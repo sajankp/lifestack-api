@@ -1,0 +1,50 @@
+[project]
+name = "lifestack-api"
+version = "0.1.0"
+description = "Personal OS — tasks, money, and investments, unified."
+requires-python = ">=3.13"
+dependencies = [
+    # Core
+    "fastapi>=0.135.0",
+    "uvicorn[standard]>=0.41.0",
+    "pydantic>=2.12.0",
+    "pydantic-settings>=2.7.0",
+
+    # Database
+    "sqlmodel>=0.0.37",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.31.0",
+    "alembic>=1.18.0",
+
+    # Auth
+    "python-jose[cryptography]>=3.5.0",
+    "passlib[bcrypt]>=1.7.4",
+
+    # Scheduler
+    "apscheduler>=3.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-asyncio>=1.3.0",
+    "httpx>=0.28.1",
+    "ruff>=0.15.0",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["app"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

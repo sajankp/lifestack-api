@@ -1,0 +1,21 @@
+services:
+  api:
+    build: .
+    ports: ["8000:8000"]
+    depends_on: [postgres]
+    env_file: .env
+    volumes:
+      - .:/app
+
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: lifestack
+      POSTGRES_PASSWORD: lifestack
+      POSTGRES_DB: lifestack
+    ports: ["5432:5432"]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+volumes:
+  pg-data:
