@@ -66,10 +66,15 @@ The older todo app remains a useful reference, especially for auth and product b
 | ORM / Models | SQLModel or SQLAlchemy |
 | Database | PostgreSQL |
 | Migrations | Alembic |
-| Auth | JWT access + refresh flow retained from the existing todo app |
+| Auth | JWT access + refresh flow (HttpOnly cookies, carried from to-do app) |
+| Password Hashing | pwdlib — Argon2id |
+| JWT Library | python-jose (HS256) |
+| Rate Limiting | slowapi (Redis backend) |
+| Logging | structlog (JSON output, trace/span enrichment) |
+| Security Headers | Custom OWASP middleware (CSP, HSTS, X-Content-Type-Options) |
+| Observability | OpenTelemetry + Prometheus + Jaeger + Loki + Grafana |
 | Scheduler | APScheduler |
 | Background work | In-process jobs first, DB-backed outbox later if needed |
-| AI | Optional stage 2 provider layer |
 | MCP | Optional stage 2 adapter |
 | Testing | pytest |
 | Linting | Ruff |
@@ -78,13 +83,14 @@ The older todo app remains a useful reference, especially for auth and product b
 
 ### Why keep JWT auth?
 
-The existing todo app already uses JWT-based auth. Reusing that model gives you:
+The existing todo app already uses JWT-based auth with HttpOnly cookies. Reusing that model gives you:
 - continuity with the current app
 - less rewrite risk
 - a clearer migration path into Lifestack
+- XSS protection (tokens are not accessible to JavaScript)
 - an API shape that still works later for mobile clients, MCP clients, or external integrations
 
-If you already have refresh-token rotation in the todo app, keep it. If not, add it inside the auth module rather than redesigning auth again.
+The cookie-based auth pattern, CSRF origin checks, and session tracking are carried forward from the to-do app. Password hashing is simplified to Argon2id-only since Lifestack is a new project with no legacy bcrypt data. See [Auth Architecture](#auth-architecture) for details.
 
 ---
 
@@ -318,12 +324,25 @@ If a structure drives real product logic, model it as a table.
 
 ## Auth Architecture
 
-### Stage 1
+### Stage 1 — Cookie-Based JWT (Carried from To-Do)
 
-Retain JWT auth from the existing todo app:
-- short-lived access token
-- refresh token flow
-- user-scoped and workspace-scoped access checks
+Retain the proven auth pattern from the existing todo app:
+
+| Aspect | Implementation |
+|--------|----------------|
+| Algorithm | HS256 (HMAC-SHA256) |
+| Access Token TTL | 30 minutes (configurable via `ACCESS_TOKEN_EXPIRE_SECONDS`) |
+| Refresh Token TTL | 1 hour (configurable via `REFRESH_TOKEN_EXPIRE_SECONDS`) |
+| Token Storage | HttpOnly secure cookies (`access_token`, `refresh_token`) |
+| Password Hashing | Argon2id only (new project, no legacy hashes) |
+| Session Tracking | Session ID (`sid`) embedded in JWT claims |
+| CSRF Protection | Origin validation on `POST`/`PUT`/`PATCH`/`DELETE` when `SameSite=None` |
+
+**Auth flow:**
+1. Login → API sets `access_token` and `refresh_token` as HttpOnly cookies
+2. Authenticated requests → middleware reads `access_token` from cookie, populates `request.state.user_id` and `request.state.username`
+3. Token refresh → client sends `refresh_token` cookie to `/token/refresh`, receives new `access_token` cookie
+4. Logout → API clears both cookies
 
 ### Stage 2
 
@@ -377,9 +396,11 @@ It also reinforces trust better than adding AI too early.
 
 ## AI and MCP
 
-These should be framed as adapters over stable domain services.
+AI features are framed as adapters over stable domain services.
 
-### Stage 2 design
+### Stage 2 Design
+
+The to-do app has an existing Gemini voice WebSocket proxy, but its architecture (direct WebSocket passthrough to a single provider) may not be the best pattern for Lifestack's multi-module scope. AI integration in Lifestack should be reconsidered with a proper adapter design:
 
 ```text
 chat or MCP request
@@ -392,6 +413,7 @@ This means:
 - chat does not own business logic
 - MCP does not bypass validation rules
 - adding or removing AI later does not damage the core product
+- AI adapter should be provider-agnostic, not coupled to a single vendor
 
 ### README guidance
 
@@ -452,17 +474,194 @@ services:
     volumes: [pg-data:/var/lib/postgresql/data]
 ```
 
-That is enough for the personal OS.
+That is enough for the personal OS core.
 
-### Stage 2 or later
+### Observability Stack (Carried from To-Do)
 
-Add Redis only if you actually need:
-- distributed rate limiting
-- worker queues
-- cache invalidation
-- pub/sub fan-out
+The to-do app has a proven observability setup that should be carried forward:
 
-Do not make Redis mandatory before one of those needs is real.
+```yaml
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector:latest
+    # Receives traces/metrics from the API, forwards to backends
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    # Distributed tracing UI
+
+  prometheus:
+    image: prom/prometheus:latest
+    # Metrics scraping from /metrics endpoint
+
+  loki:
+    image: grafana/loki:latest
+    # Log aggregation
+
+  grafana:
+    image: grafana/grafana:latest
+    # Unified dashboards for traces, metrics, and logs
+```
+
+See the to-do app's `docker-compose.yml` for the full working configuration.
+
+### Redis
+
+Redis is included from stage 1 as the backend for rate limiting. It also serves as the foundation for future needs:
+- distributed rate limiting (stage 1)
+- worker queues (when needed)
+- cache invalidation (when needed)
+- pub/sub fan-out (when needed)
+
+---
+
+## Observability
+
+All observability patterns are carried forward from the to-do app.
+
+### Metrics
+
+- `prometheus-fastapi-instrumentator` auto-instruments all routes
+- `/metrics` endpoint protected by bearer token or dev-mode access
+- Custom metrics for business events (logins, registrations, todos created/completed/deleted, DB query duration)
+
+### Tracing
+
+- OpenTelemetry instrumentation for FastAPI and the database driver
+- OTLP HTTP export to the collector when `OTEL_EXPORTER_OTLP_ENDPOINT` is configured
+- Trace context propagated through all layers
+
+### Logging
+
+- structlog with JSON output for machine parseability
+- Middleware enriches every log entry with `trace_id` and `span_id`
+- Configurable log level via `LOG_LEVEL` environment variable
+- Request/response logging with timing and status codes
+
+### Dashboards
+
+Grafana unifies all three signals:
+- Prometheus for metrics and alerting
+- Jaeger for distributed trace exploration
+- Loki for log search with trace correlation
+
+---
+
+## Security Middleware
+
+All security middleware is carried forward from the to-do app.
+
+### OWASP Security Headers
+
+A custom middleware adds security headers to every response:
+- `Content-Security-Policy` (configurable `img-src`, `style-src`, `script-src`, `font-src`)
+- `Strict-Transport-Security` (HSTS)
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+
+### Rate Limiting
+
+| Endpoint Type | Limit | Strategy |
+|---------------|-------|----------|
+| Auth endpoints (`/token`, `/user`) | 5/minute | User ID when authenticated, IP fallback |
+| API endpoints | 100/minute | Default |
+| Storage | Redis (via `REDIS_URL`) |
+
+### CORS
+
+- Configurable via environment variables (`CORS_ORIGINS`, `CORS_ALLOW_METHODS`, etc.)
+- Origin sanitization strips paths and trailing slashes
+- Credentials support for cookie-based auth
+
+---
+
+## API Versioning
+
+All API routes should be versioned from day one:
+
+```text
+/v1/todo/
+/v1/spending/
+/v1/investing/
+```
+
+This provides:
+- a deprecation path for breaking changes
+- backwards compatibility for existing clients
+- a clear contract for MCP and external integrations later
+
+Version the router prefix, not individual endpoints. When `v2` is needed, the old routes remain active with a documented sunset date.
+
+---
+
+## Error Handling (RFC 7807)
+
+All error responses should follow the [RFC 7807 Problem Details](https://www.rfc-editor.org/rfc/rfc7807) standard from day one:
+
+```json
+{
+    "type": "https://lifestack.app/errors/not-found",
+    "title": "Resource not found",
+    "status": 404,
+    "detail": "Todo with id 'abc' does not exist in this workspace",
+    "instance": "/v1/todo/abc"
+}
+```
+
+This gives clients:
+- machine-readable error types
+- human-readable descriptions
+- consistent error shape across all modules
+- a standard that API clients and MCP adapters can rely on
+
+---
+
+## Testing Strategy
+
+### Testing Pyramid
+
+```text
+        ┌─────────────────┐
+        │   E2E Tests     │  ← Slowest, run on main merge
+        │  (Playwright)   │
+        ├─────────────────┤
+        │  Integration    │  ← Medium, run on PRs
+        │  Tests (Real DB)│
+        ├─────────────────┤
+        │   Unit Tests    │  ← Fastest, run on every push
+        │ (Mocked deps)   │
+        └─────────────────┘
+```
+
+### Unit Tests
+- Mock repositories and services
+- Test business logic in isolation
+- Target: 80%+ coverage
+- Framework: pytest + AsyncMock
+
+### Integration Tests
+- Use testcontainers to spin up real PostgreSQL and Redis
+- Tests hit actual database through the full stack
+- Verify SQL queries, transactions, and constraint enforcement
+
+### E2E Tests
+- Playwright for full browser-to-API flows
+- Cover critical paths: auth, todo CRUD, cross-module workflows
+- Run against a real Docker Compose environment
+
+---
+
+## CI Gate Strategy
+
+| Trigger | Unit Tests | Integration Tests | E2E Tests |
+|---------|------------|-------------------|------------|
+| Every push | ✅ Required | ❌ Skip | ❌ Skip |
+| Pull Request | ✅ Required | ✅ Required | ❌ Skip |
+| Merge to main | ✅ Required | ✅ Required | ✅ Required |
+| Nightly scheduled | ✅ Required | ✅ Required | ✅ Required |
+
+This balances developer velocity (fast push feedback) with release confidence (full E2E on merge).
 
 ---
 
@@ -477,9 +676,12 @@ Do not make Redis mandatory before one of those needs is real.
 - add audit logging
 - add export
 - add scheduler-based reminders and recurring jobs
+- implement API versioning (`/v1/`)
+- implement RFC 7807 error responses
+- set up CI gates (unit + integration on PR, E2E on merge)
 
 ### Phase 2 - AI and Integrations
-- add AI provider abstraction
+- design AI adapter architecture (provider-agnostic)
 - add chat UI
 - add usage tracking and rate limits
 - add MCP as an optional adapter
@@ -492,16 +694,53 @@ Do not make Redis mandatory before one of those needs is real.
 
 ---
 
+## Carried Forward from To-Do
+
+The following production-ready patterns are proven in the existing to-do app and should be retained in Lifestack:
+
+| Pattern | To-Do Implementation | Status |
+|---------|---------------------|--------|
+| Cookie-based JWT auth | HttpOnly cookies, access + refresh tokens | ✅ Carry forward |
+| CSRF protection | Origin validation on mutating requests | ✅ Carry forward |
+| Password hashing | Argon2id (simplified — no bcrypt migration needed) | ✅ Carry forward |
+| Session tracking | Session IDs in JWT claims | ✅ Carry forward |
+| Rate limiting | slowapi with Redis backend | ✅ Carry forward |
+| Security headers | OWASP middleware (CSP, HSTS, X-Frame-Options) | ✅ Carry forward |
+| Structured logging | structlog with trace/span enrichment | ✅ Carry forward |
+| Metrics | Prometheus + custom business metrics | ✅ Carry forward |
+| Tracing | OpenTelemetry (FastAPI + DB driver) | ✅ Carry forward |
+| Log aggregation | Loki integration | ✅ Carry forward |
+| Dashboards | Grafana (traces + metrics + logs) | ✅ Carry forward |
+| CORS | Configurable origins with sanitization | ✅ Carry forward |
+| Health checks | Liveness + readiness probes | ✅ Carry forward |
+| Metrics auth | Bearer token or dev-mode for `/metrics` | ✅ Carry forward |
+
+**Not carried forward:**
+- Gemini voice proxy — AI architecture to be redesigned in stage 2
+- bcrypt legacy hashing — new project, Argon2id only
+
+**What changes in migration:**
+- Database switches from MongoDB to PostgreSQL
+- Sync PyMongo calls become async SQLAlchemy sessions
+- Flat router-to-DB becomes layered (router → service → repository)
+- `user_id` scoping becomes `workspace_id` scoping
+- ObjectId IDs become BIGINT + UUID
+- API routes gain `/v1/` prefix
+- Error responses follow RFC 7807
+
+---
+
 ## What Needs Extra Clarity in the Docs
 
 These points should stay explicit across README and architecture docs:
 - what works today vs what is planned
 - personal OS first, SaaS later
-- JWT auth is intentional because it comes from the existing todo app
+- JWT cookie auth is intentional because it comes from the existing todo app
 - MCP is not part of the core architecture yet
 - scheduler and direct workflows are the default coordination model
 - Pub/Sub is optional, not foundational
 - `workspace_id` is the migration path to SaaS
+- observability and security middleware are carried forward, not new work
 
 ---
 
@@ -509,10 +748,15 @@ These points should stay explicit across README and architecture docs:
 
 For this project, the right architecture is:
 - a tenant-aware modular monolith
-- JWT auth retained from the current todo app
+- JWT cookie auth (Argon2id) retained from the current todo app
 - PostgreSQL as the source of truth
+- Redis for rate limiting from stage 1
 - scheduler plus direct workflows for stage 1
-- AI and MCP added later as adapters
+- full observability stack (OTel + Prometheus + Jaeger + Loki + Grafana) from day one
+- security middleware (OWASP headers, rate limiting, CSRF) from day one
+- API versioning (`/v1/`) and RFC 7807 error responses from day one
+- CI gates (unit on push, integration on PR, E2E on merge) from day one
+- AI and MCP added later as stage 2 adapters with proper architecture review
 - SaaS features added by extending workspace and platform layers, not by breaking the monolith apart too early
 
 That gives you a credible personal product now and a realistic path to a platform later.

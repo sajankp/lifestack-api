@@ -457,11 +457,11 @@ class AuditLogger:
 
 ---
 
-## Centralized Exceptions
+## Centralized Exceptions (RFC 7807)
 
 ```python
 # app/core/exceptions.py
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 
@@ -481,19 +481,39 @@ class ValidationError(LifestackError):
     pass
 
 
+def _problem_response(request: Request, status: int, title: str, detail: str):
+    """Build an RFC 7807 Problem Details response."""
+    return JSONResponse(
+        status_code=status,
+        content={
+            "type": f"https://lifestack.app/errors/{title.lower().replace(' ', '-')}",
+            "title": title,
+            "status": status,
+            "detail": detail,
+            "instance": str(request.url.path),
+        },
+    )
+
+
 def register_exception_handlers(app: FastAPI):
     @app.exception_handler(NotFoundError)
     async def _(request, exc):
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return _problem_response(request, 404, "Not Found", str(exc))
 
     @app.exception_handler(AuthorizationError)
     async def _(request, exc):
-        return JSONResponse(status_code=403, content={"detail": str(exc)})
+        return _problem_response(request, 403, "Forbidden", str(exc))
 
     @app.exception_handler(ValidationError)
     async def _(request, exc):
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        return _problem_response(request, 422, "Validation Error", str(exc))
 ```
+
+**Notes:**
+- All error responses follow [RFC 7807 Problem Details](https://www.rfc-editor.org/rfc/rfc7807).
+- `type` field provides a machine-readable error URI.
+- `instance` is the request path that triggered the error.
+- Consistent across all modules — clients can parse errors uniformly.
 
 ---
 
@@ -501,12 +521,8 @@ def register_exception_handlers(app: FastAPI):
 
 ```python
 # app/core/dependencies.py
-from fastapi import Depends
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from app.core.auth import decode_token
+from fastapi import HTTPException, Request
 from app.core.database.postgres import async_session_maker
-
-security = HTTPBearer()
 
 
 async def get_session():
@@ -516,20 +532,84 @@ async def get_session():
         # on exception: commit is skipped, context manager rolls back automatically
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-):
-    return decode_token(credentials.credentials)
+def get_authenticated_user(request: Request):
+    """Dependency that retrieves the authenticated user from request state.
+    Assumes the auth middleware has already validated the cookie token
+    and populated request.state.
+    """
+    if not hasattr(request.state, "user_id") or not request.state.user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return request.state
 
 
-async def get_current_workspace(user=Depends(get_current_user)) -> int:
-    return user["workspace_id"]
+async def get_current_workspace(request: Request) -> int:
+    """Extract workspace_id from the authenticated user context."""
+    user = get_authenticated_user(request)
+    return user.workspace_id
 ```
 
 **Notes:**
 - Session auto-commits if no exception is raised and rolls back otherwise.
-- `get_current_workspace()` extracts the active internal workspace ID from the JWT payload or membership context.
+- Auth is handled by a **cookie middleware** (not `HTTPBearer`), which populates `request.state.user_id` and `request.state.username` before route handlers run.
+- `get_current_workspace()` extracts the active internal workspace ID from request state.
 - Internal integer IDs are fine inside auth/session context; UUIDs matter mainly for externally referenced resources.
+
+---
+
+## Auth Middleware (Carried from To-Do)
+
+```python
+# app/core/auth_middleware.py
+from fastapi import Request, status
+from fastapi.responses import JSONResponse
+from app.core.auth import decode_token, get_user_info_from_token
+
+# Routes that do not require authentication
+PUBLIC_PATHS = {
+    "/token", "/docs", "/openapi.json", "/redoc",
+    "/", "/token/refresh", "/health", "/health/ready",
+    "/user", "/metrics", "/auth/logout",
+}
+
+
+async def auth_middleware(request: Request, call_next):
+    """Read JWT from HttpOnly cookie, validate, and populate request.state."""
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    normalized_path = request.url.path.rstrip("/") or "/"
+    if normalized_path in PUBLIC_PATHS:
+        return await call_next(request)
+
+    token = request.cookies.get("access_token")
+    if not token:
+        return JSONResponse(
+            content={"detail": "Missing token"},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    try:
+        username, user_id = get_user_info_from_token(token)
+        request.state.user_id = user_id
+        request.state.username = username
+    except Exception as e:
+        return JSONResponse(
+            content={"detail": str(e)},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    return await call_next(request)
+```
+
+**Notes:**
+- Tokens are read from HttpOnly cookies, not Authorization headers.
+- Public paths are whitelisted; everything else requires a valid token.
+- `request.state` is populated for downstream route handlers and dependencies.
+- CSRF origin checks should be added for mutating requests when `SameSite=None`.
 
 ---
 
@@ -618,3 +698,161 @@ async def test_get_todo_not_found(service, mock_repo):
 **Notes:**
 - Repository is mocked; tests exercise business logic, not the database.
 - Workflow tests work the same way: mock the module services and assert the orchestration.
+
+---
+
+## Rate Limiting (Carried from To-Do)
+
+```python
+# app/core/rate_limiter.py
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from app.config import get_settings
+
+settings = get_settings()
+
+
+def _key_func(request):
+    """Use authenticated user ID when available, fall back to IP."""
+    if hasattr(request.state, "user_id") and request.state.user_id:
+        return str(request.state.user_id)
+    return get_remote_address(request)
+
+
+limiter = Limiter(
+    key_func=_key_func,
+    default_limits=[settings.rate_limit_default],
+    storage_uri=settings.redis_url,  # Redis backend (required)
+    enabled=settings.rate_limit_enabled,
+)
+```
+
+**Usage in routers:**
+```python
+@router.post("/token/")
+@limiter.limit(settings.rate_limit_auth)  # 5/minute
+def login(request: Request, ...):
+    ...
+```
+
+**Notes:**
+- Redis backend via `REDIS_URL` environment variable.
+- Per-user limits when authenticated, per-IP for anonymous endpoints.
+- Configurable via environment variables (`RATE_LIMIT_DEFAULT`, `RATE_LIMIT_AUTH`).
+
+---
+
+## Observability Patterns (Carried from To-Do)
+
+### Prometheus Custom Metrics
+
+```python
+# app/utils/metrics.py
+from prometheus_client import Counter, Gauge, Histogram
+
+LOGINS_TOTAL = Counter("logins_total", "Total login attempts", ["status"])
+REGISTRATIONS_TOTAL = Counter("registrations_total", "Total user registrations")
+TODOS_CREATED_TOTAL = Counter("todos_created_total", "Total todos created")
+TODOS_COMPLETED_TOTAL = Counter("todos_completed_total", "Total todos completed")
+TODOS_DELETED_TOTAL = Counter("todos_deleted_total", "Total todos deleted")
+TODOS_PER_USER = Histogram("todos_per_user", "Number of todos returned per query")
+DB_QUERY_DURATION_SECONDS = Histogram(
+    "db_query_duration_seconds", "DB query duration", ["operation"]
+)
+DB_CONNECTIONS_ACTIVE = Gauge("db_connections_active", "Active DB connections")
+```
+
+### Structured Logging Middleware
+
+```python
+# app/middleware/logging.py
+import structlog
+from starlette.middleware.base import BaseHTTPMiddleware
+
+logger = structlog.get_logger()
+
+
+class StructlogMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        logger.info(
+            "request_completed",
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+        )
+        return response
+```
+
+### OpenTelemetry Setup
+
+```python
+# app/utils/telemetry.py
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+
+def setup_telemetry(app, settings):
+    if not settings.otel_exporter_otlp_endpoint:
+        return
+
+    provider = TracerProvider()
+    exporter = OTLPSpanExporter(
+        endpoint=f"{settings.otel_exporter_otlp_endpoint}/v1/traces"
+    )
+    provider.add_span_processor(BatchSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+    FastAPIInstrumentor.instrument_app(app)
+```
+
+---
+
+## Security Middleware (Carried from To-Do)
+
+### OWASP Security Headers
+
+```python
+# app/middleware/security.py
+from starlette.middleware.base import BaseHTTPMiddleware
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=63072000; includeSubDomains"
+        )
+        # CSP configured via environment variables
+        return response
+```
+
+### Metrics Endpoint Protection
+
+```python
+def verify_metrics_token(request: Request):
+    """Protect /metrics with bearer token or dev-mode access."""
+    if settings.metrics_bearer_token:
+        auth_header = request.headers.get("Authorization")
+        expected = f"Bearer {settings.metrics_bearer_token}"
+        if not (auth_header and secrets.compare_digest(auth_header, expected)):
+            raise HTTPException(status_code=403, detail="Forbidden")
+    elif settings.metrics_dev_mode:
+        pass  # Allow public access in dev
+    else:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+# In main.py:
+Instrumentator().instrument(app).expose(
+    app, dependencies=[Depends(verify_metrics_token)]
+)
+```
+
+**Notes:**
+- Metrics endpoint is secure by default; requires explicit token or dev-mode opt-in.
+- Constant-time comparison (`secrets.compare_digest`) prevents timing attacks.
