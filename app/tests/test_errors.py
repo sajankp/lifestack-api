@@ -3,44 +3,57 @@ from fastapi import APIRouter
 from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel
 
+from app.core.auth import create_token
 from app.core.exceptions import APIError
-from app.main import app
-
-# Create some helper endpoints to trigger errors
-error_router = APIRouter()
+from app.main import create_app
 
 
 class Item(BaseModel):
     name: str
 
 
-@error_router.get("/test-404")
-async def trigger_404():
-    raise APIError(
-        type_str="not-found",
-        title="Resource Not Found",
-        status_code=404,
-        detail="The requested resource could not be found.",
+@pytest.fixture
+def error_app():
+    app = create_app()
+    error_router = APIRouter()
+
+    @error_router.get("/test-404")
+    async def trigger_404():
+        raise APIError(
+            type_str="not-found",
+            title="Resource Not Found",
+            status_code=404,
+            detail="The requested resource could not be found.",
+        )
+
+    @error_router.post("/test-422")
+    async def trigger_422(item: Item):
+        return item
+
+    @error_router.get("/test-500")
+    async def trigger_500():
+        raise ValueError("Something went terribly wrong!")
+
+    app.include_router(error_router)
+    return app
+
+
+@pytest.fixture
+def auth_headers():
+    token = create_token(
+        data={"sub": "tester", "sub_id": "1"},
+        sid="test-session",
+        token_type="access",
     )
-
-
-@error_router.post("/test-422")
-async def trigger_422(item: Item):
-    return item
-
-
-@error_router.get("/test-500")
-async def trigger_500():
-    raise ValueError("Something went terribly wrong!")
-
-
-app.include_router(error_router)
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.mark.asyncio
-async def test_api_error_returns_rfc7807():
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.get("/test-404")
+async def test_api_error_returns_rfc7807(error_app, auth_headers):
+    async with AsyncClient(
+        transport=ASGITransport(app=error_app), base_url="http://test"
+    ) as client:
+        response = await client.get("/test-404", headers=auth_headers)
         assert response.status_code == 404
         data = response.json()
         assert data["type"] == "https://lifestack.app/errors/not-found"
@@ -51,9 +64,13 @@ async def test_api_error_returns_rfc7807():
 
 
 @pytest.mark.asyncio
-async def test_validation_error_returns_rfc7807():
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        response = await client.post("/test-422", json={"wrong_field": "value"})
+async def test_validation_error_returns_rfc7807(error_app, auth_headers):
+    async with AsyncClient(
+        transport=ASGITransport(app=error_app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/test-422", json={"wrong_field": "value"}, headers=auth_headers
+        )
         assert response.status_code == 422
         data = response.json()
         assert data["type"] == "https://lifestack.app/errors/validation-error"
@@ -66,15 +83,30 @@ async def test_validation_error_returns_rfc7807():
 
 
 @pytest.mark.asyncio
-async def test_unhandled_exception_returns_rfc7807():
+async def test_unhandled_exception_returns_rfc7807(error_app, auth_headers):
     async with AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+        transport=ASGITransport(app=error_app, raise_app_exceptions=False), base_url="http://test"
     ) as client:
-        response = await client.get("/test-500")
+        response = await client.get("/test-500", headers=auth_headers)
         assert response.status_code == 500
         data = response.json()
         assert data["type"] == "https://lifestack.app/errors/internal-server-error"
         assert data["title"] == "Internal Server Error"
         assert data["status"] == 500
         assert data["instance"] == "/test-500"
+        assert "detail" in data
+
+
+@pytest.mark.asyncio
+async def test_invalid_token_returns_problem_details(error_app):
+    async with AsyncClient(
+        transport=ASGITransport(app=error_app, raise_app_exceptions=False), base_url="http://test"
+    ) as client:
+        response = await client.get("/test-404", headers={"Authorization": "Bearer invalid-token"})
+        assert response.status_code == 401
+        data = response.json()
+        assert data["type"] == "about:blank"
+        assert data["title"] == "Unauthorized"
+        assert data["status"] == 401
+        assert data["instance"] == "/test-404"
         assert "detail" in data
