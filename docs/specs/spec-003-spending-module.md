@@ -1,5 +1,5 @@
 # Feature Spec: Spending Module
-**Status:** Draft
+**Status:** Approved
 **Spec ID:** 003
 
 ## 1. Overview
@@ -139,30 +139,46 @@ Supported filters for list:
 #### Budgets
 - `GET /v1/spending/budgets`
 - `POST /v1/spending/budgets`
+- `PATCH /v1/spending/budgets/{public_id}`
 
 Rules:
-- `POST /v1/spending/budgets` performs upsert semantics for `(workspace_id, category_id, month_start)` or the API should be split into create/update explicitly before implementation
-- whichever option is chosen, document it in the router and tests so clients do not guess
+- `POST /v1/spending/budgets` creates a new budget; it must reject the request with an RFC 7807 conflict response if a budget for the same `(workspace_id, category_id, month_start)` already exists.
+- `PATCH /v1/spending/budgets/{public_id}` updates the `amount` of an existing budget.
+- Clients are expected to check whether a budget exists before deciding to create or update. This is the explicit split model, not upsert.
 
 ## 6. Implementation Guidance
 
 ### 6.1 Currency Handling
-Use `Decimal` persisted as PostgreSQL `NUMERIC`.
+Use `Decimal` persisted as PostgreSQL `NUMERIC(12, 2)`.
 
 Rationale:
-- this matches the current architecture direction more closely than mixing `Decimal` and `BigInt` language
-- it keeps arithmetic precise without introducing a cents-only API contract yet
-
-The API schema should validate scale explicitly once concrete field definitions are added.
+- 2 decimal places covers standard currency precision for a personal finance tracker.
+- `NUMERIC(12, 2)` supports amounts up to 9,999,999,999.99 which is sufficient.
+- Pydantic schemas must validate that submitted amounts have at most 2 decimal places.
+- Arithmetic (e.g. budget vs actual comparisons) should use `Decimal` throughout to avoid floating-point errors.
 
 ### 6.2 Provisioning Default Categories
-The architecture goal is to have system categories available per workspace, but current registration only creates the workspace.
+Default spending categories are seeded **during user registration**, at the same time the default workspace is created.
 
-To stay aligned with the current codebase, treat default-category provisioning as an explicit implementation decision for the spending slice:
-- either extend registration/workspace provisioning to seed spending categories
-- or bootstrap them lazily on first spending access
+The registration workflow must:
+1. Create the `users` row.
+2. Create the default `workspaces` row.
+3. Create the `workspace_memberships` row.
+4. Insert a fixed set of system categories (`is_system = true`) scoped to that workspace.
 
-Do not use globally shared categories with `workspace_id = null`.
+This is an atomic operation — all four steps should succeed or the registration fails.
+
+Default system categories (illustrative, finalize before implementation):
+- Food & Dining
+- Transport
+- Housing
+- Health
+- Entertainment
+- Shopping
+- Income
+- Other
+
+Do not use globally shared categories with `workspace_id = null`. Every category row must belong to exactly one workspace.
 
 ### 6.3 Cross-Module Workflows
 Budget checks, alerts, and todo follow-ups are not part of the spending service layer itself.
@@ -218,9 +234,10 @@ If overspending should create a todo or dashboard signal, define that in `app/ap
 - Create a monthly budget and confirm the UI/API shows the stored month/category combination consistently.
 - Verify problem-detail responses are surfaced cleanly for missing category or transaction URLs.
 
-## 10. Open Decisions
-- Should budget writes be modeled as upsert on `POST` or split across `POST` plus `PATCH`?
-- Should default categories be seeded during registration or on first spending-module initialization?
-- What decimal precision/scale should be enforced for money fields?
+## 10. Settled Decisions
 
-These decisions should be settled before implementation starts so tests and API contracts do not drift.
+| # | Decision | Resolution |
+|---|----------|------------|
+| 1 | Budget write model | Split `POST` (create) + `PATCH` (update). `POST` rejects duplicates with RFC 7807 conflict. |
+| 2 | Default category provisioning | Seeded atomically during registration alongside workspace creation. |
+| 3 | Money field precision | `NUMERIC(12, 2)` — 2 decimal places, validated in Pydantic schemas. |

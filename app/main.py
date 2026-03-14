@@ -18,6 +18,7 @@ from app.core.exceptions import (
     request_validation_exception_handler,
     unhandled_exception_handler,
 )
+from app.spending.router import router as spending_router
 from app.todo.router import router as todo_router
 
 logger = structlog.get_logger()
@@ -127,6 +128,7 @@ def create_app() -> FastAPI:
     # Include routers under /v1 prefix
     _app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
     _app.include_router(todo_router, prefix=settings.API_V1_STR)
+    _app.include_router(spending_router, prefix=settings.API_V1_STR)
 
     @_app.get("/health", tags=["health"])
     async def health_check():
