@@ -6,295 +6,155 @@
 
 ## Module Shape
 
-Every domain module follows the same four-file structure. The todo module is used as the reference.
+Every domain module should keep the same layered shape:
 
-### Models
+```text
+models.py       -> persistence model definitions
+schemas.py      -> request / response contracts
+repository.py   -> database access scoped by workspace
+service.py      -> domain logic for one module
+router.py       -> HTTP layer and dependency resolution
+```
+
+The todo module is the reference for this pattern, but this file intentionally shows only the stable shape and boundaries, not every current implementation detail.
+
+### Model Pattern
+
+Use models that separate internal and external identity and carry tenant context explicitly:
 
 ```python
-# app/todo/models.py
-import uuid
-from datetime import datetime
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlmodel import Column, Field, SQLModel
-
-
 class Todo(SQLModel, table=True):
-    __tablename__ = "todos"
-
     id: int | None = Field(default=None, primary_key=True)
     public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
-    workspace_id: int = Field(index=True, foreign_key="workspaces.id")
-    title: str
-    priority: str = "medium"
-    status: str = "pending"
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+
+    title: str = Field(max_length=100)
+    description: str | None = Field(default="", max_length=500)
     due_date: datetime | None = None
-    tags: list[str] = Field(default_factory=list, sa_column=Column(JSONB))
-    notes: str | None = None
-    metadata_: dict = Field(
-        default_factory=dict,
-        sa_column=Column("metadata", JSONB),
-    )
-    system_key: str | None = Field(default=None, index=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    priority: PriorityEnum = Field(default=PriorityEnum.medium)
+    completed: bool = Field(default=False)
 ```
 
 **Notes:**
-- Internal primary keys use `BIGINT`; `public_id` is the external-facing UUID.
-- `workspace_id` is an internal foreign key on every business table.
-- `default_factory` avoids shared mutable defaults for lists and dicts.
-- `system_key` is optional and used to deduplicate system-generated tasks.
-- If subtasks drive business logic later, promote them to a separate table.
+- `id` is the internal PK.
+- `public_id` is the external identifier exposed to clients.
+- `workspace_id` is the tenant boundary for access control and query scoping.
+- `user_id` can record ownership or creator metadata, but it should not replace workspace scoping.
 
-### Schemas
+### Schema Pattern
+
+Keep create/update/response schemas explicit and narrow:
 
 ```python
-# app/todo/schemas.py
-import uuid
-from datetime import datetime
-from pydantic import BaseModel, Field as PydanticField
-
-
-class TodoCreate(BaseModel):
-    title: str
-    priority: str = "medium"
+class TodoBase(BaseModel):
+    title: str = Field(..., min_length=1, max_length=100)
+    description: str | None = Field(default="", max_length=500)
     due_date: datetime | None = None
-    tags: list[str] = PydanticField(default_factory=list)
-    notes: str | None = None
+    priority: PriorityEnum = Field(default=PriorityEnum.medium)
+    completed: bool = Field(default=False)
+
+
+class TodoCreate(TodoBase):
+    pass
 
 
 class TodoUpdate(BaseModel):
-    title: str | None = None
-    priority: str | None = None
-    status: str | None = None
+    title: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=500)
     due_date: datetime | None = None
-    tags: list[str] | None = None
-    notes: str | None = None
+    priority: PriorityEnum | None = None
+    completed: bool | None = None
 
 
-class TodoResponse(BaseModel):
+class TodoResponse(TodoBase):
     public_id: uuid.UUID
-    title: str
-    priority: str
-    status: str
-    due_date: datetime | None
-    tags: list[str]
-    notes: str | None
+    workspace_id: int
     created_at: datetime
-
-    model_config = {"from_attributes": True}
+    updated_at: datetime
 ```
 
-### Repository
+**Notes:**
+- Use `TodoCreate` for required/allowed create fields.
+- Use partial update schemas with `exclude_unset=True`.
+- Keep response schemas client-facing; expose `public_id`, not internal `id`.
+
+### Repository Pattern
+
+Repositories own DB access and must always scope reads and writes by workspace:
 
 ```python
-# app/todo/repository.py
-import uuid
-from datetime import datetime
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
-from app.todo.models import Todo
-
-
 class TodoRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def find_by_workspace(
-        self, workspace_id: int, status: str | None = None
-    ) -> list[Todo]:
+    async def get_all(self, workspace_id: int, completed: bool | None = None) -> Sequence[Todo]:
         query = select(Todo).where(Todo.workspace_id == workspace_id)
-        if status:
-            query = query.where(Todo.status == status)
-        query = query.order_by(Todo.created_at.desc())
+        if completed is not None:
+            query = query.where(Todo.completed == completed)
         result = await self.session.execute(query)
-        return list(result.scalars().all())
+        return result.scalars().all()
 
-    async def find_by_public_id(
-        self, workspace_id: int, todo_public_id: uuid.UUID
-    ) -> Todo | None:
+    async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> Todo | None:
         query = select(Todo).where(
             Todo.workspace_id == workspace_id,
-            Todo.public_id == todo_public_id,
+            Todo.public_id == public_id,
         )
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
-
-    async def find_open_system_task(
-        self, workspace_id: int, system_key: str
-    ) -> Todo | None:
-        query = (
-            select(Todo)
-            .where(
-                Todo.workspace_id == workspace_id,
-                Todo.system_key == system_key,
-                Todo.status != "completed",
-            )
-            .order_by(Todo.created_at.desc())
-        )
-        result = await self.session.execute(query)
-        return result.scalars().first()
-
-    async def find_recent_system_task(
-        self, workspace_id: int, system_key: str, since: datetime
-    ) -> Todo | None:
-        query = (
-            select(Todo)
-            .where(
-                Todo.workspace_id == workspace_id,
-                Todo.system_key == system_key,
-                Todo.created_at >= since,
-            )
-            .order_by(Todo.created_at.desc())
-        )
-        result = await self.session.execute(query)
-        return result.scalars().first()
-
-    async def create(self, todo: Todo) -> Todo:
-        self.session.add(todo)
-        await self.session.flush()
-        await self.session.refresh(todo)
-        return todo
-
-    async def update(self, todo: Todo) -> Todo:
-        self.session.add(todo)
-        await self.session.flush()
-        await self.session.refresh(todo)
-        return todo
-
-    async def delete(self, todo: Todo) -> None:
-        await self.session.delete(todo)
-        await self.session.flush()
 ```
 
 **Notes:**
-- Every query is scoped by `workspace_id`; no data leaks between workspaces.
-- External lookups use `public_id`; internal joins still use integer primary keys.
-- Uses `flush()` instead of `commit()` so the router or a workflow can control transaction boundaries.
-- Returns domain objects, not dicts.
+- Every query is scoped by `workspace_id`.
+- Repositories should use `flush()`, not `commit()`, so transaction boundaries stay above the repository layer.
+- Return domain objects, not ad-hoc dicts.
 
-### Service
+### Service Pattern
+
+Services hold module business logic and accept workspace context explicitly:
 
 ```python
-# app/todo/service.py
-import uuid
-from datetime import datetime, timedelta
-from app.core.exceptions import NotFoundError
-from app.todo.models import Todo
-from app.todo.repository import TodoRepository
-from app.todo.schemas import TodoCreate
-
-
 class TodoService:
-    def __init__(self, repo: TodoRepository):
-        self.repo = repo
+    def __init__(self, repository: TodoRepository):
+        self.repository = repository
 
-    async def list_todos(
-        self, workspace_id: int, status: str | None = None
-    ) -> list[Todo]:
-        return await self.repo.find_by_workspace(workspace_id, status)
+    async def list_todos(self, workspace_id: int, completed: bool | None = None) -> Sequence[Todo]:
+        return await self.repository.get_all(workspace_id, completed)
 
-    async def get_todo(self, workspace_id: int, todo_public_id: uuid.UUID) -> Todo:
-        todo = await self.repo.find_by_public_id(workspace_id, todo_public_id)
-        if not todo:
-            raise NotFoundError(f"Todo {todo_public_id} not found")
-        return todo
+    async def get_todo(self, workspace_id: int, public_id: uuid.UUID) -> Todo:
+        ...
 
-    async def create_todo(self, workspace_id: int, data: TodoCreate) -> Todo:
-        todo = Todo(**data.model_dump(), workspace_id=workspace_id)
-        return await self.repo.create(todo)
+    async def create_todo(self, user_id: int, workspace_id: int, todo_in: TodoCreate) -> Todo:
+        ...
 
-    async def complete_todo(
-        self, workspace_id: int, todo_public_id: uuid.UUID
-    ) -> Todo:
-        todo = await self.get_todo(workspace_id, todo_public_id)
-        todo.status = "completed"
-        todo.updated_at = datetime.utcnow()
-        return await self.repo.update(todo)
-
-    async def ensure_system_task(
-        self,
-        workspace_id: int,
-        system_key: str,
-        title: str,
-        cooldown_hours: int = 24,
-    ) -> Todo:
-        """Guarantees at most one open task per rule, with an optional cooldown."""
-        existing = await self.repo.find_open_system_task(workspace_id, system_key)
-        if existing:
-            return existing
-
-        cutoff = datetime.utcnow() - timedelta(hours=cooldown_hours)
-        recent = await self.repo.find_recent_system_task(
-            workspace_id, system_key, cutoff
-        )
-        if recent:
-            return recent
-
-        todo = Todo(
-            workspace_id=workspace_id,
-            title=title,
-            priority="medium",
-            tags=["system-generated"],
-            system_key=system_key,
-        )
-        return await self.repo.create(todo)
+    async def update_todo(self, workspace_id: int, public_id: uuid.UUID, todo_in: TodoUpdate) -> Todo:
+        ...
 ```
 
 **Notes:**
-- Service never imports another module's service; cross-module logic goes in `application/`.
-- `ensure_system_task()` makes background rules idempotent and prevents duplicate task spam.
-- Add a partial unique index in a migration if you want database-level enforcement for one open task per `workspace_id + system_key`.
+- Services should not read `Request` objects directly.
+- Services should not import other module services for cross-module orchestration; use `application/` workflows for that.
+- Missing entity lookups should fail consistently for the active workspace.
 
-### Router
+### Router Pattern
+
+Routers should stay thin and resolve authenticated user plus active workspace via dependencies:
 
 ```python
-# app/todo/router.py
-import uuid
-from fastapi import APIRouter, Depends
-from app.core.dependencies import get_current_workspace, get_session
-from app.todo.repository import TodoRepository
-from app.todo.schemas import TodoCreate, TodoResponse
-from app.todo.service import TodoService
-
-router = APIRouter(prefix="/todo", tags=["todo"])
-
-
-def get_todo_service(session=Depends(get_session)) -> TodoService:
-    return TodoService(TodoRepository(session))
-
-
-@router.get("/", response_model=list[TodoResponse])
-async def list_todos(
-    status: str | None = None,
-    workspace_id: int = Depends(get_current_workspace),
-    service: TodoService = Depends(get_todo_service),
-):
-    return await service.list_todos(workspace_id, status)
-
-
-@router.post("/", response_model=TodoResponse, status_code=201)
+@router.post("/", response_model=TodoResponse, status_code=status.HTTP_201_CREATED)
 async def create_todo(
-    data: TodoCreate,
-    workspace_id: int = Depends(get_current_workspace),
-    service: TodoService = Depends(get_todo_service),
+    todo_in: TodoCreate,
+    todo_service: Annotated[TodoService, Depends(get_todo_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
 ):
-    return await service.create_todo(workspace_id, data)
-
-
-@router.post("/{todo_id}/complete", response_model=TodoResponse)
-async def complete_todo(
-    todo_id: uuid.UUID,
-    workspace_id: int = Depends(get_current_workspace),
-    service: TodoService = Depends(get_todo_service),
-):
-    return await service.complete_todo(workspace_id, todo_id)
+    return await todo_service.create_todo(user["id"], workspace_id, todo_in)
 ```
 
 **Notes:**
-- `get_current_workspace()` returns the internal workspace primary key used for DB access.
-- External routes use UUIDs for entity lookup while repositories keep integer joins internally.
-- Service is constructed per-request via `Depends`, getting a fresh session each time.
+- Routers validate/deserialize input, resolve dependencies, call the service, and return the result.
+- The active workspace comes from a dependency, not from route params.
+- External routes use `public_id` UUIDs for entity lookup.
 
 ---
 
@@ -303,39 +163,15 @@ async def complete_todo(
 Workflows live in `app/application/` and compose multiple module services. They are the only place where modules interact.
 
 ```python
-# app/application/workflows.py
-from app.spending.service import SpendingService
-from app.todo.service import TodoService
+class SomeWorkflow:
+    def __init__(self, service_a, service_b):
+        self.service_a = service_a
+        self.service_b = service_b
 
-
-class BudgetReviewWorkflow:
-    def __init__(self, spending_service: SpendingService, todo_service: TodoService):
-        self.spending = spending_service
-        self.todo = todo_service
-
-    async def check_and_alert(self, workspace_id: int) -> None:
-        status = await self.spending.get_budget_status(workspace_id)
-        if status.is_over_limit:
-            await self.todo.ensure_system_task(
-                workspace_id=workspace_id,
-                system_key="budget_review",
-                title="Review this month's spending",
-                cooldown_hours=24,
-            )
-
-
-class WeeklySummaryWorkflow:
-    def __init__(self, todo_service, spending_service, investing_service):
-        self.todo = todo_service
-        self.spending = spending_service
-        self.investing = investing_service
-
-    async def generate(self, workspace_id: int) -> dict:
-        return {
-            "todos_completed": await self.todo.count_completed_this_week(workspace_id),
-            "total_spent": await self.spending.get_weekly_total(workspace_id),
-            "portfolio_change": await self.investing.get_weekly_change(workspace_id),
-        }
+    async def run(self, workspace_id: int) -> None:
+        data = await self.service_a.get_state(workspace_id)
+        if data.requires_followup:
+            await self.service_b.handle_followup(workspace_id, data)
 ```
 
 **Notes:**
@@ -521,63 +357,54 @@ def register_exception_handlers(app: FastAPI):
 
 ```python
 # app/core/dependencies.py
-from fastapi import HTTPException, Request
-from app.core.database.postgres import async_session_maker
+from fastapi import Depends, HTTPException, Request
 
+from app.core.database.postgres import get_db_session
 
-async def get_session():
-    async with async_session_maker() as session:
-        yield session
-        await session.commit()
-        # on exception: commit is skipped, context manager rolls back automatically
-
-
-def get_authenticated_user(request: Request):
-    """Dependency that retrieves the authenticated user from request state.
-    Assumes the auth middleware has already validated the cookie token
-    and populated request.state.
-    """
+async def get_current_user(request: Request) -> dict:
     if not hasattr(request.state, "user_id") or not request.state.user_id:
         raise HTTPException(
             status_code=401,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return request.state
+    return {"id": request.state.user_id, "username": request.state.username}
 
 
-async def get_current_workspace(request: Request) -> int:
-    """Extract workspace_id from the authenticated user context."""
-    user = get_authenticated_user(request)
-    return user.workspace_id
+async def get_current_workspace_id(
+    request: Request,
+    workspace_service: WorkspaceService = Depends(get_workspace_service),
+) -> int:
+    if not hasattr(request.state, "user_id") or not request.state.user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    workspaces = await workspace_service.get_user_workspaces(request.state.user_id)
+    if not workspaces:
+        workspace = await workspace_service.ensure_default_workspace(
+            request.state.user_id, request.state.username
+        )
+        return workspace.id
+
+    return workspaces[0].id
 ```
 
 **Notes:**
-- Session auto-commits if no exception is raised and rolls back otherwise.
-- Auth is handled by a **cookie middleware** (not `HTTPBearer`), which populates `request.state.user_id` and `request.state.username` before route handlers run.
-- `get_current_workspace()` extracts the active internal workspace ID from request state.
-- Internal integer IDs are fine inside auth/session context; UUIDs matter mainly for externally referenced resources.
+- Session management should come from a DB dependency such as `get_db_session`, not be recreated ad hoc in each router.
+- Auth middleware populates request user context before route handlers run.
+- A dedicated dependency resolves the active `workspace_id` for the request.
+- Stage 1 can resolve the first/default workspace for a user, but repositories and services should still operate on `workspace_id`.
 
 ---
 
 ## Auth Middleware (Carried from To-Do)
 
 ```python
-# app/core/auth_middleware.py
-from fastapi import Request, status
-from fastapi.responses import JSONResponse
-from app.core.auth import decode_token, get_user_info_from_token
-
-# Routes that do not require authentication
-PUBLIC_PATHS = {
-    "/token", "/docs", "/openapi.json", "/redoc",
-    "/", "/token/refresh", "/health", "/health/ready",
-    "/user", "/metrics", "/auth/logout",
-}
-
-
 async def auth_middleware(request: Request, call_next):
-    """Read JWT from HttpOnly cookie, validate, and populate request.state."""
+    """Read JWT from HttpOnly cookie, validate, and populate request state."""
     if request.method == "OPTIONS":
         return await call_next(request)
 
@@ -608,7 +435,7 @@ async def auth_middleware(request: Request, call_next):
 **Notes:**
 - Tokens are read from HttpOnly cookies, not Authorization headers.
 - Public paths are whitelisted; everything else requires a valid token.
-- `request.state` is populated for downstream route handlers and dependencies.
+- `request.state` is populated for downstream dependencies such as `get_current_user()` and `get_current_workspace_id()`.
 - CSRF origin checks should be added for mutating requests when `SameSite=None`.
 
 ---
@@ -616,36 +443,18 @@ async def auth_middleware(request: Request, call_next):
 ## Wiring in `main.py`
 
 ```python
-# app/main.py
-from fastapi import FastAPI
-from app.auth.router import router as auth_router
-from app.core.exceptions import register_exception_handlers
-from app.core.scheduler import scheduler
-from app.dashboard.router import router as dashboard_router
-from app.investing.router import router as investing_router
-from app.spending.router import router as spending_router
-from app.todo.router import router as todo_router
-
-app = FastAPI(title="Lifestack API")
+app = FastAPI(...)
 
 register_exception_handlers(app)
+app.middleware("http")(auth_middleware)
 
-app.include_router(auth_router)
-app.include_router(todo_router)
-app.include_router(spending_router)
-app.include_router(investing_router)
-app.include_router(dashboard_router)
-
-
-@app.on_event("startup")
-async def startup():
-    scheduler.start()
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    scheduler.shutdown()
+app.include_router(auth_router, prefix="/v1/auth")
+app.include_router(todo_router, prefix="/v1")
 ```
+
+**Notes:**
+- Apply auth, exception, and routing concerns at the application boundary.
+- Version routers at inclusion time, not by hardcoding version segments inside every endpoint.
 
 ---
 
@@ -654,11 +463,13 @@ async def shutdown():
 ```python
 # app/todo/tests/test_service.py
 import uuid
-import pytest
 from unittest.mock import AsyncMock
-from app.core.exceptions import NotFoundError
+
+import pytest
+from fastapi import HTTPException
+
 from app.todo.models import Todo
-from app.todo.schemas import TodoCreate
+from app.todo.schemas import TodoCreate, TodoUpdate
 from app.todo.service import TodoService
 
 
@@ -669,20 +480,21 @@ def mock_repo():
         id=1,
         public_id=uuid.uuid4(),
         workspace_id=1,
+        user_id=10,
         title="Test",
-        status="pending",
+        completed=False,
     )
     return repo
 
 
 @pytest.fixture
 def service(mock_repo):
-    return TodoService(repo=mock_repo)
+    return TodoService(repository=mock_repo)
 
 
 @pytest.mark.asyncio
 async def test_create_todo(service, mock_repo):
-    result = await service.create_todo(1, TodoCreate(title="Buy groceries"))
+    result = await service.create_todo(10, 1, TodoCreate(title="Buy groceries"))
     mock_repo.create.assert_called_once()
     assert result.title == "Test"
     assert result.workspace_id == 1
@@ -690,14 +502,15 @@ async def test_create_todo(service, mock_repo):
 
 @pytest.mark.asyncio
 async def test_get_todo_not_found(service, mock_repo):
-    mock_repo.find_by_public_id.return_value = None
-    with pytest.raises(NotFoundError):
+    mock_repo.get_by_public_id.return_value = None
+    with pytest.raises(HTTPException):
         await service.get_todo(1, uuid.uuid4())
 ```
 
 **Notes:**
 - Repository is mocked; tests exercise business logic, not the database.
-- Workflow tests work the same way: mock the module services and assert the orchestration.
+- Add separate integration tests that hit the real DB through the full stack.
+- Include workspace isolation scenarios in integration tests, not only happy-path CRUD.
 
 ---
 
