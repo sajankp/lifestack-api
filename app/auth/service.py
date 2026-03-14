@@ -32,6 +32,9 @@ class AuthService:
         new_user = await self.user_repo.create(user_create)
         return new_user
 
+    async def get_user_by_id(self, user_id: int) -> User | None:
+        return await self.user_repo.get_by_id(user_id)
+
     async def authenticate_user(self, username_or_email: str, password: str) -> User | None:
         user = await self.user_repo.get_by_username(username_or_email)
         if not user:

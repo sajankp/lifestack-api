@@ -6,11 +6,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.application.workflows import UserRegistrationWorkflow
-from app.auth.schemas import TokenResponse, UserCreate
+from app.auth.schemas import TokenResponse, UserCreate, UserResponse
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.auth import create_token, get_user_info_from_token
-from app.core.dependencies import get_auth_service, get_user_registration_workflow, limiter
+from app.core.dependencies import (
+    get_auth_service,
+    get_current_user,
+    get_user_registration_workflow,
+    limiter,
+)
 
 router = APIRouter()
 
@@ -24,6 +29,20 @@ async def create_user(
 ):
     await workflow.register_user_with_workspace(user_in)
     return True
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_me(
+    current_user: dict = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service),
+):
+    user = await auth_service.get_user_by_id(current_user["id"])
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    return user
 
 
 @router.post("/login", response_model=TokenResponse)
