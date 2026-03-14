@@ -6,15 +6,15 @@ from pydantic import BaseModel
 from app.core.exceptions import APIError
 from app.main import app
 
-# Create some test endpoints to trigger errors
-test_router = APIRouter()
+# Create some helper endpoints to trigger errors
+error_router = APIRouter()
 
 
 class Item(BaseModel):
     name: str
 
 
-@test_router.get("/test-404")
+@error_router.get("/test-404")
 async def trigger_404():
     raise APIError(
         type_str="not-found",
@@ -24,17 +24,17 @@ async def trigger_404():
     )
 
 
-@test_router.post("/test-422")
+@error_router.post("/test-422")
 async def trigger_422(item: Item):
     return item
 
 
-@test_router.get("/test-500")
+@error_router.get("/test-500")
 async def trigger_500():
     raise ValueError("Something went terribly wrong!")
 
 
-app.include_router(test_router)
+app.include_router(error_router)
 
 
 @pytest.mark.asyncio
