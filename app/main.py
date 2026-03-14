@@ -10,6 +10,7 @@ from starlette.responses import JSONResponse
 
 from app.auth.router import router as auth_router
 from app.config import settings
+from app.core.auth import get_user_info_from_token
 from app.core.dependencies import limiter
 from app.core.exceptions import (
     APIError,
@@ -58,8 +59,6 @@ def create_app() -> FastAPI:
     # OpenTelemetry will be initialized after the app starts if configured
     if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
         FastAPIInstrumentor.instrument_app(_app)
-
-    from app.core.auth import get_user_info_from_token
 
     @_app.middleware("http")
     async def add_user_info_to_request(request: Request, call_next):
