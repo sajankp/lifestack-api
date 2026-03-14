@@ -9,6 +9,8 @@ from testcontainers.postgres import PostgresContainer
 from alembic import command
 from alembic.config import Config
 from app.config import settings
+from app.core.database import postgres
+from app.core.dependencies import limiter
 from app.main import app
 
 
@@ -31,8 +33,6 @@ async def override_database_url(postgres_container):
     config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
     await anyio.to_thread.run_sync(command.upgrade, config, "head")
 
-    from app.core.database import postgres
-
     postgres.engine = create_async_engine(
         settings.DATABASE_URL,
         echo=settings.LOG_LEVEL == "DEBUG",
@@ -53,7 +53,6 @@ async def override_database_url(postgres_container):
 async def client(override_database_url):
     """Return an AsyncClient that hits the app."""
     # Reset the in-memory rate-limiter so counts don't bleed between tests.
-    from app.core.dependencies import limiter
 
     limiter._storage.reset()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
