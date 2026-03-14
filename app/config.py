@@ -1,4 +1,4 @@
-from pydantic import AnyHttpUrl, computed_field
+from pydantic import AliasChoices, AnyHttpUrl, Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,7 +11,10 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/v1"
 
     # CORS
-    BACKEND_CORS_ORIGINS: list[AnyHttpUrl] | str = []
+    BACKEND_CORS_ORIGINS: list[AnyHttpUrl] | str = Field(
+        default=[],
+        validation_alias=AliasChoices("BACKEND_CORS_ORIGINS", "CORS_ORIGINS"),
+    )
 
     # Auth
     SECRET_KEY: str = "super-secret-key-change-in-production"
@@ -22,7 +25,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # Database
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/lifestack"
+    DATABASE_URL: str = Field(
+        default="postgresql+asyncpg://postgres:postgres@localhost:5432/lifestack",
+        validation_alias=AliasChoices("DATABASE_URL", "POSTGRES_URL"),
+    )
 
     # Redis (Rate Limiting)
     REDIS_URL: str = "redis://localhost:6379/1"

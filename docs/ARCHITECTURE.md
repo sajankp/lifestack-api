@@ -584,7 +584,7 @@ A custom middleware adds security headers to every response:
 
 ### CORS
 
-- Configurable via environment variables (`CORS_ORIGINS`, `CORS_ALLOW_METHODS`, etc.)
+- Configurable via environment variables (`BACKEND_CORS_ORIGINS`, `CORS_ALLOW_METHODS`, etc.)
 - Origin sanitization strips paths and trailing slashes
 - Credentials support for cookie-based auth
 
