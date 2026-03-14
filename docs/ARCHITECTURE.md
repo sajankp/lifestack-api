@@ -31,7 +31,7 @@ Stage 1 should feel complete and useful without AI, MCP, billing, or message inf
 One FastAPI app and one PostgreSQL database are enough for this product for a long time.
 
 ### 3. Workspace-scoped from day one
-Even for a single personal user, all business tables should carry a `workspace_id`. In stage 1 there may be one workspace per user. Later, the same shape supports teams, households, and SaaS plans.
+Even for a single personal user, all business tables should carry a `workspace_id`. In stage 1 there may be one default workspace per user, but that is still a real workspace concept, not a shortcut back to `user_id` scoping. Later, the same shape supports teams, households, and SaaS plans.
 
 ### 4. Adapters over core services
 REST, dashboard views, chat, and MCP should all call the same application and domain services.
@@ -304,6 +304,18 @@ Keep the ownership model explicit:
 
 In stage 1, a single user can simply have one default workspace. The structure still scales cleanly when you later add shared or team-based usage.
 
+### Stage 1 workspace contract
+
+For stage 1, the backend should still behave as workspace-aware even if each user only has one default workspace.
+
+That means:
+- business tables are scoped by `workspace_id`, not by `user_id`
+- authenticated request context resolves both the current user and the active workspace
+- repositories query by `workspace_id`
+- tests must prove that one authenticated user's workspace data is not visible from another user's workspace context
+
+If the implementation uses a derived default workspace per user before full workspace and membership tables are introduced, document that explicitly in code and tests as a temporary stage-1 shape, not as the target long-term architecture.
+
 ### Use JSONB carefully
 
 JSONB is fine for optional metadata or flexible notes.
@@ -340,9 +352,11 @@ Retain the proven auth pattern from the existing todo app:
 
 **Auth flow:**
 1. Login → API sets `access_token` and `refresh_token` as HttpOnly cookies
-2. Authenticated requests → middleware reads `access_token` from cookie, populates `request.state.user_id` and `request.state.username`
+2. Authenticated requests → middleware reads `access_token` from cookie, populates request user context, and the dependency layer resolves the active `workspace_id` for downstream services
 3. Token refresh → client sends `refresh_token` cookie to `/token/refresh`, receives new `access_token` cookie
 4. Logout → API clears both cookies
+
+For stage 1, the active workspace may be the user's default workspace. The important rule is that handlers and repositories operate on `workspace_id`, not on raw `user_id` ownership checks.
 
 ### Stage 2
 
@@ -644,10 +658,14 @@ This gives clients:
 - Use testcontainers to spin up real PostgreSQL and Redis
 - Tests hit actual database through the full stack
 - Verify SQL queries, transactions, and constraint enforcement
+- Verify workspace isolation explicitly: one authenticated user's workspace data must not leak into another user's results
+- Verify migration-backed setup, not `create_all()`-style schema bootstrapping
+- Verify that request-to-workspace resolution is deterministic and documented for stage 1
 
 ### E2E Tests
 - Playwright for full browser-to-API flows
 - Cover critical paths: auth, todo CRUD, cross-module workflows
+- Include at least one workspace isolation scenario where a second user cannot see or mutate the first user's records
 - Run against a real Docker Compose environment
 
 ---
