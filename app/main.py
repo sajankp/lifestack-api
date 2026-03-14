@@ -1,6 +1,8 @@
 import structlog
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -8,7 +10,12 @@ from slowapi.middleware import SlowAPIMiddleware
 from app.auth.router import router as auth_router
 from app.config import settings
 from app.core.dependencies import limiter
-from app.core.exceptions import APIError, api_exception_handler
+from app.core.exceptions import (
+    APIError,
+    api_exception_handler,
+    request_validation_exception_handler,
+    unhandled_exception_handler,
+)
 from app.todo.router import router as todo_router
 
 logger = structlog.get_logger()
@@ -39,12 +46,12 @@ def create_app() -> FastAPI:
 
     # Exception Handlers
     _app.add_exception_handler(APIError, api_exception_handler)
+    _app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
+    _app.add_exception_handler(Exception, unhandled_exception_handler)
     _app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     # OpenTelemetry will be initialized after the app starts if configured
     if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-
         FastAPIInstrumentor.instrument_app(_app)
 
     # Include routers under /v1 prefix

@@ -1,5 +1,6 @@
 import structlog
 from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 logger = structlog.get_logger()
@@ -22,6 +23,37 @@ async def api_exception_handler(request: Request, exc: APIError) -> JSONResponse
             "title": exc.title,
             "status": exc.status_code,
             "detail": exc.detail,
+            "instance": str(request.url.path),
+        },
+    )
+
+
+async def request_validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    logger.warning("validation_error", detail=exc.errors(), url=str(request.url))
+    return JSONResponse(
+        status_code=422,
+        content={
+            "type": "https://lifestack.app/errors/validation-error",
+            "title": "Request Validation Error",
+            "status": 422,
+            "detail": "The request payload or parameters are invalid.",
+            "instance": str(request.url.path),
+            "errors": exc.errors(),
+        },
+    )
+
+
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("unhandled_exception", error=str(exc), url=str(request.url))
+    return JSONResponse(
+        status_code=500,
+        content={
+            "type": "https://lifestack.app/errors/internal-server-error",
+            "title": "Internal Server Error",
+            "status": 500,
+            "detail": "An unexpected error occurred processing your request.",
             "instance": str(request.url.path),
         },
     )
