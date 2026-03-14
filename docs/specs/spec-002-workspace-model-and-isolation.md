@@ -1,5 +1,5 @@
 # Feature Spec: Workspace Model and Isolation
-**Status:** Draft
+**Status:** Approved
 **Spec ID:** 002
 
 ## 1. Overview

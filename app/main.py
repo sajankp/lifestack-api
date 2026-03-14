@@ -14,6 +14,7 @@ from app.core.dependencies import limiter
 from app.core.exceptions import (
     APIError,
     api_exception_handler,
+    http_exception_handler,
     request_validation_exception_handler,
     unhandled_exception_handler,
 )
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
 
     # Exception Handlers
     _app.add_exception_handler(APIError, api_exception_handler)
+    _app.add_exception_handler(HTTPException, http_exception_handler)
     _app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     _app.add_exception_handler(Exception, unhandled_exception_handler)
     _app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)

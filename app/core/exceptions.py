@@ -1,5 +1,5 @@
 import structlog
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -23,6 +23,22 @@ async def api_exception_handler(request: Request, exc: APIError) -> JSONResponse
             "title": exc.title,
             "status": exc.status_code,
             "detail": exc.detail,
+            "instance": str(request.url.path),
+        },
+    )
+
+
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    logger.warning(
+        "http_exception", status=exc.status_code, detail=exc.detail, url=str(request.url)
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "type": "about:blank",
+            "title": "API Error",
+            "status": exc.status_code,
+            "detail": str(exc.detail),
             "instance": str(request.url.path),
         },
     )

@@ -1,5 +1,5 @@
 # Feature Spec: API Versioning and RFC 7807 Error Responses
-**Status:** Draft
+**Status:** Approved
 **Spec ID:** 001
 
 ## 1. Overview

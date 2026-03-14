@@ -5,11 +5,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 
+from app.application.workflows import UserRegistrationWorkflow
 from app.auth.schemas import TokenResponse, UserCreate
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.auth import create_token, get_user_info_from_token
-from app.core.dependencies import get_auth_service, limiter
+from app.core.dependencies import get_auth_service, get_user_registration_workflow, limiter
 
 router = APIRouter()
 
@@ -19,9 +20,9 @@ router = APIRouter()
 async def create_user(
     request: Request,
     user_in: UserCreate,
-    auth_service: AuthService = Depends(get_auth_service),
+    workflow: UserRegistrationWorkflow = Depends(get_user_registration_workflow),
 ):
-    await auth_service.register_user(user_in)
+    await workflow.register_user_with_workspace(user_in)
     return True
 
 

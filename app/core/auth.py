@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
@@ -41,6 +42,11 @@ def create_token(
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm="HS256")
     return encoded_jwt
+
+
+def get_default_workspace_id(user_id: int | str) -> uuid.UUID:
+    """Derive a stable stage-1 workspace ID for a single-user default workspace."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"lifestack:workspace:{user_id}")
 
 
 def get_user_info_from_token(token: str, expected_type: str = "access") -> tuple[str, str, str]:

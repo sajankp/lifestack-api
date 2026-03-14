@@ -1,9 +1,10 @@
-from fastapi import HTTPException, status
+from fastapi import status
 
 from app.auth.models import User
 from app.auth.repository import UserRepository
 from app.auth.schemas import UserCreate
 from app.core.auth import verify_password
+from app.core.exceptions import APIError
 
 
 class AuthService:
@@ -13,13 +14,17 @@ class AuthService:
     async def register_user(self, user_create: UserCreate) -> User:
         existing_user = await self.user_repo.get_by_email(user_create.email)
         if existing_user:
-            raise HTTPException(
+            raise APIError(
+                type_str="conflict",
+                title="Email Already Registered",
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Email already registered",
             )
         existing_user_name = await self.user_repo.get_by_username(user_create.username)
         if existing_user_name:
-            raise HTTPException(
+            raise APIError(
+                type_str="conflict",
+                title="Username Taken",
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Username already taken",
             )
