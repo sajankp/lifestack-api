@@ -10,6 +10,7 @@ from starlette.responses import JSONResponse
 
 from app.auth.router import router as auth_router
 from app.config import settings
+from app.core.auth import get_user_info_from_token
 from app.core.dependencies import limiter
 from app.core.exceptions import (
     APIError,
@@ -18,6 +19,7 @@ from app.core.exceptions import (
     request_validation_exception_handler,
     unhandled_exception_handler,
 )
+from app.spending.router import router as spending_router
 from app.todo.router import router as todo_router
 
 logger = structlog.get_logger()
@@ -33,10 +35,11 @@ def create_app() -> FastAPI:
     )
 
     # CORS
-    if settings.BACKEND_CORS_ORIGINS:
+    cors_origins = settings.cors_allowed_origins
+    if cors_origins:
         _app.add_middleware(
             CORSMiddleware,
-            allow_origins=[str(origin) for origin in settings.BACKEND_CORS_ORIGINS],
+            allow_origins=cors_origins,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
@@ -56,8 +59,6 @@ def create_app() -> FastAPI:
     # OpenTelemetry will be initialized after the app starts if configured
     if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
         FastAPIInstrumentor.instrument_app(_app)
-
-    from app.core.auth import get_user_info_from_token
 
     @_app.middleware("http")
     async def add_user_info_to_request(request: Request, call_next):
@@ -126,6 +127,7 @@ def create_app() -> FastAPI:
     # Include routers under /v1 prefix
     _app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
     _app.include_router(todo_router, prefix=settings.API_V1_STR)
+    _app.include_router(spending_router, prefix=settings.API_V1_STR)
 
     @_app.get("/health", tags=["health"])
     async def health_check():
