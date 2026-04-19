@@ -1,0 +1,70 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  COVERAGE_THRESHOLD: 80
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run pre-commit checks
+        run: |
+          uv run pre-commit run --all-files
+
+      - name: Run tests with coverage
+        run: |
+          echo "TESTING=true" > .env
+          echo "DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/lifestack_ci" >> .env
+          echo "SECRET_KEY=test-secret-key-for-ci" >> .env
+          echo "PASSWORD_ALGORITHM=HS256" >> .env
+          echo "ACCESS_TOKEN_EXPIRE_SECONDS=1800" >> .env
+          echo "REFRESH_TOKEN_EXPIRE_SECONDS=3600" >> .env
+
+          uv run pytest --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=${{ env.COVERAGE_THRESHOLD }}
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 30
+
+      - name: Security scanning
+        run: |
+          uv run --with bandit bandit -r app/ -ll --format json --output bandit-report.json
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+          if-no-files-found: warn
+          retention-days: 30
