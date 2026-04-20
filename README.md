@@ -41,7 +41,7 @@ A unified home page showing tasks due, budget status, and portfolio performance 
 A fast task manager with priorities, due dates, and a clean service-layer architecture. This module is the continuation of the earlier todo app, now folded into the larger Lifestack platform.
 
 ### Spending Tracker
-Track transactions, budgets, recurring expenses, and monthly spending patterns.
+Track transactions, budgets, and monthly spending patterns.
 
 ### Investment Tracker
 Track holdings, performance, and portfolio-level changes over time.
@@ -135,7 +135,7 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Todo CRUD with priorities | Stage 1 |
 | JWT auth (existing todo app continuity) | Stage 1 |
 | Spending tracker | Stage 1 |
-| Recurring transactions | Stage 1 |
+| Recurring transactions | Planned (post spending CRUD + scheduler workflow) |
 | Investment portfolio tracker | Stage 1 |
 | Unified dashboard | Planned |
 | Scheduled reminders and summaries | Planned |
