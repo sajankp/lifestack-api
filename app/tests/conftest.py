@@ -52,8 +52,8 @@ async def override_database_url(postgres_container):
 @pytest.fixture
 async def client(override_database_url):
     """Return an AsyncClient that hits the app."""
-    # Reset the in-memory rate-limiter so counts don't bleed between tests.
-
-    limiter._storage.reset()
+    # Disable rate limiting in tests to avoid Redis dependency.
+    limiter.enabled = False
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
+    limiter.enabled = True

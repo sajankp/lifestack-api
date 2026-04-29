@@ -65,7 +65,7 @@ async def test_default_categories_seeded_on_registration(client: AsyncClient):
     # List categories — must include system categories
     resp = await client.get("/v1/spending/categories", cookies=creds["cookies"])
     assert resp.status_code == 200
-    cats = resp.json()
+    cats = resp.json()["items"]
     assert len(cats) > 0, "Expected system categories to be seeded"
     system_cats = [c for c in cats if c["is_system"]]
     assert len(system_cats) == 8, f"Expected 8 system categories, got {len(system_cats)}"
@@ -99,18 +99,16 @@ async def test_workspace_isolation_categories(client: AsyncClient):
     # User B lists categories — must NOT see User A's category
     b_list = await client.get("/v1/spending/categories", cookies=user_b["cookies"])
     assert b_list.status_code == 200
-    b_cat_ids = {c["public_id"] for c in b_list.json()}
+    b_cat_ids = {c["public_id"] for c in b_list.json()["items"]}
     assert a_cat_public_id not in b_cat_ids
 
     # User B fetches User A's category directly → 404 (non-disclosure)
-    await client.get(
+    detail_resp = await client.get(
         f"/v1/spending/categories/{a_cat_public_id}",
         cookies=user_b["cookies"],
     )
-    # Categories don't have a direct GET endpoint in the spec;
-    # the isolation is proven through the list exclusion above.
-    # This assertion confirms the list isolation.
-    assert a_cat_public_id not in b_cat_ids
+    assert detail_resp.status_code == 404
+    assert detail_resp.json()["type"] == "https://lifestack.app/errors/not-found"
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +160,7 @@ async def test_budget_uniqueness_enforced(client: AsyncClient):
     creds = await _register_and_login(client, "buduniq")
 
     # Get any system category
-    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
     cat_id = cats[0]["public_id"]
     month = "2026-03-01"
 
@@ -185,7 +183,7 @@ async def test_budget_uniqueness_enforced(client: AsyncClient):
     assert "PATCH" in body["detail"]  # hint to use PATCH for updates
 
     # Confirm only one budget row exists
-    budgets = (await client.get("/v1/spending/budgets", cookies=creds["cookies"])).json()
+    budgets = (await client.get("/v1/spending/budgets", cookies=creds["cookies"])).json()["items"]
     matching = [b for b in budgets if b["category_id"] == cat_id and b["month_start"] == month]
     assert len(matching) == 1
 
@@ -198,7 +196,7 @@ async def test_budget_uniqueness_enforced(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_budget_update_via_patch(client: AsyncClient):
     creds = await _register_and_login(client, "budpatch")
-    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
     cat_id = cats[0]["public_id"]
     month = "2026-04-01"
 
@@ -229,7 +227,7 @@ async def test_full_spending_flow(client: AsyncClient):
     creds = await _register_and_login(client, "fullflow")
 
     # Default categories exist
-    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
     assert len(cats) > 0
     food_cat = next(c for c in cats if c["name"] == "Food & Dining")
 
@@ -262,7 +260,7 @@ async def test_full_spending_flow(client: AsyncClient):
     # List transactions
     listed = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
     assert listed.status_code == 200
-    assert any(t["public_id"] == tx_data["public_id"] for t in listed.json())
+    assert any(t["public_id"] == tx_data["public_id"] for t in listed.json()["items"])
 
     # Get single transaction
     fetched = await client.get(
@@ -288,7 +286,7 @@ async def test_full_spending_flow(client: AsyncClient):
 
     # Confirm deletion
     after = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
-    assert all(t["public_id"] != tx_data["public_id"] for t in after.json())
+    assert all(t["public_id"] != tx_data["public_id"] for t in after.json()["items"])
 
     # Delete custom category (no transactions remain)
     del_cat = await client.delete(f"/v1/spending/categories/{gym_cat_id}", cookies=creds["cookies"])
@@ -303,7 +301,7 @@ async def test_full_spending_flow(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_cannot_delete_system_category(client: AsyncClient):
     creds = await _register_and_login(client, "sysdelcat")
-    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
     system_cat = next(c for c in cats if c["is_system"])
 
     resp = await client.delete(

@@ -2,7 +2,13 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from app.core.exceptions import APIError
+from app.core.exceptions import (
+    CategoryInUseError,
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+)
+from app.core.pagination import DEFAULT_LIMIT
 from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
@@ -40,18 +46,15 @@ class CategoryService:
     def __init__(self, repository: CategoryRepository):
         self.repository = repository
 
-    async def list_categories(self, workspace_id: int) -> Sequence[SpendingCategory]:
-        return await self.repository.get_all(workspace_id)
+    async def list_categories(
+        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> tuple[Sequence[SpendingCategory], int]:
+        return await self.repository.get_all(workspace_id, limit, offset)
 
     async def get_category(self, workspace_id: int, public_id: uuid.UUID) -> SpendingCategory:
         category = await self.repository.get_by_public_id(workspace_id, public_id)
         if not category:
-            raise APIError(
-                type_str="not-found",
-                title="Category Not Found",
-                status_code=404,
-                detail=f"Category with id {public_id} not found in this workspace",
-            )
+            raise NotFoundError(detail=f"Category with id {public_id} not found in this workspace")
         return category
 
     async def create_category(
@@ -60,11 +63,8 @@ class CategoryService:
         normalized = _normalize(category_in.name)
         existing = await self.repository.get_by_normalized_name(workspace_id, normalized)
         if existing:
-            raise APIError(
-                type_str="conflict",
-                title="Category Already Exists",
-                status_code=409,
-                detail=f"A category named '{category_in.name}' already exists in this workspace",
+            raise ConflictError(
+                detail=f"A category named '{category_in.name}' already exists in this workspace"
             )
         category = SpendingCategory(
             workspace_id=workspace_id,
@@ -91,11 +91,8 @@ class CategoryService:
                     workspace_id, new_normalized
                 )
                 if existing:
-                    raise APIError(
-                        type_str="conflict",
-                        title="Category Name Conflict",
-                        status_code=409,
-                        detail=f"A category named '{update_data['name']}' already exists",
+                    raise ConflictError(
+                        detail=f"A category named '{update_data['name']}' already exists"
                     )
             update_data["normalized_name"] = new_normalized
 
@@ -107,18 +104,10 @@ class CategoryService:
     async def delete_category(self, workspace_id: int, public_id: uuid.UUID) -> None:
         category = await self.get_category(workspace_id, public_id)
         if category.is_system:
-            raise APIError(
-                type_str="forbidden",
-                title="Cannot Delete System Category",
-                status_code=403,
-                detail="System categories cannot be deleted",
-            )
+            raise ForbiddenError(detail="System categories cannot be deleted")
         if await self.repository.has_transactions(category.id):  # type: ignore[arg-type]
-            raise APIError(
-                type_str="conflict",
-                title="Category In Use",
-                status_code=409,
-                detail="Cannot delete a category that has transactions referencing it",
+            raise CategoryInUseError(
+                detail="Cannot delete a category that has transactions referencing it"
             )
         await self.repository.delete(category)
 
@@ -153,14 +142,11 @@ class TransactionService:
         """Resolve a category by public_id, enforcing workspace boundary."""
         category = await self.category_repo.get_by_public_id(workspace_id, category_public_id)
         if not category:
-            raise APIError(
-                type_str="not-found",
-                title="Category Not Found",
-                status_code=404,
+            raise NotFoundError(
                 detail=(
                     f"Category with id {category_public_id} not found in this workspace. "
                     "Cross-workspace category references are not permitted."
-                ),
+                )
             )
         return category
 
@@ -171,7 +157,9 @@ class TransactionService:
         type_filter: TransactionType | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
-    ) -> Sequence[SpendingTransaction]:
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Sequence[SpendingTransaction], int]:
         category_id: int | None = None
         if category_public_id is not None:
             cat = await self._resolve_category(workspace_id, category_public_id)
@@ -183,16 +171,15 @@ class TransactionService:
             type_filter=type_filter,
             from_date=from_date,
             to_date=to_date,
+            limit=limit,
+            offset=offset,
         )
 
     async def get_transaction(self, workspace_id: int, public_id: uuid.UUID) -> SpendingTransaction:
         transaction = await self.transaction_repo.get_by_public_id(workspace_id, public_id)
         if not transaction:
-            raise APIError(
-                type_str="not-found",
-                title="Transaction Not Found",
-                status_code=404,
-                detail=f"Transaction with id {public_id} not found in this workspace",
+            raise NotFoundError(
+                detail=f"Transaction with id {public_id} not found in this workspace"
             )
         return transaction
 
@@ -250,29 +237,23 @@ class BudgetService:
     ) -> SpendingCategory:
         category = await self.category_repo.get_by_public_id(workspace_id, category_public_id)
         if not category:
-            raise APIError(
-                type_str="not-found",
-                title="Category Not Found",
-                status_code=404,
+            raise NotFoundError(
                 detail=(
                     f"Category with id {category_public_id} not found in this workspace. "
                     "Cross-workspace category references are not permitted."
-                ),
+                )
             )
         return category
 
-    async def list_budgets(self, workspace_id: int) -> Sequence[SpendingBudget]:
-        return await self.budget_repo.get_all(workspace_id)
+    async def list_budgets(
+        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> tuple[Sequence[SpendingBudget], int]:
+        return await self.budget_repo.get_all(workspace_id, limit, offset)
 
     async def get_budget(self, workspace_id: int, public_id: uuid.UUID) -> SpendingBudget:
         budget = await self.budget_repo.get_by_public_id(workspace_id, public_id)
         if not budget:
-            raise APIError(
-                type_str="not-found",
-                title="Budget Not Found",
-                status_code=404,
-                detail=f"Budget with id {public_id} not found in this workspace",
-            )
+            raise NotFoundError(detail=f"Budget with id {public_id} not found in this workspace")
         return budget
 
     async def create_budget(self, workspace_id: int, budget_in: BudgetCreate) -> SpendingBudget:
@@ -284,14 +265,11 @@ class BudgetService:
             budget_in.month_start,  # type: ignore[arg-type]
         )
         if existing:
-            raise APIError(
-                type_str="conflict",
-                title="Budget Already Exists",
-                status_code=409,
+            raise ConflictError(
                 detail=(
                     f"A budget for category '{category.name}' and month "
                     f"{budget_in.month_start} already exists. Use PATCH to update it."
-                ),
+                )
             )
 
         budget = SpendingBudget(

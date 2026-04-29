@@ -28,7 +28,6 @@ class TodoUpdate(BaseModel):
 
 class TodoResponse(TodoBase):
     public_id: uuid.UUID
-    workspace_id: int
     created_at: datetime
     updated_at: datetime
 

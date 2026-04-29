@@ -29,13 +29,12 @@ async def test_todo_crud_flow_is_workspace_scoped(client: AsyncClient):
     assert todo["title"] == "Test Todo"
     assert todo["priority"] == "high"
     user_one_todo_id = todo["public_id"]
-    user_one_workspace_id = todo["workspace_id"]
 
     list_res = await client.get("/v1/todo/")
     assert list_res.status_code == 200
-    todos = list_res.json()
-    assert len(todos) == 1
-    assert todos[0]["public_id"] == user_one_todo_id
+    list_body = list_res.json()
+    assert list_body["total"] == 1
+    assert list_body["items"][0]["public_id"] == user_one_todo_id
 
     get_res = await client.get(f"/v1/todo/{user_one_todo_id}")
     assert get_res.status_code == 200
@@ -74,16 +73,25 @@ async def test_todo_crud_flow_is_workspace_scoped(client: AsyncClient):
     )
     assert user_two_create_res.status_code == 201
     user_two_todo = user_two_create_res.json()
-    assert user_two_todo["workspace_id"] != user_one_workspace_id
+    assert user_two_todo["public_id"] is not None
 
     user_two_list_res = await client.get("/v1/todo/")
     assert user_two_list_res.status_code == 200
-    user_two_todos = user_two_list_res.json()
-    assert len(user_two_todos) == 1
-    assert user_two_todos[0]["public_id"] == user_two_todo["public_id"]
+    user_two_list = user_two_list_res.json()
+    assert user_two_list["total"] == 1
+    assert user_two_list["items"][0]["public_id"] == user_two_todo["public_id"]
 
     cross_workspace_get = await client.get(f"/v1/todo/{user_one_todo_id}")
     assert cross_workspace_get.status_code == 404
+
+    cross_workspace_patch = await client.patch(
+        f"/v1/todo/{user_one_todo_id}",
+        json={"title": "Malicious Update"},
+    )
+    assert cross_workspace_patch.status_code == 404
+
+    cross_workspace_delete = await client.delete(f"/v1/todo/{user_one_todo_id}")
+    assert cross_workspace_delete.status_code == 404
 
     logout_res = await client.post("/v1/auth/logout")
     assert logout_res.status_code == 200
@@ -95,10 +103,10 @@ async def test_todo_crud_flow_is_workspace_scoped(client: AsyncClient):
 
     user_one_list_again = await client.get("/v1/todo/")
     assert user_one_list_again.status_code == 200
-    user_one_todos = user_one_list_again.json()
-    assert len(user_one_todos) == 1
-    assert user_one_todos[0]["public_id"] == user_one_todo_id
-    assert user_one_todos[0]["workspace_id"] == user_one_workspace_id
+    user_one_list = user_one_list_again.json()
+    assert user_one_list["total"] == 1
+    assert user_one_list["items"][0]["public_id"] == user_one_todo_id
+    assert user_one_list["items"][0]["title"] == "Updated Title"
 
     cross_workspace_get = await client.get(f"/v1/todo/{user_two_todo['public_id']}")
     assert cross_workspace_get.status_code == 404

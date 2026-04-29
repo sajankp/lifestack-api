@@ -347,16 +347,16 @@ Retain the proven auth pattern from the existing todo app:
 | Refresh Token TTL | 1 hour (configurable via `REFRESH_TOKEN_EXPIRE_SECONDS`) |
 | Token Storage | HttpOnly secure cookies (`access_token`, `refresh_token`) |
 | Password Hashing | Argon2id only (new project, no legacy hashes) |
-| Session Tracking | Session ID (`sid`) embedded in JWT claims |
-| CSRF Protection | Origin validation on `POST`/`PUT`/`PATCH`/`DELETE` when `SameSite=None` |
+| Session Tracking | Session ID (`sid`) embedded in JWT claims and validated against DB-backed `auth_sessions` rows |
+| CSRF Protection | Origin validation for cookie-authenticated `POST`/`PUT`/`PATCH`/`DELETE` requests against trusted origins |
 
 **Auth flow:**
-1. Login → API sets `access_token` and `refresh_token` as HttpOnly cookies
-2. Authenticated requests → middleware reads `access_token` from cookie, populates request user context, and the dependency layer resolves the active `workspace_id` for downstream services
-3. Token refresh → client sends `refresh_token` cookie to `/token/refresh`, receives new `access_token` cookie
-4. Logout → API clears both cookies
+1. Login → API creates an `auth_sessions` row, then sets `access_token` and `refresh_token` as HttpOnly cookies
+2. Authenticated requests → middleware reads `access_token`, validates the JWT, validates the `sid` against `auth_sessions`, then the dependency layer resolves the active `workspace_id`
+3. Token refresh → client sends `refresh_token` cookie to `/v1/auth/refresh`; the session must still be active before a new access token is issued
+4. Logout → API revokes the active session server-side and clears both cookies
 
-For stage 1, the active workspace may be the user's default workspace. The important rule is that handlers and repositories operate on `workspace_id`, not on raw `user_id` ownership checks.
+For stage 1, the active workspace may be the user's default workspace. The important rule is that handlers and repositories operate on `workspace_id`, not on raw `user_id` ownership checks. If a user somehow has no workspace membership, the fallback path must provision the default workspace and its seeded spending categories inside the same request transaction.
 
 ### Stage 2
 
@@ -567,7 +567,7 @@ All security middleware is carried forward from the to-do app.
 
 ### OWASP Security Headers
 
-A custom middleware adds security headers to every response:
+This is still a recommended hardening step rather than a fully implemented platform layer in the current repo. The intended middleware should add:
 - `Content-Security-Policy` (configurable `img-src`, `style-src`, `script-src`, `font-src`)
 - `Strict-Transport-Security` (HSTS)
 - `X-Content-Type-Options: nosniff`
@@ -578,9 +578,11 @@ A custom middleware adds security headers to every response:
 
 | Endpoint Type | Limit | Strategy |
 |---------------|-------|----------|
-| Auth endpoints (`/token`, `/user`) | 5/minute | User ID when authenticated, IP fallback |
-| API endpoints | 100/minute | Default |
-| Storage | Redis (via `REDIS_URL`) |
+| Auth endpoints (`/v1/auth/login`, `/v1/auth/register`, `/v1/auth/refresh`) | Configurable via `RATE_LIMIT_AUTH` | User ID when authenticated, IP fallback |
+| API endpoints | Configurable via `RATE_LIMIT_DEFAULT` | User ID when authenticated, IP fallback |
+| Storage | `memory://` by default for local/dev; Redis via `RATE_LIMIT_STORAGE_URI` for production |
+
+Rate-limit responses should also use the same RFC 7807 `application/problem+json` shape as the rest of the API.
 
 ### CORS
 
@@ -655,12 +657,13 @@ This gives clients:
 - Framework: pytest + AsyncMock
 
 ### Integration Tests
-- Use testcontainers to spin up real PostgreSQL and Redis
+- Use testcontainers to spin up real PostgreSQL; add Redis-backed runs when validating the production rate-limit profile
 - Tests hit actual database through the full stack
 - Verify SQL queries, transactions, and constraint enforcement
 - Verify workspace isolation explicitly: one authenticated user's workspace data must not leak into another user's results
 - Verify migration-backed setup, not `create_all()`-style schema bootstrapping
 - Verify that request-to-workspace resolution is deterministic and documented for stage 1
+- Verify session revocation, duplicate-registration conflicts, and rate-limit problem responses
 
 ### E2E Tests
 - Playwright for full browser-to-API flows

@@ -2,7 +2,8 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from app.core.exceptions import APIError
+from app.core.exceptions import NotFoundError
+from app.core.pagination import DEFAULT_LIMIT
 from app.todo.models import Todo
 from app.todo.repository import TodoRepository
 from app.todo.schemas import TodoCreate, TodoUpdate
@@ -12,18 +13,19 @@ class TodoService:
     def __init__(self, repository: TodoRepository):
         self.repository = repository
 
-    async def list_todos(self, workspace_id: int, completed: bool | None = None) -> Sequence[Todo]:
-        return await self.repository.get_all(workspace_id, completed)
+    async def list_todos(
+        self,
+        workspace_id: int,
+        completed: bool | None = None,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Sequence[Todo], int]:
+        return await self.repository.get_all(workspace_id, completed, limit, offset)
 
     async def get_todo(self, workspace_id: int, public_id: uuid.UUID) -> Todo:
         todo = await self.repository.get_by_public_id(workspace_id, public_id)
         if not todo:
-            raise APIError(
-                type_str="not-found",
-                title="Todo Not Found",
-                status_code=404,
-                detail=f"Todo with id {public_id} not found",
-            )
+            raise NotFoundError(detail=f"Todo with id {public_id} not found")
         return todo
 
     async def create_todo(self, user_id: int, workspace_id: int, todo_in: TodoCreate) -> Todo:

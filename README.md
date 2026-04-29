@@ -14,7 +14,7 @@ Lifestack is being built in three stages:
 
 ### Stage 1: Personal OS
 - One frontend, one API, one PostgreSQL database
-- JWT-based auth carried forward from the existing todo app
+- JWT-based auth (HttpOnly cookies) carried forward from the existing todo app
 - Todo, spending, investing, dashboard, exports, reminders
 - Cross-module workflows handled by application services and scheduled jobs
 
@@ -133,7 +133,7 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Feature | Status |
 |---|---|
 | Todo CRUD with priorities | Stage 1 |
-| JWT auth (existing todo app continuity) | Stage 1 |
+| JWT auth (HttpOnly cookies, existing todo app continuity) | Stage 1 |
 | Spending tracker | Stage 1 |
 | Recurring transactions | Planned (post spending CRUD + scheduler workflow) |
 | Investment portfolio tracker | Stage 1 |
