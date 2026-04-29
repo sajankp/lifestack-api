@@ -54,6 +54,9 @@ async def client(override_database_url):
     """Return an AsyncClient that hits the app."""
     # Disable rate limiting in tests to avoid Redis dependency.
     limiter.enabled = False
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("127.0.0.1", 123), raise_app_exceptions=False),
+        base_url="http://test",
+    ) as ac:
         yield ac
     limiter.enabled = True

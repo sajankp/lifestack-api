@@ -106,9 +106,8 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _check_production_defaults(self) -> "Settings":
         """Fail fast when insecure defaults are used against a remote database."""
-        is_local_db = any(
-            host in self.DATABASE_URL for host in ("localhost", "127.0.0.1", "postgres:")
-        )
+        parsed_db = urlparse(self.DATABASE_URL)
+        is_local_db = parsed_db.hostname in ("localhost", "127.0.0.1")
 
         if not is_local_db:
             if self.SECRET_KEY == "super-secret-key-change-in-production":

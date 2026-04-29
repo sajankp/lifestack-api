@@ -86,18 +86,16 @@ async def test_registration_rollback_on_category_failure(client: AsyncClient):
     email = "rollback@example.com"
     username = "rollbackuser"
 
-    with (
-        patch(
-            "app.spending.service.CategoryService.provision_default_categories",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("Simulated category provisioning failure"),
-        ),
-        pytest.raises(RuntimeError, match="Simulated category provisioning failure"),
+    with patch(
+        "app.spending.service.CategoryService.provision_default_categories",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("Simulated category provisioning failure"),
     ):
-        await client.post(
+        resp = await client.post(
             "/v1/auth/register",
             json={"email": email, "username": username, "password": "testpassword"},
         )
+        assert resp.status_code == 500
 
     # After the rollback, none of the registration artifacts should exist
     async with postgres.async_session_maker() as session:
