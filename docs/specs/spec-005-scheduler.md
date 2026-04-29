@@ -25,7 +25,8 @@ Implementation constraints for this iteration:
 - `APScheduler` runs only when `SCHEDULER_ENABLED=true`.
 - Non-leader API instances must start without scheduler jobs.
 - Production deploy config must ensure only one instance has `SCHEDULER_ENABLED=true`.
-- If multi-instance scheduling is required later, we will adopt a persistent shared job store and leader/locking strategy in a follow-up spec.
+- **Split-Brain Prevention:** Even with `SCHEDULER_ENABLED=true` intended for a single node, rolling deployments can temporarily spin up two containers. To prevent duplicate execution during these overlaps, all jobs MUST acquire a Postgres advisory lock or a lease from a `job_locks` table before executing their business logic.
+- If multi-instance scheduling is required later, we will transition to a fully persistent shared job store (e.g. Redis/Celery) in a follow-up spec.
 
 Boundary rule:
 - `app/application/jobs.py` owns scheduler wrappers (trigger registration, workspace iteration, session and error boundaries).

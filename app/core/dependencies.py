@@ -144,10 +144,20 @@ async def get_current_workspace_id(
     workspace_service: WorkspaceService = Depends(get_workspace_service),
     category_service: CategoryService = Depends(get_spending_category_service),
 ) -> int:
+    """Resolve the active workspace for the current request.
+
+    **Fallback provisioning (defense-in-depth):**
+    If the authenticated user has no workspace (e.g. a registration that partially
+    failed before the workspace step, or a user created via admin tooling), this
+    dependency will provision a default workspace and seed spending categories.
+
+    Under normal operation, ``UserRegistrationWorkflow`` handles all of this
+    atomically during registration, so this fallback path should never execute.
+    It exists as a safety net, not as the primary provisioning mechanism.
+    """
     if not hasattr(request.state, "user_id") or not request.state.user_id:
         raise UnauthorizedError(detail="Not authenticated")
 
-    # Stage 1: resolve the user's first/default workspace.
     workspaces = await workspace_service.get_user_workspaces(request.state.user_id)
     if not workspaces:
         workspace = await workspace_service.ensure_default_workspace(
