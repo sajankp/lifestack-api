@@ -1,11 +1,16 @@
+import secrets
+
 import structlog
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from starlette.responses import JSONResponse
+from starlette.status import HTTP_401_UNAUTHORIZED
 
 from app.auth.repository import AuthSessionRepository
 from app.auth.router import router as auth_router
@@ -65,6 +70,22 @@ def create_app() -> FastAPI:
     # OpenTelemetry will be initialized after the app starts if configured
     if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
         FastAPIInstrumentor.instrument_app(_app)
+
+    @_app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        normalized = request.url.path.rstrip("/") or "/"
+        is_docs = normalized in {"/docs", "/openapi.json"} or normalized.startswith("/docs/")
+        if not is_docs:
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; img-src 'self' data:; "
+                "style-src 'self' 'unsafe-inline'; script-src 'self'"
+            )
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
 
     @_app.middleware("http")
     async def add_user_info_to_request(request: Request, call_next):
@@ -179,6 +200,23 @@ def create_app() -> FastAPI:
     async def health_check():
         """Basic health check endpoint."""
         return {"status": "ok", "version": settings.VERSION}
+
+    security = HTTPBearer()
+
+    def verify_metrics_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+        expected_token = settings.METRICS_TOKEN
+        if not secrets.compare_digest(credentials.credentials, expected_token):
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED,
+                detail="Invalid metrics token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return credentials.credentials
+
+    @_app.get("/metrics", tags=["health"])
+    async def metrics_endpoint(token: str = Depends(verify_metrics_token)):
+        """Prometheus metrics endpoint."""
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     return _app
 

@@ -60,8 +60,8 @@ All new list endpoints in later specs should follow this baseline unless a spec 
    - Update tests in `app/tests/e2e/test_system.py` and other test files to use the `/v1` prefix where applicable.
 
 2. **RFC 7807**:
-   - Create a base `RFC7807Exception` class in `app/core/exceptions.py`.
-   - Update existing custom exceptions (e.g., `NotFoundError`, `UnauthorizedError`) to inherit from it or map to it.
+   - Create a base `APIError` exception class in `app/core/exceptions.py`.
+   - Define subclasses for common HTTP error categories (e.g., `NotFoundError`, `UnauthorizedError`, `ConflictError`).
    - Add global exception handlers in `app/main.py` using `@app.exception_handler(HTTPException)`, `@app.exception_handler(RequestValidationError)`, and `@app.exception_handler(Exception)`.
 
 ## 4. Testing Plan

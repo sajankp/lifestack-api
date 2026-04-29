@@ -19,7 +19,7 @@ Add `AuditLog` model to `app/core/audit.py` mapping to `audit_logs` table:
 - `module` (str) — e.g., "todo", "spending", "investing".
 - `entity_type` (str) — e.g., "todo", "spending_category", "spending_transaction", "budget".
 - `entity_id` (int) — internal ID of the affected record.
-- `details` (JSONB) — dictionary of any additional changes / metadata.
+- `details` (JSONB) — dictionary of any additional changes / metadata. MUST be passed through a strict redaction layer to strip PII and credentials before insertion.
 - `timestamp` (timezone-aware datetime, indexed)
 
 ## Event Contract (Stage 1 Minimum)
@@ -46,6 +46,7 @@ Rationale for identity fields:
 - Audit writes must occur in the same DB transaction as the business mutation.
 - If the business transaction rolls back, the paired audit row must not persist.
 - Audit logger usage is at Service/Workflow boundaries, not hidden inside generic repository helpers.
+- **Redaction Layer:** Before serializing the `details` JSONB payload, the logger MUST apply an allowlist or explicit redactor to ensure passwords, auth tokens, exact financial account numbers, or API keys are never written to the audit log (preventing toxic data spills).
 - Stage 1 enforcement choice is explicit: append-only is enforced in application code. DB triggers/role-level hardening are deferred.
 
 ## API Changes

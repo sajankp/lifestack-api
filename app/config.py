@@ -1,6 +1,7 @@
 from urllib.parse import urlparse
 
-from pydantic import AliasChoices, AnyHttpUrl, Field, computed_field
+import structlog
+from pydantic import AliasChoices, AnyHttpUrl, Field, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,7 +41,7 @@ class Settings(BaseSettings):
     # Auth
     SECRET_KEY: str = "super-secret-key-change-in-production"
     ACCESS_TOKEN_EXPIRE_SECONDS: int = 60 * 30  # 30 mins
-    REFRESH_TOKEN_EXPIRE_SECONDS: int = 60 * 60  # 1 hour
+    REFRESH_TOKEN_EXPIRE_SECONDS: int = 60 * 60 * 24 * 7  # 7 days
 
     # Log Level
     LOG_LEVEL: str = "INFO"
@@ -62,6 +63,7 @@ class Settings(BaseSettings):
 
     # Observability
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
+    METRICS_TOKEN: str = "dev-metrics-token"
 
     @computed_field
     @property
@@ -98,6 +100,33 @@ class Settings(BaseSettings):
             if normalized not in sanitized:
                 sanitized.append(normalized)
         return sanitized
+
+    @model_validator(mode="after")
+    def _check_production_defaults(self) -> "Settings":
+        """Fail fast when insecure defaults are used against a remote database."""
+        _logger = structlog.get_logger()
+        is_local_db = any(
+            host in self.DATABASE_URL for host in ("localhost", "127.0.0.1", "postgres:")
+        )
+
+        if not is_local_db:
+            if self.SECRET_KEY == "super-secret-key-change-in-production":
+                raise ValueError(
+                    "SECRET_KEY must be changed from its default value "
+                    "when DATABASE_URL points to a remote host."
+                )
+            if self.METRICS_TOKEN == "dev-metrics-token":
+                raise ValueError(
+                    "METRICS_TOKEN must be changed from its default value "
+                    "when DATABASE_URL points to a remote host."
+                )
+            if not self.COOKIE_SECURE:
+                _logger.warning(
+                    "cookie_secure_disabled",
+                    msg="COOKIE_SECURE is False with a remote database — "
+                    "cookies will not require HTTPS.",
+                )
+        return self
 
 
 settings = Settings()

@@ -151,10 +151,9 @@ lifestack-api/
 |   |   `-- jobs.py
 |   |
 |   |-- platform/
-|   |   |-- workspaces.py
-|   |   |-- memberships.py
-|   |   |-- exports.py
-|   |   `-- usage.py
+|   |   |-- models.py            # workspace, membership, role models
+|   |   |-- repository.py
+|   |   `-- service.py
 |   |
 |   |-- ai/          # stage 2
 |   `-- mcp/         # stage 2
@@ -567,9 +566,9 @@ All security middleware is carried forward from the to-do app.
 
 ### OWASP Security Headers
 
-This is still a recommended hardening step rather than a fully implemented platform layer in the current repo. The intended middleware should add:
+Security headers are applied via inline middleware in `app/main.py`. The middleware adds the following headers to all API responses (Swagger UI paths are exempted from CSP to allow the documentation UI to function):
 - `Content-Security-Policy` (configurable `img-src`, `style-src`, `script-src`, `font-src`)
-- `Strict-Transport-Security` (HSTS)
+- `Strict-Transport-Security` (HSTS, `max-age=31536000`)
 - `X-Content-Type-Options: nosniff`
 - `X-Frame-Options: DENY`
 - `Referrer-Policy: strict-origin-when-cross-origin`

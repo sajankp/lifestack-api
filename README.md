@@ -148,6 +148,17 @@ The core rule is: business logic lives in services, cross-module orchestration l
 
 ---
 
+## Technical Debt & Future Architecture Steps
+
+Based on architectural reviews of the baseline implementation (Specs 001-003), the following technical debt items and future optimizations are planned:
+
+1. **JWT Workspace Caching:** Currently, `workspace_id` is resolved via database lookup on every authenticated request. In Stage 2, `default_workspace_id` should be embedded in the JWT payload to eliminate this N+1 latency.
+2. **Currency Serialization Strictness:** Ensure Pydantic serialization of `NUMERIC(12,2)` (Decimals) explicitly casts to strings over the wire to prevent JavaScript floating-point rounding errors in the frontend.
+3. **Workflow Atomicity Verification:** Ensure the cross-module user registration workflow (User + Workspace + Membership + Default Categories) executes completely within a single, strict Postgres transaction block.
+4. **Namespace URI Defenses:** Add strict test assertions to ensure RFC 7807 problem details do not regress to `about:blank` for business logic exceptions.
+
+---
+
 ## Running Locally
 
 ```bash

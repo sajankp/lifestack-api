@@ -84,6 +84,7 @@ Constraints:
 - Audit events emitted for holding mutations.
 - Cash-balance CRUD is available and workspace-scoped.
 - Financial precision follows documented numeric scales.
+- **Serialization Strictness:** Pydantic schemas MUST enforce `Decimal` to `str` serialization over the wire (`model_config = ConfigDict(json_encoders={Decimal: str})` or equivalent Pydantic v2 approach) to prevent frontend JavaScript floating-point rounding errors.
 
 ## 10. Observability Hooks
 - Emit structured logs for holdings/cash-balance mutations.

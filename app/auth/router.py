@@ -85,6 +85,7 @@ async def login_for_access_token(
         value=access_token,
         httponly=True,
         max_age=settings.ACCESS_TOKEN_EXPIRE_SECONDS,
+        path="/",
         samesite="lax",
         secure=settings.COOKIE_SECURE,
     )
@@ -93,6 +94,7 @@ async def login_for_access_token(
         value=refresh_token,
         httponly=True,
         max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS if remember_me else None,
+        path="/",
         samesite="lax",
         secure=settings.COOKIE_SECURE,
     )
@@ -136,6 +138,7 @@ async def refresh_token(
         value=access_token,
         httponly=True,
         max_age=settings.ACCESS_TOKEN_EXPIRE_SECONDS,
+        path="/",
         samesite="lax",
         secure=settings.COOKIE_SECURE,
     )
@@ -160,6 +163,7 @@ async def logout(
             httponly=True,
             max_age=0,
             expires=0,
+            path="/",
             samesite="lax",
             secure=settings.COOKIE_SECURE,
         )

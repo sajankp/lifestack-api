@@ -309,7 +309,21 @@ class APIError(Exception):
     title = "Internal Server Error"
     status_code = 500
 
-    def __init__(self, detail: str, **extra_fields: object):
+    def __init__(
+        self,
+        detail: str,
+        *,
+        type_str: str | None = None,
+        title: str | None = None,
+        status_code: int | None = None,
+        **extra_fields: object,
+    ):
+        if type_str is not None:
+            self.type_str = type_str
+        if title is not None:
+            self.title = title
+        if status_code is not None:
+            self.status_code = status_code
         self.detail = detail
         self.extra_fields = extra_fields
 
@@ -325,16 +339,18 @@ class NotFoundError(APIError):
 
 
 async def api_exception_handler(request: Request, exc: APIError) -> JSONResponse:
+    body: dict[str, object] = {
+        "type": exc.type_uri,
+        "title": exc.title,
+        "status": exc.status_code,
+        "detail": exc.detail,
+        "instance": str(request.url.path),
+    }
+    if exc.extra_fields:
+        body.update(exc.extra_fields)
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "type": exc.type_uri,
-            "title": exc.title,
-            "status": exc.status_code,
-            "detail": exc.detail,
-            "instance": str(request.url.path),
-            **exc.extra_fields,
-        },
+        content=body,
         media_type=PROBLEM_JSON,
     )
 ```
@@ -343,6 +359,8 @@ async def api_exception_handler(request: Request, exc: APIError) -> JSONResponse
 - All error responses follow [RFC 7807 Problem Details](https://www.rfc-editor.org/rfc/rfc7807).
 - `type` field provides a machine-readable error URI.
 - `instance` is the request path that triggered the error.
+- Subclasses set class-level defaults for `type_str`, `title`, and `status_code`; call sites only need `detail`.
+- Runtime overrides are supported for ad-hoc error responses.
 - Consistent across all modules — clients can parse errors uniformly.
 
 ---
@@ -509,23 +527,21 @@ async def test_get_todo_not_found(service, mock_repo):
 ## Rate Limiting (Carried from To-Do)
 
 ```python
-# app/core/rate_limiter.py
+# app/core/dependencies.py (rate limiter section)
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from app.config import get_settings
-
-settings = get_settings()
+from app.config import settings
 
 
-def _key_func(request):
+def _rate_limit_key_func(request):
     """Use authenticated user ID when available, fall back to IP."""
     if hasattr(request.state, "user_id") and request.state.user_id:
-        return str(request.state.user_id)
+        return f"user:{request.state.user_id}"
     return get_remote_address(request)
 
 
 limiter = Limiter(
-    key_func=_key_func,
+    key_func=_rate_limit_key_func,
     storage_uri=settings.RATE_LIMIT_STORAGE_URI,
 )
 ```
@@ -540,7 +556,7 @@ def login(request: Request, ...):
 
 **Notes:**
 - `memory://` is acceptable for local dev and tests; production should point `RATE_LIMIT_STORAGE_URI` at Redis.
-- Per-user limits when authenticated, per-IP for anonymous endpoints.
+- Per-user limits when authenticated (prefixed with `user:` to avoid key collisions with IP addresses), per-IP for anonymous endpoints.
 - Configurable via environment variables (`RATE_LIMIT_DEFAULT`, `RATE_LIMIT_AUTH`).
 - 429 responses should go through the same RFC 7807 problem-details handler as the rest of the API.
 
@@ -619,44 +635,49 @@ def setup_telemetry(app, settings):
 ### OWASP Security Headers
 
 ```python
-# app/middleware/security.py
-from starlette.middleware.base import BaseHTTPMiddleware
-
-
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Strict-Transport-Security"] = (
-            "max-age=63072000; includeSubDomains"
+# Inline middleware in main.py
+@_app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    normalized = request.url.path.rstrip("/") or "/"
+    is_docs = normalized in {"/docs", "/openapi.json"} or normalized.startswith("/docs/")
+    if not is_docs:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; script-src 'self'"
         )
-        # CSP configured via environment variables
-        return response
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=31536000; includeSubDomains"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 ```
 
 ### Metrics Endpoint Protection
 
 ```python
-def verify_metrics_token(request: Request):
-    """Protect /metrics with bearer token or dev-mode access."""
-    if settings.metrics_bearer_token:
-        auth_header = request.headers.get("Authorization")
-        expected = f"Bearer {settings.metrics_bearer_token}"
-        if not (auth_header and secrets.compare_digest(auth_header, expected)):
-            raise HTTPException(status_code=403, detail="Forbidden")
-    elif settings.metrics_dev_mode:
-        pass  # Allow public access in dev
-    else:
-        raise HTTPException(status_code=403, detail="Forbidden")
+import secrets
+
+def verify_metrics_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Protect /metrics with bearer token using constant-time comparison."""
+    expected_token = settings.METRICS_TOKEN
+    if not secrets.compare_digest(credentials.credentials, expected_token):
+        raise HTTPException(
+            status_code=HTTP_401_UNAUTHORIZED,
+            detail="Invalid metrics token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return credentials.credentials
 
 # In main.py:
-Instrumentator().instrument(app).expose(
-    app, dependencies=[Depends(verify_metrics_token)]
-)
+@_app.get("/metrics", tags=["health"])
+async def metrics_endpoint(token: str = Depends(verify_metrics_token)):
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 ```
 
 **Notes:**
-- Metrics endpoint is secure by default; requires explicit token or dev-mode opt-in.
+- Metrics endpoint is secure by default; requires a valid `METRICS_TOKEN` bearer token.
 - Constant-time comparison (`secrets.compare_digest`) prevents timing attacks.
+- `METRICS_TOKEN` must be changed from its default in production (enforced by `Settings` validator).
