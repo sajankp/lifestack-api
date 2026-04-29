@@ -119,7 +119,7 @@ def create_app() -> FastAPI:
 
             if token_from_cookie and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
                 origin = request.headers.get("Origin")
-                if origin and settings.csrf_trusted_origins:
+                if origin:
                     try:
                         normalized_origin = settings._normalize_origin(origin)
                     except ValueError:
@@ -127,7 +127,10 @@ def create_app() -> FastAPI:
                             request, CSRFFailedError(detail="Origin header is invalid")
                         )
 
-                    if normalized_origin not in settings.csrf_trusted_origins:
+                    if (
+                        not settings.csrf_trusted_origins
+                        or normalized_origin not in settings.csrf_trusted_origins
+                    ):
                         return await api_exception_handler(
                             request,
                             CSRFFailedError(
