@@ -4,6 +4,8 @@ import structlog
 from pydantic import AliasChoices, AnyHttpUrl, Field, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_logger = structlog.get_logger(__name__)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_ignore_empty=True, extra="ignore")
@@ -104,7 +106,6 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _check_production_defaults(self) -> "Settings":
         """Fail fast when insecure defaults are used against a remote database."""
-        _logger = structlog.get_logger()
         is_local_db = any(
             host in self.DATABASE_URL for host in ("localhost", "127.0.0.1", "postgres:")
         )

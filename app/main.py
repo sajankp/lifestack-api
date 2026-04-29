@@ -77,10 +77,13 @@ def create_app() -> FastAPI:
         normalized = request.url.path.rstrip("/") or "/"
         is_docs = normalized in {"/docs", "/openapi.json"} or normalized.startswith("/docs/")
         if not is_docs:
-            response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; img-src 'self' data:; "
-                "style-src 'self' 'unsafe-inline'; script-src 'self'"
+            csp_policy = (
+                "default-src 'self'; "
+                "img-src 'self' data:; "
+                "style-src 'self' 'unsafe-inline'; "
+                "script-src 'self'"
             )
+            response.headers["Content-Security-Policy"] = csp_policy
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
