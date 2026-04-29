@@ -45,6 +45,7 @@ def upgrade() -> None:
         ),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("id", "workspace_id", name="uq_category_id_workspace"),
         sa.UniqueConstraint("workspace_id", "normalized_name", name="uq_category_workspace_name"),
     )
     op.create_index(
@@ -84,9 +85,13 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("now()"),
         ),
-        sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
-        sa.ForeignKeyConstraint(["category_id"], ["spending_categories.id"]),
+        sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
+        sa.ForeignKeyConstraint(
+            ["category_id", "workspace_id"],
+            ["spending_categories.id", "spending_categories.workspace_id"],
+            name="fk_spending_transactions_category_workspace",
+        ),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(
@@ -130,7 +135,11 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
         ),
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"]),
-        sa.ForeignKeyConstraint(["category_id"], ["spending_categories.id"]),
+        sa.ForeignKeyConstraint(
+            ["category_id", "workspace_id"],
+            ["spending_categories.id", "spending_categories.workspace_id"],
+            name="fk_spending_budgets_category_workspace",
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "workspace_id",

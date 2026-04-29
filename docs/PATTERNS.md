@@ -297,52 +297,46 @@ class AuditLogger:
 
 ```python
 # app/core/exceptions.py
-from fastapi import FastAPI, Request
+from fastapi import Request
 from fastapi.responses import JSONResponse
 
-
-class LifestackError(Exception):
-    """Base for all domain errors."""
-
-
-class NotFoundError(LifestackError):
-    pass
+PROBLEM_JSON = "application/problem+json"
+ERROR_BASE_URI = "https://lifestack.app/errors"
 
 
-class AuthorizationError(LifestackError):
-    pass
+class APIError(Exception):
+    type_str = "internal-server-error"
+    title = "Internal Server Error"
+    status_code = 500
+
+    def __init__(self, detail: str, **extra_fields: object):
+        self.detail = detail
+        self.extra_fields = extra_fields
+
+    @property
+    def type_uri(self) -> str:
+        return f"{ERROR_BASE_URI}/{self.type_str}"
 
 
-class ValidationError(LifestackError):
-    pass
+class NotFoundError(APIError):
+    type_str = "not-found"
+    title = "Not Found"
+    status_code = 404
 
 
-def _problem_response(request: Request, status: int, title: str, detail: str):
-    """Build an RFC 7807 Problem Details response."""
+async def api_exception_handler(request: Request, exc: APIError) -> JSONResponse:
     return JSONResponse(
-        status_code=status,
+        status_code=exc.status_code,
         content={
-            "type": f"https://lifestack.app/errors/{title.lower().replace(' ', '-')}",
-            "title": title,
-            "status": status,
-            "detail": detail,
+            "type": exc.type_uri,
+            "title": exc.title,
+            "status": exc.status_code,
+            "detail": exc.detail,
             "instance": str(request.url.path),
+            **exc.extra_fields,
         },
+        media_type=PROBLEM_JSON,
     )
-
-
-def register_exception_handlers(app: FastAPI):
-    @app.exception_handler(NotFoundError)
-    async def _(request, exc):
-        return _problem_response(request, 404, "Not Found", str(exc))
-
-    @app.exception_handler(AuthorizationError)
-    async def _(request, exc):
-        return _problem_response(request, 403, "Forbidden", str(exc))
-
-    @app.exception_handler(ValidationError)
-    async def _(request, exc):
-        return _problem_response(request, 422, "Validation Error", str(exc))
 ```
 
 **Notes:**
@@ -357,36 +351,30 @@ def register_exception_handlers(app: FastAPI):
 
 ```python
 # app/core/dependencies.py
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Request
 
-from app.core.database.postgres import get_db_session
+from app.core.exceptions import UnauthorizedError
 
 async def get_current_user(request: Request) -> dict:
     if not hasattr(request.state, "user_id") or not request.state.user_id:
-        raise HTTPException(
-            status_code=401,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise UnauthorizedError(detail="Not authenticated")
     return {"id": request.state.user_id, "username": request.state.username}
 
 
 async def get_current_workspace_id(
     request: Request,
     workspace_service: WorkspaceService = Depends(get_workspace_service),
+    category_service: CategoryService = Depends(get_spending_category_service),
 ) -> int:
     if not hasattr(request.state, "user_id") or not request.state.user_id:
-        raise HTTPException(
-            status_code=401,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise UnauthorizedError(detail="Not authenticated")
 
     workspaces = await workspace_service.get_user_workspaces(request.state.user_id)
     if not workspaces:
         workspace = await workspace_service.ensure_default_workspace(
             request.state.user_id, request.state.username
         )
+        await category_service.provision_default_categories(workspace.id)
         return workspace.id
 
     return workspaces[0].id
@@ -397,6 +385,7 @@ async def get_current_workspace_id(
 - Auth middleware populates request user context before route handlers run.
 - A dedicated dependency resolves the active `workspace_id` for the request.
 - Stage 1 can resolve the first/default workspace for a user, but repositories and services should still operate on `workspace_id`.
+- If fallback provisioning is enabled, it should seed the workspace and default spending categories in the same request transaction.
 
 ---
 
@@ -404,7 +393,7 @@ async def get_current_workspace_id(
 
 ```python
 async def auth_middleware(request: Request, call_next):
-    """Read JWT from HttpOnly cookie, validate, and populate request state."""
+    """Read JWT, validate it, enforce session/CSRF rules, then populate request state."""
     if request.method == "OPTIONS":
         return await call_next(request)
 
@@ -414,29 +403,32 @@ async def auth_middleware(request: Request, call_next):
 
     token = request.cookies.get("access_token")
     if not token:
-        return JSONResponse(
-            content={"detail": "Missing token"},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
 
-    try:
-        username, user_id = get_user_info_from_token(token)
-        request.state.user_id = user_id
-        request.state.username = username
-    except Exception as e:
-        return JSONResponse(
-            content={"detail": str(e)},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
+    username, user_id, sid = get_user_info_from_token(token)
+    request.state.user_id = int(user_id)
+    request.state.username = username
+    request.state.sid = sid
+
+    if token_from_cookie and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        ...  # validate Origin against trusted origins when provided
+
+    async with postgres.async_session_maker() as session:
+        auth_session = await AuthSessionRepository(session).get_active_by_sid(sid, user_id)
+    if not auth_session:
+        ...
 
     return await call_next(request)
 ```
 
 **Notes:**
-- Tokens are read from HttpOnly cookies, not Authorization headers.
+- Tokens are accepted from HttpOnly cookies or `Authorization: Bearer ...` headers.
 - Public paths are whitelisted; everything else requires a valid token.
 - `request.state` is populated for downstream dependencies such as `get_current_user()` and `get_current_workspace_id()`.
-- CSRF origin checks should be added for mutating requests when `SameSite=None`.
+- Session revocation is enforced server-side by validating the JWT `sid` against `auth_sessions`.
+- Cookie-authenticated mutating requests validate `Origin` against trusted origins when the header is present.
 
 ---
 
@@ -534,24 +526,23 @@ def _key_func(request):
 
 limiter = Limiter(
     key_func=_key_func,
-    default_limits=[settings.rate_limit_default],
-    storage_uri=settings.redis_url,  # Redis backend (required)
-    enabled=settings.rate_limit_enabled,
+    storage_uri=settings.RATE_LIMIT_STORAGE_URI,
 )
 ```
 
 **Usage in routers:**
 ```python
-@router.post("/token/")
+@router.post("/login")
 @limiter.limit(settings.rate_limit_auth)  # 5/minute
 def login(request: Request, ...):
     ...
 ```
 
 **Notes:**
-- Redis backend via `REDIS_URL` environment variable.
+- `memory://` is acceptable for local dev and tests; production should point `RATE_LIMIT_STORAGE_URI` at Redis.
 - Per-user limits when authenticated, per-IP for anonymous endpoints.
 - Configurable via environment variables (`RATE_LIMIT_DEFAULT`, `RATE_LIMIT_AUTH`).
+- 429 responses should go through the same RFC 7807 problem-details handler as the rest of the API.
 
 ---
 

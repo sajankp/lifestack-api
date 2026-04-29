@@ -4,20 +4,27 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 
 from app.core.dependencies import get_current_user, get_current_workspace_id, get_todo_service
+from app.core.pagination import PaginatedResponse, PaginationParams
 from app.todo.schemas import TodoCreate, TodoResponse, TodoUpdate
 from app.todo.service import TodoService
 
 router = APIRouter(prefix="/todo", tags=["todo"])
 
 
-@router.get("/", response_model=list[TodoResponse])
+@router.get("/", response_model=PaginatedResponse[TodoResponse])
 async def list_todos(
     todo_service: Annotated[TodoService, Depends(get_todo_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
     completed: bool | None = Query(None),
 ):
-    return await todo_service.list_todos(workspace_id, completed)
+    items, total = await todo_service.list_todos(
+        workspace_id, completed, pagination.limit, pagination.offset
+    )
+    return PaginatedResponse(
+        items=items, total=total, limit=pagination.limit, offset=pagination.offset
+    )
 
 
 @router.post("/", response_model=TodoResponse, status_code=status.HTTP_201_CREATED)

@@ -85,10 +85,10 @@ def cat_service(mock_cat_repo):
 
 @pytest.mark.asyncio
 async def test_list_categories(cat_service, mock_cat_repo):
-    mock_cat_repo.get_all.return_value = []
+    mock_cat_repo.get_all.return_value = ([], 0)
     result = await cat_service.list_categories(workspace_id=1)
-    mock_cat_repo.get_all.assert_called_once_with(1)
-    assert result == []
+    mock_cat_repo.get_all.assert_called_once_with(1, 50, 0)
+    assert result == ([], 0)
 
 
 @pytest.mark.asyncio

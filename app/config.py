@@ -18,25 +18,24 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("BACKEND_CORS_ORIGINS", "CORS_ORIGINS"),
     )
 
+    CSRF_TRUSTED_ORIGINS: list[AnyHttpUrl] | str = Field(
+        default=[],
+        validation_alias=AliasChoices("CSRF_TRUSTED_ORIGINS"),
+    )
+
     @computed_field
     @property
     def cors_allowed_origins(self) -> list[str]:
         """Normalize origins so that CORS comparisons ignore paths/trailing slashes."""
-        raw_value = self.BACKEND_CORS_ORIGINS
-        if not raw_value:
-            return []
+        return self._normalize_origins(self.BACKEND_CORS_ORIGINS)
 
-        origins = [raw_value] if isinstance(raw_value, str) else list(raw_value)
-        sanitized = []
-        for raw_origin in origins:
-            origin_str = str(raw_origin).strip()
-            if not origin_str:
-                continue
-
-            normalized = self._normalize_origin(origin_str)
-            if normalized not in sanitized:
-                sanitized.append(normalized)
-        return sanitized
+    @computed_field
+    @property
+    def csrf_trusted_origins(self) -> list[str]:
+        """Trusted browser origins for cookie-authenticated mutating requests."""
+        if self.CSRF_TRUSTED_ORIGINS:
+            return self._normalize_origins(self.CSRF_TRUSTED_ORIGINS)
+        return self.cors_allowed_origins
 
     # Auth
     SECRET_KEY: str = "super-secret-key-change-in-production"
@@ -54,6 +53,12 @@ class Settings(BaseSettings):
 
     # Redis (Rate Limiting)
     REDIS_URL: str = "redis://localhost:6379/1"
+    RATE_LIMIT_DEFAULT: str = "100/minute"
+    RATE_LIMIT_AUTH: str = "10/minute"
+    RATE_LIMIT_STORAGE_URI: str = "memory://"  # Set to REDIS_URL in production
+
+    # Cookie Security
+    COOKIE_SECURE: bool = False  # Set True in production (HTTPS)
 
     # Observability
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
@@ -77,6 +82,22 @@ class Settings(BaseSettings):
             raise ValueError("CORS origin must include a scheme and hostname")
 
         return f"{parsed.scheme}://{parsed.netloc}"
+
+    def _normalize_origins(self, raw_value: list[AnyHttpUrl] | str) -> list[str]:
+        if not raw_value:
+            return []
+
+        origins = [raw_value] if isinstance(raw_value, str) else list(raw_value)
+        sanitized: list[str] = []
+        for raw_origin in origins:
+            origin_str = str(raw_origin).strip()
+            if not origin_str:
+                continue
+
+            normalized = self._normalize_origin(origin_str)
+            if normalized not in sanitized:
+                sanitized.append(normalized)
+        return sanitized
 
 
 settings = Settings()

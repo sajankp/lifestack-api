@@ -3,19 +3,25 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from starlette.responses import JSONResponse
 
+from app.auth.repository import AuthSessionRepository
 from app.auth.router import router as auth_router
 from app.config import settings
 from app.core.auth import get_user_info_from_token
+from app.core.database import postgres
 from app.core.dependencies import limiter
 from app.core.exceptions import (
+    PROBLEM_JSON,
     APIError,
+    CSRFFailedError,
+    UnauthorizedError,
+    _type_uri_for_status,
     api_exception_handler,
     http_exception_handler,
+    rate_limit_exception_handler,
     request_validation_exception_handler,
     unhandled_exception_handler,
 )
@@ -54,7 +60,7 @@ def create_app() -> FastAPI:
     _app.add_exception_handler(HTTPException, http_exception_handler)
     _app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     _app.add_exception_handler(Exception, unhandled_exception_handler)
-    _app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    _app.add_exception_handler(RateLimitExceeded, rate_limit_exception_handler)
 
     # OpenTelemetry will be initialized after the app starts if configured
     if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
@@ -83,6 +89,7 @@ def create_app() -> FastAPI:
             return await call_next(request)
 
         token = request.cookies.get("access_token")
+        token_from_cookie = token is not None
 
         if not token:
             auth_header = request.headers.get("Authorization")
@@ -92,14 +99,15 @@ def create_app() -> FastAPI:
         if not token:
             return JSONResponse(
                 content={
-                    "type": "about:blank",
+                    "type": _type_uri_for_status(401),
                     "title": "Unauthorized",
                     "status": 401,
                     "detail": "Not authenticated",
                     "instance": normalized_path,
                 },
                 status_code=401,
-                headers={"WWW-Authenticate": "Bearer", "Content-Type": "application/problem+json"},
+                media_type=PROBLEM_JSON,
+                headers={"WWW-Authenticate": "Bearer"},
             )
 
         try:
@@ -108,20 +116,58 @@ def create_app() -> FastAPI:
             request.state.user_id = int(str_user_id) if str_user_id.isdigit() else user_id
             request.state.username = username
             request.state.sid = sid
-            # Optionally add CSRF check here if needed
+
+            if token_from_cookie and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                origin = request.headers.get("Origin")
+                if origin:
+                    try:
+                        normalized_origin = settings._normalize_origin(origin)
+                    except ValueError:
+                        return await api_exception_handler(
+                            request, CSRFFailedError(detail="Origin header is invalid")
+                        )
+
+                    if (
+                        not settings.csrf_trusted_origins
+                        or normalized_origin not in settings.csrf_trusted_origins
+                    ):
+                        return await api_exception_handler(
+                            request,
+                            CSRFFailedError(
+                                detail="Origin is not allowed for cookie-authenticated requests"
+                            ),
+                        )
+
+            async with postgres.async_session_maker() as session:
+                auth_session = await AuthSessionRepository(session).get_active_by_sid(
+                    sid, request.state.user_id
+                )
+            if not auth_session:
+                return await api_exception_handler(
+                    request, UnauthorizedError(detail="Session is no longer active")
+                )
 
             return await call_next(request)
-        except HTTPException as e:
+        except (HTTPException, APIError) as e:
+            if isinstance(e, APIError):
+                status_code = e.status_code
+                detail = e.detail
+                type_uri = e.type_uri
+            else:
+                status_code = e.status_code
+                detail = str(e.detail)
+                type_uri = _type_uri_for_status(e.status_code)
             return JSONResponse(
                 content={
-                    "type": "about:blank",
+                    "type": type_uri,
                     "title": "Unauthorized",
-                    "status": e.status_code,
-                    "detail": str(e.detail),
+                    "status": status_code,
+                    "detail": detail,
                     "instance": normalized_path,
                 },
-                status_code=e.status_code,
-                headers={"WWW-Authenticate": "Bearer", "Content-Type": "application/problem+json"},
+                status_code=status_code,
+                media_type=PROBLEM_JSON,
+                headers={"WWW-Authenticate": "Bearer"},
             )
 
     # Include routers under /v1 prefix

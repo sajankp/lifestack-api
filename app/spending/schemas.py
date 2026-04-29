@@ -25,7 +25,6 @@ class CategoryUpdate(BaseModel):
 
 class CategoryResponse(BaseModel):
     public_id: uuid.UUID
-    workspace_id: int
     name: str
     is_system: bool
     color: str | None
@@ -74,7 +73,6 @@ class TransactionUpdate(BaseModel):
 
 class TransactionResponse(BaseModel):
     public_id: uuid.UUID
-    workspace_id: int
     category_id: uuid.UUID  # exposed as public_id
     amount: Decimal
     type: TransactionType
@@ -103,6 +101,13 @@ class BudgetCreate(BaseModel):
             raise ValueError("Amount must have at most 2 decimal places")
         return v
 
+    @field_validator("month_start")
+    @classmethod
+    def validate_first_of_month(cls, v: date) -> date:
+        if v.day != 1:
+            raise ValueError("month_start must be the first day of the month")
+        return v
+
 
 class BudgetUpdate(BaseModel):
     amount: Decimal = Field(..., gt=0, decimal_places=2)
@@ -117,7 +122,6 @@ class BudgetUpdate(BaseModel):
 
 class BudgetResponse(BaseModel):
     public_id: uuid.UUID
-    workspace_id: int
     category_id: uuid.UUID  # exposed as public_id
     amount: Decimal
     month_start: date
