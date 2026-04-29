@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.core.exceptions import APIError
+from app.core.exceptions import NotFoundError
 from app.todo.models import Todo
 from app.todo.schemas import TodoCreate, TodoUpdate
 from app.todo.service import TodoService
@@ -21,10 +21,10 @@ def service(mock_repo):
 
 @pytest.mark.asyncio
 async def test_list_todos(service, mock_repo):
-    mock_repo.get_all.return_value = []
+    mock_repo.get_all.return_value = ([], 0)
     result = await service.list_todos(workspace_id=1, completed=True)
-    mock_repo.get_all.assert_called_once_with(1, True)
-    assert result == []
+    mock_repo.get_all.assert_called_once_with(1, True, 50, 0)
+    assert result == ([], 0)
 
 
 @pytest.mark.asyncio
@@ -44,7 +44,7 @@ async def test_get_todo_not_found(service, mock_repo):
     todo_id = uuid.uuid4()
     mock_repo.get_by_public_id.return_value = None
 
-    with pytest.raises(APIError) as exc:
+    with pytest.raises(NotFoundError) as exc:
         await service.get_todo(workspace_id=1, public_id=todo_id)
 
     assert exc.value.status_code == 404

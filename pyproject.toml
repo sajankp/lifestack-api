@@ -30,6 +30,7 @@ dependencies = [
 
     # Rate Limiting
     "slowapi>=0.1.9",
+    "redis>=5.0.0",
 
     # Observability
     "structlog>=24.1.0",

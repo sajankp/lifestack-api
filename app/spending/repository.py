@@ -2,9 +2,10 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.pagination import DEFAULT_LIMIT
 from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction
 
 
@@ -12,11 +13,17 @@ class CategoryRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_all(self, workspace_id: int) -> Sequence[SpendingCategory]:
+    async def get_all(
+        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> tuple[Sequence[SpendingCategory], int]:
+        base = select(SpendingCategory).where(SpendingCategory.workspace_id == workspace_id)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
         result = await self.session.execute(
-            select(SpendingCategory).where(SpendingCategory.workspace_id == workspace_id)
+            base.order_by(SpendingCategory.created_at.desc()).limit(limit).offset(offset)
         )
-        return result.scalars().all()
+        return result.scalars().all(), total
 
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> SpendingCategory | None:
         result = await self.session.execute(
@@ -78,18 +85,25 @@ class TransactionRepository:
         type_filter: str | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
-    ) -> Sequence[SpendingTransaction]:
-        query = select(SpendingTransaction).where(SpendingTransaction.workspace_id == workspace_id)
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Sequence[SpendingTransaction], int]:
+        base = select(SpendingTransaction).where(SpendingTransaction.workspace_id == workspace_id)
         if category_id is not None:
-            query = query.where(SpendingTransaction.category_id == category_id)
+            base = base.where(SpendingTransaction.category_id == category_id)
         if type_filter is not None:
-            query = query.where(SpendingTransaction.type == type_filter)
+            base = base.where(SpendingTransaction.type == type_filter)
         if from_date is not None:
-            query = query.where(SpendingTransaction.occurred_at >= from_date)
+            base = base.where(SpendingTransaction.occurred_at >= from_date)
         if to_date is not None:
-            query = query.where(SpendingTransaction.occurred_at <= to_date)
-        result = await self.session.execute(query)
-        return result.scalars().all()
+            base = base.where(SpendingTransaction.occurred_at <= to_date)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(SpendingTransaction.created_at.desc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), total
 
     async def get_by_public_id(
         self, workspace_id: int, public_id: UUID
@@ -123,11 +137,17 @@ class BudgetRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_all(self, workspace_id: int) -> Sequence[SpendingBudget]:
+    async def get_all(
+        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> tuple[Sequence[SpendingBudget], int]:
+        base = select(SpendingBudget).where(SpendingBudget.workspace_id == workspace_id)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
         result = await self.session.execute(
-            select(SpendingBudget).where(SpendingBudget.workspace_id == workspace_id)
+            base.order_by(SpendingBudget.created_at.desc()).limit(limit).offset(offset)
         )
-        return result.scalars().all()
+        return result.scalars().all(), total
 
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> SpendingBudget | None:
         result = await self.session.execute(

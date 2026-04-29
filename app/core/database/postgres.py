@@ -29,7 +29,26 @@ async_session_maker = get_session_maker(engine)
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency for injecting database sessions."""
+    """Dependency for injecting database sessions.
+
+    **Session Lifecycle (Request-Scoped)**
+
+    FastAPI caches ``Depends()`` results per-request. Because every repository
+    and service dependency resolves through ``Depends(get_db_session)``, all
+    components within a single request share the **same** ``AsyncSession``
+    instance. This gives us implicit request-scoped transactions:
+
+    - Repositories call ``flush()`` (never ``commit()``) to surface constraint
+      violations early while keeping the transaction open.
+    - This generator calls ``commit()`` once, after the route handler returns
+      successfully.
+    - On any exception the session is rolled back, ensuring atomicity for
+      multi-step workflows like user registration.
+
+    **Implication for workflows:** ``UserRegistrationWorkflow`` (which calls
+    ``AuthService``, ``WorkspaceService``, and ``CategoryService`` sequentially)
+    is fully atomic — all three operate on the same session and transaction.
+    """
     async with async_session_maker() as session:
         try:
             yield session

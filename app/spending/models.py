@@ -34,6 +34,7 @@ class SpendingCategory(SQLModel, table=True):
     )
 
     __table_args__ = (
+        sa.UniqueConstraint("id", "workspace_id", name="uq_category_id_workspace"),
         sa.UniqueConstraint("workspace_id", "normalized_name", name="uq_category_workspace_name"),
     )
 
@@ -59,6 +60,14 @@ class SpendingTransaction(SQLModel, table=True):
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
 
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["category_id", "workspace_id"],
+            ["spending_categories.id", "spending_categories.workspace_id"],
+            name="fk_spending_transactions_category_workspace",
+        ),
+    )
+
 
 class SpendingBudget(SQLModel, table=True):
     __tablename__ = "spending_budgets"
@@ -80,6 +89,11 @@ class SpendingBudget(SQLModel, table=True):
     )
 
     __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["category_id", "workspace_id"],
+            ["spending_categories.id", "spending_categories.workspace_id"],
+            name="fk_spending_budgets_category_workspace",
+        ),
         sa.UniqueConstraint(
             "workspace_id", "category_id", "month_start", name="uq_budget_workspace_category_month"
         ),
