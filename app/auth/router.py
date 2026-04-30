@@ -150,11 +150,12 @@ async def refresh_token(
 async def logout(
     request: Request,
     response: Response,
+    current_user: dict = Depends(get_current_user),
     auth_service: AuthService = Depends(get_auth_service),
 ):
     """Logout by clearing auth cookies."""
-    if hasattr(request.state, "sid") and request.state.sid:
-        await auth_service.revoke_session(request.state.sid)
+    if "sid" in current_user:
+        await auth_service.revoke_session(current_user["sid"])
 
     for key in ("access_token", "refresh_token"):
         response.set_cookie(
