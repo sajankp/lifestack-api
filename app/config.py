@@ -1,3 +1,4 @@
+import secrets
 from urllib.parse import urlparse
 
 import structlog
@@ -65,7 +66,7 @@ class Settings(BaseSettings):
 
     # Observability
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
-    METRICS_TOKEN: str = "dev-metrics-token"
+    METRICS_TOKEN: str = Field(default_factory=lambda: "dev-metrics-" + secrets.token_urlsafe(16))
 
     @computed_field
     @property
@@ -107,7 +108,7 @@ class Settings(BaseSettings):
     def _check_production_defaults(self) -> "Settings":
         """Fail fast when insecure defaults are used against a remote database."""
         parsed_db = urlparse(self.DATABASE_URL)
-        is_local_db = parsed_db.hostname in ("localhost", "127.0.0.1")
+        is_local_db = parsed_db.hostname in ("localhost", "127.0.0.1", "postgres")
 
         if not is_local_db:
             if self.SECRET_KEY == "super-secret-key-change-in-production":
@@ -115,7 +116,7 @@ class Settings(BaseSettings):
                     "SECRET_KEY must be changed from its default value "
                     "when DATABASE_URL points to a remote host."
                 )
-            if self.METRICS_TOKEN == "dev-metrics-token":
+            if self.METRICS_TOKEN.startswith("dev-"):
                 raise ValueError(
                     "METRICS_TOKEN must be changed from its default value "
                     "when DATABASE_URL points to a remote host."

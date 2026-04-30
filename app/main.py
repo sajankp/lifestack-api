@@ -72,26 +72,6 @@ def create_app() -> FastAPI:
         FastAPIInstrumentor.instrument_app(_app)
 
     @_app.middleware("http")
-    async def add_security_headers(request: Request, call_next):
-        response = await call_next(request)
-        normalized = request.url.path.rstrip("/") or "/"
-        is_docs = normalized in {"/docs", "/openapi.json"} or normalized.startswith("/docs/")
-        if not is_docs:
-            csp_policy = (
-                "default-src 'self'; "
-                "img-src 'self' data:; "
-                "style-src 'self' 'unsafe-inline'; "
-                "script-src 'self'"
-            )
-            response.headers["Content-Security-Policy"] = csp_policy
-        if settings.COOKIE_SECURE:
-            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        return response
-
-    @_app.middleware("http")
     async def add_user_info_to_request(request: Request, call_next):
         if request.method == "OPTIONS":
             return await call_next(request)
@@ -194,6 +174,30 @@ def create_app() -> FastAPI:
                 media_type=PROBLEM_JSON,
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+    @_app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        normalized = request.url.path.rstrip("/") or "/"
+        is_docs = normalized in {
+            "/docs",
+            "/openapi.json",
+            f"{settings.API_V1_STR}/openapi.json",
+        } or normalized.startswith("/docs/")
+        if not is_docs:
+            csp_policy = (
+                "default-src 'self'; "
+                "img-src 'self' data:; "
+                "style-src 'self' 'unsafe-inline'; "
+                "script-src 'self'"
+            )
+            response.headers["Content-Security-Policy"] = csp_policy
+        if settings.COOKIE_SECURE:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
 
     # Include routers under /v1 prefix
     _app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
