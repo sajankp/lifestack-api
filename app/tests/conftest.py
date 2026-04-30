@@ -54,6 +54,17 @@ async def client(override_database_url):
     """Return an AsyncClient that hits the app."""
     # Disable rate limiting in tests to avoid Redis dependency.
     limiter.enabled = False
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+
+    # Ensure http://test is trusted for CSRF during tests.
+    # We use a set/list check and update the setting directly.
+    current_trusted = settings.csrf_trusted_origins
+    if "http://test" not in current_trusted:
+        settings.CSRF_TRUSTED_ORIGINS = ["http://test"]
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("127.0.0.1", 123), raise_app_exceptions=False),
+        base_url="http://test",
+        headers={"Origin": "http://test"},
+    ) as ac:
         yield ac
     limiter.enabled = True

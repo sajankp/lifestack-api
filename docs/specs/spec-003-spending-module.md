@@ -122,7 +122,9 @@ Phase 1 budget rule:
 Rules:
 - list only categories for the active workspace
 - delete is allowed only for custom categories
+- system categories may be patched for cosmetic/user-label fields (`name`, `color`, `icon`) but cannot be deleted
 - deleting a category that is referenced by transactions should fail with a documented problem response unless a reassignment flow is explicitly added
+- category delete conflicts use RFC 7807 with conflict status and a module-specific type (for example `https://lifestack.app/errors/category-in-use`)
 
 #### Transactions
 - `GET /v1/spending/transactions`
@@ -155,6 +157,7 @@ Rationale:
 - 2 decimal places covers standard currency precision for a personal finance tracker.
 - `NUMERIC(12, 2)` supports amounts up to 9,999,999,999.99 which is sufficient.
 - Pydantic schemas must validate that submitted amounts have at most 2 decimal places.
+- Pydantic schemas must reject zero and negative values (`amount > 0`).
 - Arithmetic (e.g. budget vs actual comparisons) should use `Decimal` throughout to avoid floating-point errors.
 
 ### 6.2 Provisioning Default Categories
@@ -180,6 +183,10 @@ Default system categories (illustrative, finalize before implementation):
 
 Do not use globally shared categories with `workspace_id = null`. Every category row must belong to exactly one workspace.
 
+Implementation note:
+- This provisioning must be orchestrated by an application workflow (`app/application/`), not by auth/router logic directly.
+- Registration remains the entrypoint, but cross-module seeding belongs in workflow orchestration boundaries.
+
 ### 6.3 Cross-Module Workflows
 Budget checks, alerts, and todo follow-ups are not part of the spending service layer itself.
 
@@ -194,7 +201,12 @@ If overspending should create a todo or dashboard signal, define that in `app/ap
 - Keep transaction ownership above the repository layer; repositories should `flush()` rather than `commit()`.
 - Document and test the chosen default-category provisioning behavior.
 
-## 8. Required Integration Scenarios
+## 8. Observability Hooks
+- Emit structured log events for category/transaction/budget create-update-delete actions with `workspace_id` and `public_id`.
+- Add module metrics counters for transaction and budget mutation outcomes.
+- Ensure trace spans include spending service operations for list/create/update/delete paths.
+
+## 9. Required Integration Scenarios
 
 ### 8.1 Workspace Isolation for Categories
 - setup: two users with distinct workspaces and categories of the same name
@@ -228,13 +240,13 @@ If overspending should create a todo or dashboard signal, define that in `app/ap
 - expected API response: categories are available without leaking from other workspaces
 - isolation assertion: no shared global category records are relied on
 
-## 9. Required E2E Scenarios
+## 10. Required E2E Scenarios
 - Register, log in, create a category, create a transaction, and see it listed in the same workspace.
 - Attempt to open or mutate another user's spending resource and verify failure.
 - Create a monthly budget and confirm the UI/API shows the stored month/category combination consistently.
 - Verify problem-detail responses are surfaced cleanly for missing category or transaction URLs.
 
-## 10. Settled Decisions
+## 11. Settled Decisions
 
 | # | Decision | Resolution |
 |---|----------|------------|

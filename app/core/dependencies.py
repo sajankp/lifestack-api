@@ -7,8 +7,9 @@ from app.application.workflows import UserRegistrationWorkflow
 from app.auth.repository import AuthSessionRepository, UserRepository
 from app.auth.service import AuthService
 from app.config import settings
+from app.core.auth import get_user_info_from_token
 from app.core.database.postgres import get_db_session
-from app.core.exceptions import UnauthorizedError
+from app.core.exceptions import CSRFFailedError, UnauthorizedError
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
 from app.spending.repository import BudgetRepository, CategoryRepository, TransactionRepository
@@ -52,10 +53,75 @@ async def get_auth_service(
     return AuthService(repo, session_repo)
 
 
-async def get_current_user(request: Request) -> dict:
-    if not hasattr(request.state, "user_id") or not request.state.user_id:
+async def get_current_user(
+    request: Request,
+    auth_session_repo: AuthSessionRepository = Depends(get_auth_session_repo),
+) -> dict:
+    token = request.cookies.get("access_token")
+    token_from_cookie = token is not None
+
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+
+    if not token:
         raise UnauthorizedError(detail="Not authenticated")
-    return {"id": request.state.user_id, "username": request.state.username}
+
+    username, user_id, sid = get_user_info_from_token(token)
+
+    try:
+        uid = int(user_id)
+    except (ValueError, TypeError):
+        uid = user_id
+
+    if token_from_cookie and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        origin = request.headers.get("Origin")
+        referer = request.headers.get("Referer")
+
+        # Determine which source to validate (Origin preferred)
+        source = origin or referer
+        if not source:
+            raise CSRFFailedError(
+                detail="Origin or Referer header is required for cookie-authenticated requests"
+            )
+
+        try:
+            normalized_source = settings._normalize_origin(source)
+        except ValueError:
+            raise CSRFFailedError(
+                detail=f"{'Origin' if origin else 'Referer'} header is invalid"
+            ) from None
+
+        if (
+            not settings.csrf_trusted_origins
+            or normalized_source not in settings.csrf_trusted_origins
+        ):
+            source_name = "Origin" if origin else "Referer"
+            raise CSRFFailedError(
+                detail=f"{source_name} is not allowed for cookie-authenticated requests"
+            )
+
+    auth_session = await auth_session_repo.get_active_by_sid(sid, uid)
+    if not auth_session:
+        raise UnauthorizedError(detail="Session is no longer active")
+
+    request.state.user_id = uid
+    request.state.username = username
+    request.state.sid = sid
+
+    return {"id": uid, "username": username, "sid": sid}
+
+
+async def get_current_user_optional(
+    request: Request,
+    auth_session_repo: AuthSessionRepository = Depends(get_auth_session_repo),
+) -> dict | None:
+    """Soft authentication dependency that returns None instead of raising 401."""
+    try:
+        return await get_current_user(request, auth_session_repo)
+    except UnauthorizedError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -140,18 +206,25 @@ async def get_spending_budget_service(
 
 
 async def get_current_workspace_id(
-    request: Request,
+    current_user: dict = Depends(get_current_user),
     workspace_service: WorkspaceService = Depends(get_workspace_service),
     category_service: CategoryService = Depends(get_spending_category_service),
 ) -> int:
-    if not hasattr(request.state, "user_id") or not request.state.user_id:
-        raise UnauthorizedError(detail="Not authenticated")
+    """Resolve the active workspace for the current request.
 
-    # Stage 1: resolve the user's first/default workspace.
-    workspaces = await workspace_service.get_user_workspaces(request.state.user_id)
+    **Fallback provisioning (defense-in-depth):**
+    If the authenticated user has no workspace (e.g. a registration that partially
+    failed before the workspace step, or a user created via admin tooling), this
+    dependency will provision a default workspace and seed spending categories.
+
+    Under normal operation, ``UserRegistrationWorkflow`` handles all of this
+    atomically during registration, so this fallback path should never execute.
+    It exists as a safety net, not as the primary provisioning mechanism.
+    """
+    workspaces = await workspace_service.get_user_workspaces(current_user["id"])
     if not workspaces:
         workspace = await workspace_service.ensure_default_workspace(
-            request.state.user_id, request.state.username
+            current_user["id"], current_user["username"]
         )
         await category_service.provision_default_categories(workspace.id)
         return workspace.id

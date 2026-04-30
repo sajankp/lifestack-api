@@ -13,6 +13,7 @@ from app.core.auth import create_token, get_user_info_from_token
 from app.core.dependencies import (
     get_auth_service,
     get_current_user,
+    get_current_user_optional,
     get_user_registration_workflow,
     limiter,
 )
@@ -85,6 +86,7 @@ async def login_for_access_token(
         value=access_token,
         httponly=True,
         max_age=settings.ACCESS_TOKEN_EXPIRE_SECONDS,
+        path="/",
         samesite="lax",
         secure=settings.COOKIE_SECURE,
     )
@@ -93,6 +95,7 @@ async def login_for_access_token(
         value=refresh_token,
         httponly=True,
         max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS if remember_me else None,
+        path="/",
         samesite="lax",
         secure=settings.COOKIE_SECURE,
     )
@@ -136,6 +139,7 @@ async def refresh_token(
         value=access_token,
         httponly=True,
         max_age=settings.ACCESS_TOKEN_EXPIRE_SECONDS,
+        path="/",
         samesite="lax",
         secure=settings.COOKIE_SECURE,
     )
@@ -147,11 +151,12 @@ async def refresh_token(
 async def logout(
     request: Request,
     response: Response,
+    current_user: dict | None = Depends(get_current_user_optional),
     auth_service: AuthService = Depends(get_auth_service),
 ):
     """Logout by clearing auth cookies."""
-    if hasattr(request.state, "sid") and request.state.sid:
-        await auth_service.revoke_session(request.state.sid)
+    if current_user and "sid" in current_user:
+        await auth_service.revoke_session(current_user["sid"])
 
     for key in ("access_token", "refresh_token"):
         response.set_cookie(
@@ -160,6 +165,7 @@ async def logout(
             httponly=True,
             max_age=0,
             expires=0,
+            path="/",
             samesite="lax",
             secure=settings.COOKIE_SECURE,
         )

@@ -1,11 +1,11 @@
 import pytest
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel
 
 from app.auth.repository import AuthSessionRepository
 from app.core.auth import create_token
-from app.core.dependencies import limiter
+from app.core.dependencies import get_current_user, limiter
 from app.core.exceptions import NotFoundError
 from app.main import create_app
 
@@ -37,6 +37,10 @@ def error_app(monkeypatch):
     @error_router.get("/test-500")
     async def trigger_500():
         raise ValueError("Something went terribly wrong!")
+
+    @error_router.get("/test-auth")
+    async def trigger_auth(user=Depends(get_current_user)):
+        return {"ok": True}
 
     app.include_router(error_router)
     return app
@@ -129,13 +133,13 @@ async def test_invalid_token_returns_problem_details(error_app):
     async with AsyncClient(
         transport=ASGITransport(app=error_app, raise_app_exceptions=False), base_url="http://test"
     ) as client:
-        response = await client.get("/test-404", headers={"Authorization": "Bearer invalid-token"})
+        response = await client.get("/test-auth", headers={"Authorization": "Bearer invalid-token"})
         assert response.status_code == 401
         data = response.json()
         assert data["type"] == "https://lifestack.app/errors/unauthorized"
         assert data["title"] == "Unauthorized"
         assert data["status"] == 401
-        assert data["instance"] == "/test-404"
+        assert data["instance"] == "/test-auth"
         assert "detail" in data
 
 
