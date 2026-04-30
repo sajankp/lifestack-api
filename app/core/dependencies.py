@@ -75,19 +75,30 @@ async def get_current_user(
 
     if token_from_cookie and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         origin = request.headers.get("Origin")
-        if origin:
-            try:
-                normalized_origin = settings._normalize_origin(origin)
-            except ValueError:
-                raise CSRFFailedError(detail="Origin header is invalid") from None
+        referer = request.headers.get("Referer")
 
-            if (
-                not settings.csrf_trusted_origins
-                or normalized_origin not in settings.csrf_trusted_origins
-            ):
-                raise CSRFFailedError(
-                    detail="Origin is not allowed for cookie-authenticated requests"
-                )
+        # Determine which source to validate (Origin preferred)
+        source = origin or referer
+        if not source:
+            raise CSRFFailedError(
+                detail="Origin or Referer header is required for cookie-authenticated requests"
+            )
+
+        try:
+            normalized_source = settings._normalize_origin(source)
+        except ValueError:
+            raise CSRFFailedError(
+                detail=f"{'Origin' if origin else 'Referer'} header is invalid"
+            ) from None
+
+        if (
+            not settings.csrf_trusted_origins
+            or normalized_source not in settings.csrf_trusted_origins
+        ):
+            source_name = "Origin" if origin else "Referer"
+            raise CSRFFailedError(
+                detail=f"{source_name} is not allowed for cookie-authenticated requests"
+            )
 
     auth_session = await auth_session_repo.get_active_by_sid(sid, uid)
     if not auth_session:
@@ -182,7 +193,6 @@ async def get_spending_budget_service(
 
 
 async def get_current_workspace_id(
-    request: Request,
     current_user: dict = Depends(get_current_user),
     workspace_service: WorkspaceService = Depends(get_workspace_service),
     category_service: CategoryService = Depends(get_spending_category_service),
@@ -198,9 +208,6 @@ async def get_current_workspace_id(
     atomically during registration, so this fallback path should never execute.
     It exists as a safety net, not as the primary provisioning mechanism.
     """
-    if not hasattr(request.state, "user_id") or not request.state.user_id:
-        raise UnauthorizedError(detail="Not authenticated")
-
     workspaces = await workspace_service.get_user_workspaces(current_user["id"])
     if not workspaces:
         workspace = await workspace_service.ensure_default_workspace(

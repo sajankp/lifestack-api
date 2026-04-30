@@ -29,16 +29,14 @@ class SecurityHeadersMiddleware:
                         "style-src 'self' 'unsafe-inline'; "
                         "script-src 'self'"
                     )
-                    headers.append("content-security-policy", csp_policy)
+                    headers["content-security-policy"] = csp_policy
 
                 if settings.COOKIE_SECURE:
-                    headers.append(
-                        "strict-transport-security", "max-age=31536000; includeSubDomains"
-                    )
+                    headers["strict-transport-security"] = "max-age=31536000; includeSubDomains"
 
-                headers.append("x-content-type-options", "nosniff")
-                headers.append("x-frame-options", "DENY")
-                headers.append("referrer-policy", "strict-origin-when-cross-origin")
+                headers["x-content-type-options"] = "nosniff"
+                headers["x-frame-options"] = "DENY"
+                headers["referrer-policy"] = "strict-origin-when-cross-origin"
 
             await send(message)
 
