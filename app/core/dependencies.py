@@ -70,8 +70,10 @@ async def get_current_user(
 
     username, user_id, sid = get_user_info_from_token(token)
 
-    str_user_id = str(user_id)
-    uid = int(str_user_id) if str_user_id.isdigit() else user_id
+    try:
+        uid = int(user_id)
+    except (ValueError, TypeError):
+        uid = user_id
 
     if token_from_cookie and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         origin = request.headers.get("Origin")
@@ -109,6 +111,17 @@ async def get_current_user(
     request.state.sid = sid
 
     return {"id": uid, "username": username, "sid": sid}
+
+
+async def get_current_user_optional(
+    request: Request,
+    auth_session_repo: AuthSessionRepository = Depends(get_auth_session_repo),
+) -> dict | None:
+    """Soft authentication dependency that returns None instead of raising 401."""
+    try:
+        return await get_current_user(request, auth_session_repo)
+    except UnauthorizedError:
+        return None
 
 
 # ---------------------------------------------------------------------------

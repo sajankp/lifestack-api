@@ -13,6 +13,7 @@ from app.core.auth import create_token, get_user_info_from_token
 from app.core.dependencies import (
     get_auth_service,
     get_current_user,
+    get_current_user_optional,
     get_user_registration_workflow,
     limiter,
 )
@@ -150,11 +151,11 @@ async def refresh_token(
 async def logout(
     request: Request,
     response: Response,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict | None = Depends(get_current_user_optional),
     auth_service: AuthService = Depends(get_auth_service),
 ):
     """Logout by clearing auth cookies."""
-    if "sid" in current_user:
+    if current_user and "sid" in current_user:
         await auth_service.revoke_session(current_user["sid"])
 
     for key in ("access_token", "refresh_token"):
