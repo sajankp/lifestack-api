@@ -1,5 +1,6 @@
 import structlog
 from fastapi import HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
@@ -169,7 +170,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 async def request_validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    logger.warning("validation_error", errors=str(exc.errors()), url=str(request.url))
+    logger.warning("validation_error", errors=jsonable_encoder(exc.errors()), url=str(request.url))
     return JSONResponse(
         status_code=422,
         content={

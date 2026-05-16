@@ -715,16 +715,18 @@ Backend exception handlers (like `request_validation_exception_handler`) must be
 **Pattern:**
 ```python
 # In app/core/exceptions.py
+from fastapi.encoders import jsonable_encoder
+
 async def request_validation_exception_handler(request, exc):
-    # Safe logging: ensure exc.errors() is serializable
-    logger.warning("validation_error", errors=str(exc.errors()), url=str(request.url))
+    # Safe logging: ensure exc.errors() is serializable while preserving structure
+    logger.warning("validation_error", errors=jsonable_encoder(exc.errors()), url=str(request.url))
     return JSONResponse(
         status_code=422,
         content={
             "type": "https://lifestack.app/errors/validation-error",
-            "title": "Validation Error",
+            "title": "Request Validation Error",
             "status": 422,
-            "detail": "One or more fields failed validation.",
+            "detail": "The request payload or parameters are invalid.",
             "errors": exc.errors(),
             "instance": str(request.url.path),
         },

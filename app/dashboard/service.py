@@ -33,8 +33,8 @@ class DashboardService:
             todos_res = TodosSummary(
                 status="available", open_count=open_count, overdue_count=overdue_count
             )
-        except Exception as e:
-            logger.error("dashboard_todos_fetch_failed", error=str(e), workspace_id=workspace_id)
+        except Exception:
+            logger.exception("dashboard_todos_fetch_failed", workspace_id=workspace_id)
             todos_res = TodosSummary(status="unavailable")
 
         # 2. Fetch Spending (current month)
@@ -48,8 +48,8 @@ class DashboardService:
                 to_date=now,
             )
             spending_res = SpendingSummary(status="available", month_spent=month_spent)
-        except Exception as e:
-            logger.error("dashboard_spending_fetch_failed", error=str(e), workspace_id=workspace_id)
+        except Exception:
+            logger.exception("dashboard_spending_fetch_failed", workspace_id=workspace_id)
             spending_res = SpendingSummary(status="unavailable")
 
         # 3. Investing (stubbed for V1)
