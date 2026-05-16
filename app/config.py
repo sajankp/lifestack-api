@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_SECONDS: int = 60 * 30  # 30 mins
     REFRESH_TOKEN_EXPIRE_SECONDS: int = 60 * 60 * 24 * 7  # 7 days
 
+    # Environment
+    ENV: str = "local"  # One of: local, staging, production
+
     # Log Level
     LOG_LEVEL: str = "INFO"
 
@@ -55,14 +58,25 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("DATABASE_URL", "POSTGRES_URL"),
     )
 
-    # Redis (Rate Limiting)
-    REDIS_URL: str = "redis://localhost:6379/1"
+    # Rate Limiting
+    RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_DEFAULT: str = "100/minute"
     RATE_LIMIT_AUTH: str = "10/minute"
     RATE_LIMIT_STORAGE_URI: str = "memory://"  # Set to REDIS_URL in production
 
     # Cookie Security
     COOKIE_SECURE: bool = False  # Set True in production (HTTPS)
+    COOKIE_SAMESITE: str = "lax"
+    COOKIE_DOMAIN: str | None = None
+
+    # CSP Configuration
+    CSP_IMG_SRC: str = (
+        ""  # Extra img-src sources (e.g. CDN URLs); 'self' and data: are always included
+    )
+    CSP_STYLE_SRC: str = "'unsafe-inline'"
+    CSP_SCRIPT_SRC: str = ""
+    CSP_FONT_SRC: str = ""
+    CSP_CONNECT_SRC: str = ""
 
     # Observability
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None

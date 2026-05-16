@@ -28,6 +28,7 @@ def _rate_limit_key_func(request: Request) -> str:
 limiter = Limiter(
     key_func=_rate_limit_key_func,
     storage_uri=settings.RATE_LIMIT_STORAGE_URI,
+    enabled=settings.RATE_LIMIT_ENABLED,
 )
 
 
