@@ -156,16 +156,6 @@ async def refresh_token(
         domain=settings.COOKIE_DOMAIN,
         secure=settings.COOKIE_SECURE,
     )
-    response.set_cookie(
-        key="sid",
-        value=sid,
-        httponly=True,
-        max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS,
-        path="/",
-        samesite=settings.COOKIE_SAMESITE,
-        domain=settings.COOKIE_DOMAIN,
-        secure=settings.COOKIE_SECURE,
-    )
 
     return TokenResponse(access_token="", token_type="bearer")
 

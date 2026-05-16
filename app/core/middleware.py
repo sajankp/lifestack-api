@@ -110,7 +110,13 @@ class SecurityHeadersMiddleware:
                 # Protocol-aware HSTS
                 headers_dict = dict(scope.get("headers", []))
                 # Decode headers from bytes to string for checking
-                x_forwarded_proto = headers_dict.get(b"x-forwarded-proto", b"").decode("utf-8")
+                x_forwarded_proto = (
+                    headers_dict.get(b"x-forwarded-proto", b"")
+                    .decode("utf-8", "replace")
+                    .split(",")[0]
+                    .strip()
+                    .lower()
+                )
 
                 if (
                     settings.COOKIE_SECURE
