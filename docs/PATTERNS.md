@@ -706,32 +706,8 @@ query = select(
 result = await self.session.execute(query)
 row = result.mappings().first()
 open_count = row.get("open_count") or 0
-## Validation and UX Robustness
 
-### Date Normalization
-When the backend enforces specific date constraints (e.g., "must be the 1st of the month"), the frontend should proactively normalize inputs before submission. This prevents unnecessary `422 Unprocessable Entity` errors and improves the user experience.
-
-**Pattern:**
-```typescript
-// Frontend normalization in SpendingPage.tsx
-const handleSave = () => {
-  // Always normalize to the 1st of the month for budgets
-  const normalizedDate = budgetMonth.substring(0, 7) + "-01";
-  await api.saveBudget({ ...data, month_start: normalizedDate });
-};
-```
-
-### Modal and Dropdown Overflow
-Modals containing absolute-positioned elements (like `DropdownSelect`) should not use `overflow-hidden` on their main container, as this will clip the dropdown list. Use `overflow-visible` (default) instead.
-
-**Pattern:**
-```tsx
-// Bad: clips absolute children
-<div className="relative overflow-hidden rounded-2xl ...">
-
-// Good: allows dropdowns to overflow
-<div className="relative rounded-2xl ...">
-```
+## Validation Robustness
 
 ### Exception Handler Robustness
 Backend exception handlers (like `request_validation_exception_handler`) must be extremely robust. If a logger fails to serialize a validation error, the client receives a `500` instead of a `422`. Always stringify or safely serialize error details before logging.
