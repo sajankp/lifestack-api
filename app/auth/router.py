@@ -87,7 +87,8 @@ async def login_for_access_token(
         httponly=True,
         max_age=settings.ACCESS_TOKEN_EXPIRE_SECONDS,
         path="/",
-        samesite="lax",
+        samesite=settings.COOKIE_SAMESITE,
+        domain=settings.COOKIE_DOMAIN,
         secure=settings.COOKIE_SECURE,
     )
     response.set_cookie(
@@ -96,7 +97,18 @@ async def login_for_access_token(
         httponly=True,
         max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS if remember_me else None,
         path="/",
-        samesite="lax",
+        samesite=settings.COOKIE_SAMESITE,
+        domain=settings.COOKIE_DOMAIN,
+        secure=settings.COOKIE_SECURE,
+    )
+    response.set_cookie(
+        key="sid",
+        value=sid,
+        httponly=True,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS if remember_me else None,
+        path="/",
+        samesite=settings.COOKIE_SAMESITE,
+        domain=settings.COOKIE_DOMAIN,
         secure=settings.COOKIE_SECURE,
     )
 
@@ -140,7 +152,8 @@ async def refresh_token(
         httponly=True,
         max_age=settings.ACCESS_TOKEN_EXPIRE_SECONDS,
         path="/",
-        samesite="lax",
+        samesite=settings.COOKIE_SAMESITE,
+        domain=settings.COOKIE_DOMAIN,
         secure=settings.COOKIE_SECURE,
     )
 
@@ -158,7 +171,7 @@ async def logout(
     if current_user and "sid" in current_user:
         await auth_service.revoke_session(current_user["sid"])
 
-    for key in ("access_token", "refresh_token"):
+    for key in ("access_token", "refresh_token", "sid"):
         response.set_cookie(
             key=key,
             value="",
@@ -166,7 +179,8 @@ async def logout(
             max_age=0,
             expires=0,
             path="/",
-            samesite="lax",
+            samesite=settings.COOKIE_SAMESITE,
+            domain=settings.COOKIE_DOMAIN,
             secure=settings.COOKIE_SECURE,
         )
     return {"message": "Logged out successfully"}

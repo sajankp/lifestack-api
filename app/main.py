@@ -1,3 +1,6 @@
+import sys
+from contextlib import asynccontextmanager
+
 import structlog
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -5,9 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from sqlalchemy import text
 
 from app.auth.router import router as auth_router
 from app.config import settings
+from app.core.database import postgres
 from app.core.dependencies import limiter
 from app.core.exceptions import (
     APIError,
@@ -18,11 +23,38 @@ from app.core.exceptions import (
     unhandled_exception_handler,
 )
 from app.core.health import router as health_router
-from app.core.middleware import SecurityHeadersMiddleware
+from app.core.logging import setup_logging
+from app.core.middleware import SecurityHeadersMiddleware, StructlogMiddleware
 from app.spending.router import router as spending_router
 from app.todo.router import router as todo_router
 
+# Initialize logging before creating the app
+setup_logging()
+
 logger = structlog.get_logger()
+
+
+async def _startup_check() -> None:
+    """Verify DB connectivity on startup (fail-fast)."""
+    try:
+        async with postgres.engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+        logger.info("startup_readiness_check_passed")
+    except Exception as e:
+        logger.critical("startup_readiness_check_failed", error=str(e))
+        sys.exit(1)
+
+    if settings.METRICS_TOKEN.startswith("dev-") and settings.ENV != "local":
+        logger.warning(
+            "insecure_metrics_token",
+            msg="METRICS_TOKEN is using a default value in a non-local environment.",
+        )
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await _startup_check()
+    yield
 
 
 def create_app() -> FastAPI:
@@ -32,6 +64,7 @@ def create_app() -> FastAPI:
         openapi_url=f"{settings.API_V1_STR}/openapi.json",
         docs_url="/docs",
         redoc_url=None,
+        lifespan=lifespan,
     )
 
     # CORS
@@ -49,6 +82,7 @@ def create_app() -> FastAPI:
     _app.state.limiter = limiter
     _app.add_middleware(SlowAPIMiddleware)
     _app.add_middleware(SecurityHeadersMiddleware)
+    _app.add_middleware(StructlogMiddleware)
 
     # Exception Handlers
     _app.add_exception_handler(APIError, api_exception_handler)
