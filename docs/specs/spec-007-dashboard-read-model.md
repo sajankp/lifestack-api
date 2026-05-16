@@ -1,5 +1,5 @@
 # Feature Spec: Dashboard Read Model
-**Status:** Planned
+**Status:** Implemented
 **Spec ID:** 007
 
 ## 1. Overview
@@ -26,6 +26,7 @@ Response sections:
 
 ## 5. Data and Query Contract
 - Dashboard service composes module services in `app/dashboard/service.py`.
+- **SQL Aggregation Mandate:** Services MUST NOT fetch full lists of ORM objects into memory for aggregation. Counts and sums must be pushed down to the database level (e.g., via `func.count()`, `func.sum()`) to guarantee stable performance.
 - All queries are workspace-scoped.
 - Missing module data returns empty-safe sections rather than hard failure.
 - V1 caching policy: no server-side caching; responses are computed from live reads.

@@ -25,6 +25,7 @@ from app.core.exceptions import (
 from app.core.health import router as health_router
 from app.core.logging import setup_logging
 from app.core.middleware import SecurityHeadersMiddleware, StructlogMiddleware
+from app.dashboard.router import router as dashboard_router
 from app.spending.router import router as spending_router
 from app.todo.router import router as todo_router
 
@@ -102,6 +103,7 @@ def create_app() -> FastAPI:
     _app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
     _app.include_router(todo_router, prefix=settings.API_V1_STR)
     _app.include_router(spending_router, prefix=settings.API_V1_STR)
+    _app.include_router(dashboard_router, prefix=settings.API_V1_STR)
 
     _app.include_router(health_router)
 

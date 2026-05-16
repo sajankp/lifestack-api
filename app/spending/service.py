@@ -175,6 +175,13 @@ class TransactionService:
             offset=offset,
         )
 
+    async def get_sum_by_type(
+        self, workspace_id: int, type_filter: str, from_date: datetime, to_date: datetime
+    ) -> float:
+        return await self.transaction_repo.get_sum_by_type(
+            workspace_id, type_filter, from_date, to_date
+        )
+
     async def get_transaction(self, workspace_id: int, public_id: uuid.UUID) -> SpendingTransaction:
         transaction = await self.transaction_repo.get_by_public_id(workspace_id, public_id)
         if not transaction:

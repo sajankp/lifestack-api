@@ -105,6 +105,19 @@ class TransactionRepository:
         )
         return result.scalars().all(), total
 
+    async def get_sum_by_type(
+        self, workspace_id: int, type_filter: str, from_date: datetime, to_date: datetime
+    ) -> float:
+        query = select(func.sum(SpendingTransaction.amount)).where(
+            SpendingTransaction.workspace_id == workspace_id,
+            SpendingTransaction.type == type_filter,
+            SpendingTransaction.occurred_at >= from_date,
+            SpendingTransaction.occurred_at <= to_date,
+        )
+        result = await self.session.execute(query)
+        val = result.scalar_one_or_none()
+        return float(val) if val else 0.0
+
     async def get_by_public_id(
         self, workspace_id: int, public_id: UUID
     ) -> SpendingTransaction | None:
