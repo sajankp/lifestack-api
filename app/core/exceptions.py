@@ -169,7 +169,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 async def request_validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    logger.warning("validation_error", detail=exc.errors(), url=str(request.url))
+    logger.warning("validation_error", errors=str(exc.errors()), url=str(request.url))
     return JSONResponse(
         status_code=422,
         content={
