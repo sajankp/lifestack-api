@@ -3,7 +3,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.core.dependencies import (
-    get_current_user,
     get_current_workspace_id,
     get_spending_transaction_service,
     get_todo_service,
@@ -25,6 +24,5 @@ async def get_dashboard_service(
 async def get_summary(
     dashboard_service: Annotated[DashboardService, Depends(get_dashboard_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    user: Annotated[dict, Depends(get_current_user)],
 ):
     return await dashboard_service.get_summary(workspace_id)

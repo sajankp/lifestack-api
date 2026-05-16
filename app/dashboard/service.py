@@ -25,10 +25,20 @@ class DashboardService:
         now = datetime.now(UTC)
 
         # 1. Fetch Todos
-        open_count, overdue_count = await self.todo_service.get_summary_counts(workspace_id, now)
+        todos_res = TodosSummary()
+        try:
+            open_count, overdue_count = await self.todo_service.get_summary_counts(
+                workspace_id, now
+            )
+            todos_res = TodosSummary(
+                status="available", open_count=open_count, overdue_count=overdue_count
+            )
+        except Exception as e:
+            logger.error("dashboard_todos_fetch_failed", error=str(e), workspace_id=workspace_id)
+            todos_res = TodosSummary(status="unavailable")
 
         # 2. Fetch Spending (current month)
-        month_spent = 0.0
+        spending_res = SpendingSummary()
         try:
             start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             month_spent = await self.transaction_service.get_sum_by_type(
@@ -37,19 +47,17 @@ class DashboardService:
                 from_date=start_of_month,
                 to_date=now,
             )
+            spending_res = SpendingSummary(status="available", month_spent=month_spent)
         except Exception as e:
             logger.error("dashboard_spending_fetch_failed", error=str(e), workspace_id=workspace_id)
+            spending_res = SpendingSummary(status="unavailable")
 
         # 3. Investing (stubbed for V1)
+        investing_res = InvestingSummary(status="available")
 
         return DashboardSummary(
-            todos=TodosSummary(
-                open_count=open_count,
-                overdue_count=overdue_count,
-            ),
-            spending=SpendingSummary(
-                month_spent=month_spent,
-            ),
-            investing=InvestingSummary(),
+            todos=todos_res,
+            spending=spending_res,
+            investing=investing_res,
             system=SystemSummary(generated_at=now),
         )

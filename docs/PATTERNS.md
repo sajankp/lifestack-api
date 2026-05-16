@@ -718,5 +718,15 @@ Backend exception handlers (like `request_validation_exception_handler`) must be
 async def request_validation_exception_handler(request, exc):
     # Safe logging: ensure exc.errors() is serializable
     logger.warning("validation_error", errors=str(exc.errors()), url=str(request.url))
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    return JSONResponse(
+        status_code=422,
+        content={
+            "type": "https://lifestack.app/errors/validation-error",
+            "title": "Validation Error",
+            "status": 422,
+            "detail": "One or more fields failed validation.",
+            "errors": exc.errors(),
+            "instance": str(request.url.path),
+        },
+    )
 ```

@@ -4,19 +4,22 @@ from pydantic import BaseModel, ConfigDict
 
 
 class TodosSummary(BaseModel):
-    open_count: int
-    overdue_count: int
+    status: str = "available"
+    open_count: int = 0
+    overdue_count: int = 0
     next_due_items: list[dict] = []
     active_guardrail_todo_count: int = 0
 
 
 class SpendingSummary(BaseModel):
-    month_spent: float
+    status: str = "available"
+    month_spent: float = 0.0
     month_budget: float | None = None
     top_overspent_categories: list[dict] = []
 
 
 class InvestingSummary(BaseModel):
+    status: str = "available"
     portfolio_value: float = 0.0
     daily_change: float | None = None
     holdings_count: int = 0

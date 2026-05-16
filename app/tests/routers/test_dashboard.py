@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from httpx import AsyncClient
 
@@ -60,7 +62,7 @@ async def test_dashboard_summary_with_data(client: AsyncClient):
         "description": "Lunch",
         "category_id": category_id,
         "type": "expense",
-        "occurred_at": "2026-05-01T12:00:00Z",
+        "occurred_at": datetime.now(UTC).isoformat(),
     }
     spend_res = await client.post("/v1/spending/transactions", json=spending_data)
     assert spend_res.status_code == 201
