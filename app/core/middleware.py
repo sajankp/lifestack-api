@@ -38,10 +38,18 @@ class StructlogMiddleware(BaseHTTPMiddleware):
             raise
 
         process_time = time.perf_counter() - start_time
+        status_code = response.status_code
 
-        logger.info(
+        if status_code >= 500:
+            log_fn = logger.error
+        elif status_code >= 400:
+            log_fn = logger.warning
+        else:
+            log_fn = logger.info
+
+        log_fn(
             "Request finished",
-            status_code=response.status_code,
+            status_code=status_code,
             duration=process_time,
         )
 

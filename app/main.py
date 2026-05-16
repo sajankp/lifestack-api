@@ -80,9 +80,9 @@ def create_app() -> FastAPI:
 
     # Core middlewares
     _app.state.limiter = limiter
-    _app.add_middleware(StructlogMiddleware)
     _app.add_middleware(SlowAPIMiddleware)
     _app.add_middleware(SecurityHeadersMiddleware)
+    _app.add_middleware(StructlogMiddleware)
 
     # Exception Handlers
     _app.add_exception_handler(APIError, api_exception_handler)
