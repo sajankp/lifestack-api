@@ -22,6 +22,9 @@ class TodoService:
     ) -> tuple[Sequence[Todo], int]:
         return await self.repository.get_all(workspace_id, completed, limit, offset)
 
+    async def get_summary_counts(self, workspace_id: int, now: datetime) -> tuple[int, int]:
+        return await self.repository.get_summary_counts(workspace_id, now)
+
     async def get_todo(self, workspace_id: int, public_id: uuid.UUID) -> Todo:
         todo = await self.repository.get_by_public_id(workspace_id, public_id)
         if not todo:

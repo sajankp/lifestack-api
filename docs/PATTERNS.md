@@ -681,3 +681,30 @@ async def metrics_endpoint(token: str = Depends(verify_metrics_token)):
 - Metrics endpoint is secure by default; requires a valid `METRICS_TOKEN` bearer token.
 - Constant-time comparison (`secrets.compare_digest`) prevents timing attacks.
 - `METRICS_TOKEN` must be changed from its default in production (enforced by `Settings` validator).
+
+## Data Aggregation & Dashboard Patterns
+### SQL-Level Counting and Summing
+Do not fetch full lists of ORM objects into memory just to count or sum them (e.g., `len(objects)` or `sum(obj.amount for obj in objects)`). This causes severe memory bloat and violates latency targets as workspaces grow.
+Instead, create explicit aggregation methods on the corresponding Repository that push the operations down to the database using `func.count()`, `func.sum()`, and conditional aggregations with `case()`.
+
+**Anti-Pattern:**
+```python
+# Bad: fetches 1000 objects into memory
+todos, _ = await self.todo_service.list_todos(limit=1000)
+open_count = len(todos)
+overdue_count = sum(1 for t in todos if t.due_date < now)
+```
+
+**Pattern:**
+```python
+# In Repository:
+query = select(
+    func.count().label("open_count"),
+    func.sum(case((Todo.due_date < now, 1), else_=0)).label("overdue_count")
+).where(Todo.workspace_id == workspace_id)
+
+result = await self.session.execute(query)
+row = result.mappings().first()
+open_count = row.get("open_count") or 0
+```
+Then expose this through the `Service` layer so the Dashboard layer can compose data without violating business rules.
