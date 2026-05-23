@@ -43,9 +43,11 @@ def create_token(
     return encoded_jwt
 
 
-def get_user_info_from_token(token: str, expected_type: str = "access") -> tuple[str, str, str]:
+def get_user_info_from_token(
+    token: str, expected_type: str = "access"
+) -> tuple[str, str, str, int | None]:
     """
-    Decodes the token and returns (username, user_id, sid).
+    Decodes the token and returns (username, user_id, sid, default_workspace_id).
     """
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
@@ -56,6 +58,7 @@ def get_user_info_from_token(token: str, expected_type: str = "access") -> tuple
         username = payload.get("sub")
         user_id = payload.get("sub_id")
         sid = payload.get("sid")
+        default_workspace_id = payload.get("default_workspace_id")
 
         if None in (username, user_id, sid):
             raise UnauthorizedError(detail="Could not validate credentials")
@@ -68,4 +71,11 @@ def get_user_info_from_token(token: str, expected_type: str = "access") -> tuple
         )
         raise UnauthorizedError(detail=detail) from e
 
-    return username, user_id, sid
+    try:
+        parsed_workspace_id = (
+            int(default_workspace_id) if default_workspace_id is not None else None
+        )
+    except (ValueError, TypeError):
+        parsed_workspace_id = None
+
+    return username, user_id, sid, parsed_workspace_id

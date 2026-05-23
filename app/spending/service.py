@@ -1,6 +1,7 @@
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from app.core.audit import AuditLogger
 from app.core.exceptions import (
@@ -276,7 +277,7 @@ class TransactionService:
 
     async def get_sum_by_type(
         self, workspace_id: int, type_filter: str, from_date: datetime, to_date: datetime
-    ) -> float:
+    ) -> Decimal:
         return await self.transaction_repo.get_sum_by_type(
             workspace_id, type_filter, from_date, to_date
         )

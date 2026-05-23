@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from datetime import date, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -107,7 +108,7 @@ class TransactionRepository:
 
     async def get_sum_by_type(
         self, workspace_id: int, type_filter: str, from_date: datetime, to_date: datetime
-    ) -> float:
+    ) -> Decimal:
         query = select(func.sum(SpendingTransaction.amount)).where(
             SpendingTransaction.workspace_id == workspace_id,
             SpendingTransaction.type == type_filter,
@@ -116,7 +117,7 @@ class TransactionRepository:
         )
         result = await self.session.execute(query)
         val = result.scalar_one_or_none()
-        return float(val) if val else 0.0
+        return Decimal(val or 0)
 
     async def get_by_public_id(
         self, workspace_id: int, public_id: UUID

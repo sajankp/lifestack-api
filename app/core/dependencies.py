@@ -11,6 +11,8 @@ from app.core.audit import AuditLogger
 from app.core.auth import get_user_info_from_token
 from app.core.database.postgres import get_db_session
 from app.core.exceptions import CSRFFailedError, UnauthorizedError
+from app.investing.repository import CashBalanceRepository, HoldingRepository
+from app.investing.service import CashBalanceService, HoldingService, InvestingSummaryService
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
 from app.spending.repository import BudgetRepository, CategoryRepository, TransactionRepository
@@ -70,7 +72,7 @@ async def get_current_user(
     if not token:
         raise UnauthorizedError(detail="Not authenticated")
 
-    username, user_id, sid = get_user_info_from_token(token)
+    username, user_id, sid, default_workspace_id = get_user_info_from_token(token)
 
     try:
         uid = int(user_id)
@@ -111,8 +113,14 @@ async def get_current_user(
     request.state.user_id = uid
     request.state.username = username
     request.state.sid = sid
+    request.state.default_workspace_id = default_workspace_id
 
-    return {"id": uid, "username": username, "sid": sid}
+    return {
+        "id": uid,
+        "username": username,
+        "sid": sid,
+        "default_workspace_id": default_workspace_id,
+    }
 
 
 async def get_current_user_optional(
@@ -211,9 +219,46 @@ async def get_spending_budget_service(
     return BudgetService(budget_repo, cat_repo)
 
 
+# ---------------------------------------------------------------------------
+# Investing
+# ---------------------------------------------------------------------------
+
+
+async def get_investing_holding_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> HoldingRepository:
+    return HoldingRepository(session)
+
+
+async def get_investing_cash_balance_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> CashBalanceRepository:
+    return CashBalanceRepository(session)
+
+
+async def get_investing_holding_service(
+    repo: HoldingRepository = Depends(get_investing_holding_repo),
+) -> HoldingService:
+    return HoldingService(repo)
+
+
+async def get_investing_cash_balance_service(
+    repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
+) -> CashBalanceService:
+    return CashBalanceService(repo)
+
+
+async def get_investing_summary_service(
+    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
+    cash_repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
+) -> InvestingSummaryService:
+    return InvestingSummaryService(holding_repo, cash_repo)
+
+
 async def get_current_workspace_id(
     current_user: dict = Depends(get_current_user),
     workspace_service: WorkspaceService = Depends(get_workspace_service),
+    membership_repo: MembershipRepository = Depends(get_membership_repo),
     category_service: CategoryService = Depends(get_spending_category_service),
 ) -> int:
     """Resolve the active workspace for the current request.
@@ -227,6 +272,12 @@ async def get_current_workspace_id(
     atomically during registration, so this fallback path should never execute.
     It exists as a safety net, not as the primary provisioning mechanism.
     """
+    if current_user.get("default_workspace_id") is not None:
+        claimed_workspace_id = int(current_user["default_workspace_id"])
+        membership = await membership_repo.get_membership(claimed_workspace_id, current_user["id"])
+        if membership:
+            return claimed_workspace_id
+
     workspaces = await workspace_service.get_user_workspaces(current_user["id"])
     if not workspaces:
         workspace = await workspace_service.ensure_default_workspace(

@@ -81,7 +81,11 @@ class TransactionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    model_config = ConfigDict(from_attributes=True, use_enum_values=True)
+    model_config = ConfigDict(
+        from_attributes=True,
+        use_enum_values=True,
+        json_encoders={Decimal: str},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -128,4 +132,4 @@ class BudgetResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})

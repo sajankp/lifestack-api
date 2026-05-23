@@ -4,6 +4,7 @@ from sqlmodel import SQLModel
 
 from app.auth.models import AuthSession, User  # noqa: F401
 from app.core.audit import AuditLog  # noqa: F401
+from app.investing.models import CashBalance, Holding  # noqa: F401
 from app.platform.models import Workspace, WorkspaceMembership  # noqa: F401
 from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction  # noqa: F401
 from app.todo.models import Todo  # noqa: F401

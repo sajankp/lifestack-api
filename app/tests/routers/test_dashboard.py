@@ -25,10 +25,10 @@ async def test_dashboard_summary_empty_workspace(client: AsyncClient):
     assert summary["todos"]["overdue_count"] == 0
 
     assert "spending" in summary
-    assert summary["spending"]["month_spent"] == 0.0
+    assert summary["spending"]["month_spent"] == "0"
 
     assert "investing" in summary
-    assert summary["investing"]["portfolio_value"] == 0.0
+    assert summary["investing"]["portfolio_value"] == "0"
 
     assert "system" in summary
     assert "generated_at" in summary["system"]
@@ -73,7 +73,7 @@ async def test_dashboard_summary_with_data(client: AsyncClient):
 
     summary = summary_res.json()
     assert summary["todos"]["open_count"] == 1
-    assert float(summary["spending"]["month_spent"]) == 15.50
+    assert summary["spending"]["month_spent"] == "15.50"
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 
 from app.core.dependencies import (
     get_current_workspace_id,
+    get_investing_summary_service,
     get_spending_transaction_service,
     get_todo_service,
 )
@@ -16,8 +17,9 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 async def get_dashboard_service(
     todo_service=Depends(get_todo_service),
     transaction_service=Depends(get_spending_transaction_service),
+    investing_summary_service=Depends(get_investing_summary_service),
 ) -> DashboardService:
-    return DashboardService(todo_service, transaction_service)
+    return DashboardService(todo_service, transaction_service, investing_summary_service)
 
 
 @router.get("/summary", response_model=DashboardSummary)
