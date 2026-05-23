@@ -1,10 +1,12 @@
 import anyio
 import pytest
 from httpx import ASGITransport, AsyncClient
+from limits.storage import storage_from_string
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 from testcontainers.postgres import PostgresContainer
+from testcontainers.redis import RedisContainer
 
 from alembic import command
 from alembic.config import Config
@@ -17,8 +19,27 @@ from app.main import app
 @pytest.fixture(scope="session")
 def postgres_container():
     """Start the Postgres testcontainer and expose it to the test session."""
-    with PostgresContainer("postgres:15-alpine") as postgres:
-        yield postgres
+    with PostgresContainer("postgres:15-alpine") as postgres_c:
+        yield postgres_c
+
+
+@pytest.fixture(scope="session")
+def redis_container():
+    """Start the Redis testcontainer and expose it to the test session."""
+    with RedisContainer("redis:7-alpine") as redis_c:
+        yield redis_c
+
+
+@pytest.fixture(scope="session", autouse=True)
+def override_redis_url(redis_container):
+    """Point the app rate limit settings at the Redis testcontainer and re-init storage."""
+    url = f"redis://{redis_container.get_container_host_ip()}:{redis_container.get_exposed_port(6379)}"
+    settings.RATE_LIMIT_STORAGE_URI = url
+
+    strategy_cls = limiter._limiter.__class__
+    limiter._storage = storage_from_string(url)
+    limiter._limiter = strategy_cls(limiter._storage)
+    yield url
 
 
 @pytest.fixture

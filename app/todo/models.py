@@ -26,9 +26,15 @@ class Todo(SQLModel, table=True):
     priority: PriorityEnum = Field(default=PriorityEnum.medium, sa_type=sa.String())
     completed: bool = Field(default=False)
 
+    system_key: str | None = Field(default=None, max_length=100, index=True)
+
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint("workspace_id", "system_key", name="uq_todo_workspace_system_key"),
     )

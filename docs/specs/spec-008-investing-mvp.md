@@ -1,5 +1,5 @@
 # Feature Spec: Investing Module MVP
-**Status:** Planned
+**Status:** Approved
 **Spec ID:** 008
 
 ## 1. Overview

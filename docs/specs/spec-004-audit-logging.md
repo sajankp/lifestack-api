@@ -1,6 +1,6 @@
 # Spec 004: Audit Logging
 
-**Status:** Planned
+**Status:** Approved
 **Spec ID:** 004
 
 ## Problem Statement
