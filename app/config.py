@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
     METRICS_TOKEN: str = Field(default_factory=lambda: "dev-metrics-" + secrets.token_urlsafe(16))
 
+    # Scheduler
+    SCHEDULER_ENABLED: bool = False
+    BUDGET_GUARDRAILS_INTERVAL_HOURS: int = 6
+    BUDGET_WARNING_THRESHOLD: float = 0.9
+    BUDGET_CRITICAL_THRESHOLD: float = 1.0
+
     @computed_field
     @property
     def sync_database_url(self) -> str:

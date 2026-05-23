@@ -4,7 +4,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
 
+from app.core.audit import AuditLogger
 from app.core.dependencies import (
+    get_audit_logger,
     get_current_user,
     get_current_workspace_id,
     get_spending_budget_service,
@@ -93,9 +95,12 @@ async def create_category(
     category_in: CategoryCreate,
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    cat = await category_service.create_category(workspace_id, category_in)
+    cat = await category_service.create_category(
+        workspace_id, category_in, actor_id=user["id"], audit_logger=audit_logger
+    )
     return _category_response(cat)
 
 
@@ -116,9 +121,16 @@ async def update_category(
     category_in: CategoryUpdate,
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    cat = await category_service.update_category(workspace_id, category_id, category_in)
+    cat = await category_service.update_category(
+        workspace_id,
+        category_id,
+        category_in,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
     return _category_response(cat)
 
 
@@ -127,9 +139,12 @@ async def delete_category(
     category_id: uuid.UUID,
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    await category_service.delete_category(workspace_id, category_id)
+    await category_service.delete_category(
+        workspace_id, category_id, actor_id=user["id"], audit_logger=audit_logger
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +192,11 @@ async def create_transaction(
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    tx = await transaction_service.create_transaction(user["id"], workspace_id, tx_in)
+    tx = await transaction_service.create_transaction(
+        user["id"], workspace_id, tx_in, audit_logger=audit_logger
+    )
     cat = await category_service.get_category(workspace_id, tx_in.category_id)
     return _transaction_response(tx, cat.public_id)
 
@@ -203,9 +221,16 @@ async def update_transaction(
     transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    tx = await transaction_service.update_transaction(workspace_id, transaction_id, tx_in)
+    tx = await transaction_service.update_transaction(
+        workspace_id,
+        transaction_id,
+        tx_in,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
     cat_cache = await _build_category_cache(category_service, workspace_id)
     return _transaction_response(tx, cat_cache[tx.category_id])
 
@@ -215,9 +240,12 @@ async def delete_transaction(
     transaction_id: uuid.UUID,
     transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    await transaction_service.delete_transaction(workspace_id, transaction_id)
+    await transaction_service.delete_transaction(
+        workspace_id, transaction_id, actor_id=user["id"], audit_logger=audit_logger
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -251,9 +279,12 @@ async def create_budget(
     budget_service: Annotated[BudgetService, Depends(get_spending_budget_service)],
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    budget = await budget_service.create_budget(workspace_id, budget_in)
+    budget = await budget_service.create_budget(
+        workspace_id, budget_in, actor_id=user["id"], audit_logger=audit_logger
+    )
     cat = await category_service.get_category(workspace_id, budget_in.category_id)
     return _budget_response(budget, cat.public_id)
 
@@ -265,8 +296,15 @@ async def update_budget(
     budget_service: Annotated[BudgetService, Depends(get_spending_budget_service)],
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    budget = await budget_service.update_budget(workspace_id, budget_id, budget_in)
+    budget = await budget_service.update_budget(
+        workspace_id,
+        budget_id,
+        budget_in,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
     cat_cache = await _build_category_cache(category_service, workspace_id)
     return _budget_response(budget, cat_cache[budget.category_id])

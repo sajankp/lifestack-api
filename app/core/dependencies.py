@@ -7,6 +7,7 @@ from app.application.workflows import UserRegistrationWorkflow
 from app.auth.repository import AuthSessionRepository, UserRepository
 from app.auth.service import AuthService
 from app.config import settings
+from app.core.audit import AuditLogger
 from app.core.auth import get_user_info_from_token
 from app.core.database.postgres import get_db_session
 from app.core.exceptions import CSRFFailedError, UnauthorizedError
@@ -123,6 +124,10 @@ async def get_current_user_optional(
         return await get_current_user(request, auth_session_repo)
     except UnauthorizedError:
         return None
+
+
+async def get_audit_logger(session: AsyncSession = Depends(get_db_session)) -> AuditLogger:
+    return AuditLogger(session)
 
 
 # ---------------------------------------------------------------------------

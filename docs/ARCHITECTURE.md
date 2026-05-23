@@ -383,27 +383,118 @@ Its service can call repositories or module services to build a single response 
 
 ---
 
-## Audit and Export
+## Audit Logging (Spec 004) — Implemented
 
-These are worth keeping early because they support the personal-OS story well.
+Audit logging is live across the `todo` and `spending` modules.
 
-### Audit log
+### Implementation
 
-Use an append-only audit table for mutations that matter:
-- todo create/update/complete
-- transaction create/update/delete
-- holding create/update/delete
-- exports generated
+- **Model**: `AuditLog` in `app/core/audit.py` — append-only table with `workspace_id`, `actor_id`, `action`, `module`, `entity_type`, `entity_id`, `details` (JSONB), and a timezone-aware `timestamp`.
+- **Helper**: `AuditLogger` class injected via FastAPI `Depends(get_audit_logger)`. It enforces the event contract, applies PII/secrets redaction, and calls `session.flush()` — keeping the audit row in the same transaction as the business mutation. Commit or rollback of the business change atomically commits or discards the audit row.
+- **Event contract** (all mutations must provide):
+  - `entity_public_id` — public UUID of the affected entity
+  - `before` — snapshot before the mutation (null for creates)
+  - `after` — snapshot after the mutation (null for deletes)
+  - `changed_fields` — list of field names that changed
+  - `request_id` — correlation ID injected from structlog context
+- **Redaction**: All `details` payloads pass through a recursive allowlist redactor that replaces keys matching `password`, `token`, `api_key`, `secret`, `account_number`, etc. with `[REDACTED]` before insertion.
+- **Injection point**: Service/Workflow boundary — not inside generic repository helpers. Routers resolve the `AuditLogger` dependency alongside the DB session.
+- **Observability**: Every successful write emits a `audit_log_written` structlog event with `module`, `action`, `entity_type`, `workspace_id`.
 
-Audit writes should happen in the same transaction boundary as the business change where possible.
+### Covered mutations
+
+| Module | Entity | Actions |
+|---|---|---|
+| todo | `todo` | create, update, complete, delete |
+| spending | `spending_category` | create, update, delete |
+| spending | `spending_transaction` | create, update, delete |
+| spending | `spending_budget` | create, update |
+| application | `todo` (system) | budget_guardrail_triggered |
 
 ### Export
 
-Export is a strong feature for a personal tool:
+Export is planned for a later slice:
 - CSV for analysis
 - JSON for backups or migrations
 
-It also reinforces trust better than adding AI too early.
+It reinforces trust better than adding AI too early.
+
+---
+
+## Scheduler and Background Jobs (Spec 005) — Implemented
+
+### Architecture
+
+APScheduler (`AsyncIOScheduler`) is embedded in the FastAPI `lifespan` context manager.
+
+**Boundary rule** (strictly enforced):
+
+```text
+app/application/jobs.py      ← scheduler wrappers only
+  - advisory lock acquisition
+  - workspace iteration
+  - per-workspace session boundaries
+  - per-workspace timeout (asyncio.wait_for)
+  - error isolation (one workspace failure does not stop the batch)
+  - structured log on every outcome (job_name, workspace_id, duration_ms, status)
+
+app/application/workflows.py ← business logic only
+  - no scheduler imports
+  - no session lifecycle management
+  - no workspace iteration
+  - receives a session and a workspace, returns a result
+```
+
+Jobs call workflows. Workflows do not import or manage scheduler concerns.
+
+### Gating
+
+The scheduler only starts when `SCHEDULER_ENABLED=true`. In production, exactly one process instance should have this flag set. All other instances run without registering jobs.
+
+### Split-brain prevention
+
+Each job acquires a Postgres advisory transaction lock (`pg_try_advisory_xact_lock`) before executing. If two instances are briefly running (e.g. during a rolling deploy), only the first to acquire the lock proceeds; the other skips silently.
+
+### Per-workspace timeout
+
+Each workspace evaluation is wrapped in `asyncio.wait_for(..., timeout=300.0)`. A workspace that hangs is abandoned after 5 minutes with a structured error log. This prevents unbounded drain on application shutdown.
+
+### Config
+
+| Variable | Default | Description |
+|---|---|---|
+| `SCHEDULER_ENABLED` | `false` | Enable/disable job registration on startup |
+| `BUDGET_GUARDRAILS_INTERVAL_HOURS` | `6` | How often the budget guardrails job runs |
+| `BUDGET_WARNING_THRESHOLD` | `0.9` | Spend ratio that triggers a warning todo (90%) |
+| `BUDGET_CRITICAL_THRESHOLD` | `1.0` | Spend ratio that triggers a critical todo (100%) |
+
+---
+
+## Budget Guardrails Workflow (Spec 009) — Implemented
+
+The budget guardrails workflow is the first production scheduler workflow.
+
+### What it does
+
+For every active workspace, every 6 hours:
+1. Fetches current-month budgets and aggregates expense transactions per category.
+2. Evaluates each budget against warning (≥90%) and critical (≥100%) thresholds.
+3. Creates or updates a **system todo** for each breached category.
+4. Auto-resolves (marks completed) the system todo when spend drops below threshold.
+5. Writes an audit log row for every created, updated, or resolved todo.
+
+### system_key — idempotency mechanism
+
+`system_key` is a nullable field on the `Todo` model with a `UNIQUE(workspace_id, system_key)` constraint. It separates machine-generated todos from user-created ones.
+
+- `system_key = None` → user-created todo (no uniqueness enforced)
+- `system_key = "budget:guardrail:{category_id}"` → machine-owned, at most **one per workspace per category**
+
+When the job re-runs, it looks up the existing todo by `system_key` and **updates** it (escalating warning→critical or resolving) rather than creating a duplicate. The DB constraint provides a hard idempotency guarantee at the storage level.
+
+### Audit events
+
+All guardrail actions use `module="application"`, `action="budget_guardrail_triggered"`, with `before`/`after` snapshots of the todo state at the time of the action.
 
 ---
 
@@ -664,6 +755,28 @@ This gives clients:
 - Verify that request-to-workspace resolution is deterministic and documented for stage 1
 - Verify session revocation, duplicate-registration conflicts, and rate-limit problem responses
 
+### Co-verification pattern (audit E2E tests)
+
+Audit logging E2E tests must verify both the business outcome and the audit log in the **same session**, proving the log faithfully mirrors the actual DB state:
+
+```python
+async with postgres.async_session_maker() as session:
+    db_entity = ...  # fetch from DB after the HTTP action
+
+    # 1. Entity is correct in DB
+    assert db_entity.title == expected_title
+
+    # 2. API response matches DB (no silent mangling between layers)
+    assert api_response["title"] == db_entity.title
+
+    # 3. Audit log mirrors actual DB values — not the request payload
+    audit = ...
+    assert audit.details["after"]["title"] == db_entity.title
+    assert audit.details["before"] is None  # contract enforced
+```
+
+This is stricter than checking `details["after"]["title"] == "hardcoded string"` because it proves the log captures what was *actually persisted*, not just what was *sent in the request*.
+
 ### E2E Tests
 - Playwright for full browser-to-API flows
 - Cover critical paths: auth, todo CRUD, cross-module workflows
@@ -688,17 +801,25 @@ This balances developer velocity (fast push feedback) with release confidence (f
 ## Build Phases
 
 ### Phase 1 - Personal OS Foundation
-- scaffold `lifestack-api` as a modular monolith
-- carry JWT auth forward from the existing todo app
-- move todo into the shared platform codebase
-- build spending and investing modules
-- add dashboard read model
-- add audit logging
-- add export
-- add scheduler-based reminders and recurring jobs
-- implement API versioning (`/v1/`)
-- implement RFC 7807 error responses
-- set up CI gates (unit + integration on PR, E2E on merge)
+
+| Item | Status |
+|---|---|
+| Scaffold `lifestack-api` as a modular monolith | ✅ Done |
+| JWT auth carried forward (HttpOnly cookies, CSRF, session tracking) | ✅ Done |
+| Todo module (CRUD, priorities, due dates, workspace scoping) | ✅ Done |
+| Spending module (categories, transactions, budgets) | ✅ Done |
+| Dashboard read model | ✅ Done |
+| Audit logging (Spec 004) — append-only, in-transaction, PII-redacted | ✅ Done |
+| Scheduler infrastructure (Spec 005) — APScheduler, gated, advisory lock | ✅ Done |
+| Budget guardrails workflow (Spec 009) — system todos, idempotency, audit | ✅ Done |
+| API versioning (`/v1/`) | ✅ Done |
+| RFC 7807 error responses | ✅ Done |
+| Workspace-scoped data model with isolation tests | ✅ Done |
+| Integration tests with real Postgres + Redis testcontainers | ✅ Done |
+| Investing module | ⏳ Next |
+| Export (CSV / JSON) | ⏳ Planned |
+| Recurring transactions scheduler workflow | ⏳ Planned |
+| E2E tests (Playwright, full Docker Compose) | ⏳ Planned |
 
 ### Phase 2 - AI and Integrations
 - design AI adapter architecture (provider-agnostic)

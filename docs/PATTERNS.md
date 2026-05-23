@@ -184,112 +184,183 @@ class SomeWorkflow:
 
 ## Scheduled Jobs
 
+The `app/application/` layer is split into two files with a hard boundary:
+
+```text
+jobs.py      → scheduler wrappers: advisory lock, iteration, sessions, timeout, error isolation
+workflows.py → business logic: receives a session + workspace object, returns a result
+```
+
+Jobs call workflows. Workflows never import from `jobs.py`.
+
 ```python
 # app/application/jobs.py
-import logging
-from app.application.workflows import BudgetReviewWorkflow
-from app.core.database.postgres import get_session_factory
-from app.platform.workspaces import WorkspaceRepository
-from app.spending.repository import SpendingRepository
-from app.spending.service import SpendingService
-from app.todo.repository import TodoRepository
-from app.todo.service import TodoService
+import asyncio
+import structlog
+from sqlalchemy import func, select
+from app.application.workflows import evaluate_workspace_budget_guardrails
+from app.core.database import postgres
+from app.platform.models import Workspace
 
-logger = logging.getLogger(__name__)
-
-
-async def budget_check_job():
-    """Runs every 6 hours via APScheduler."""
-    async with get_session_factory() as session:
-        workspace_ids = await WorkspaceRepository(session).list_active_ids()
-
-    for workspace_id in workspace_ids:
-        async with get_session_factory() as session:
-            workflow = BudgetReviewWorkflow(
-                spending_service=SpendingService(SpendingRepository(session)),
-                todo_service=TodoService(TodoRepository(session)),
-            )
-            try:
-                await workflow.check_and_alert(workspace_id)
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                logger.exception(
-                    "Budget check failed for workspace_id=%s", workspace_id
-                )
+logger = structlog.get_logger(__name__)
+BUDGET_GUARDRAILS_LOCK_KEY = 1001
+WORKSPACE_EVALUATION_TIMEOUT_SECONDS = 300.0
 
 
+async def budget_guardrails_job() -> None:
+    # 1. Acquire advisory lock — prevents concurrent runs during rolling deploys
+    async with postgres.async_session_maker() as session:
+        has_lock = (await session.execute(
+            select(func.pg_try_advisory_xact_lock(BUDGET_GUARDRAILS_LOCK_KEY))
+        )).scalar()
+        if not has_lock:
+            logger.info("budget_guardrails_job_skipped_lock_held")
+            return
+
+        workspaces = (await session.execute(
+            select(Workspace).where(Workspace.is_active == True)  # noqa: E712
+        )).scalars().all()
+
+    # 2. Per-workspace isolated transactions
+    for workspace in workspaces:
+        try:
+            async with postgres.async_session_maker() as ws_session:
+                async with ws_session.begin():
+                    await asyncio.wait_for(
+                        evaluate_workspace_budget_guardrails(ws_session, workspace),
+                        timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
+                    )
+            logger.info("budget_guardrails_workspace_success",
+                        workspace_id=workspace.id, status="success")
+        except asyncio.TimeoutError:
+            logger.error("budget_guardrails_workspace_timeout",
+                         workspace_id=workspace.id, status="timeout")
+        except Exception:
+            logger.error("budget_guardrails_workspace_failed",
+                         workspace_id=workspace.id, status="failed", exc_info=True)
+```
+
+```python
 # app/core/scheduler.py
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from app.application.jobs import budget_guardrails_job
+from app.config import settings
 
 scheduler = AsyncIOScheduler()
-scheduler.add_job(budget_check_job, "interval", hours=6)
-scheduler.add_job(process_recurring_transactions, "cron", hour=0)
-scheduler.add_job(send_daily_reminders, "cron", hour=9)
-scheduler.add_job(generate_weekly_summaries, "cron", day_of_week="mon", hour=8)
+
+def configure_scheduler() -> None:
+    if not settings.SCHEDULER_ENABLED:
+        return
+    scheduler.add_job(
+        budget_guardrails_job,
+        "interval",
+        hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
+        id="budget_guardrails",
+        replace_existing=True,
+    )
 ```
 
 **Notes:**
-- Each workspace is processed in its own transaction.
-- One failing workspace does not poison the whole scheduled batch.
-- This is a better default than one long-running transaction across all tenants.
+- **Gating**: `SCHEDULER_ENABLED` must be `true` to register any jobs. Only one process instance should have this set in production.
+- **Split-brain prevention**: Postgres advisory transaction lock (`pg_try_advisory_xact_lock`) ensures only one instance executes concurrently during rolling deploys.
+- **Per-workspace timeout**: `asyncio.wait_for(..., timeout=300.0)` abandons a stuck workspace after 5 minutes. This prevents blocking application shutdown.
+- **Failure isolation**: One workspace exception is caught, logged with `exc_info=True`, and skipped. The remaining workspaces continue.
+- **Transaction boundary**: Each workspace runs inside its own `async with session.begin()`. Commit and rollback are managed by the context manager, not by the workflow.
 
 ---
 
 ## Audit Logging
 
+Audit logging is implemented in `app/core/audit.py` and injected via FastAPI dependencies.
+
+### Model
+
 ```python
-# app/core/audit.py
-import uuid
-from datetime import datetime
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlmodel import Column, Field, SQLModel
-
-
 class AuditLog(SQLModel, table=True):
     __tablename__ = "audit_logs"
 
     id: int | None = Field(default=None, primary_key=True)
     public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
     workspace_id: int = Field(index=True)
-    actor_id: int           # user who performed the action
-    action: str             # "create", "update", "delete", "complete"
-    module: str             # "todo", "spending", "investing"
-    entity_id: int          # internal ID of the affected record
+    actor_id: int             # authenticated user who triggered the action
+    action: str               # "create" | "update" | "complete" | "delete" | "budget_guardrail_triggered"
+    module: str               # "todo" | "spending" | "application"
+    entity_type: str          # e.g. "todo", "spending_transaction"
+    entity_id: int            # internal PK of the affected record
     details: dict = Field(default_factory=dict, sa_column=Column(JSONB))
-    timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True)),
+    )
+```
 
+### Helper and event contract
 
+```python
 class AuditLogger:
-    def __init__(self, session):
+    def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
     async def log(
         self,
+        *,
         workspace_id: int,
         actor_id: int,
-        action: str,
+        action: str,       # "create" | "update" | "complete" | "delete" | custom
         module: str,
+        entity_type: str,
         entity_id: int,
-        details: dict | None = None,
-    ):
-        entry = AuditLog(
-            workspace_id=workspace_id,
-            actor_id=actor_id,
-            action=action,
-            module=module,
-            entity_id=entity_id,
-            details=details or {},
-        )
-        self.session.add(entry)
-        # no commit; let the caller's transaction boundary handle it
+        details: dict,     # must include: entity_public_id, before, after, changed_fields
+    ) -> AuditLog:
+        ...
+        # Validates required contract keys
+        # Validates action-level rules (create → before=None, delete → after=None)
+        # Applies PII/secrets redaction to `details`
+        # Calls session.flush() — NOT session.commit()
+        # Emits logger.info("audit_log_written", ...)
 ```
 
+**Event contract** — all callers must supply these keys in `details`:
+
+| Key | Type | Rule |
+|---|---|---|
+| `entity_public_id` | `str` | Always present |
+| `before` | `dict \| None` | `None` for `create` actions |
+| `after` | `dict \| None` | `None` for `delete` actions |
+| `changed_fields` | `list[str]` | Fields that differ between before and after |
+| `request_id` | `str \| None` | Optional correlation ID from structlog context |
+
+### Injection in routers
+
+```python
+@router.post("/", response_model=TodoResponse, status_code=201)
+async def create_todo(
+    todo_in: TodoCreate,
+    todo_service: Annotated[TodoService, Depends(get_todo_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+):
+    return await todo_service.create_todo(
+        user_id=user["id"],
+        workspace_id=workspace_id,
+        todo_in=todo_in,
+        audit_logger=audit_logger,
+    )
+```
+
+### Atomicity guarantee
+
+`AuditLogger.log()` calls `session.flush()`, not `session.commit()`. The audit row is part of the same DB transaction as the business mutation:
+- If the request handler's transaction commits → audit row is persisted.
+- If the transaction rolls back → audit row is discarded.
+
+This is enforced by injecting the **same session** for both the repository and the `AuditLogger` via the same FastAPI dependency.
+
 **Notes:**
-- `workspace_id` is scoped like everything else.
-- Audit logs follow the same internal `BIGINT` + external `public_id` pattern when they need to be exposed.
-- No `commit()`; audit writes happen inside the same transaction as the business change.
-- `details` is JSONB for per-module flexibility.
+- Never pass a different session to `AuditLogger` than the one used by the repository in the same request.
+- Audit writes belong in the **service or workflow layer**, not inside generic repository methods.
+- Sensitive keys (`password`, `token`, `api_key`, `secret`, `account_number`, etc.) are recursively redacted to `[REDACTED]` before the `details` dict is stored.
 
 ---
 

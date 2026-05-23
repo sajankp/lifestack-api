@@ -1,14 +1,53 @@
+"""
+Unit tests for AuditLogger mechanics.
+
+These tests cover internal behaviour that is difficult or inappropriate to
+exercise through the HTTP E2E tests:
+  - Redaction of sensitive keys in the JSONB payload
+  - Contract validation (required keys, action-level null rules)
+  - Transactional atomicity (commit persists, rollback discards)
+
+Service-level integration tests (e.g. TodoService calling AuditLogger) are
+intentionally omitted here — they are fully covered by the E2E audit tests in
+  app/tests/routers/test_todo_audit.py
+  app/tests/integration/test_spending_audit.py
+which additionally co-verify that the audit log faithfully mirrors the actual
+DB entity state after each mutation.
+"""
+
 import uuid
 
 import pytest
 from sqlalchemy import select
 
-# These imports will fail initially as we haven't implemented app.core.audit yet
+from app.auth.models import User
 from app.core.audit import AuditLog, AuditLogger, redact_details
-from app.core.database.postgres import async_session_maker
-from app.todo.repository import TodoRepository
-from app.todo.schemas import TodoCreate, TodoUpdate
-from app.todo.service import TodoService
+from app.core.database import postgres
+from app.platform.models import Workspace
+
+
+@pytest.fixture(autouse=True)
+async def seed_audit_test_data(override_database_url):
+    """Seed the user and workspaces needed for audit logging foreign key constraints.
+
+    Workspace IDs used by remaining tests:
+      901 — test_audit_logger_contract_validation
+      902 — test_audit_logger_action_rules
+      903 — test_audit_log_transactional_commit
+      904 — test_audit_log_transactional_rollback
+    """
+    async with postgres.async_session_maker() as session:
+        user = User(
+            id=1,
+            email="audit_actor@example.com",
+            username="audit_actor",
+            hashed_password="hashed_password_here",
+        )
+        session.add(user)
+        for wid in range(901, 905):  # 901, 902, 903, 904
+            ws = Workspace(id=wid, name=f"Workspace {wid}")
+            session.add(ws)
+        await session.commit()
 
 
 @pytest.mark.asyncio
@@ -40,13 +79,13 @@ async def test_redact_details_sensitive_keys():
 @pytest.mark.asyncio
 async def test_audit_logger_contract_validation(postgres_container, override_database_url):
     """Verify that the logger enforces the presence of required event contract keys."""
-    async with async_session_maker() as session:
+    async with postgres.async_session_maker() as session:
         logger = AuditLogger(session)
 
         # Missing required keys (e.g., entity_public_id)
         with pytest.raises(ValueError) as exc:
             await logger.log(
-                workspace_id=1,
+                workspace_id=901,
                 actor_id=1,
                 action="create",
                 module="todo",
@@ -60,7 +99,7 @@ async def test_audit_logger_contract_validation(postgres_container, override_dat
 @pytest.mark.asyncio
 async def test_audit_logger_action_rules(postgres_container, override_database_url):
     """Verify action-level nullability constraints."""
-    async with async_session_maker() as session:
+    async with postgres.async_session_maker() as session:
         logger = AuditLogger(session)
 
         entity_uuid = str(uuid.uuid4())
@@ -68,7 +107,7 @@ async def test_audit_logger_action_rules(postgres_container, override_database_u
         # 'create' must have before=None
         with pytest.raises(ValueError) as exc:
             await logger.log(
-                workspace_id=1,
+                workspace_id=902,
                 actor_id=1,
                 action="create",
                 module="todo",
@@ -87,7 +126,7 @@ async def test_audit_logger_action_rules(postgres_container, override_database_u
         # 'update' must have both before and after not-null
         with pytest.raises(ValueError) as exc:
             await logger.log(
-                workspace_id=1,
+                workspace_id=902,
                 actor_id=1,
                 action="update",
                 module="todo",
@@ -107,12 +146,12 @@ async def test_audit_logger_action_rules(postgres_container, override_database_u
 @pytest.mark.asyncio
 async def test_audit_log_transactional_commit(postgres_container, override_database_url):
     """Verify that audit logs are committed when the transaction succeeds."""
-    async with async_session_maker() as session:
+    async with postgres.async_session_maker() as session:
         logger = AuditLogger(session)
         entity_uuid = str(uuid.uuid4())
 
         await logger.log(
-            workspace_id=1,
+            workspace_id=903,
             actor_id=1,
             action="create",
             module="todo",
@@ -130,8 +169,8 @@ async def test_audit_log_transactional_commit(postgres_container, override_datab
         await session.commit()
 
     # Query in a new session to verify the log exists
-    async with async_session_maker() as session:
-        result = await session.execute(select(AuditLog).where(AuditLog.workspace_id == 1))
+    async with postgres.async_session_maker() as session:
+        result = await session.execute(select(AuditLog).where(AuditLog.workspace_id == 903))
         logs = result.scalars().all()
         assert len(logs) == 1
         assert logs[0].action == "create"
@@ -141,12 +180,12 @@ async def test_audit_log_transactional_commit(postgres_container, override_datab
 @pytest.mark.asyncio
 async def test_audit_log_transactional_rollback(postgres_container, override_database_url):
     """Verify that audit logs are discarded if the transaction rolls back."""
-    async with async_session_maker() as session:
+    async with postgres.async_session_maker() as session:
         logger = AuditLogger(session)
         entity_uuid = str(uuid.uuid4())
 
         await logger.log(
-            workspace_id=1,
+            workspace_id=904,
             actor_id=1,
             action="create",
             module="todo",
@@ -164,170 +203,7 @@ async def test_audit_log_transactional_rollback(postgres_container, override_dat
         await session.rollback()
 
     # Verify no log exists
-    async with async_session_maker() as session:
-        result = await session.execute(select(AuditLog).where(AuditLog.workspace_id == 1))
+    async with postgres.async_session_maker() as session:
+        result = await session.execute(select(AuditLog).where(AuditLog.workspace_id == 904))
         logs = result.scalars().all()
         assert len(logs) == 0
-
-
-@pytest.mark.asyncio
-async def test_todo_service_create_audit_logging(postgres_container, override_database_url):
-    """Verify that creating a todo logs a 'create' audit event."""
-    async with async_session_maker() as session:
-        todo_repo = TodoRepository(session)
-        todo_service = TodoService(todo_repo)
-        audit_logger = AuditLogger(session)
-
-        # Create a todo
-        todo_in = TodoCreate(title="Audited Todo", description="Needs audit check")
-        todo = await todo_service.create_todo(
-            user_id=1, workspace_id=1, todo_in=todo_in, audit_logger=audit_logger
-        )
-        await session.commit()
-
-        todo_id = todo.id
-        todo_uuid = todo.public_id
-
-    # Verify the audit log was written
-    async with async_session_maker() as session:
-        result = await session.execute(select(AuditLog).where(AuditLog.entity_id == todo_id))
-        logs = result.scalars().all()
-        assert len(logs) == 1
-        log = logs[0]
-        assert log.action == "create"
-        assert log.module == "todo"
-        assert log.entity_type == "todo"
-        assert log.details["entity_public_id"] == str(todo_uuid)
-        assert log.details["before"] is None
-        assert log.details["after"]["title"] == "Audited Todo"
-
-
-@pytest.mark.asyncio
-async def test_todo_service_update_audit_logging(postgres_container, override_database_url):
-    """Verify that updating a todo logs an 'update' audit event."""
-    async with async_session_maker() as session:
-        todo_repo = TodoRepository(session)
-        todo_service = TodoService(todo_repo)
-        audit_logger = AuditLogger(session)
-
-        todo_in = TodoCreate(title="Original Title", description="Before update")
-        todo = await todo_service.create_todo(
-            user_id=1, workspace_id=1, todo_in=todo_in, audit_logger=audit_logger
-        )
-        await session.commit()
-        todo_id = todo.id
-        todo_uuid = todo.public_id
-
-    # Perform update in a new session
-    async with async_session_maker() as session:
-        todo_repo = TodoRepository(session)
-        todo_service = TodoService(todo_repo)
-        audit_logger = AuditLogger(session)
-
-        todo_update = TodoUpdate(title="Updated Title")
-        await todo_service.update_todo(
-            workspace_id=1,
-            public_id=todo_uuid,
-            todo_in=todo_update,
-            actor_id=1,
-            audit_logger=audit_logger,
-        )
-        await session.commit()
-
-    # Verify update audit log
-    async with async_session_maker() as session:
-        result = await session.execute(
-            select(AuditLog).where(AuditLog.entity_id == todo_id).order_by(AuditLog.timestamp.asc())
-        )
-        logs = result.scalars().all()
-        assert len(logs) == 2  # 1: create, 2: update
-        update_log = logs[1]
-        assert update_log.action == "update"
-        assert update_log.details["before"]["title"] == "Original Title"
-        assert update_log.details["after"]["title"] == "Updated Title"
-        assert update_log.details["changed_fields"] == ["title"]
-
-
-@pytest.mark.asyncio
-async def test_todo_service_complete_audit_logging(postgres_container, override_database_url):
-    """Verify that completing a todo logs a 'complete' audit event instead of 'update'."""
-    async with async_session_maker() as session:
-        todo_repo = TodoRepository(session)
-        todo_service = TodoService(todo_repo)
-        audit_logger = AuditLogger(session)
-
-        todo_in = TodoCreate(title="Completable Todo")
-        todo = await todo_service.create_todo(
-            user_id=1, workspace_id=1, todo_in=todo_in, audit_logger=audit_logger
-        )
-        await session.commit()
-        todo_id = todo.id
-        todo_uuid = todo.public_id
-
-    # Complete it
-    async with async_session_maker() as session:
-        todo_repo = TodoRepository(session)
-        todo_service = TodoService(todo_repo)
-        audit_logger = AuditLogger(session)
-
-        todo_update = TodoUpdate(completed=True)
-        await todo_service.update_todo(
-            workspace_id=1,
-            public_id=todo_uuid,
-            todo_in=todo_update,
-            actor_id=1,
-            audit_logger=audit_logger,
-        )
-        await session.commit()
-
-    # Verify complete audit log
-    async with async_session_maker() as session:
-        result = await session.execute(
-            select(AuditLog).where(AuditLog.entity_id == todo_id).order_by(AuditLog.timestamp.asc())
-        )
-        logs = result.scalars().all()
-        assert len(logs) == 2
-        complete_log = logs[1]
-        assert complete_log.action == "complete"
-        assert complete_log.details["before"]["completed"] is False
-        assert complete_log.details["after"]["completed"] is True
-
-
-@pytest.mark.asyncio
-async def test_todo_service_delete_audit_logging(postgres_container, override_database_url):
-    """Verify that deleting a todo logs a 'delete' audit event."""
-    async with async_session_maker() as session:
-        todo_repo = TodoRepository(session)
-        todo_service = TodoService(todo_repo)
-        audit_logger = AuditLogger(session)
-
-        todo_in = TodoCreate(title="Deletable Todo")
-        todo = await todo_service.create_todo(
-            user_id=1, workspace_id=1, todo_in=todo_in, audit_logger=audit_logger
-        )
-        await session.commit()
-        todo_id = todo.id
-        todo_uuid = todo.public_id
-
-    # Delete it
-    async with async_session_maker() as session:
-        todo_repo = TodoRepository(session)
-        todo_service = TodoService(todo_repo)
-        audit_logger = AuditLogger(session)
-
-        await todo_service.delete_todo(
-            workspace_id=1, public_id=todo_uuid, actor_id=1, audit_logger=audit_logger
-        )
-        await session.commit()
-
-    # Verify delete audit log
-    async with async_session_maker() as session:
-        result = await session.execute(
-            select(AuditLog).where(AuditLog.entity_id == todo_id).order_by(AuditLog.timestamp.asc())
-        )
-        logs = result.scalars().all()
-        assert len(logs) == 2
-        delete_log = logs[1]
-        assert delete_log.action == "delete"
-        assert delete_log.details["before"]["title"] == "Deletable Todo"
-        assert delete_log.details["after"] is None

@@ -10,6 +10,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
+from app.application.jobs import budget_guardrails_job
 from app.auth.router import router as auth_router
 from app.config import settings
 from app.core.database import postgres
@@ -25,6 +26,7 @@ from app.core.exceptions import (
 from app.core.health import router as health_router
 from app.core.logging import setup_logging
 from app.core.middleware import SecurityHeadersMiddleware, StructlogMiddleware
+from app.core.scheduler import scheduler, shutdown_scheduler, start_scheduler
 from app.dashboard.router import router as dashboard_router
 from app.spending.router import router as spending_router
 from app.todo.router import router as todo_router
@@ -55,7 +57,18 @@ async def _startup_check() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await _startup_check()
+    if settings.SCHEDULER_ENABLED:
+        scheduler.add_job(
+            budget_guardrails_job,
+            "interval",
+            hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
+            id="budget_guardrails",
+            replace_existing=True,
+        )
+        start_scheduler()
     yield
+    if settings.SCHEDULER_ENABLED:
+        shutdown_scheduler()
 
 
 def create_app() -> FastAPI:

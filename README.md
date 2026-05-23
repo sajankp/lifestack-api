@@ -132,15 +132,16 @@ The core rule is: business logic lives in services, cross-module orchestration l
 
 | Feature | Status |
 |---|---|
-| Todo CRUD with priorities | Stage 1 |
-| JWT auth (HttpOnly cookies, existing todo app continuity) | Stage 1 |
-| Spending tracker | Stage 1 |
-| Recurring transactions | Planned (post spending CRUD + scheduler workflow) |
-| Investment portfolio tracker | Stage 1 |
-| Unified dashboard | Planned |
-| Scheduled reminders and summaries | Planned |
-| Audit log | Planned |
-| Data export (CSV / JSON) | Planned |
+| Todo CRUD with priorities and workspace scoping | ✅ Done |
+| JWT auth (HttpOnly cookies, session tracking, CSRF) | ✅ Done |
+| Spending tracker (categories, transactions, budgets) | ✅ Done |
+| Unified dashboard | ✅ Done |
+| Audit logging — in-transaction, append-only, PII-redacted | ✅ Done |
+| Scheduler infrastructure (APScheduler, gating, advisory lock) | ✅ Done |
+| Budget guardrails workflow (system todos, idempotency, auto-resolve) | ✅ Done |
+| Investing module | ⏳ Next |
+| Recurring transactions scheduler workflow | ⏳ Planned |
+| Data export (CSV / JSON) | ⏳ Planned |
 | AI chat | Stage 2 |
 | MCP tools | Stage 2 |
 | BYOK and provider abstraction | Stage 2 |
@@ -150,12 +151,12 @@ The core rule is: business logic lives in services, cross-module orchestration l
 
 ## Technical Debt & Future Architecture Steps
 
-Based on architectural reviews of the baseline implementation (Specs 001-003), the following technical debt items and future optimizations are planned:
+Based on architectural reviews and implementation, the following items are tracked:
 
-1. **JWT Workspace Caching:** Currently, `workspace_id` is resolved via database lookup on every authenticated request. In Stage 2, `default_workspace_id` should be embedded in the JWT payload to eliminate this N+1 latency.
-2. **Currency Serialization Strictness:** Ensure Pydantic serialization of `NUMERIC(12,2)` (Decimals) explicitly casts to strings over the wire to prevent JavaScript floating-point rounding errors in the frontend.
-3. **Workflow Atomicity Verification:** Ensure the cross-module user registration workflow (User + Workspace + Membership + Default Categories) executes completely within a single, strict Postgres transaction block.
-4. **Namespace URI Defenses:** Add strict test assertions to ensure RFC 7807 problem details do not regress to `about:blank` for business logic exceptions.
+1. **JWT Workspace Caching:** `workspace_id` is resolved via database lookup on every authenticated request. In Stage 2, `default_workspace_id` should be embedded in the JWT payload to eliminate this N+1 latency.
+2. **Currency Serialization Strictness:** Pydantic serialization of `NUMERIC(12,2)` (Decimals) should explicitly cast to strings over the wire to prevent JavaScript floating-point rounding errors.
+3. **Investing Module Audit Logging:** The investing module will receive audit logging at implementation time — it is intentionally deferred to keep audit scope consistent with implemented modules.
+4. **Scheduler: Rolling Deploy Window:** The Postgres advisory lock prevents duplicate execution but does not guarantee *exactly-once* delivery if both instances acquire the lock sequentially within the same run window. Acceptable for stage 1 (idempotent workflows), but should be re-evaluated before scheduling non-idempotent jobs.
 
 ---
 

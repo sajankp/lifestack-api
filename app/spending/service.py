@@ -2,6 +2,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
+from app.core.audit import AuditLogger
 from app.core.exceptions import (
     CategoryInUseError,
     ConflictError,
@@ -42,6 +43,33 @@ def _normalize(name: str) -> str:
     return name.strip().lower()
 
 
+def _snapshot_category(category: SpendingCategory) -> dict:
+    return {
+        "name": category.name,
+        "color": category.color,
+        "icon": category.icon,
+        "is_system": category.is_system,
+    }
+
+
+def _snapshot_transaction(transaction: SpendingTransaction) -> dict:
+    return {
+        "category_id": transaction.category_id,
+        "amount": str(transaction.amount) if transaction.amount is not None else None,
+        "type": transaction.type,
+        "occurred_at": transaction.occurred_at.isoformat() if transaction.occurred_at else None,
+        "description": transaction.description,
+    }
+
+
+def _snapshot_budget(budget: SpendingBudget) -> dict:
+    return {
+        "category_id": budget.category_id,
+        "amount": str(budget.amount) if budget.amount is not None else None,
+        "month_start": budget.month_start.isoformat() if budget.month_start else None,
+    }
+
+
 class CategoryService:
     def __init__(self, repository: CategoryRepository):
         self.repository = repository
@@ -58,7 +86,11 @@ class CategoryService:
         return category
 
     async def create_category(
-        self, workspace_id: int, category_in: CategoryCreate
+        self,
+        workspace_id: int,
+        category_in: CategoryCreate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
     ) -> SpendingCategory:
         normalized = _normalize(category_in.name)
         existing = await self.repository.get_by_normalized_name(workspace_id, normalized)
@@ -74,12 +106,37 @@ class CategoryService:
             icon=category_in.icon,
             is_system=False,
         )
-        return await self.repository.create(category)
+        category = await self.repository.create(category)
+
+        if audit_logger and actor_id is not None:
+            after_snap = _snapshot_category(category)
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="create",
+                module="spending",
+                entity_type="spending_category",
+                entity_id=category.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(category.public_id),
+                    "before": None,
+                    "after": after_snap,
+                    "changed_fields": list(after_snap.keys()),
+                },
+            )
+        return category
 
     async def update_category(
-        self, workspace_id: int, public_id: uuid.UUID, category_in: CategoryUpdate
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        category_in: CategoryUpdate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
     ) -> SpendingCategory:
         category = await self.get_category(workspace_id, public_id)
+        before_snap = _snapshot_category(category)
+
         update_data = category_in.model_dump(exclude_unset=True)
         if not update_data:
             return category
@@ -99,9 +156,34 @@ class CategoryService:
         for key, value in update_data.items():
             setattr(category, key, value)
         category.updated_at = datetime.now(UTC)
-        return await self.repository.save(category)
+        category = await self.repository.save(category)
 
-    async def delete_category(self, workspace_id: int, public_id: uuid.UUID) -> None:
+        if audit_logger and actor_id is not None:
+            after_snap = _snapshot_category(category)
+            changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="update",
+                module="spending",
+                entity_type="spending_category",
+                entity_id=category.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(category.public_id),
+                    "before": before_snap,
+                    "after": after_snap,
+                    "changed_fields": changed_fields,
+                },
+            )
+        return category
+
+    async def delete_category(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
         category = await self.get_category(workspace_id, public_id)
         if category.is_system:
             raise ForbiddenError(detail="System categories cannot be deleted")
@@ -109,7 +191,24 @@ class CategoryService:
             raise CategoryInUseError(
                 detail="Cannot delete a category that has transactions referencing it"
             )
+        before_snap = _snapshot_category(category)
         await self.repository.delete(category)
+
+        if audit_logger and actor_id is not None:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="delete",
+                module="spending",
+                entity_type="spending_category",
+                entity_id=category.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(category.public_id),
+                    "before": before_snap,
+                    "after": None,
+                    "changed_fields": [],
+                },
+            )
 
     async def provision_default_categories(self, workspace_id: int) -> None:
         """Insert system categories for a newly created workspace."""
@@ -191,7 +290,11 @@ class TransactionService:
         return transaction
 
     async def create_transaction(
-        self, user_id: int, workspace_id: int, tx_in: TransactionCreate
+        self,
+        user_id: int,
+        workspace_id: int,
+        tx_in: TransactionCreate,
+        audit_logger: AuditLogger | None = None,
     ) -> SpendingTransaction:
         category = await self._resolve_category(workspace_id, tx_in.category_id)
         transaction = SpendingTransaction(
@@ -203,15 +306,37 @@ class TransactionService:
             occurred_at=tx_in.occurred_at,
             description=tx_in.description,
         )
-        return await self.transaction_repo.create(transaction)
+        transaction = await self.transaction_repo.create(transaction)
+
+        if audit_logger:
+            after_snap = _snapshot_transaction(transaction)
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action="create",
+                module="spending",
+                entity_type="spending_transaction",
+                entity_id=transaction.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(transaction.public_id),
+                    "before": None,
+                    "after": after_snap,
+                    "changed_fields": list(after_snap.keys()),
+                },
+            )
+        return transaction
 
     async def update_transaction(
         self,
         workspace_id: int,
         public_id: uuid.UUID,
         tx_in: TransactionUpdate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
     ) -> SpendingTransaction:
         transaction = await self.get_transaction(workspace_id, public_id)
+        before_snap = _snapshot_transaction(transaction)
+
         update_data = tx_in.model_dump(exclude_unset=True)
         if not update_data:
             return transaction
@@ -223,11 +348,53 @@ class TransactionService:
         for key, value in update_data.items():
             setattr(transaction, key, value)
         transaction.updated_at = datetime.now(UTC)
-        return await self.transaction_repo.save(transaction)
+        transaction = await self.transaction_repo.save(transaction)
 
-    async def delete_transaction(self, workspace_id: int, public_id: uuid.UUID) -> None:
+        if audit_logger and actor_id is not None:
+            after_snap = _snapshot_transaction(transaction)
+            changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="update",
+                module="spending",
+                entity_type="spending_transaction",
+                entity_id=transaction.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(transaction.public_id),
+                    "before": before_snap,
+                    "after": after_snap,
+                    "changed_fields": changed_fields,
+                },
+            )
+        return transaction
+
+    async def delete_transaction(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
         transaction = await self.get_transaction(workspace_id, public_id)
+        before_snap = _snapshot_transaction(transaction)
         await self.transaction_repo.delete(transaction)
+
+        if audit_logger and actor_id is not None:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="delete",
+                module="spending",
+                entity_type="spending_transaction",
+                entity_id=transaction.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(transaction.public_id),
+                    "before": before_snap,
+                    "after": None,
+                    "changed_fields": [],
+                },
+            )
 
 
 class BudgetService:
@@ -263,7 +430,13 @@ class BudgetService:
             raise NotFoundError(detail=f"Budget with id {public_id} not found in this workspace")
         return budget
 
-    async def create_budget(self, workspace_id: int, budget_in: BudgetCreate) -> SpendingBudget:
+    async def create_budget(
+        self,
+        workspace_id: int,
+        budget_in: BudgetCreate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> SpendingBudget:
         category = await self._resolve_category(workspace_id, budget_in.category_id)
 
         existing = await self.budget_repo.get_by_category_and_month(
@@ -285,12 +458,56 @@ class BudgetService:
             amount=budget_in.amount,
             month_start=budget_in.month_start,
         )
-        return await self.budget_repo.create(budget)
+        budget = await self.budget_repo.create(budget)
+
+        if audit_logger and actor_id is not None:
+            after_snap = _snapshot_budget(budget)
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="create",
+                module="spending",
+                entity_type="spending_budget",
+                entity_id=budget.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(budget.public_id),
+                    "before": None,
+                    "after": after_snap,
+                    "changed_fields": list(after_snap.keys()),
+                },
+            )
+        return budget
 
     async def update_budget(
-        self, workspace_id: int, public_id: uuid.UUID, budget_in: BudgetUpdate
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        budget_in: BudgetUpdate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
     ) -> SpendingBudget:
         budget = await self.get_budget(workspace_id, public_id)
+        before_snap = _snapshot_budget(budget)
+
         budget.amount = budget_in.amount
         budget.updated_at = datetime.now(UTC)
-        return await self.budget_repo.save(budget)
+        budget = await self.budget_repo.save(budget)
+
+        if audit_logger and actor_id is not None:
+            after_snap = _snapshot_budget(budget)
+            changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="update",
+                module="spending",
+                entity_type="spending_budget",
+                entity_id=budget.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(budget.public_id),
+                    "before": before_snap,
+                    "after": after_snap,
+                    "changed_fields": changed_fields,
+                },
+            )
+        return budget

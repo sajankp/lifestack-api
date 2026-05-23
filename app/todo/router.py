@@ -3,7 +3,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
 
-from app.core.dependencies import get_current_user, get_current_workspace_id, get_todo_service
+from app.core.audit import AuditLogger
+from app.core.dependencies import (
+    get_audit_logger,
+    get_current_user,
+    get_current_workspace_id,
+    get_todo_service,
+)
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.todo.schemas import TodoCreate, TodoResponse, TodoUpdate
 from app.todo.service import TodoService
@@ -33,8 +39,11 @@ async def create_todo(
     todo_service: Annotated[TodoService, Depends(get_todo_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    return await todo_service.create_todo(user["id"], workspace_id, todo_in)
+    return await todo_service.create_todo(
+        user["id"], workspace_id, todo_in, audit_logger=audit_logger
+    )
 
 
 @router.get("/{todo_id}", response_model=TodoResponse)
@@ -54,8 +63,15 @@ async def update_todo(
     todo_service: Annotated[TodoService, Depends(get_todo_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    return await todo_service.update_todo(workspace_id, todo_id, todo_in)
+    return await todo_service.update_todo(
+        workspace_id,
+        todo_id,
+        todo_in,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
 
 
 @router.delete("/{todo_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -64,5 +80,8 @@ async def delete_todo(
     todo_service: Annotated[TodoService, Depends(get_todo_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    await todo_service.delete_todo(workspace_id, todo_id)
+    await todo_service.delete_todo(
+        workspace_id, todo_id, actor_id=user["id"], audit_logger=audit_logger
+    )
