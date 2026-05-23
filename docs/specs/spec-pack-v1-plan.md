@@ -1,6 +1,6 @@
 # Lifestack Spec Pack V1 (Planning Bundle)
 
-**Status:** Planned
+**Status:** Approved
 **Branch:** `planning-spec-pack-v1`
 **Purpose:** Provide one coherent planning bundle so implementation can run faster with fewer design reversals.
 
@@ -8,12 +8,12 @@
 - [spec-001-api-versioning-rfc7807.md](./spec-001-api-versioning-rfc7807.md) (Approved)
 - [spec-002-workspace-model-and-isolation.md](./spec-002-workspace-model-and-isolation.md) (Approved)
 - [spec-003-spending-module.md](./spec-003-spending-module.md) (Approved)
-- [spec-004-audit-logging.md](./spec-004-audit-logging.md) (Planned)
-- [spec-005-scheduler.md](./spec-005-scheduler.md) (Planned)
-- [spec-006-export-module.md](./spec-006-export-module.md) (Planned)
-- [spec-007-dashboard-read-model.md](./spec-007-dashboard-read-model.md) (Planned)
-- [spec-008-investing-mvp.md](./spec-008-investing-mvp.md) (Planned)
-- [spec-009-scheduler-first-workflow-budget-guardrails.md](./spec-009-scheduler-first-workflow-budget-guardrails.md) (Planned)
+- [spec-004-audit-logging.md](./spec-004-audit-logging.md) (Approved)
+- [spec-005-scheduler.md](./spec-005-scheduler.md) (Approved)
+- [spec-006-export-module.md](./spec-006-export-module.md) (Approved)
+- [spec-007-dashboard-read-model.md](./spec-007-dashboard-read-model.md) (Approved)
+- [spec-008-investing-mvp.md](./spec-008-investing-mvp.md) (Approved)
+- [spec-009-scheduler-first-workflow-budget-guardrails.md](./spec-009-scheduler-first-workflow-budget-guardrails.md) (Approved)
 
 ## Why One Planning Branch
 - Review dependency chains once.

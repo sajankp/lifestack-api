@@ -1,6 +1,6 @@
 # Spec 005: Scheduler and Background Jobs
 
-**Status:** Planned
+**Status:** Approved
 **Spec ID:** 005
 
 ## Problem Statement

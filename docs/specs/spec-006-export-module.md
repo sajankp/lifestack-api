@@ -1,5 +1,5 @@
 # Feature Spec: Export Module
-**Status:** Planned
+**Status:** Approved
 **Spec ID:** 006
 
 ## 1. Overview

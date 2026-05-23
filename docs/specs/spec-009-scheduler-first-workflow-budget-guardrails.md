@@ -1,5 +1,5 @@
 # Feature Spec: First Scheduler Workflow - Budget Guardrails
-**Status:** Planned
+**Status:** Approved
 **Spec ID:** 009
 
 ## 1. Overview
