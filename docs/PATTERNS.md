@@ -262,7 +262,7 @@ def configure_scheduler() -> None:
 
 **Notes:**
 - **Gating**: `SCHEDULER_ENABLED` must be `true` to register any jobs. Only one process instance should have this set in production.
-- **Split-brain prevention**: Postgres advisory transaction lock (`pg_try_advisory_xact_lock`) ensures only one instance executes concurrently during rolling deploys.
+- **Split-brain prevention**: Postgres advisory transaction lock (`pg_try_advisory_xact_lock`) ensures only one instance executes concurrently during rolling deploys. *Make sure the lock transaction session is held open for the entire duration of the task execution, not closed before the actual background processing starts (since the lock is transaction-scoped and released automatically when the transaction ends).*
 - **Per-workspace timeout**: `asyncio.wait_for(..., timeout=300.0)` abandons a stuck workspace after 5 minutes. This prevents blocking application shutdown.
 - **Failure isolation**: One workspace exception is caught, logged with `exc_info=True`, and skipped. The remaining workspaces continue.
 - **Transaction boundary**: Each workspace runs inside its own `async with session.begin()`. Commit and rollback are managed by the context manager, not by the workflow.
@@ -777,6 +777,56 @@ query = select(
 result = await self.session.execute(query)
 row = result.mappings().first()
 open_count = row.get("open_count") or 0
+
+### N+1 Query Prevention in Loops
+Do not perform database queries inside loop iterations. Fetching related data or checking state (e.g., checking if a system todo exists for each category) inside a loop results in the N+1 query problem, creating severe performance degradation as the size of the collection grows.
+Instead, pre-fetch all matching records once using a single batch query (e.g., using `.like()` or `.in_()`), build a lookup dictionary in memory, and look up the data from the dictionary during iteration.
+
+**Anti-Pattern:**
+```python
+# Bad: fetches existing todo inside the loop (N+1 queries)
+for budget in budgets:
+    todo_res = await session.execute(
+        select(Todo).where(Todo.system_key == f"budget:guardrail:{budget.category_id}")
+    )
+    todo = todo_res.scalar()
+```
+
+**Pattern:**
+```python
+# Good: pre-fetch all system todos in a single query
+todos_res = await session.execute(
+    select(Todo).where(
+        Todo.workspace_id == workspace.id,
+        Todo.system_key.like("budget:guardrail:%"),
+    )
+)
+todos_map = {todo.system_key: todo for todo in todos_res.scalars().all()}
+
+for budget in budgets:
+    todo = todos_map.get(f"budget:guardrail:{budget.category_id}")
+```
+
+### Boolean Sorting in SQL
+When sorting query results by a boolean expression (e.g., `role == "owner"` or checking status), be aware of database sorting behavior. In PostgreSQL, boolean expressions evaluate to `true` (1) or `false` (0). By default, ascending order puts `false` before `true`, meaning `role != "owner"` elements will be returned first.
+To prioritize `true` elements first (e.g., to ensure workspace owners are resolved first), you must explicitly apply descending ordering using `.desc()`.
+
+**Anti-Pattern:**
+```python
+# Bad: sorts False (non-owner) before True (owner)
+select(WorkspaceMembership.user_id)
+.order_by(WorkspaceMembership.role == "owner")
+```
+
+**Pattern:**
+```python
+# Good: sorts True (owner) before False (non-owner)
+select(WorkspaceMembership.user_id)
+.order_by((WorkspaceMembership.role == "owner").desc())
+```
+
+**Notes:**
+- Postgres Advisory Locks: Always use session-level advisory locks (`pg_advisory_xact_lock`) for operations that span multiple queries to prevent race conditions. Ensure the lock key is scoped by `workspace_id` to prevent cross-workspace contention.
 
 ## Validation Robustness
 
