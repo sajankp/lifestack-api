@@ -16,7 +16,10 @@ logger = structlog.get_logger(__name__)
 
 SENSITIVE_KEYS = {
     "password",
+    "hashed_password",
     "token",
+    "access_token",
+    "refresh_token",
     "secret",
     "api_key",
     "apikey",
@@ -37,8 +40,7 @@ def redact_details(data: Any) -> Any:
         redacted = {}
         for key, value in data.items():
             key_lower = key.lower()
-            # Check if any sensitive key pattern is part of the key name
-            if any(sensitive in key_lower for sensitive in SENSITIVE_KEYS):
+            if key_lower in SENSITIVE_KEYS:
                 redacted[key] = "[REDACTED]"
             else:
                 redacted[key] = redact_details(value)
