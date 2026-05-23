@@ -49,7 +49,7 @@ async def budget_guardrails_job() -> None:
     logger.info("budget_guardrails_job_start", job_name="budget_guardrails_job")
 
     # --- Step 1: Advisory lock + workspace list fetch ---
-    async with postgres.async_session_maker() as session:
+    async with postgres.async_session_maker() as session, session.begin():
         lock_res = await session.execute(
             select(func.pg_try_advisory_xact_lock(BUDGET_GUARDRAILS_LOCK_KEY))
         )
@@ -66,49 +66,49 @@ async def budget_guardrails_job() -> None:
         )
         workspaces = workspaces_res.scalars().all()
 
-    # --- Step 2: Per-workspace evaluation with isolated transactions ---
-    for workspace in workspaces:
-        ws_start = datetime.now(UTC)
-        try:
-            async with postgres.async_session_maker() as ws_session:  # noqa: SIM117
-                async with ws_session.begin():
-                    await asyncio.wait_for(
-                        evaluate_workspace_budget_guardrails(ws_session, workspace),
-                        timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
-                    )
+        # --- Step 2: Per-workspace evaluation with isolated transactions ---
+        for workspace in workspaces:
+            ws_start = datetime.now(UTC)
+            try:
+                async with postgres.async_session_maker() as ws_session:  # noqa: SIM117
+                    async with ws_session.begin():
+                        await asyncio.wait_for(
+                            evaluate_workspace_budget_guardrails(ws_session, workspace),
+                            timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
+                        )
 
-            duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-            logger.info(
-                "budget_guardrails_workspace_success",
-                job_name="budget_guardrails_job",
-                workspace_id=workspace.id,
-                duration_ms=duration_ms,
-                status="success",
-            )
-        except TimeoutError:
-            duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-            logger.error(
-                "budget_guardrails_workspace_timeout",
-                job_name="budget_guardrails_job",
-                workspace_id=workspace.id,
-                duration_ms=duration_ms,
-                status="timeout",
-            )
-        except Exception:
-            duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-            logger.error(
-                "budget_guardrails_workspace_failed",
-                job_name="budget_guardrails_job",
-                workspace_id=workspace.id,
-                duration_ms=duration_ms,
-                status="failed",
-                exc_info=True,
-            )
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.info(
+                    "budget_guardrails_workspace_success",
+                    job_name="budget_guardrails_job",
+                    workspace_id=workspace.id,
+                    duration_ms=duration_ms,
+                    status="success",
+                )
+            except TimeoutError:
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.error(
+                    "budget_guardrails_workspace_timeout",
+                    job_name="budget_guardrails_job",
+                    workspace_id=workspace.id,
+                    duration_ms=duration_ms,
+                    status="timeout",
+                )
+            except Exception:
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.error(
+                    "budget_guardrails_workspace_failed",
+                    job_name="budget_guardrails_job",
+                    workspace_id=workspace.id,
+                    duration_ms=duration_ms,
+                    status="failed",
+                    exc_info=True,
+                )
 
-    total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
-    logger.info(
-        "budget_guardrails_job_completed",
-        job_name="budget_guardrails_job",
-        duration_ms=total_ms,
-        workspace_count=len(workspaces),
-    )
+        total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+        logger.info(
+            "budget_guardrails_job_completed",
+            job_name="budget_guardrails_job",
+            duration_ms=total_ms,
+            workspace_count=len(workspaces),
+        )

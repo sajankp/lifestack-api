@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.schemas import UserCreate
@@ -79,7 +79,9 @@ async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace:
     members_res = await session.execute(
         select(WorkspaceMembership.user_id)
         .where(WorkspaceMembership.workspace_id == workspace.id)
-        .order_by(WorkspaceMembership.role == "owner", WorkspaceMembership.created_at.asc())
+        .order_by(
+            (WorkspaceMembership.role == "owner").desc(), WorkspaceMembership.created_at.asc()
+        )
         .limit(1)
     )
     user_id = members_res.scalar()
@@ -116,23 +118,31 @@ async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace:
     )
     cats = {c.id: c for c in cats_res.scalars().all()}
 
-    # 5. Aggregate expense spend per category for the current month
-    txs_res = await session.execute(
-        select(SpendingTransaction).where(
+    # 5. Aggregate expense spend per category for the current month in SQL
+    tx_sum_query = (
+        select(SpendingTransaction.category_id, func.sum(SpendingTransaction.amount))
+        .where(
             SpendingTransaction.workspace_id == workspace.id,
             SpendingTransaction.occurred_at >= current_month_dt,
             SpendingTransaction.occurred_at < next_month_dt,
         )
+        .group_by(SpendingTransaction.category_id)
     )
-    spend_per_category: dict[int, float] = {}
-    for tx in txs_res.scalars().all():
-        spend_per_category[tx.category_id] = spend_per_category.get(tx.category_id, 0.0) + float(
-            tx.amount
+    tx_sum_res = await session.execute(tx_sum_query)
+    spend_per_category = {cat_id: float(total or 0.0) for cat_id, total in tx_sum_res.all()}
+
+    # 6. Pre-fetch all relevant system todos for this workspace to avoid N+1 queries
+    todos_res = await session.execute(
+        select(Todo).where(
+            Todo.workspace_id == workspace.id,
+            Todo.system_key.like("budget:guardrail:%"),
         )
+    )
+    todos_map = {todo.system_key: todo for todo in todos_res.scalars().all()}
 
     audit_logger = AuditLogger(session)
 
-    # 6. Evaluate each budget against thresholds
+    # 7. Evaluate each budget against thresholds
     for budget in budgets:
         category = cats.get(budget.category_id)
         if not category:
@@ -146,14 +156,7 @@ async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace:
         ratio = actual_spend / budget_amount
         system_key = f"budget:guardrail:{budget.category_id}"
 
-        # Fetch existing system todo for this category (if any)
-        todo_res = await session.execute(
-            select(Todo).where(
-                Todo.workspace_id == workspace.id,
-                Todo.system_key == system_key,
-            )
-        )
-        todo: Todo | None = todo_res.scalar()
+        todo = todos_map.get(system_key)
 
         is_warning = ratio >= settings.BUDGET_WARNING_THRESHOLD
         is_critical = ratio >= settings.BUDGET_CRITICAL_THRESHOLD
