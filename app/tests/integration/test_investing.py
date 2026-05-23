@@ -11,20 +11,29 @@ from app.core.database import postgres
 from app.investing.models import CashBalance, Holding
 
 
-@pytest.mark.asyncio
-async def test_investing_crud_summary_and_audit(client: AsyncClient):
-    user = {
-        "email": "investing-e2e@example.com",
-        "username": "investing-e2e",
-        "password": "password123",
-    }
-    register_res = await client.post("/v1/auth/register", json=user)
+async def _register_and_login(
+    client: AsyncClient, *, email: str, username: str, password: str
+) -> None:
+    register_res = await client.post(
+        "/v1/auth/register",
+        json={"email": email, "username": username, "password": password},
+    )
     assert register_res.status_code == 200
-
     login_res = await client.post(
-        "/v1/auth/login", data={"username": user["username"], "password": user["password"]}
+        "/v1/auth/login",
+        data={"username": username, "password": password},
     )
     assert login_res.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_investing_crud_summary_and_audit(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="investing-e2e@example.com",
+        username="investing-e2e",
+        password="password123",
+    )
 
     # Create holding
     create_holding = {
@@ -118,3 +127,110 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     # Delete holding
     delete_res = await client.delete(f"/v1/investing/holdings/{holding_id}")
     assert delete_res.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_investing_duplicate_holding_conflict(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="investing-conflict@example.com",
+        username="investing-conflict",
+        password="password123",
+    )
+
+    payload = {
+        "symbol": "AAPL",
+        "account_name": "brokerage",
+        "quantity": "1.00000000",
+        "avg_cost": "100.00",
+        "currency": "USD",
+    }
+    first = await client.post("/v1/investing/holdings", json=payload)
+    assert first.status_code == 201
+
+    second = await client.post("/v1/investing/holdings", json=payload)
+    assert second.status_code == 409
+    assert second.headers["content-type"].startswith("application/problem+json")
+    body = second.json()
+    assert body["type"] == "https://lifestack.app/errors/conflict"
+
+
+@pytest.mark.asyncio
+async def test_investing_workspace_isolation(client: AsyncClient):
+    # User A creates investing data
+    await _register_and_login(
+        client,
+        email="investing-iso-a@example.com",
+        username="investing-iso-a",
+        password="password123",
+    )
+    create_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "MSFT",
+            "account_name": "brokerage",
+            "quantity": "3.00000000",
+            "avg_cost": "250.00",
+            "currency": "USD",
+        },
+    )
+    assert create_res.status_code == 201
+    holding_id = create_res.json()["public_id"]
+
+    # Switch to User B and verify no access to A's workspace-scoped data
+    await client.post("/v1/auth/logout")
+    await _register_and_login(
+        client,
+        email="investing-iso-b@example.com",
+        username="investing-iso-b",
+        password="password123",
+    )
+
+    list_res = await client.get("/v1/investing/holdings")
+    assert list_res.status_code == 200
+    assert list_res.json()["items"] == []
+
+    patch_res = await client.patch(
+        f"/v1/investing/holdings/{holding_id}",
+        json={"quantity": "4.00000000"},
+    )
+    assert patch_res.status_code == 404
+
+    delete_res = await client.delete(f"/v1/investing/holdings/{holding_id}")
+    assert delete_res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_investing_cash_balance_update_and_delete(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="investing-cash@example.com",
+        username="investing-cash",
+        password="password123",
+    )
+
+    create_cash = {
+        "account_name": "wallet",
+        "balance": "123.45",
+        "currency": "usd",
+        "as_of": datetime.now(UTC).isoformat(),
+    }
+    create_res = await client.post("/v1/investing/cash-balances", json=create_cash)
+    assert create_res.status_code == 201
+    cash_id = create_res.json()["public_id"]
+
+    update_res = await client.patch(
+        f"/v1/investing/cash-balances/{cash_id}",
+        json={"balance": "200.00"},
+    )
+    assert update_res.status_code == 200
+    updated = update_res.json()
+    assert updated["balance"] == "200.00"
+    assert updated["currency"] == "USD"
+
+    delete_res = await client.delete(f"/v1/investing/cash-balances/{cash_id}")
+    assert delete_res.status_code == 204
+
+    list_res = await client.get("/v1/investing/cash-balances")
+    assert list_res.status_code == 200
+    assert list_res.json()["items"] == []
