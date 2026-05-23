@@ -217,7 +217,21 @@ async def test_investing_cash_balance_update_and_delete(client: AsyncClient):
     }
     create_res = await client.post("/v1/investing/cash-balances", json=create_cash)
     assert create_res.status_code == 201
-    cash_id = create_res.json()["public_id"]
+    cash = create_res.json()
+    cash_id = cash["public_id"]
+
+    # Fetch cash from DB before update/delete to verify audit log by entity_id
+    async with postgres.async_session_maker() as session:
+        db_cash = (
+            (
+                await session.execute(
+                    select(CashBalance).where(CashBalance.public_id == uuid.UUID(cash_id))
+                )
+            )
+            .scalars()
+            .one()
+        )
+        db_cash_id = db_cash.id
 
     update_res = await client.patch(
         f"/v1/investing/cash-balances/{cash_id}",
@@ -234,3 +248,99 @@ async def test_investing_cash_balance_update_and_delete(client: AsyncClient):
     list_res = await client.get("/v1/investing/cash-balances")
     assert list_res.status_code == 200
     assert list_res.json()["items"] == []
+
+    # Verify audit logs
+    async with postgres.async_session_maker() as session:
+        audits = (
+            (
+                await session.execute(
+                    select(AuditLog)
+                    .where(AuditLog.entity_type == "cash_balance")
+                    .where(AuditLog.entity_id == db_cash_id)
+                    .order_by(AuditLog.timestamp.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        assert len(audits) == 3
+        assert audits[0].module == "investing"
+        assert audits[0].action == "create"
+        assert audits[0].details["before"] is None
+        assert audits[0].details["after"]["balance"] == "123.45"
+
+        assert audits[1].action == "update"
+        assert audits[1].details["before"]["balance"] == "123.45"
+        assert audits[1].details["after"]["balance"] == "200.00"
+        assert "balance" in audits[1].details["changed_fields"]
+
+        assert audits[2].action == "delete"
+        assert audits[2].details["before"]["balance"] == "200.00"
+        assert audits[2].details["after"] is None
+
+
+@pytest.mark.asyncio
+async def test_investing_multi_currency_summary(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="investing-multi-curr@example.com",
+        username="investing-multi-curr",
+        password="password123",
+    )
+
+    # 1. Create USD asset (Holding)
+    await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "AAPL",
+            "account_name": "brokerage",
+            "quantity": "10.00000000",
+            "avg_cost": "150.00",
+            "currency": "usd",
+        },
+    )
+    # 2. Create EUR asset (Holding)
+    await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "SAP",
+            "account_name": "brokerage",
+            "quantity": "5.00000000",
+            "avg_cost": "100.00",
+            "currency": "eur",
+        },
+    )
+    # 3. Create USD cash balance
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_name": "usd-wallet",
+            "balance": "1000.00",
+            "currency": "usd",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    # 4. Create EUR cash balance
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_name": "eur-wallet",
+            "balance": "500.00",
+            "currency": "eur",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    # Fetch summary and assert aggregates are only computed for the dominant currency (USD)
+    summary_res = await client.get("/v1/investing/summary")
+    assert summary_res.status_code == 200
+    summary = summary_res.json()
+    assert summary["holdings_count"] == 2
+    # USD only sums
+    assert Decimal(summary["portfolio_value"]) == Decimal("1500.00")
+    assert Decimal(summary["cash_total"]) == Decimal("1000.00")
+
+    # Breakdown contains correct currency mappings for both
+    assert Decimal(summary["currency_breakdown"]["USD"]) == Decimal("2500.00")
+    assert Decimal(summary["currency_breakdown"]["EUR"]) == Decimal("1000.00")

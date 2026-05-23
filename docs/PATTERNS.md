@@ -121,14 +121,13 @@ class TodoService:
     async def list_todos(self, workspace_id: int, completed: bool | None = None) -> Sequence[Todo]:
         return await self.repository.get_all(workspace_id, completed)
 
-    async def get_todo(self, workspace_id: int, public_id: uuid.UUID) -> Todo:
-        ...
+    async def get_todo(self, workspace_id: int, public_id: uuid.UUID) -> Todo: ...
 
-    async def create_todo(self, user_id: int, workspace_id: int, todo_in: TodoCreate) -> Todo:
-        ...
+    async def create_todo(self, user_id: int, workspace_id: int, todo_in: TodoCreate) -> Todo: ...
 
-    async def update_todo(self, workspace_id: int, public_id: uuid.UUID, todo_in: TodoUpdate) -> Todo:
-        ...
+    async def update_todo(
+        self, workspace_id: int, public_id: uuid.UUID, todo_in: TodoUpdate
+    ) -> Todo: ...
 ```
 
 **Notes:**
@@ -210,16 +209,24 @@ WORKSPACE_EVALUATION_TIMEOUT_SECONDS = 300.0
 async def budget_guardrails_job() -> None:
     # 1. Acquire advisory lock — prevents concurrent runs during rolling deploys
     async with postgres.async_session_maker() as session:
-        has_lock = (await session.execute(
-            select(func.pg_try_advisory_xact_lock(BUDGET_GUARDRAILS_LOCK_KEY))
-        )).scalar()
+        has_lock = (
+            await session.execute(
+                select(func.pg_try_advisory_xact_lock(BUDGET_GUARDRAILS_LOCK_KEY))
+            )
+        ).scalar()
         if not has_lock:
             logger.info("budget_guardrails_job_skipped_lock_held")
             return
 
-        workspaces = (await session.execute(
-            select(Workspace).where(Workspace.is_active == True)  # noqa: E712
-        )).scalars().all()
+        workspaces = (
+            (
+                await session.execute(
+                    select(Workspace).where(Workspace.is_active == True)  # noqa: E712
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     # 2. Per-workspace isolated transactions
     for workspace in workspaces:
@@ -230,14 +237,20 @@ async def budget_guardrails_job() -> None:
                         evaluate_workspace_budget_guardrails(ws_session, workspace),
                         timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
                     )
-            logger.info("budget_guardrails_workspace_success",
-                        workspace_id=workspace.id, status="success")
+            logger.info(
+                "budget_guardrails_workspace_success", workspace_id=workspace.id, status="success"
+            )
         except asyncio.TimeoutError:
-            logger.error("budget_guardrails_workspace_timeout",
-                         workspace_id=workspace.id, status="timeout")
+            logger.error(
+                "budget_guardrails_workspace_timeout", workspace_id=workspace.id, status="timeout"
+            )
         except Exception:
-            logger.error("budget_guardrails_workspace_failed",
-                         workspace_id=workspace.id, status="failed", exc_info=True)
+            logger.error(
+                "budget_guardrails_workspace_failed",
+                workspace_id=workspace.id,
+                status="failed",
+                exc_info=True,
+            )
 ```
 
 ```python
@@ -247,6 +260,7 @@ from app.application.jobs import budget_guardrails_job
 from app.config import settings
 
 scheduler = AsyncIOScheduler()
+
 
 def configure_scheduler() -> None:
     if not settings.SCHEDULER_ENABLED:
@@ -282,11 +296,11 @@ class AuditLog(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
     workspace_id: int = Field(index=True)
-    actor_id: int             # authenticated user who triggered the action
-    action: str               # "create" | "update" | "complete" | "delete" | "budget_guardrail_triggered"
-    module: str               # "todo" | "spending" | "application"
-    entity_type: str          # e.g. "todo", "spending_transaction"
-    entity_id: int            # internal PK of the affected record
+    actor_id: int  # authenticated user who triggered the action
+    action: str  # "create" | "update" | "complete" | "delete" | "budget_guardrail_triggered"
+    module: str  # "todo" | "spending" | "application"
+    entity_type: str  # e.g. "todo", "spending_transaction"
+    entity_id: int  # internal PK of the affected record
     details: dict = Field(default_factory=dict, sa_column=Column(JSONB))
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
@@ -306,11 +320,11 @@ class AuditLogger:
         *,
         workspace_id: int,
         actor_id: int,
-        action: str,       # "create" | "update" | "complete" | "delete" | custom
+        action: str,  # "create" | "update" | "complete" | "delete" | custom
         module: str,
         entity_type: str,
         entity_id: int,
-        details: dict,     # must include: entity_public_id, before, after, changed_fields
+        details: dict,  # must include: entity_public_id, before, after, changed_fields
     ) -> AuditLog:
         ...
         # Validates required contract keys
@@ -443,6 +457,7 @@ async def api_exception_handler(request: Request, exc: APIError) -> JSONResponse
 from fastapi import Depends, Request
 
 from app.core.exceptions import UnauthorizedError
+
 
 async def get_current_user(request: Request) -> dict:
     if not hasattr(request.state, "user_id") or not request.state.user_id:
@@ -691,9 +706,7 @@ def setup_telemetry(app, settings):
         return
 
     provider = TracerProvider()
-    exporter = OTLPSpanExporter(
-        endpoint=f"{settings.otel_exporter_otlp_endpoint}/v1/traces"
-    )
+    exporter = OTLPSpanExporter(endpoint=f"{settings.otel_exporter_otlp_endpoint}/v1/traces")
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
     FastAPIInstrumentor.instrument_app(app)
@@ -717,9 +730,7 @@ async def add_security_headers(request: Request, call_next):
             "default-src 'self'; img-src 'self' data:; "
             "style-src 'self' 'unsafe-inline'; script-src 'self'"
         )
-    response.headers["Strict-Transport-Security"] = (
-        "max-age=31536000; includeSubDomains"
-    )
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -731,6 +742,7 @@ async def add_security_headers(request: Request, call_next):
 ```python
 import secrets
 
+
 def verify_metrics_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Protect /metrics with bearer token using constant-time comparison."""
     expected_token = settings.METRICS_TOKEN
@@ -741,6 +753,7 @@ def verify_metrics_token(credentials: HTTPAuthorizationCredentials = Depends(sec
             headers={"WWW-Authenticate": "Bearer"},
         )
     return credentials.credentials
+
 
 # In main.py:
 @_app.get("/metrics", tags=["health"])

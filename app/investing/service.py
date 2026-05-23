@@ -27,6 +27,15 @@ def _snapshot_holding(holding: Holding) -> dict:
     }
 
 
+def _snapshot_cash_balance(cash: CashBalance) -> dict:
+    return {
+        "account_name": cash.account_name,
+        "balance": str(cash.balance),
+        "currency": cash.currency,
+        "as_of": cash.as_of.isoformat() if hasattr(cash.as_of, "isoformat") else str(cash.as_of),
+    }
+
+
 class HoldingService:
     def __init__(self, repository: HoldingRepository):
         self.repository = repository
@@ -176,6 +185,7 @@ class CashBalanceService:
         user_id: int,
         workspace_id: int,
         cash_in: CashBalanceCreate,
+        audit_logger: AuditLogger | None = None,
     ) -> CashBalance:
         cash = CashBalance(
             workspace_id=workspace_id,
@@ -185,15 +195,36 @@ class CashBalanceService:
             currency=cash_in.currency,
             as_of=cash_in.as_of,
         )
-        return await self.repository.create(cash)
+        cash = await self.repository.create(cash)
+
+        if audit_logger:
+            after_snap = _snapshot_cash_balance(cash)
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action="create",
+                module="investing",
+                entity_type="cash_balance",
+                entity_id=cash.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(cash.public_id),
+                    "before": None,
+                    "after": after_snap,
+                    "changed_fields": list(after_snap.keys()),
+                },
+            )
+        return cash
 
     async def update_cash_balance(
         self,
         workspace_id: int,
         public_id: uuid.UUID,
         cash_in: CashBalanceUpdate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
     ) -> CashBalance:
         cash = await self.get_cash_balance(workspace_id, public_id)
+        before_snap = _snapshot_cash_balance(cash)
 
         update_data = cash_in.model_dump(exclude_unset=True)
         if not update_data:
@@ -202,11 +233,53 @@ class CashBalanceService:
         for key, value in update_data.items():
             setattr(cash, key, value)
         cash.updated_at = datetime.now(UTC)
-        return await self.repository.save(cash)
+        cash = await self.repository.save(cash)
 
-    async def delete_cash_balance(self, workspace_id: int, public_id: uuid.UUID) -> None:
+        if audit_logger and actor_id is not None:
+            after_snap = _snapshot_cash_balance(cash)
+            changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="update",
+                module="investing",
+                entity_type="cash_balance",
+                entity_id=cash.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(cash.public_id),
+                    "before": before_snap,
+                    "after": after_snap,
+                    "changed_fields": changed_fields,
+                },
+            )
+        return cash
+
+    async def delete_cash_balance(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
         cash = await self.get_cash_balance(workspace_id, public_id)
+        before_snap = _snapshot_cash_balance(cash)
         await self.repository.delete(cash)
+
+        if audit_logger and actor_id is not None:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="delete",
+                module="investing",
+                entity_type="cash_balance",
+                entity_id=cash.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(cash.public_id),
+                    "before": before_snap,
+                    "after": None,
+                    "changed_fields": [],
+                },
+            )
 
 
 class InvestingSummaryService:
@@ -218,18 +291,40 @@ class InvestingSummaryService:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
         cash_balances, _ = await self.cash_repo.get_all(workspace_id, limit=10000, offset=0)
 
+        # Collect all currencies in the workspace to determine the primary currency
+        workspace_currencies: list[str] = []
+        for holding in holdings:
+            curr = holding.currency.upper()
+            if curr not in workspace_currencies:
+                workspace_currencies.append(curr)
+        for cash in cash_balances:
+            curr = cash.currency.upper()
+            if curr not in workspace_currencies:
+                workspace_currencies.append(curr)
+
+        if "USD" in workspace_currencies:
+            primary_currency = "USD"
+        elif workspace_currencies:
+            primary_currency = workspace_currencies[0]
+        else:
+            primary_currency = "USD"
+
         portfolio_value = Decimal("0")
         breakdown: dict[str, Decimal] = {}
 
         for holding in holdings:
             value = holding.quantity * holding.avg_cost
-            portfolio_value += value
-            breakdown[holding.currency] = breakdown.get(holding.currency, Decimal("0")) + value
+            curr = holding.currency.upper()
+            if curr == primary_currency:
+                portfolio_value += value
+            breakdown[curr] = breakdown.get(curr, Decimal("0")) + value
 
         cash_total = Decimal("0")
         for cash in cash_balances:
-            cash_total += cash.balance
-            breakdown[cash.currency] = breakdown.get(cash.currency, Decimal("0")) + cash.balance
+            curr = cash.currency.upper()
+            if curr == primary_currency:
+                cash_total += cash.balance
+            breakdown[curr] = breakdown.get(curr, Decimal("0")) + cash.balance
 
         return InvestingSummaryResponse(
             portfolio_value=portfolio_value,

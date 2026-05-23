@@ -1,5 +1,4 @@
 from collections.abc import Sequence
-from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -103,11 +102,3 @@ class CashBalanceRepository:
     async def delete(self, cash_balance: CashBalance) -> None:
         await self.session.delete(cash_balance)
         await self.session.flush()
-
-    async def get_cash_total(self, workspace_id: int) -> Decimal:
-        result = await self.session.execute(
-            select(func.coalesce(func.sum(CashBalance.balance), 0)).where(
-                CashBalance.workspace_id == workspace_id
-            )
-        )
-        return Decimal(result.scalar_one())

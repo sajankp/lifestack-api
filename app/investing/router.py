@@ -117,8 +117,11 @@ async def create_cash_balance(
     cash_service: Annotated[CashBalanceService, Depends(get_investing_cash_balance_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    cash = await cash_service.create_cash_balance(user["id"], workspace_id, cash_in)
+    cash = await cash_service.create_cash_balance(
+        user["id"], workspace_id, cash_in, audit_logger=audit_logger
+    )
     return CashBalanceResponse.model_validate(cash)
 
 
@@ -128,9 +131,16 @@ async def update_cash_balance(
     cash_in: CashBalanceUpdate,
     cash_service: Annotated[CashBalanceService, Depends(get_investing_cash_balance_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    cash = await cash_service.update_cash_balance(workspace_id, cash_balance_id, cash_in)
+    cash = await cash_service.update_cash_balance(
+        workspace_id,
+        cash_balance_id,
+        cash_in,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
     return CashBalanceResponse.model_validate(cash)
 
 
@@ -139,9 +149,12 @@ async def delete_cash_balance(
     cash_balance_id: uuid.UUID,
     cash_service: Annotated[CashBalanceService, Depends(get_investing_cash_balance_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    await cash_service.delete_cash_balance(workspace_id, cash_balance_id)
+    await cash_service.delete_cash_balance(
+        workspace_id, cash_balance_id, actor_id=user["id"], audit_logger=audit_logger
+    )
 
 
 @router.get("/summary", response_model=InvestingSummaryResponse)
