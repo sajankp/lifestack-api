@@ -195,25 +195,22 @@ async def get_transaction_summary(
     from_date: datetime = Query(...),
     to_date: datetime = Query(...),
 ):
-    category_filter: uuid.UUID | None = category_id
     income_total = await transaction_service.get_sum_by_type(
         workspace_id=workspace_id,
         type_filter=TransactionType.income,
         from_date=from_date,
         to_date=to_date,
-        category_public_id=category_filter,
+        category_public_id=category_id,
     )
-    expense_total = await transaction_service.get_sum_by_type(
-        workspace_id=workspace_id,
-        type_filter=TransactionType.expense,
-        from_date=from_date,
-        to_date=to_date,
-        category_public_id=category_filter,
-    )
-    cat_cache = await _build_category_cache(category_service, workspace_id)
-    if category_filter is not None:
-        category = await category_service.get_category(workspace_id, category_filter)
-        category_totals = [CategorySpendTotal(category_id=category.public_id, total=expense_total)]
+    if category_id is not None:
+        expense_total = await transaction_service.get_sum_by_type(
+            workspace_id=workspace_id,
+            type_filter=TransactionType.expense,
+            from_date=from_date,
+            to_date=to_date,
+            category_public_id=category_id,
+        )
+        category_totals = [CategorySpendTotal(category_id=category_id, total=expense_total)]
     else:
         raw_totals = await transaction_service.get_category_totals(
             workspace_id=workspace_id,
@@ -221,6 +218,8 @@ async def get_transaction_summary(
             to_date=to_date,
             type_filter=TransactionType.expense,
         )
+        expense_total = sum(raw_totals.values())
+        cat_cache = await _build_category_cache(category_service, workspace_id)
         category_totals = [
             CategorySpendTotal(category_id=cat_cache[cat_id], total=total)
             for cat_id, total in raw_totals.items()
