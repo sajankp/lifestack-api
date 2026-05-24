@@ -24,7 +24,7 @@ from app.auth.models import User
 from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
-from app.core.scheduler import scheduler
+from app.core.scheduler import register_interval_job, scheduler
 from app.platform.models import Workspace, WorkspaceMembership
 from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction
 from app.todo.models import Todo
@@ -154,6 +154,23 @@ async def test_scheduler_gating_and_registration():
 
     # Clean up without starting the scheduler (avoids event-loop side-effects)
     local_scheduler.remove_all_jobs()
+
+
+@pytest.mark.asyncio
+async def test_non_idempotent_scheduler_jobs_blocked_by_default():
+    """Non-idempotent jobs should not be registerable without explicit opt-in."""
+    original_value = settings.SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS
+    settings.SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS = False
+    try:
+        with pytest.raises(RuntimeError):
+            register_interval_job(
+                budget_guardrails_job,  # function value is irrelevant for guard check
+                job_id="non_idempotent_test_job",
+                hours=1,
+                idempotent=False,
+            )
+    finally:
+        settings.SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS = original_value
 
 
 # ---------------------------------------------------------------------------

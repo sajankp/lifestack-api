@@ -464,6 +464,7 @@ Each workspace evaluation is wrapped in `asyncio.wait_for(..., timeout=300.0)`. 
 | Variable | Default | Description |
 |---|---|---|
 | `SCHEDULER_ENABLED` | `false` | Enable/disable job registration on startup |
+| `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS` | `false` | Safety guard: blocks registration of non-idempotent jobs unless explicitly enabled |
 | `BUDGET_GUARDRAILS_INTERVAL_HOURS` | `6` | How often the budget guardrails job runs |
 | `BUDGET_WARNING_THRESHOLD` | `0.9` | Spend ratio that triggers a warning todo (90%) |
 | `BUDGET_CRITICAL_THRESHOLD` | `1.0` | Spend ratio that triggers a critical todo (100%) |

@@ -139,7 +139,9 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Audit logging — in-transaction, append-only, PII-redacted | ✅ Done |
 | Scheduler infrastructure (APScheduler, gating, advisory lock) | ✅ Done |
 | Budget guardrails workflow (system todos, idempotency, auto-resolve) | ✅ Done |
-| Investing module | ⏳ Next |
+| Investing module (Spec 008 baseline) | ✅ Done |
+| Investing currency/account governance + FX + transfer ledger (Spec 011) | ✅ Done |
+| Look-through exposure + overlap analytics APIs (Spec 012 backend) | ✅ Done |
 | Recurring transactions scheduler workflow | ⏳ Planned |
 | Data export (CSV / JSON) | ⏳ Planned |
 | AI chat | Stage 2 |
@@ -153,10 +155,8 @@ The core rule is: business logic lives in services, cross-module orchestration l
 
 Based on architectural reviews and implementation, the following items are tracked:
 
-1. **JWT Workspace Caching:** `workspace_id` is resolved via database lookup on every authenticated request. In Stage 2, `default_workspace_id` should be embedded in the JWT payload to eliminate this N+1 latency.
-2. **Currency Serialization Strictness:** Pydantic serialization of `NUMERIC(12,2)` (Decimals) should explicitly cast to strings over the wire to prevent JavaScript floating-point rounding errors.
-3. **Investing Module Audit Logging:** The investing module will receive audit logging at implementation time — it is intentionally deferred to keep audit scope consistent with implemented modules.
-4. **Scheduler: Rolling Deploy Window:** The Postgres advisory lock prevents duplicate execution but does not guarantee *exactly-once* delivery if both instances acquire the lock sequentially within the same run window. Acceptable for stage 1 (idempotent workflows), but should be re-evaluated before scheduling non-idempotent jobs.
+1. **Scheduler: Rolling Deploy Window:** Advisory locks still do not provide strict exactly-once delivery semantics. As a hard guardrail, non-idempotent scheduler jobs are now blocked unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly set.
+2. **Cross-repo full-stack E2E test harness:** FE and BE are separate repos; true UI+API+DB end-to-end tests should be hosted in a dedicated integration repo (planned scope item).
 
 ---
 

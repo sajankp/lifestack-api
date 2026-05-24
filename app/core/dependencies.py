@@ -11,6 +11,35 @@ from app.core.audit import AuditLogger
 from app.core.auth import get_user_info_from_token
 from app.core.database.postgres import get_db_session
 from app.core.exceptions import CSRFFailedError, UnauthorizedError
+from app.finance.repository import (
+    AccountRepository,
+    CapitalTransferRepository,
+    CurrencyRepository,
+    FinanceSettingRepository,
+    FxRateRepository,
+)
+from app.finance.service import (
+    AccountService,
+    CapitalTransferService,
+    CurrencyService,
+    FinanceSettingService,
+    FxRateService,
+)
+from app.investing.repository import (
+    CashBalanceRepository,
+    CompanyRepository,
+    HoldingRepository,
+    InstrumentConstituentRepository,
+    InstrumentRepository,
+)
+from app.investing.service import (
+    CashBalanceService,
+    ConstituentService,
+    ExposureAnalyticsService,
+    HoldingService,
+    InstrumentService,
+    InvestingSummaryService,
+)
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
 from app.spending.repository import BudgetRepository, CategoryRepository, TransactionRepository
@@ -70,7 +99,7 @@ async def get_current_user(
     if not token:
         raise UnauthorizedError(detail="Not authenticated")
 
-    username, user_id, sid = get_user_info_from_token(token)
+    username, user_id, sid, default_workspace_id = get_user_info_from_token(token)
 
     try:
         uid = int(user_id)
@@ -111,8 +140,14 @@ async def get_current_user(
     request.state.user_id = uid
     request.state.username = username
     request.state.sid = sid
+    request.state.default_workspace_id = default_workspace_id
 
-    return {"id": uid, "username": username, "sid": sid}
+    return {
+        "id": uid,
+        "username": username,
+        "sid": sid,
+        "default_workspace_id": default_workspace_id,
+    }
 
 
 async def get_current_user_optional(
@@ -211,9 +246,166 @@ async def get_spending_budget_service(
     return BudgetService(budget_repo, cat_repo)
 
 
+# ---------------------------------------------------------------------------
+# Investing
+# ---------------------------------------------------------------------------
+
+
+async def get_investing_holding_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> HoldingRepository:
+    return HoldingRepository(session)
+
+
+async def get_investing_cash_balance_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> CashBalanceRepository:
+    return CashBalanceRepository(session)
+
+
+async def get_investing_instrument_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> InstrumentRepository:
+    return InstrumentRepository(session)
+
+
+async def get_investing_company_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> CompanyRepository:
+    return CompanyRepository(session)
+
+
+async def get_investing_constituent_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> InstrumentConstituentRepository:
+    return InstrumentConstituentRepository(session)
+
+
+async def get_finance_setting_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> FinanceSettingRepository:
+    return FinanceSettingRepository(session)
+
+
+async def get_finance_fx_rate_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> FxRateRepository:
+    return FxRateRepository(session)
+
+
+async def get_finance_transfer_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> CapitalTransferRepository:
+    return CapitalTransferRepository(session)
+
+
+async def get_finance_currency_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> CurrencyRepository:
+    return CurrencyRepository(session)
+
+
+async def get_finance_account_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> AccountRepository:
+    return AccountRepository(session)
+
+
+async def get_investing_holding_service(
+    repo: HoldingRepository = Depends(get_investing_holding_repo),
+    instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
+    company_repo: CompanyRepository = Depends(get_investing_company_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> HoldingService:
+    return HoldingService(repo, instrument_repo, company_repo, account_repo, currency_repo)
+
+
+async def get_investing_cash_balance_service(
+    repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> CashBalanceService:
+    return CashBalanceService(repo, account_repo, currency_repo)
+
+
+async def get_investing_summary_service(
+    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
+    cash_repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
+    finance_setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
+    fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
+) -> InvestingSummaryService:
+    return InvestingSummaryService(holding_repo, cash_repo, finance_setting_repo, fx_rate_repo)
+
+
+async def get_investing_instrument_service(
+    instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
+    company_repo: CompanyRepository = Depends(get_investing_company_repo),
+) -> InstrumentService:
+    return InstrumentService(instrument_repo, company_repo)
+
+
+async def get_investing_constituent_service(
+    instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
+    company_repo: CompanyRepository = Depends(get_investing_company_repo),
+    constituent_repo: InstrumentConstituentRepository = Depends(get_investing_constituent_repo),
+) -> ConstituentService:
+    return ConstituentService(instrument_repo, company_repo, constituent_repo)
+
+
+async def get_investing_analytics_service(
+    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
+    instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
+    company_repo: CompanyRepository = Depends(get_investing_company_repo),
+    constituent_repo: InstrumentConstituentRepository = Depends(get_investing_constituent_repo),
+) -> ExposureAnalyticsService:
+    return ExposureAnalyticsService(holding_repo, instrument_repo, company_repo, constituent_repo)
+
+
+# ---------------------------------------------------------------------------
+# Finance references
+# ---------------------------------------------------------------------------
+
+
+async def get_finance_currency_service(
+    repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> CurrencyService:
+    return CurrencyService(repo)
+
+
+async def get_finance_account_service(
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> AccountService:
+    return AccountService(account_repo, currency_repo)
+
+
+async def get_finance_setting_service(
+    setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> FinanceSettingService:
+    return FinanceSettingService(setting_repo, currency_repo)
+
+
+async def get_finance_fx_rate_service(
+    fx_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> FxRateService:
+    return FxRateService(fx_repo, currency_repo)
+
+
+async def get_finance_transfer_service(
+    transfer_repo: CapitalTransferRepository = Depends(get_finance_transfer_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> CapitalTransferService:
+    return CapitalTransferService(transfer_repo, account_repo, currency_repo)
+
+
 async def get_current_workspace_id(
     current_user: dict = Depends(get_current_user),
     workspace_service: WorkspaceService = Depends(get_workspace_service),
+    membership_repo: MembershipRepository = Depends(get_membership_repo),
     category_service: CategoryService = Depends(get_spending_category_service),
 ) -> int:
     """Resolve the active workspace for the current request.
@@ -227,6 +419,12 @@ async def get_current_workspace_id(
     atomically during registration, so this fallback path should never execute.
     It exists as a safety net, not as the primary provisioning mechanism.
     """
+    if current_user.get("default_workspace_id") is not None:
+        claimed_workspace_id = int(current_user["default_workspace_id"])
+        membership = await membership_repo.get_membership(claimed_workspace_id, current_user["id"])
+        if membership:
+            return claimed_workspace_id
+
     workspaces = await workspace_service.get_user_workspaces(current_user["id"])
     if not workspaces:
         workspace = await workspace_service.ensure_default_workspace(

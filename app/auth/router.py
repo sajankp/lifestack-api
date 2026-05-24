@@ -15,9 +15,11 @@ from app.core.dependencies import (
     get_current_user,
     get_current_user_optional,
     get_user_registration_workflow,
+    get_workspace_service,
     limiter,
 )
 from app.core.exceptions import NotFoundError, UnauthorizedError
+from app.platform.service import WorkspaceService
 
 router = APIRouter()
 
@@ -51,6 +53,7 @@ async def login_for_access_token(
     response: Response,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     auth_service: AuthService = Depends(get_auth_service),
+    workspace_service: WorkspaceService = Depends(get_workspace_service),
     remember_me: bool = True,
 ):
     user = await auth_service.authenticate_user(form_data.username, form_data.password)
@@ -66,15 +69,25 @@ async def login_for_access_token(
         expires_in=refresh_token_expires,
     )
 
+    default_workspace = await workspace_service.ensure_default_workspace(user.id, user.username)
+
     access_token_expires = timedelta(seconds=settings.ACCESS_TOKEN_EXPIRE_SECONDS)
     access_token = create_token(
-        data={"sub": user.username, "sub_id": str(user.id)},
+        data={
+            "sub": user.username,
+            "sub_id": str(user.id),
+            "default_workspace_id": default_workspace.id,
+        },
         expires_delta=access_token_expires,
         sid=sid,
         token_type="access",
     )
     refresh_token = create_token(
-        data={"sub": user.username, "sub_id": str(user.id)},
+        data={
+            "sub": user.username,
+            "sub_id": str(user.id),
+            "default_workspace_id": default_workspace.id,
+        },
         expires_delta=refresh_token_expires,
         sid=sid,
         token_type="refresh",
@@ -122,6 +135,7 @@ async def refresh_token(
     request: Request,
     response: Response,
     auth_service: AuthService = Depends(get_auth_service),
+    workspace_service: WorkspaceService = Depends(get_workspace_service),
 ):
     refresh_token = request.cookies.get("refresh_token")
 
@@ -129,7 +143,9 @@ async def refresh_token(
         raise UnauthorizedError(detail="Refresh token missing")
 
     try:
-        _username, user_id, sid = get_user_info_from_token(refresh_token, expected_type="refresh")
+        _username, user_id, sid, default_workspace_id = get_user_info_from_token(
+            refresh_token, expected_type="refresh"
+        )
     except UnauthorizedError:
         raise UnauthorizedError(detail="Invalid refresh token") from None
 
@@ -137,10 +153,17 @@ async def refresh_token(
     user = await auth_service.get_user_by_id(int(user_id))
     if not user:
         raise UnauthorizedError(detail="User account is no longer active")
+    if default_workspace_id is None:
+        default_workspace = await workspace_service.ensure_default_workspace(user.id, user.username)
+        default_workspace_id = default_workspace.id
 
     access_token_expires = timedelta(seconds=settings.ACCESS_TOKEN_EXPIRE_SECONDS)
     access_token = create_token(
-        data={"sub": user.username, "sub_id": str(user.id)},
+        data={
+            "sub": user.username,
+            "sub_id": str(user.id),
+            "default_workspace_id": default_workspace_id,
+        },
         expires_delta=access_token_expires,
         sid=sid,
         token_type="access",

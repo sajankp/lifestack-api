@@ -25,10 +25,10 @@ async def test_dashboard_summary_empty_workspace(client: AsyncClient):
     assert summary["todos"]["overdue_count"] == 0
 
     assert "spending" in summary
-    assert summary["spending"]["month_spent"] == 0.0
+    assert summary["spending"]["month_spent"] == "0"
 
     assert "investing" in summary
-    assert summary["investing"]["portfolio_value"] == 0.0
+    assert summary["investing"]["portfolio_value"] == "0"
 
     assert "system" in summary
     assert "generated_at" in summary["system"]
@@ -67,13 +67,26 @@ async def test_dashboard_summary_with_data(client: AsyncClient):
     spend_res = await client.post("/v1/spending/transactions", json=spending_data)
     assert spend_res.status_code == 201
 
+    # Create a budget for this month
+    month_start = datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    budget_res = await client.post(
+        "/v1/spending/budgets",
+        json={
+            "category_id": category_id,
+            "amount": "100.00",
+            "month_start": month_start.date().isoformat(),
+        },
+    )
+    assert budget_res.status_code == 201
+
     # Fetch dashboard summary
     summary_res = await client.get("/v1/dashboard/summary")
     assert summary_res.status_code == 200
 
     summary = summary_res.json()
     assert summary["todos"]["open_count"] == 1
-    assert float(summary["spending"]["month_spent"]) == 15.50
+    assert summary["spending"]["month_spent"] == "15.50"
+    assert summary["spending"]["month_budget"] == "100.00"
 
 
 @pytest.mark.asyncio

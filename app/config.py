@@ -84,6 +84,7 @@ class Settings(BaseSettings):
 
     # Scheduler
     SCHEDULER_ENABLED: bool = False
+    SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS: bool = False
     BUDGET_GUARDRAILS_INTERVAL_HOURS: int = 6
     BUDGET_WARNING_THRESHOLD: float = 0.9
     BUDGET_CRITICAL_THRESHOLD: float = 1.0

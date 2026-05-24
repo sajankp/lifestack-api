@@ -9,17 +9,26 @@ from app.dashboard.schemas import (
     SystemSummary,
     TodosSummary,
 )
+from app.investing.service import InvestingSummaryService
 from app.spending.models import TransactionType
-from app.spending.service import TransactionService
+from app.spending.service import BudgetService, TransactionService
 from app.todo.service import TodoService
 
 logger = structlog.get_logger()
 
 
 class DashboardService:
-    def __init__(self, todo_service: TodoService, transaction_service: TransactionService):
+    def __init__(
+        self,
+        todo_service: TodoService,
+        transaction_service: TransactionService,
+        budget_service: BudgetService,
+        investing_summary_service: InvestingSummaryService,
+    ):
         self.todo_service = todo_service
         self.transaction_service = transaction_service
+        self.budget_service = budget_service
+        self.investing_summary_service = investing_summary_service
 
     async def get_summary(self, workspace_id: int) -> DashboardSummary:
         now = datetime.now(UTC)
@@ -47,13 +56,32 @@ class DashboardService:
                 from_date=start_of_month,
                 to_date=now,
             )
-            spending_res = SpendingSummary(status="available", month_spent=month_spent)
+            month_budget = await self.budget_service.get_month_total_budget(
+                workspace_id=workspace_id,
+                month_start=start_of_month.date(),
+            )
+            spending_res = SpendingSummary(
+                status="available",
+                month_spent=month_spent,
+                month_budget=month_budget,
+            )
         except Exception:
             logger.exception("dashboard_spending_fetch_failed", workspace_id=workspace_id)
             spending_res = SpendingSummary(status="unavailable")
 
-        # 3. Investing (stubbed for V1)
-        investing_res = InvestingSummary(status="available")
+        # 3. Investing
+        investing_res = InvestingSummary()
+        try:
+            investing_summary = await self.investing_summary_service.get_summary(workspace_id)
+            investing_res = InvestingSummary(
+                status="available",
+                portfolio_value=investing_summary.portfolio_value,
+                daily_change=investing_summary.daily_change,
+                holdings_count=investing_summary.holdings_count,
+            )
+        except Exception:
+            logger.exception("dashboard_investing_fetch_failed", workspace_id=workspace_id)
+            investing_res = InvestingSummary(status="unavailable")
 
         return DashboardSummary(
             todos=todos_res,

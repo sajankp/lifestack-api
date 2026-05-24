@@ -26,8 +26,10 @@ from app.core.exceptions import (
 from app.core.health import router as health_router
 from app.core.logging import setup_logging
 from app.core.middleware import SecurityHeadersMiddleware, StructlogMiddleware
-from app.core.scheduler import scheduler, shutdown_scheduler, start_scheduler
+from app.core.scheduler import register_interval_job, shutdown_scheduler, start_scheduler
 from app.dashboard.router import router as dashboard_router
+from app.finance.router import router as finance_router
+from app.investing.router import router as investing_router
 from app.spending.router import router as spending_router
 from app.todo.router import router as todo_router
 
@@ -58,12 +60,11 @@ async def _startup_check() -> None:
 async def lifespan(_app: FastAPI):
     await _startup_check()
     if settings.SCHEDULER_ENABLED:
-        scheduler.add_job(
+        register_interval_job(
             budget_guardrails_job,
-            "interval",
+            job_id="budget_guardrails",
             hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
-            id="budget_guardrails",
-            replace_existing=True,
+            idempotent=True,
         )
         start_scheduler()
     yield
@@ -116,6 +117,8 @@ def create_app() -> FastAPI:
     _app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
     _app.include_router(todo_router, prefix=settings.API_V1_STR)
     _app.include_router(spending_router, prefix=settings.API_V1_STR)
+    _app.include_router(investing_router, prefix=settings.API_V1_STR)
+    _app.include_router(finance_router, prefix=settings.API_V1_STR)
     _app.include_router(dashboard_router, prefix=settings.API_V1_STR)
 
     _app.include_router(health_router)

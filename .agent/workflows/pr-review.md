@@ -177,6 +177,41 @@ After addressing feedback, document what was done by replying to each comment th
 
 
 
+### Step 2.5.1: Optional CLI Helper to Resolve Threads
+
+If GraphQL thread resolution is repetitive, use the helper script:
+
+```bash
+# Safer default: resolve only outdated unresolved threads
+.agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode outdated
+
+# Resolve all unresolved threads (use only when validated)
+.agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode all
+
+# Preview only
+.agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode outdated --dry-run
+```
+
+Recommended flow:
+1. Run `--dry-run` first
+2. Resolve `--mode outdated`
+3. Manually verify non-outdated unresolved comments before using `--mode all`
+
+
+For targeted non-outdated threads that were verified manually, use:
+
+```bash
+# Single thread
+.agent/scripts/resolve-specific-threads.sh --thread <thread_id> --reply "Addressed in commit <sha>: <summary>"
+
+# Multiple threads from file (one ID per line)
+.agent/scripts/resolve-specific-threads.sh --threads-file .tmp/thread-ids.txt --reply-file .tmp/reply.md
+
+# Preview actions
+.agent/scripts/resolve-specific-threads.sh --thread <thread_id> --dry-run
+```
+
+
 ### Step 2.6: Request Re-Review (After Addressing Feedback)
 
 After fixing issues identified by the AI reviewer, explicitly request a fresh review to ensure your changes are validated.
