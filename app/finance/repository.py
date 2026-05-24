@@ -46,12 +46,7 @@ class CurrencyRepository:
             )
         await self.session.flush()
 
-    async def get_by_code(self, code: str) -> Currency | None:
-        result = await self.session.execute(select(Currency).where(Currency.code == code.upper()))
-        return result.scalar_one_or_none()
-
-    async def is_enabled_for_workspace(self, workspace_id: int, code: str) -> bool:
-        # Lazy bootstrap: if workspace has no explicit mappings yet, enable all active currencies.
+    async def ensure_workspace_defaults(self, workspace_id: int) -> None:
         existing_count = (
             await self.session.execute(
                 select(func.count()).select_from(
@@ -61,13 +56,19 @@ class CurrencyRepository:
                 )
             )
         ).scalar_one()
-        if existing_count == 0:
-            active = await self.list_active()
-            if active:
-                await self.add_workspace_currencies(
-                    workspace_id, [currency.code for currency in active]
-                )
+        if existing_count > 0:
+            return
+        active = await self.list_active()
+        if active:
+            await self.add_workspace_currencies(
+                workspace_id, [currency.code for currency in active]
+            )
 
+    async def get_by_code(self, code: str) -> Currency | None:
+        result = await self.session.execute(select(Currency).where(Currency.code == code.upper()))
+        return result.scalar_one_or_none()
+
+    async def is_enabled_for_workspace(self, workspace_id: int, code: str) -> bool:
         result = await self.session.execute(
             select(WorkspaceCurrency).where(
                 WorkspaceCurrency.workspace_id == workspace_id,
@@ -229,6 +230,40 @@ class FxRateRepository:
             query = query.where(FxRate.as_of <= as_of)
         result = await self.session.execute(query.order_by(FxRate.as_of.desc()).limit(1))
         return result.scalar_one_or_none()
+
+    async def get_latest_rates_for_pairs(
+        self,
+        pairs: Sequence[tuple[str, str]],
+        as_of: datetime | None = None,
+    ) -> dict[tuple[str, str], FxRate]:
+        unique_pairs = {(b.upper(), q.upper()) for b, q in pairs if b and q}
+        if not unique_pairs:
+            return {}
+        base_codes = {b for b, _ in unique_pairs}
+        quote_codes = {q for _, q in unique_pairs}
+        query = select(FxRate).where(
+            FxRate.base_currency_code.in_(base_codes),
+            FxRate.quote_currency_code.in_(quote_codes),
+        )
+        if as_of is not None:
+            query = query.where(FxRate.as_of <= as_of)
+        result = await self.session.execute(
+            query.order_by(
+                FxRate.base_currency_code.asc(),
+                FxRate.quote_currency_code.asc(),
+                FxRate.as_of.desc(),
+            )
+        )
+        rows = result.scalars().all()
+
+        latest: dict[tuple[str, str], FxRate] = {}
+        for row in rows:
+            key = (row.base_currency_code.upper(), row.quote_currency_code.upper())
+            if key not in unique_pairs:
+                continue
+            if key not in latest:
+                latest[key] = row
+        return latest
 
 
 class CapitalTransferRepository:

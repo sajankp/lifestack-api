@@ -117,6 +117,7 @@ class HoldingService:
             currency_row = await self.currency_repo.get_by_code(code)
             if not currency_row or not currency_row.is_active:
                 raise ValidationError(detail=f"Unsupported currency code '{code}'")
+            await self.currency_repo.ensure_workspace_defaults(workspace_id)
             enabled = await self.currency_repo.is_enabled_for_workspace(workspace_id, code)
             if not enabled:
                 raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
@@ -277,6 +278,7 @@ class CashBalanceService:
             currency_row = await self.currency_repo.get_by_code(code)
             if not currency_row or not currency_row.is_active:
                 raise ValidationError(detail=f"Unsupported currency code '{code}'")
+            await self.currency_repo.ensure_workspace_defaults(workspace_id)
             enabled = await self.currency_repo.is_enabled_for_workspace(workspace_id, code)
             if not enabled:
                 raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
@@ -471,8 +473,10 @@ class ConstituentService:
             instrument.id, payload.as_of_date, payload.source
         )  # type: ignore[arg-type]
         rows: list[InstrumentConstituent] = []
+        requested_names = [item.company_name for item in payload.constituents]
+        companies_by_name = await self.company_repo.get_by_names(workspace_id, requested_names)
         for item in payload.constituents:
-            company = await self.company_repo.get_by_name(workspace_id, item.company_name)
+            company = companies_by_name.get(item.company_name)
             if company is None:
                 company = await self.company_repo.create(
                     Company(
@@ -481,6 +485,7 @@ class ConstituentService:
                         ticker=item.company_ticker,
                     )
                 )
+                companies_by_name[item.company_name] = company
             rows.append(
                 InstrumentConstituent(
                     instrument_id=instrument.id,  # type: ignore[arg-type]
@@ -503,9 +508,12 @@ class ConstituentService:
         if not rows:
             rows = await self.constituent_repo.get_latest_on_or_before(instrument.id, as_of)  # type: ignore[arg-type]
 
+        companies_by_id = await self.company_repo.get_by_ids([
+            row.constituent_company_id for row in rows
+        ])
         out: list[InstrumentConstituentResponse] = []
         for row in rows:
-            company = await self.company_repo.get_by_id(row.constituent_company_id)
+            company = companies_by_id.get(row.constituent_company_id)
             if company is None:
                 continue
             out.append(
@@ -543,14 +551,27 @@ class ExposureAnalyticsService:
         warnings: list[str] = []
         decomposable = 0
         decomposed = 0
+        instruments_by_id = await self.instrument_repo.get_by_ids([
+            h.instrument_id for h in holdings if h.instrument_id is not None
+        ])
+        symbols = [h.symbol for h in holdings if h.instrument_id is None]
+        instruments_by_symbol = await self.instrument_repo.get_by_symbols(workspace_id, symbols)
+        pooled_instrument_ids = [
+            inst.id
+            for inst in list(instruments_by_id.values()) + list(instruments_by_symbol.values())
+            if inst.id is not None and inst.instrument_type != InstrumentType.stock.value
+        ]
+        constituents_by_instrument = await self.constituent_repo.get_latest_on_or_before_many(
+            pooled_instrument_ids, as_of
+        )
 
         for h in holdings:
             value = h.quantity * h.avg_cost
             instrument = None
             if h.instrument_id is not None:
-                instrument = await self.instrument_repo.session.get(Instrument, h.instrument_id)  # type: ignore[attr-defined]
+                instrument = instruments_by_id.get(h.instrument_id)
             if instrument is None:
-                instrument = await self.instrument_repo.get_by_symbol(workspace_id, h.symbol)
+                instrument = instruments_by_symbol.get(h.symbol)
             if instrument is None:
                 warnings.append(f"Instrument missing for symbol {h.symbol}")
                 continue
@@ -570,10 +591,7 @@ class ExposureAnalyticsService:
                 continue
 
             decomposable += 1
-            rows = await self.constituent_repo.get_latest_on_or_before(
-                instrument.id,  # type: ignore[arg-type]
-                as_of,
-            )
+            rows = constituents_by_instrument.get(instrument.id, [])  # type: ignore[arg-type]
             if not rows:
                 warnings.append(f"No constituent snapshot for {instrument.symbol}")
                 continue
@@ -588,9 +606,10 @@ class ExposureAnalyticsService:
                 ) + (value * row.weight)
 
         company_ids = sorted(set(direct.keys()) | set(lookthrough.keys()))
+        companies_by_id = await self.company_repo.get_by_ids(company_ids)
         rows: list[ExposureCompanyRow] = []
         for cid in company_ids:
-            company = await self.instrument_repo.session.get(Company, cid)  # type: ignore[attr-defined]
+            company = companies_by_id.get(cid)
             if company is None:
                 continue
             rows.append(
@@ -755,6 +774,24 @@ class InvestingSummaryService:
             converted_portfolio = Decimal("0")
             converted_cash = Decimal("0")
             valuation_as_of = datetime.now(UTC)
+            required_pairs: set[tuple[str, str]] = set()
+            for holding in holdings:
+                curr = holding.currency.upper()
+                if curr != reporting_currency:
+                    required_pairs.add((curr, reporting_currency))
+                    if curr != "USD" and reporting_currency != "USD":
+                        required_pairs.add((curr, "USD"))
+                        required_pairs.add(("USD", reporting_currency))
+            for cash in cash_balances:
+                curr = cash.currency.upper()
+                if curr != reporting_currency:
+                    required_pairs.add((curr, reporting_currency))
+                    if curr != "USD" and reporting_currency != "USD":
+                        required_pairs.add((curr, "USD"))
+                        required_pairs.add(("USD", reporting_currency))
+            fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
+                list(required_pairs), as_of=valuation_as_of
+            )
 
             for holding in holdings:
                 native_value = holding.quantity * holding.avg_cost
@@ -762,16 +799,10 @@ class InvestingSummaryService:
                 if curr == reporting_currency:
                     converted_portfolio += native_value
                     continue
-                rate_row = await self.fx_rate_repo.get_latest_rate(
-                    curr, reporting_currency, as_of=valuation_as_of
-                )
+                rate_row = fx_lookup.get((curr, reporting_currency))
                 if rate_row is None and curr != "USD" and reporting_currency != "USD":
-                    base_to_usd = await self.fx_rate_repo.get_latest_rate(
-                        curr, "USD", as_of=valuation_as_of
-                    )
-                    usd_to_quote = await self.fx_rate_repo.get_latest_rate(
-                        "USD", reporting_currency, as_of=valuation_as_of
-                    )
+                    base_to_usd = fx_lookup.get((curr, "USD"))
+                    usd_to_quote = fx_lookup.get(("USD", reporting_currency))
                     if base_to_usd and usd_to_quote:
                         converted_portfolio += (
                             native_value
@@ -797,16 +828,10 @@ class InvestingSummaryService:
                 if curr == reporting_currency:
                     converted_cash += cash.balance
                     continue
-                rate_row = await self.fx_rate_repo.get_latest_rate(
-                    curr, reporting_currency, as_of=valuation_as_of
-                )
+                rate_row = fx_lookup.get((curr, reporting_currency))
                 if rate_row is None and curr != "USD" and reporting_currency != "USD":
-                    base_to_usd = await self.fx_rate_repo.get_latest_rate(
-                        curr, "USD", as_of=valuation_as_of
-                    )
-                    usd_to_quote = await self.fx_rate_repo.get_latest_rate(
-                        "USD", reporting_currency, as_of=valuation_as_of
-                    )
+                    base_to_usd = fx_lookup.get((curr, "USD"))
+                    usd_to_quote = fx_lookup.get(("USD", reporting_currency))
                     if base_to_usd and usd_to_quote:
                         converted_cash += (
                             cash.balance

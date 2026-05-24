@@ -135,6 +135,29 @@ class InstrumentRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_symbols(
+        self, workspace_id: int, symbols: Sequence[str]
+    ) -> dict[str, Instrument]:
+        normalized = {s for s in symbols if s}
+        if not normalized:
+            return {}
+        result = await self.session.execute(
+            select(Instrument).where(
+                Instrument.workspace_id == workspace_id,
+                Instrument.symbol.in_(normalized),
+            )
+        )
+        rows = result.scalars().all()
+        return {row.symbol: row for row in rows}
+
+    async def get_by_ids(self, ids: Sequence[int]) -> dict[int, Instrument]:
+        unique_ids = {i for i in ids if i is not None}
+        if not unique_ids:
+            return {}
+        result = await self.session.execute(select(Instrument).where(Instrument.id.in_(unique_ids)))
+        rows = result.scalars().all()
+        return {row.id: row for row in rows if row.id is not None}
+
     async def create(self, instrument: Instrument) -> Instrument:
         self.session.add(instrument)
         await self.session.flush()
@@ -173,6 +196,27 @@ class CompanyRepository:
     async def get_by_id(self, company_id: int) -> Company | None:
         result = await self.session.execute(select(Company).where(Company.id == company_id))
         return result.scalar_one_or_none()
+
+    async def get_by_ids(self, ids: Sequence[int]) -> dict[int, Company]:
+        unique_ids = {i for i in ids if i is not None}
+        if not unique_ids:
+            return {}
+        result = await self.session.execute(select(Company).where(Company.id.in_(unique_ids)))
+        rows = result.scalars().all()
+        return {row.id: row for row in rows if row.id is not None}
+
+    async def get_by_names(self, workspace_id: int, names: Sequence[str]) -> dict[str, Company]:
+        unique_names = {n for n in names if n}
+        if not unique_names:
+            return {}
+        result = await self.session.execute(
+            select(Company).where(
+                Company.workspace_id == workspace_id,
+                Company.name.in_(unique_names),
+            )
+        )
+        rows = result.scalars().all()
+        return {row.name: row for row in rows}
 
     async def create(self, company: Company) -> Company:
         self.session.add(company)
@@ -227,3 +271,35 @@ class InstrumentConstituentRepository:
         if latest_date is None:
             return []
         return await self.list_snapshot(instrument_id, latest_date)
+
+    async def get_latest_on_or_before_many(
+        self, instrument_ids: Sequence[int], as_of_date: date
+    ) -> dict[int, list[InstrumentConstituent]]:
+        unique_ids = {i for i in instrument_ids if i is not None}
+        if not unique_ids:
+            return {}
+
+        result = await self.session.execute(
+            select(InstrumentConstituent)
+            .where(InstrumentConstituent.instrument_id.in_(unique_ids))
+            .where(InstrumentConstituent.as_of_date <= as_of_date)
+            .order_by(
+                InstrumentConstituent.instrument_id.asc(),
+                InstrumentConstituent.as_of_date.desc(),
+            )
+        )
+        rows = result.scalars().all()
+        latest_date_by_instrument: dict[int, date] = {}
+        grouped: dict[int, list[InstrumentConstituent]] = {}
+        for row in rows:
+            iid = row.instrument_id
+            if iid is None:
+                continue
+            latest = latest_date_by_instrument.get(iid)
+            if latest is None:
+                latest_date_by_instrument[iid] = row.as_of_date
+                grouped[iid] = [row]
+                continue
+            if row.as_of_date == latest:
+                grouped[iid].append(row)
+        return grouped

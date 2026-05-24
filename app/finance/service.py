@@ -47,6 +47,7 @@ class CurrencyService:
 
     async def validate_workspace_enabled(self, workspace_id: int, code: str) -> None:
         await self.validate_supported_code(code)
+        await self.repository.ensure_workspace_defaults(workspace_id)
         enabled = await self.repository.is_enabled_for_workspace(workspace_id, code)
         if not enabled:
             raise ValidationError(
@@ -144,6 +145,7 @@ class FinanceSettingService:
                 raise ValidationError(
                     detail=f"Unsupported reporting currency '{reporting_currency_code}'"
                 )
+            await self.currency_repository.ensure_workspace_defaults(workspace_id)
             enabled = await self.currency_repository.is_enabled_for_workspace(
                 workspace_id, reporting_currency_code
             )
@@ -253,6 +255,7 @@ class CapitalTransferService:
         if not to_account:
             raise ValidationError(detail="to_account_id is invalid for this workspace")
 
+        await self.currency_repository.ensure_workspace_defaults(workspace_id)
         for code in [transfer_in.from_currency_code, transfer_in.to_currency_code]:
             currency = await self.currency_repository.get_by_code(code)
             if not currency or not currency.is_active:
