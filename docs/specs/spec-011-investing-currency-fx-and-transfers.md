@@ -1,6 +1,20 @@
 # Feature Spec: Investing Currency Governance, FX Valuation, and Cross-Module Transfer Ledger
-**Status:** Planned
+**Status:** Implemented (V1.1)
 **Spec ID:** 011
+
+## Implementation Notes (2026-05-24)
+- Implemented backend resources under shared finance slice:
+  - `currencies`, `workspace_currencies`, `accounts`
+  - `workspace_finance_settings`, `fx_rates`, `capital_transfers`
+- Added APIs:
+  - `GET /v1/finance/settings`, `PATCH /v1/finance/settings`
+  - `POST /v1/finance/fx-rates`, `GET /v1/finance/fx-rates`
+  - `GET /v1/finance/transfers`, `GET /v1/finance/transfers/{public_id}`, `POST /v1/finance/transfers`
+- Investing summary now supports valuation status semantics:
+  - `single_currency_native`, `multi_currency_unconverted`, `conversion_required`, `converted_available`
+- Workspace currency/account validation is enforced in investing + transfer flows.
+- Integration coverage added for finance settings/FX/transfers and investing summary conversion paths.
+- Follow-up slice **V1.2 (Spec 012: look-through exposure and overlap analytics)** is also implemented.
 
 ## 1. Overview
 The current investing module supports holdings and cash balances, but leaves several domain-critical concerns underspecified:

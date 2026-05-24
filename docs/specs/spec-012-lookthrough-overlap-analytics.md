@@ -1,6 +1,25 @@
 # Feature Spec: Look-Through Exposure and Overlap Analytics for ETF/Mutual Fund Portfolios
-**Status:** Planned
+**Status:** Implemented (V1.2 backend)
 **Spec ID:** 012
+
+## Implementation Notes (2026-05-24)
+- Implemented as **V1.2**, on top of completed **V1.1 (Spec 011)** finance/currency/FX foundations.
+- Implemented day-level look-through data foundation:
+  - `investing_companies`
+  - `investing_instruments`
+  - `investing_instrument_constituents`
+  - `investing_holdings.instrument_id` linkage
+- Added APIs:
+  - `GET /v1/investing/instruments`
+  - `POST /v1/investing/instruments`
+  - `GET /v1/investing/instruments/{instrument_id}/constituents?as_of=YYYY-MM-DD`
+  - `POST /v1/investing/instruments/{instrument_id}/constituents`
+  - `GET /v1/investing/analytics/exposure?as_of=YYYY-MM-DD`
+  - `GET /v1/investing/analytics/overlap?as_of=YYYY-MM-DD`
+- Implemented fallback strategy for constituent snapshots:
+  - use latest snapshot on or before requested date
+  - include warning metadata and `analysis_status=partial` when coverage is incomplete
+- Integration coverage added for mixed direct + pooled holdings, look-through exposure, and overlap metrics.
 
 ## 1. Overview
 Users often hold a mix of direct stocks and pooled vehicles (ETFs, mutual funds). Portfolio totals alone hide concentration and duplicate exposure created by overlapping fund constituents.
