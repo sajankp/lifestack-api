@@ -73,7 +73,6 @@ These are planned interface layers, not the foundation of the product. The core 
 - React 19 + TypeScript + Vite
 - React Router
 - Zustand + TanStack Query
-- Recharts for portfolio and spending views
 - Shared UI and module-based sections
 
 ---
@@ -87,8 +86,7 @@ lifestack-web (React)
       +-- /todo
       +-- /spending
       +-- /investing
-      +-- /settings
-      `-- /chat        -> optional stage 2
+      `-- /login, /register
                |
                v
         lifestack-api (FastAPI)
@@ -98,7 +96,6 @@ lifestack-web (React)
                +-- /spending
                +-- /investing
                +-- /dashboard
-               +-- /platform
                |
                +-- application services
                |      `-- cross-module workflows

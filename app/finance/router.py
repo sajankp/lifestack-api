@@ -25,7 +25,6 @@ from app.finance.schemas import (
     CapitalTransferResponse,
     CurrencyResponse,
     FxRateResponse,
-    FxRateUpsert,
     WorkspaceFinanceSettingResponse,
     WorkspaceFinanceSettingUpdate,
 )
@@ -117,16 +116,6 @@ async def update_workspace_finance_settings(
         workspace_id, setting_in.reporting_currency_code
     )
     return WorkspaceFinanceSettingResponse.model_validate(row)
-
-
-@router.post("/fx-rates", response_model=FxRateResponse, status_code=status.HTTP_201_CREATED)
-async def upsert_fx_rate(
-    fx_in: FxRateUpsert,
-    fx_service: Annotated[FxRateService, Depends(get_finance_fx_rate_service)],
-    _user: Annotated[dict, Depends(get_current_user)],
-):
-    row = await fx_service.upsert(fx_in)
-    return FxRateResponse.model_validate(row)
 
 
 @router.get("/fx-rates", response_model=FxRateResponse)

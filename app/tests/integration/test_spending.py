@@ -11,6 +11,7 @@ Also covers the full happy-path CRUD flows and the REST contract
 (201 on create, 204 on delete, RFC 7807 on errors).
 """
 
+import calendar
 import uuid
 from datetime import UTC, datetime
 
@@ -291,6 +292,76 @@ async def test_full_spending_flow(client: AsyncClient):
     # Delete custom category (no transactions remain)
     del_cat = await client.delete(f"/v1/spending/categories/{gym_cat_id}", cookies=creds["cookies"])
     assert del_cat.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_spending_month_summary_uses_full_month_totals(client: AsyncClient):
+    creds = await _register_and_login(client, "sumtot")
+
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
+    food_cat = next(c for c in cats if c["name"] == "Food & Dining")
+    month_start = datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    budget_res = await client.post(
+        "/v1/spending/budgets",
+        json={
+            "category_id": food_cat["public_id"],
+            "amount": "1000.00",
+            "month_start": month_start.date().isoformat(),
+        },
+        cookies=creds["cookies"],
+    )
+    assert budget_res.status_code == 201
+
+    for idx in range(55):
+        tx_res = await client.post(
+            "/v1/spending/transactions",
+            json={
+                "category_id": food_cat["public_id"],
+                "amount": "1.00",
+                "type": "expense",
+                "occurred_at": month_start.replace(day=min(idx + 1, 28)).isoformat(),
+                "description": f"Txn {idx}",
+            },
+            cookies=creds["cookies"],
+        )
+        assert tx_res.status_code == 201
+
+    page_one = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
+    assert page_one.status_code == 200
+    assert page_one.json()["total"] == 55
+    assert len(page_one.json()["items"]) == 50
+
+    summary = await client.get(
+        "/v1/spending/transactions/summary",
+        params={
+            "from_date": month_start.isoformat(),
+            "to_date": month_start.replace(
+                day=calendar.monthrange(month_start.year, month_start.month)[1],
+                hour=23,
+                minute=59,
+                second=59,
+                microsecond=999000,
+            ).isoformat(),
+        },
+        cookies=creds["cookies"],
+    )
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["expense_total"] == "55.00"
+    assert body["income_total"] == "0"
+    assert body["net_total"] == "-55.00"
+    assert body["category_totals"][0]["total"] == "55.00"
+
+    month_budgets = await client.get(
+        "/v1/spending/budgets",
+        params={"month_start": month_start.date().isoformat()},
+        cookies=creds["cookies"],
+    )
+    assert month_budgets.status_code == 200
+    assert all(
+        b["month_start"] == month_start.date().isoformat() for b in month_budgets.json()["items"]
+    )
 
 
 # ---------------------------------------------------------------------------

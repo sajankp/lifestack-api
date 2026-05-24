@@ -276,11 +276,32 @@ class TransactionService:
         )
 
     async def get_sum_by_type(
-        self, workspace_id: int, type_filter: str, from_date: datetime, to_date: datetime
+        self,
+        workspace_id: int,
+        type_filter: str,
+        from_date: datetime,
+        to_date: datetime,
+        category_public_id: uuid.UUID | None = None,
     ) -> Decimal:
+        category_id: int | None = None
+        if category_public_id is not None:
+            cat = await self._resolve_category(workspace_id, category_public_id)
+            category_id = cat.id  # type: ignore[assignment]
         return await self.transaction_repo.get_sum_by_type(
-            workspace_id, type_filter, from_date, to_date
+            workspace_id, type_filter, from_date, to_date, category_id=category_id
         )
+
+    async def get_category_totals(
+        self,
+        workspace_id: int,
+        from_date: datetime,
+        to_date: datetime,
+        type_filter: TransactionType | None = None,
+    ) -> dict[int, Decimal]:
+        rows = await self.transaction_repo.get_category_totals(
+            workspace_id, from_date, to_date, type_filter=type_filter
+        )
+        return dict(rows)
 
     async def get_transaction(self, workspace_id: int, public_id: uuid.UUID) -> SpendingTransaction:
         transaction = await self.transaction_repo.get_by_public_id(workspace_id, public_id)
@@ -421,9 +442,13 @@ class BudgetService:
         return category
 
     async def list_budgets(
-        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        month_start: date | None = None,
     ) -> tuple[Sequence[SpendingBudget], int]:
-        return await self.budget_repo.get_all(workspace_id, limit, offset)
+        return await self.budget_repo.get_all(workspace_id, limit, offset, month_start=month_start)
 
     async def get_month_total_budget(self, workspace_id: int, month_start: date) -> Decimal:
         return await self.budget_repo.get_month_total(workspace_id, month_start)

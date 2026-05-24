@@ -88,6 +88,22 @@ class TransactionResponse(BaseModel):
     )
 
 
+class CategorySpendTotal(BaseModel):
+    category_id: uuid.UUID
+    total: Decimal
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class TransactionSummaryResponse(BaseModel):
+    income_total: Decimal = Decimal("0")
+    expense_total: Decimal = Decimal("0")
+    net_total: Decimal = Decimal("0")
+    category_totals: list[CategorySpendTotal] = Field(default_factory=list)
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
 # ---------------------------------------------------------------------------
 # Budget schemas
 # ---------------------------------------------------------------------------
