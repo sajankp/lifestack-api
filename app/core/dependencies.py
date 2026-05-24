@@ -25,8 +25,21 @@ from app.finance.service import (
     FinanceSettingService,
     FxRateService,
 )
-from app.investing.repository import CashBalanceRepository, HoldingRepository
-from app.investing.service import CashBalanceService, HoldingService, InvestingSummaryService
+from app.investing.repository import (
+    CashBalanceRepository,
+    CompanyRepository,
+    HoldingRepository,
+    InstrumentConstituentRepository,
+    InstrumentRepository,
+)
+from app.investing.service import (
+    CashBalanceService,
+    ConstituentService,
+    ExposureAnalyticsService,
+    HoldingService,
+    InstrumentService,
+    InvestingSummaryService,
+)
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
 from app.spending.repository import BudgetRepository, CategoryRepository, TransactionRepository
@@ -250,6 +263,24 @@ async def get_investing_cash_balance_repo(
     return CashBalanceRepository(session)
 
 
+async def get_investing_instrument_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> InstrumentRepository:
+    return InstrumentRepository(session)
+
+
+async def get_investing_company_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> CompanyRepository:
+    return CompanyRepository(session)
+
+
+async def get_investing_constituent_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> InstrumentConstituentRepository:
+    return InstrumentConstituentRepository(session)
+
+
 async def get_finance_setting_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> FinanceSettingRepository:
@@ -282,10 +313,12 @@ async def get_finance_account_repo(
 
 async def get_investing_holding_service(
     repo: HoldingRepository = Depends(get_investing_holding_repo),
+    instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
+    company_repo: CompanyRepository = Depends(get_investing_company_repo),
     account_repo: AccountRepository = Depends(get_finance_account_repo),
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
 ) -> HoldingService:
-    return HoldingService(repo, account_repo, currency_repo)
+    return HoldingService(repo, instrument_repo, company_repo, account_repo, currency_repo)
 
 
 async def get_investing_cash_balance_service(
@@ -303,6 +336,30 @@ async def get_investing_summary_service(
     fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
 ) -> InvestingSummaryService:
     return InvestingSummaryService(holding_repo, cash_repo, finance_setting_repo, fx_rate_repo)
+
+
+async def get_investing_instrument_service(
+    instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
+    company_repo: CompanyRepository = Depends(get_investing_company_repo),
+) -> InstrumentService:
+    return InstrumentService(instrument_repo, company_repo)
+
+
+async def get_investing_constituent_service(
+    instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
+    company_repo: CompanyRepository = Depends(get_investing_company_repo),
+    constituent_repo: InstrumentConstituentRepository = Depends(get_investing_constituent_repo),
+) -> ConstituentService:
+    return ConstituentService(instrument_repo, company_repo, constituent_repo)
+
+
+async def get_investing_analytics_service(
+    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
+    instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
+    company_repo: CompanyRepository = Depends(get_investing_company_repo),
+    constituent_repo: InstrumentConstituentRepository = Depends(get_investing_constituent_repo),
+) -> ExposureAnalyticsService:
+    return ExposureAnalyticsService(holding_repo, instrument_repo, company_repo, constituent_repo)
 
 
 # ---------------------------------------------------------------------------

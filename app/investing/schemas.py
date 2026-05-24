@@ -1,8 +1,10 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.investing.models import InstrumentType
 
 
 class HoldingCreate(BaseModel):
@@ -97,3 +99,112 @@ class InvestingSummaryResponse(BaseModel):
     fx_as_of: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class InstrumentCreate(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20)
+    name: str = Field(..., min_length=1, max_length=255)
+    instrument_type: InstrumentType = InstrumentType.stock
+    ticker: str | None = Field(default=None, min_length=1, max_length=20)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("ticker")
+    @classmethod
+    def normalize_ticker(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip().upper()
+
+
+class InstrumentResponse(BaseModel):
+    public_id: uuid.UUID
+    symbol: str
+    name: str
+    instrument_type: InstrumentType
+    company_id: uuid.UUID | None = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InstrumentConstituentCreate(BaseModel):
+    company_name: str = Field(..., min_length=1, max_length=255)
+    company_ticker: str | None = Field(default=None, min_length=1, max_length=20)
+    weight: Decimal = Field(..., gt=0, le=1, decimal_places=8)
+
+    @field_validator("company_ticker")
+    @classmethod
+    def normalize_company_ticker(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip().upper()
+
+
+class InstrumentConstituentUpsert(BaseModel):
+    as_of_date: date
+    source: str = Field(..., min_length=1, max_length=64)
+    fetched_at: datetime
+    constituents: list[InstrumentConstituentCreate] = Field(default_factory=list, min_length=1)
+
+
+class InstrumentConstituentResponse(BaseModel):
+    company_id: uuid.UUID
+    company_name: str
+    company_ticker: str | None
+    weight: Decimal
+    as_of_date: date
+    source: str
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class ExposureCompanyRow(BaseModel):
+    company_id: uuid.UUID
+    company_name: str
+    company_ticker: str | None
+    direct_exposure: Decimal
+    lookthrough_exposure: Decimal
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class ExposureAnalyticsResponse(BaseModel):
+    as_of_date: date
+    analysis_status: str
+    snapshot_coverage: Decimal
+    staleness_days: int | None = None
+    warnings: list[str]
+    exposure: list[ExposureCompanyRow]
+    total_direct_exposure: Decimal
+    total_lookthrough_exposure: Decimal
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class OverlapRow(BaseModel):
+    company_id: uuid.UUID
+    company_name: str
+    company_ticker: str | None
+    overlap_exposure: Decimal
+    portfolio_share: Decimal
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class OverlapAnalyticsResponse(BaseModel):
+    as_of_date: date
+    analysis_status: str
+    snapshot_coverage: Decimal
+    warnings: list[str]
+    top_5_concentration_pct: Decimal
+    top_10_concentration_pct: Decimal
+    duplicate_exposure_index: Decimal
+    overlaps: list[OverlapRow]
+
+    model_config = ConfigDict(json_encoders={Decimal: str})

@@ -363,3 +363,87 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
     # Breakdown contains correct currency mappings for both
     assert Decimal(summary["currency_breakdown"]["USD"]) == Decimal("2500.00")
     assert Decimal(summary["currency_breakdown"]["GBP"]) == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
+async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="investing-lookthrough@example.com",
+        username="investing-lookthrough",
+        password="password123",
+    )
+
+    instrument_res = await client.post(
+        "/v1/investing/instruments",
+        json={
+            "symbol": "VTI",
+            "name": "Vanguard Total Market ETF",
+            "instrument_type": "etf",
+        },
+    )
+    assert instrument_res.status_code == 201
+    instrument_id = instrument_res.json()["public_id"]
+
+    today = datetime.now(UTC).date().isoformat()
+    constituent_res = await client.post(
+        f"/v1/investing/instruments/{instrument_id}/constituents",
+        json={
+            "as_of_date": today,
+            "source": "test-seed",
+            "fetched_at": datetime.now(UTC).isoformat(),
+            "constituents": [
+                {"company_name": "Apple Inc", "company_ticker": "AAPL", "weight": "0.60000000"},
+                {
+                    "company_name": "Microsoft Corp",
+                    "company_ticker": "MSFT",
+                    "weight": "0.40000000",
+                },
+            ],
+        },
+    )
+    assert constituent_res.status_code == 201
+    assert len(constituent_res.json()) == 2
+
+    etf_holding = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "VTI",
+            "account_name": "brokerage",
+            "quantity": "10.00000000",
+            "avg_cost": "100.00",
+            "currency": "USD",
+        },
+    )
+    assert etf_holding.status_code == 201
+
+    direct_holding = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "AAPL",
+            "account_name": "wallet",
+            "quantity": "2.00000000",
+            "avg_cost": "150.00",
+            "currency": "USD",
+        },
+    )
+    assert direct_holding.status_code == 201
+
+    exposure_res = await client.get("/v1/investing/analytics/exposure", params={"as_of": today})
+    assert exposure_res.status_code == 200
+    exposure = exposure_res.json()
+    assert exposure["analysis_status"] == "complete"
+    assert exposure["snapshot_coverage"] == "1"
+    assert Decimal(exposure["total_lookthrough_exposure"]) > Decimal("0")
+    assert len(exposure["exposure"]) >= 2
+
+    aapl_row = next((row for row in exposure["exposure"] if row["company_ticker"] == "AAPL"), None)
+    assert aapl_row is not None
+    assert Decimal(aapl_row["lookthrough_exposure"]) > Decimal(aapl_row["direct_exposure"])
+
+    overlap_res = await client.get("/v1/investing/analytics/overlap", params={"as_of": today})
+    assert overlap_res.status_code == 200
+    overlap = overlap_res.json()
+    assert overlap["analysis_status"] == "complete"
+    assert len(overlap["overlaps"]) >= 2
+    assert overlap["overlaps"][0]["company_ticker"] in {"AAPL", "MSFT"}

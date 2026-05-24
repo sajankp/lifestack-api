@@ -1,11 +1,12 @@
 from collections.abc import Sequence
+from datetime import date
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
-from app.investing.models import CashBalance, Holding
+from app.investing.models import CashBalance, Company, Holding, Instrument, InstrumentConstituent
 
 
 class HoldingRepository:
@@ -102,3 +103,127 @@ class CashBalanceRepository:
     async def delete(self, cash_balance: CashBalance) -> None:
         await self.session.delete(cash_balance)
         await self.session.flush()
+
+
+class InstrumentRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def list_workspace(self, workspace_id: int) -> Sequence[Instrument]:
+        result = await self.session.execute(
+            select(Instrument)
+            .where(Instrument.workspace_id == workspace_id)
+            .order_by(Instrument.created_at.desc())
+        )
+        return result.scalars().all()
+
+    async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> Instrument | None:
+        result = await self.session.execute(
+            select(Instrument).where(
+                Instrument.workspace_id == workspace_id,
+                Instrument.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_symbol(self, workspace_id: int, symbol: str) -> Instrument | None:
+        result = await self.session.execute(
+            select(Instrument).where(
+                Instrument.workspace_id == workspace_id,
+                Instrument.symbol == symbol,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def create(self, instrument: Instrument) -> Instrument:
+        self.session.add(instrument)
+        await self.session.flush()
+        await self.session.refresh(instrument)
+        return instrument
+
+    async def save(self, instrument: Instrument) -> Instrument:
+        self.session.add(instrument)
+        await self.session.flush()
+        await self.session.refresh(instrument)
+        return instrument
+
+
+class CompanyRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> Company | None:
+        result = await self.session.execute(
+            select(Company).where(
+                Company.workspace_id == workspace_id,
+                Company.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_name(self, workspace_id: int, name: str) -> Company | None:
+        result = await self.session.execute(
+            select(Company).where(
+                Company.workspace_id == workspace_id,
+                Company.name == name,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_id(self, company_id: int) -> Company | None:
+        result = await self.session.execute(select(Company).where(Company.id == company_id))
+        return result.scalar_one_or_none()
+
+    async def create(self, company: Company) -> Company:
+        self.session.add(company)
+        await self.session.flush()
+        await self.session.refresh(company)
+        return company
+
+
+class InstrumentConstituentRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def delete_snapshot(self, instrument_id: int, as_of_date: date, source: str) -> None:
+        result = await self.session.execute(
+            select(InstrumentConstituent).where(
+                InstrumentConstituent.instrument_id == instrument_id,
+                InstrumentConstituent.as_of_date == as_of_date,
+                InstrumentConstituent.source == source,
+            )
+        )
+        for row in result.scalars().all():
+            await self.session.delete(row)
+        await self.session.flush()
+
+    async def create_many(self, rows: list[InstrumentConstituent]) -> list[InstrumentConstituent]:
+        self.session.add_all(rows)
+        await self.session.flush()
+        return rows
+
+    async def list_snapshot(
+        self, instrument_id: int, as_of_date: date
+    ) -> Sequence[InstrumentConstituent]:
+        result = await self.session.execute(
+            select(InstrumentConstituent).where(
+                InstrumentConstituent.instrument_id == instrument_id,
+                InstrumentConstituent.as_of_date == as_of_date,
+            )
+        )
+        return result.scalars().all()
+
+    async def get_latest_on_or_before(
+        self, instrument_id: int, as_of_date: date
+    ) -> Sequence[InstrumentConstituent]:
+        latest_date = (
+            await self.session.execute(
+                select(func.max(InstrumentConstituent.as_of_date)).where(
+                    InstrumentConstituent.instrument_id == instrument_id,
+                    InstrumentConstituent.as_of_date <= as_of_date,
+                )
+            )
+        ).scalar_one_or_none()
+        if latest_date is None:
+            return []
+        return await self.list_snapshot(instrument_id, latest_date)

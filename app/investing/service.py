@@ -1,6 +1,6 @@
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from app.core.audit import AuditLogger
@@ -12,14 +12,34 @@ from app.finance.repository import (
     FinanceSettingRepository,
     FxRateRepository,
 )
-from app.investing.models import CashBalance, Holding
-from app.investing.repository import CashBalanceRepository, HoldingRepository
+from app.investing.models import (
+    CashBalance,
+    Company,
+    Holding,
+    Instrument,
+    InstrumentConstituent,
+    InstrumentType,
+)
+from app.investing.repository import (
+    CashBalanceRepository,
+    CompanyRepository,
+    HoldingRepository,
+    InstrumentConstituentRepository,
+    InstrumentRepository,
+)
 from app.investing.schemas import (
     CashBalanceCreate,
     CashBalanceUpdate,
+    ExposureAnalyticsResponse,
+    ExposureCompanyRow,
     HoldingCreate,
     HoldingUpdate,
+    InstrumentConstituentResponse,
+    InstrumentConstituentUpsert,
+    InstrumentCreate,
     InvestingSummaryResponse,
+    OverlapAnalyticsResponse,
+    OverlapRow,
 )
 
 
@@ -46,12 +66,44 @@ class HoldingService:
     def __init__(
         self,
         repository: HoldingRepository,
+        instrument_repo: InstrumentRepository | None = None,
+        company_repo: CompanyRepository | None = None,
         account_repo: AccountRepository | None = None,
         currency_repo: CurrencyRepository | None = None,
     ):
         self.repository = repository
+        self.instrument_repo = instrument_repo
+        self.company_repo = company_repo
         self.account_repo = account_repo
         self.currency_repo = currency_repo
+
+    async def _resolve_or_create_stock_instrument(
+        self, workspace_id: int, symbol: str
+    ) -> Instrument | None:
+        if self.instrument_repo is None:
+            return None
+        instrument = await self.instrument_repo.get_by_symbol(workspace_id, symbol)
+        if instrument is not None:
+            return instrument
+
+        company: Company | None = None
+        if self.company_repo is not None:
+            company = await self.company_repo.get_by_name(workspace_id, symbol)
+            if company is None:
+                company = await self.company_repo.create(
+                    Company(workspace_id=workspace_id, name=symbol, ticker=symbol)
+                )
+
+        instrument = await self.instrument_repo.create(
+            Instrument(
+                workspace_id=workspace_id,
+                symbol=symbol,
+                name=symbol,
+                instrument_type=InstrumentType.stock.value,
+                company_id=company.id if company else None,
+            )
+        )
+        return instrument
 
     async def _validate_refs(self, workspace_id: int, account_name: str, currency: str) -> None:
         if self.account_repo is not None:
@@ -105,6 +157,9 @@ class HoldingService:
             avg_cost=holding_in.avg_cost,
             currency=holding_in.currency,
         )
+        instrument = await self._resolve_or_create_stock_instrument(workspace_id, holding_in.symbol)
+        if instrument is not None:
+            holding.instrument_id = instrument.id
         holding = await self.repository.create(holding)
 
         if audit_logger:
@@ -346,6 +401,261 @@ class CashBalanceService:
                     "changed_fields": [],
                 },
             )
+
+
+class InstrumentService:
+    def __init__(
+        self,
+        instrument_repo: InstrumentRepository,
+        company_repo: CompanyRepository,
+    ):
+        self.instrument_repo = instrument_repo
+        self.company_repo = company_repo
+
+    async def list_instruments(self, workspace_id: int) -> Sequence[Instrument]:
+        return await self.instrument_repo.list_workspace(workspace_id)
+
+    async def create_instrument(self, workspace_id: int, payload: InstrumentCreate) -> Instrument:
+        existing = await self.instrument_repo.get_by_symbol(workspace_id, payload.symbol)
+        if existing is not None:
+            raise ConflictError(detail=f"Instrument '{payload.symbol}' already exists")
+
+        company_id: int | None = None
+        if payload.instrument_type == InstrumentType.stock:
+            company = await self.company_repo.get_by_name(workspace_id, payload.name)
+            if company is None:
+                company = await self.company_repo.create(
+                    Company(
+                        workspace_id=workspace_id,
+                        name=payload.name,
+                        ticker=payload.ticker or payload.symbol,
+                    )
+                )
+            company_id = company.id
+
+        return await self.instrument_repo.create(
+            Instrument(
+                workspace_id=workspace_id,
+                symbol=payload.symbol,
+                name=payload.name,
+                instrument_type=payload.instrument_type.value,
+                company_id=company_id,
+            )
+        )
+
+
+class ConstituentService:
+    def __init__(
+        self,
+        instrument_repo: InstrumentRepository,
+        company_repo: CompanyRepository,
+        constituent_repo: InstrumentConstituentRepository,
+    ):
+        self.instrument_repo = instrument_repo
+        self.company_repo = company_repo
+        self.constituent_repo = constituent_repo
+
+    async def upsert_constituents(
+        self,
+        workspace_id: int,
+        instrument_public_id: uuid.UUID,
+        payload: InstrumentConstituentUpsert,
+    ) -> Sequence[InstrumentConstituent]:
+        instrument = await self.instrument_repo.get_by_public_id(workspace_id, instrument_public_id)
+        if instrument is None:
+            raise NotFoundError(detail=f"Instrument '{instrument_public_id}' not found")
+        if instrument.instrument_type == InstrumentType.stock.value:
+            raise ValidationError(detail="Stock instruments cannot have constituent snapshots")
+
+        await self.constituent_repo.delete_snapshot(
+            instrument.id, payload.as_of_date, payload.source
+        )  # type: ignore[arg-type]
+        rows: list[InstrumentConstituent] = []
+        for item in payload.constituents:
+            company = await self.company_repo.get_by_name(workspace_id, item.company_name)
+            if company is None:
+                company = await self.company_repo.create(
+                    Company(
+                        workspace_id=workspace_id,
+                        name=item.company_name,
+                        ticker=item.company_ticker,
+                    )
+                )
+            rows.append(
+                InstrumentConstituent(
+                    instrument_id=instrument.id,  # type: ignore[arg-type]
+                    constituent_company_id=company.id,  # type: ignore[arg-type]
+                    weight=item.weight,
+                    as_of_date=payload.as_of_date,
+                    source=payload.source,
+                    fetched_at=payload.fetched_at,
+                )
+            )
+        return await self.constituent_repo.create_many(rows)
+
+    async def get_constituents(
+        self, workspace_id: int, instrument_public_id: uuid.UUID, as_of: date
+    ) -> list[InstrumentConstituentResponse]:
+        instrument = await self.instrument_repo.get_by_public_id(workspace_id, instrument_public_id)
+        if instrument is None:
+            raise NotFoundError(detail=f"Instrument '{instrument_public_id}' not found")
+        rows = await self.constituent_repo.list_snapshot(instrument.id, as_of)  # type: ignore[arg-type]
+        if not rows:
+            rows = await self.constituent_repo.get_latest_on_or_before(instrument.id, as_of)  # type: ignore[arg-type]
+
+        out: list[InstrumentConstituentResponse] = []
+        for row in rows:
+            company = await self.company_repo.get_by_id(row.constituent_company_id)
+            if company is None:
+                continue
+            out.append(
+                InstrumentConstituentResponse(
+                    company_id=company.public_id,
+                    company_name=company.name,
+                    company_ticker=company.ticker,
+                    weight=row.weight,
+                    as_of_date=row.as_of_date,
+                    source=row.source,
+                )
+            )
+        return out
+
+
+class ExposureAnalyticsService:
+    def __init__(
+        self,
+        holding_repo: HoldingRepository,
+        instrument_repo: InstrumentRepository,
+        company_repo: CompanyRepository,
+        constituent_repo: InstrumentConstituentRepository,
+        staleness_window_days: int = 30,
+    ):
+        self.holding_repo = holding_repo
+        self.instrument_repo = instrument_repo
+        self.company_repo = company_repo
+        self.constituent_repo = constituent_repo
+        self.staleness_window_days = staleness_window_days
+
+    async def exposure(self, workspace_id: int, as_of: date) -> ExposureAnalyticsResponse:
+        holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
+        direct: dict[int, Decimal] = {}
+        lookthrough: dict[int, Decimal] = {}
+        warnings: list[str] = []
+        decomposable = 0
+        decomposed = 0
+
+        for h in holdings:
+            value = h.quantity * h.avg_cost
+            instrument = None
+            if h.instrument_id is not None:
+                instrument = await self.instrument_repo.session.get(Instrument, h.instrument_id)  # type: ignore[attr-defined]
+            if instrument is None:
+                instrument = await self.instrument_repo.get_by_symbol(workspace_id, h.symbol)
+            if instrument is None:
+                warnings.append(f"Instrument missing for symbol {h.symbol}")
+                continue
+
+            if instrument.instrument_type == InstrumentType.stock.value:
+                if instrument.company_id is None:
+                    warnings.append(
+                        f"Stock instrument {instrument.symbol} is not linked to a company"
+                    )
+                    continue
+                direct[instrument.company_id] = (
+                    direct.get(instrument.company_id, Decimal("0")) + value
+                )
+                lookthrough[instrument.company_id] = (
+                    lookthrough.get(instrument.company_id, Decimal("0")) + value
+                )
+                continue
+
+            decomposable += 1
+            rows = await self.constituent_repo.get_latest_on_or_before(
+                instrument.id,  # type: ignore[arg-type]
+                as_of,
+            )
+            if not rows:
+                warnings.append(f"No constituent snapshot for {instrument.symbol}")
+                continue
+            snapshot_date = rows[0].as_of_date
+            if (as_of - snapshot_date).days > self.staleness_window_days:
+                warnings.append(f"Stale constituent snapshot for {instrument.symbol}")
+                continue
+            decomposed += 1
+            for row in rows:
+                lookthrough[row.constituent_company_id] = lookthrough.get(
+                    row.constituent_company_id, Decimal("0")
+                ) + (value * row.weight)
+
+        company_ids = sorted(set(direct.keys()) | set(lookthrough.keys()))
+        rows: list[ExposureCompanyRow] = []
+        for cid in company_ids:
+            company = await self.instrument_repo.session.get(Company, cid)  # type: ignore[attr-defined]
+            if company is None:
+                continue
+            rows.append(
+                ExposureCompanyRow(
+                    company_id=company.public_id,
+                    company_name=company.name,
+                    company_ticker=company.ticker,
+                    direct_exposure=direct.get(cid, Decimal("0")),
+                    lookthrough_exposure=lookthrough.get(cid, Decimal("0")),
+                )
+            )
+
+        coverage = Decimal("1")
+        if decomposable > 0:
+            coverage = Decimal(decomposed) / Decimal(decomposable)
+        analysis_status = "complete" if not warnings else "partial"
+        return ExposureAnalyticsResponse(
+            as_of_date=as_of,
+            analysis_status=analysis_status,
+            snapshot_coverage=coverage,
+            staleness_days=self.staleness_window_days,
+            warnings=warnings,
+            exposure=rows,
+            total_direct_exposure=sum((r.direct_exposure for r in rows), Decimal("0")),
+            total_lookthrough_exposure=sum((r.lookthrough_exposure for r in rows), Decimal("0")),
+        )
+
+    async def overlap(self, workspace_id: int, as_of: date) -> OverlapAnalyticsResponse:
+        exposure = await self.exposure(workspace_id, as_of)
+        sorted_rows = sorted(exposure.exposure, key=lambda r: r.lookthrough_exposure, reverse=True)
+        total = sum((r.lookthrough_exposure for r in sorted_rows), Decimal("0"))
+
+        overlaps: list[OverlapRow] = []
+        for row in sorted_rows:
+            share = Decimal("0")
+            if total > 0:
+                share = row.lookthrough_exposure / total
+            overlaps.append(
+                OverlapRow(
+                    company_id=row.company_id,
+                    company_name=row.company_name,
+                    company_ticker=row.company_ticker,
+                    overlap_exposure=row.lookthrough_exposure,
+                    portfolio_share=share,
+                )
+            )
+
+        top5 = sum((r.portfolio_share for r in overlaps[:5]), Decimal("0"))
+        top10 = sum((r.portfolio_share for r in overlaps[:10]), Decimal("0"))
+        duplicate = sum(
+            ((row.lookthrough_exposure - row.direct_exposure) for row in exposure.exposure),
+            Decimal("0"),
+        )
+        duplicate = duplicate / total if total > 0 else Decimal("0")
+
+        return OverlapAnalyticsResponse(
+            as_of_date=as_of,
+            analysis_status=exposure.analysis_status,
+            snapshot_coverage=exposure.snapshot_coverage,
+            warnings=exposure.warnings,
+            top_5_concentration_pct=top5,
+            top_10_concentration_pct=top10,
+            duplicate_exposure_index=duplicate,
+            overlaps=overlaps,
+        )
 
 
 class InvestingSummaryService:

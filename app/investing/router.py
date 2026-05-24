@@ -1,4 +1,5 @@
 import uuid
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
@@ -8,8 +9,11 @@ from app.core.dependencies import (
     get_audit_logger,
     get_current_user,
     get_current_workspace_id,
+    get_investing_analytics_service,
     get_investing_cash_balance_service,
+    get_investing_constituent_service,
     get_investing_holding_service,
+    get_investing_instrument_service,
     get_investing_summary_service,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
@@ -17,12 +21,25 @@ from app.investing.schemas import (
     CashBalanceCreate,
     CashBalanceResponse,
     CashBalanceUpdate,
+    ExposureAnalyticsResponse,
     HoldingCreate,
     HoldingResponse,
     HoldingUpdate,
+    InstrumentConstituentResponse,
+    InstrumentConstituentUpsert,
+    InstrumentCreate,
+    InstrumentResponse,
     InvestingSummaryResponse,
+    OverlapAnalyticsResponse,
 )
-from app.investing.service import CashBalanceService, HoldingService, InvestingSummaryService
+from app.investing.service import (
+    CashBalanceService,
+    ConstituentService,
+    ExposureAnalyticsService,
+    HoldingService,
+    InstrumentService,
+    InvestingSummaryService,
+)
 
 router = APIRouter(prefix="/investing", tags=["investing"])
 
@@ -164,3 +181,83 @@ async def get_investing_summary(
     _user: Annotated[dict, Depends(get_current_user)],
 ):
     return await summary_service.get_summary(workspace_id)
+
+
+@router.get("/instruments", response_model=list[InstrumentResponse])
+async def list_instruments(
+    instrument_service: Annotated[InstrumentService, Depends(get_investing_instrument_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    instruments = await instrument_service.list_instruments(workspace_id)
+    return [InstrumentResponse.model_validate(item) for item in instruments]
+
+
+@router.post("/instruments", response_model=InstrumentResponse, status_code=status.HTTP_201_CREATED)
+async def create_instrument(
+    payload: InstrumentCreate,
+    instrument_service: Annotated[InstrumentService, Depends(get_investing_instrument_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    instrument = await instrument_service.create_instrument(workspace_id, payload)
+    return InstrumentResponse.model_validate(instrument)
+
+
+@router.get(
+    "/instruments/{instrument_id}/constituents",
+    response_model=list[InstrumentConstituentResponse],
+)
+async def get_instrument_constituents(
+    instrument_id: uuid.UUID,
+    as_of: str,
+    constituent_service: Annotated[ConstituentService, Depends(get_investing_constituent_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    as_of_date = date.fromisoformat(as_of)
+    return await constituent_service.get_constituents(workspace_id, instrument_id, as_of_date)
+
+
+@router.post(
+    "/instruments/{instrument_id}/constituents",
+    response_model=list[InstrumentConstituentResponse],
+    status_code=status.HTTP_201_CREATED,
+)
+async def upsert_instrument_constituents(
+    instrument_id: uuid.UUID,
+    payload: InstrumentConstituentUpsert,
+    constituent_service: Annotated[ConstituentService, Depends(get_investing_constituent_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    await constituent_service.upsert_constituents(workspace_id, instrument_id, payload)
+    return await constituent_service.get_constituents(
+        workspace_id=workspace_id, instrument_public_id=instrument_id, as_of=payload.as_of_date
+    )
+
+
+@router.get("/analytics/exposure", response_model=ExposureAnalyticsResponse)
+async def get_exposure_analytics(
+    as_of: str,
+    analytics_service: Annotated[
+        ExposureAnalyticsService, Depends(get_investing_analytics_service)
+    ],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    as_of_date = date.fromisoformat(as_of)
+    return await analytics_service.exposure(workspace_id, as_of_date)
+
+
+@router.get("/analytics/overlap", response_model=OverlapAnalyticsResponse)
+async def get_overlap_analytics(
+    as_of: str,
+    analytics_service: Annotated[
+        ExposureAnalyticsService, Depends(get_investing_analytics_service)
+    ],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    as_of_date = date.fromisoformat(as_of)
+    return await analytics_service.overlap(workspace_id, as_of_date)
