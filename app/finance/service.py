@@ -14,7 +14,18 @@ class CurrencyService:
         self.repository = repository
 
     async def list_workspace_currencies(self, workspace_id: int) -> Sequence:
-        return await self.repository.list_workspace_enabled(workspace_id)
+        currencies = await self.repository.list_workspace_enabled(workspace_id)
+        if currencies:
+            return currencies
+
+        # Bootstrap default workspace currency mappings for new workspaces.
+        active = await self.repository.list_active()
+        if active:
+            await self.repository.add_workspace_currencies(
+                workspace_id, [currency.code for currency in active]
+            )
+            currencies = await self.repository.list_workspace_enabled(workspace_id)
+        return currencies
 
     async def validate_supported_code(self, code: str) -> None:
         currency = await self.repository.get_by_code(code)

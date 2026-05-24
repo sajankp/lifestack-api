@@ -22,6 +22,22 @@ class CurrencyRepository:
         )
         return result.scalars().all()
 
+    async def list_active(self) -> Sequence[Currency]:
+        result = await self.session.execute(
+            select(Currency).where(Currency.is_active.is_(True)).order_by(Currency.code.asc())
+        )
+        return result.scalars().all()
+
+    async def add_workspace_currencies(self, workspace_id: int, codes: Sequence[str]) -> None:
+        for code in codes:
+            self.session.add(
+                WorkspaceCurrency(
+                    workspace_id=workspace_id,
+                    currency_code=code.upper(),
+                )
+            )
+        await self.session.flush()
+
     async def get_by_code(self, code: str) -> Currency | None:
         result = await self.session.execute(select(Currency).where(Currency.code == code.upper()))
         return result.scalar_one_or_none()
