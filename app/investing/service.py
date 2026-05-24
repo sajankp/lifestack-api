@@ -6,6 +6,7 @@ from decimal import Decimal
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.pagination import DEFAULT_LIMIT
+from app.finance.repository import FinanceSettingRepository
 from app.investing.models import CashBalance, Holding
 from app.investing.repository import CashBalanceRepository, HoldingRepository
 from app.investing.schemas import (
@@ -283,48 +284,99 @@ class CashBalanceService:
 
 
 class InvestingSummaryService:
-    def __init__(self, holding_repo: HoldingRepository, cash_repo: CashBalanceRepository):
+    def __init__(
+        self,
+        holding_repo: HoldingRepository,
+        cash_repo: CashBalanceRepository,
+        finance_setting_repo: FinanceSettingRepository | None = None,
+    ):
         self.holding_repo = holding_repo
         self.cash_repo = cash_repo
+        self.finance_setting_repo = finance_setting_repo
 
     async def get_summary(self, workspace_id: int) -> InvestingSummaryResponse:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
         cash_balances, _ = await self.cash_repo.get_all(workspace_id, limit=10000, offset=0)
 
-        # Collect all currencies in the workspace to determine the primary currency
-        workspace_currencies: list[str] = []
-        for holding in holdings:
-            curr = holding.currency.upper()
-            if curr not in workspace_currencies:
-                workspace_currencies.append(curr)
-        for cash in cash_balances:
-            curr = cash.currency.upper()
-            if curr not in workspace_currencies:
-                workspace_currencies.append(curr)
-
-        if "USD" in workspace_currencies:
-            primary_currency = "USD"
-        elif workspace_currencies:
-            primary_currency = workspace_currencies[0]
-        else:
-            primary_currency = "USD"
-
-        portfolio_value = Decimal("0")
         breakdown: dict[str, Decimal] = {}
 
         for holding in holdings:
             value = holding.quantity * holding.avg_cost
             curr = holding.currency.upper()
-            if curr == primary_currency:
-                portfolio_value += value
             breakdown[curr] = breakdown.get(curr, Decimal("0")) + value
 
-        cash_total = Decimal("0")
         for cash in cash_balances:
             curr = cash.currency.upper()
-            if curr == primary_currency:
-                cash_total += cash.balance
             breakdown[curr] = breakdown.get(curr, Decimal("0")) + cash.balance
+
+        used_currencies = sorted(breakdown.keys())
+        reporting_currency: str | None = None
+        if self.finance_setting_repo is not None:
+            settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
+            if settings and settings.reporting_currency_code:
+                reporting_currency = settings.reporting_currency_code.upper()
+
+        # No data in workspace -> trivially valued as zero.
+        if not used_currencies:
+            return InvestingSummaryResponse(
+                portfolio_value=Decimal("0"),
+                holdings_count=0,
+                cash_total=Decimal("0"),
+                currency_breakdown={},
+                daily_change=None,
+                reporting_currency=reporting_currency,
+                valuation_status="empty",
+            )
+
+        if reporting_currency is None:
+            # If there is only one currency, we can report deterministic native totals.
+            if len(used_currencies) == 1:
+                currency = used_currencies[0]
+                portfolio_value = Decimal("0")
+                cash_total = Decimal("0")
+                for holding in holdings:
+                    portfolio_value += holding.quantity * holding.avg_cost
+                for cash in cash_balances:
+                    cash_total += cash.balance
+                return InvestingSummaryResponse(
+                    portfolio_value=portfolio_value,
+                    holdings_count=len(holdings),
+                    cash_total=cash_total,
+                    currency_breakdown=breakdown,
+                    daily_change=None,
+                    reporting_currency=currency,
+                    valuation_status="single_currency_native",
+                )
+
+            # Multi-currency portfolio without configured reporting currency.
+            return InvestingSummaryResponse(
+                portfolio_value=None,
+                holdings_count=len(holdings),
+                cash_total=None,
+                currency_breakdown=breakdown,
+                daily_change=None,
+                reporting_currency=None,
+                valuation_status="multi_currency_unconverted",
+            )
+
+        if any(curr != reporting_currency for curr in used_currencies):
+            # Explicit reporting currency exists, but conversion engine/rates not implemented yet.
+            return InvestingSummaryResponse(
+                portfolio_value=None,
+                holdings_count=len(holdings),
+                cash_total=None,
+                currency_breakdown=breakdown,
+                daily_change=None,
+                reporting_currency=reporting_currency,
+                valuation_status="conversion_required",
+            )
+
+        portfolio_value = Decimal("0")
+        cash_total = Decimal("0")
+        for holding in holdings:
+            portfolio_value += holding.quantity * holding.avg_cost
+        for cash in cash_balances:
+            cash_total += cash.balance
 
         return InvestingSummaryResponse(
             portfolio_value=portfolio_value,
@@ -332,4 +384,6 @@ class InvestingSummaryService:
             cash_total=cash_total,
             currency_breakdown=breakdown,
             daily_change=None,
+            reporting_currency=reporting_currency,
+            valuation_status="converted_available",
         )

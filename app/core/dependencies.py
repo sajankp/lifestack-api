@@ -11,6 +11,8 @@ from app.core.audit import AuditLogger
 from app.core.auth import get_user_info_from_token
 from app.core.database.postgres import get_db_session
 from app.core.exceptions import CSRFFailedError, UnauthorizedError
+from app.finance.repository import AccountRepository, CurrencyRepository, FinanceSettingRepository
+from app.finance.service import AccountService, CurrencyService
 from app.investing.repository import CashBalanceRepository, HoldingRepository
 from app.investing.service import CashBalanceService, HoldingService, InvestingSummaryService
 from app.platform.repository import MembershipRepository, WorkspaceRepository
@@ -236,6 +238,12 @@ async def get_investing_cash_balance_repo(
     return CashBalanceRepository(session)
 
 
+async def get_finance_setting_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> FinanceSettingRepository:
+    return FinanceSettingRepository(session)
+
+
 async def get_investing_holding_service(
     repo: HoldingRepository = Depends(get_investing_holding_repo),
 ) -> HoldingService:
@@ -251,8 +259,39 @@ async def get_investing_cash_balance_service(
 async def get_investing_summary_service(
     holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
     cash_repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
+    finance_setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
 ) -> InvestingSummaryService:
-    return InvestingSummaryService(holding_repo, cash_repo)
+    return InvestingSummaryService(holding_repo, cash_repo, finance_setting_repo)
+
+
+# ---------------------------------------------------------------------------
+# Finance references
+# ---------------------------------------------------------------------------
+
+
+async def get_finance_currency_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> CurrencyRepository:
+    return CurrencyRepository(session)
+
+
+async def get_finance_account_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> AccountRepository:
+    return AccountRepository(session)
+
+
+async def get_finance_currency_service(
+    repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> CurrencyService:
+    return CurrencyService(repo)
+
+
+async def get_finance_account_service(
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> AccountService:
+    return AccountService(account_repo, currency_repo)
 
 
 async def get_current_workspace_id(

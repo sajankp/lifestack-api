@@ -87,10 +87,12 @@ class CashBalanceResponse(BaseModel):
 
 
 class InvestingSummaryResponse(BaseModel):
-    portfolio_value: Decimal
+    portfolio_value: Decimal | None = None
     holdings_count: int
-    cash_total: Decimal
+    cash_total: Decimal | None = None
     currency_breakdown: dict[str, Decimal]
     daily_change: Decimal | None = None
+    reporting_currency: str | None = None
+    valuation_status: str = "unavailable"
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})

@@ -84,6 +84,8 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     assert summary["cash_total"] == "1000.00"
     assert summary["currency_breakdown"]["USD"] == "2680.0000000000"
     assert summary["daily_change"] is None
+    assert summary["reporting_currency"] == "USD"
+    assert summary["valuation_status"] == "single_currency_native"
 
     async with postgres.async_session_maker() as session:
         db_holding = (
@@ -300,7 +302,7 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
             "currency": "usd",
         },
     )
-    # 2. Create EUR asset (Holding)
+    # 2. Create GBP asset (Holding)
     await client.post(
         "/v1/investing/holdings",
         json={
@@ -308,7 +310,7 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
             "account_name": "brokerage",
             "quantity": "5.00000000",
             "avg_cost": "100.00",
-            "currency": "eur",
+            "currency": "gbp",
         },
     )
     # 3. Create USD cash balance
@@ -321,26 +323,27 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
             "as_of": datetime.now(UTC).isoformat(),
         },
     )
-    # 4. Create EUR cash balance
+    # 4. Create GBP cash balance
     await client.post(
         "/v1/investing/cash-balances",
         json={
-            "account_name": "eur-wallet",
+            "account_name": "gbp-wallet",
             "balance": "500.00",
-            "currency": "eur",
+            "currency": "gbp",
             "as_of": datetime.now(UTC).isoformat(),
         },
     )
 
-    # Fetch summary and assert aggregates are only computed for the dominant currency (USD)
+    # Multi-currency without reporting currency should require conversion.
     summary_res = await client.get("/v1/investing/summary")
     assert summary_res.status_code == 200
     summary = summary_res.json()
     assert summary["holdings_count"] == 2
-    # USD only sums
-    assert Decimal(summary["portfolio_value"]) == Decimal("1500.00")
-    assert Decimal(summary["cash_total"]) == Decimal("1000.00")
+    assert summary["portfolio_value"] is None
+    assert summary["cash_total"] is None
+    assert summary["reporting_currency"] is None
+    assert summary["valuation_status"] == "multi_currency_unconverted"
 
     # Breakdown contains correct currency mappings for both
     assert Decimal(summary["currency_breakdown"]["USD"]) == Decimal("2500.00")
-    assert Decimal(summary["currency_breakdown"]["EUR"]) == Decimal("1000.00")
+    assert Decimal(summary["currency_breakdown"]["GBP"]) == Decimal("1000.00")
