@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from httpx import AsyncClient
 
@@ -125,3 +127,87 @@ async def test_finance_account_validation_and_workspace_isolation(client: AsyncC
         json={"name": "Should Not Work"},
     )
     assert patch_res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_finance_settings_fx_and_transfers_flow(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="finance-transfer@example.com",
+        username="finance-transfer",
+        password="password123",
+    )
+
+    from_account = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Budget Bank",
+            "account_type": "bank",
+            "default_currency_code": "USD",
+        },
+    )
+    assert from_account.status_code == 201
+    to_account = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Global Brokerage",
+            "account_type": "brokerage",
+            "default_currency_code": "GBP",
+        },
+    )
+    assert to_account.status_code == 201
+
+    setting_res = await client.patch(
+        "/v1/finance/settings",
+        json={"reporting_currency_code": "USD"},
+    )
+    assert setting_res.status_code == 200
+    assert setting_res.json()["reporting_currency_code"] == "USD"
+
+    fx_upsert = await client.post(
+        "/v1/finance/fx-rates",
+        json={
+            "base_currency_code": "GBP",
+            "quote_currency_code": "USD",
+            "rate": "1.2500000000",
+            "as_of": datetime.now(UTC).isoformat(),
+            "fetched_at": datetime.now(UTC).isoformat(),
+            "source": "test-seed",
+        },
+    )
+    assert fx_upsert.status_code == 201
+
+    fx_get = await client.get("/v1/finance/fx-rates", params={"base": "GBP", "quote": "USD"})
+    assert fx_get.status_code == 200
+    assert fx_get.json()["base_currency_code"] == "GBP"
+    assert fx_get.json()["quote_currency_code"] == "USD"
+
+    transfer_res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "investing",
+            "from_account_id": from_account.json()["public_id"],
+            "to_account_id": to_account.json()["public_id"],
+            "from_currency_code": "USD",
+            "to_currency_code": "GBP",
+            "gross_amount": "1000.00",
+            "fx_rate_used": "0.8000000000",
+            "fx_fee_amount": "5.00",
+            "platform_fee_amount": "2.00",
+            "tax_amount": "1.00",
+            "net_amount_received": "792.00",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "notes": "Initial transfer",
+        },
+    )
+    assert transfer_res.status_code == 201
+    transfer_id = transfer_res.json()["public_id"]
+
+    list_transfers = await client.get("/v1/finance/transfers")
+    assert list_transfers.status_code == 200
+    assert list_transfers.json()["total"] == 1
+
+    get_transfer = await client.get(f"/v1/finance/transfers/{transfer_id}")
+    assert get_transfer.status_code == 200
+    assert get_transfer.json()["net_amount_received"] == "792.00"

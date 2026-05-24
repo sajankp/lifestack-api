@@ -24,6 +24,22 @@ async def _register_and_login(
         data={"username": username, "password": password},
     )
     assert login_res.status_code == 200
+    for account_name in [
+        "brokerage",
+        "wallet",
+        "usd-wallet",
+        "gbp-wallet",
+        "eur-wallet",
+        "primary",
+    ]:
+        await client.post(
+            "/v1/finance/accounts",
+            json={
+                "name": account_name,
+                "account_type": "brokerage",
+                "default_currency_code": "USD",
+            },
+        )
 
 
 @pytest.mark.asyncio

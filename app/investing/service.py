@@ -4,9 +4,14 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.core.audit import AuditLogger
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
-from app.finance.repository import FinanceSettingRepository
+from app.finance.repository import (
+    AccountRepository,
+    CurrencyRepository,
+    FinanceSettingRepository,
+    FxRateRepository,
+)
 from app.investing.models import CashBalance, Holding
 from app.investing.repository import CashBalanceRepository, HoldingRepository
 from app.investing.schemas import (
@@ -38,8 +43,31 @@ def _snapshot_cash_balance(cash: CashBalance) -> dict:
 
 
 class HoldingService:
-    def __init__(self, repository: HoldingRepository):
+    def __init__(
+        self,
+        repository: HoldingRepository,
+        account_repo: AccountRepository | None = None,
+        currency_repo: CurrencyRepository | None = None,
+    ):
         self.repository = repository
+        self.account_repo = account_repo
+        self.currency_repo = currency_repo
+
+    async def _validate_refs(self, workspace_id: int, account_name: str, currency: str) -> None:
+        if self.account_repo is not None:
+            account = await self.account_repo.get_by_name(workspace_id, account_name)
+            if not account or not account.is_active:
+                raise ValidationError(
+                    detail=f"Account '{account_name}' is not found in this workspace"
+                )
+        if self.currency_repo is not None:
+            code = currency.upper()
+            currency_row = await self.currency_repo.get_by_code(code)
+            if not currency_row or not currency_row.is_active:
+                raise ValidationError(detail=f"Unsupported currency code '{code}'")
+            enabled = await self.currency_repo.is_enabled_for_workspace(workspace_id, code)
+            if not enabled:
+                raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
 
     async def list_holdings(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
@@ -66,6 +94,7 @@ class HoldingService:
             raise ConflictError(
                 detail=("A holding already exists for this symbol/account in this workspace")
             )
+        await self._validate_refs(workspace_id, holding_in.account_name, holding_in.currency)
 
         holding = Holding(
             workspace_id=workspace_id,
@@ -111,6 +140,12 @@ class HoldingService:
         update_data = holding_in.model_dump(exclude_unset=True)
         if not update_data:
             return holding
+
+        next_account_name = holding.account_name
+        next_currency = holding.currency
+        if "currency" in update_data and update_data["currency"] is not None:
+            next_currency = update_data["currency"]
+        await self._validate_refs(workspace_id, next_account_name, next_currency)
 
         for key, value in update_data.items():
             setattr(holding, key, value)
@@ -165,8 +200,31 @@ class HoldingService:
 
 
 class CashBalanceService:
-    def __init__(self, repository: CashBalanceRepository):
+    def __init__(
+        self,
+        repository: CashBalanceRepository,
+        account_repo: AccountRepository | None = None,
+        currency_repo: CurrencyRepository | None = None,
+    ):
         self.repository = repository
+        self.account_repo = account_repo
+        self.currency_repo = currency_repo
+
+    async def _validate_refs(self, workspace_id: int, account_name: str, currency: str) -> None:
+        if self.account_repo is not None:
+            account = await self.account_repo.get_by_name(workspace_id, account_name)
+            if not account or not account.is_active:
+                raise ValidationError(
+                    detail=f"Account '{account_name}' is not found in this workspace"
+                )
+        if self.currency_repo is not None:
+            code = currency.upper()
+            currency_row = await self.currency_repo.get_by_code(code)
+            if not currency_row or not currency_row.is_active:
+                raise ValidationError(detail=f"Unsupported currency code '{code}'")
+            enabled = await self.currency_repo.is_enabled_for_workspace(workspace_id, code)
+            if not enabled:
+                raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
 
     async def list_cash_balances(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
@@ -188,6 +246,7 @@ class CashBalanceService:
         cash_in: CashBalanceCreate,
         audit_logger: AuditLogger | None = None,
     ) -> CashBalance:
+        await self._validate_refs(workspace_id, cash_in.account_name, cash_in.currency)
         cash = CashBalance(
             workspace_id=workspace_id,
             user_id=user_id,
@@ -230,6 +289,12 @@ class CashBalanceService:
         update_data = cash_in.model_dump(exclude_unset=True)
         if not update_data:
             return cash
+
+        next_account_name = cash.account_name
+        next_currency = cash.currency
+        if "currency" in update_data and update_data["currency"] is not None:
+            next_currency = update_data["currency"]
+        await self._validate_refs(workspace_id, next_account_name, next_currency)
 
         for key, value in update_data.items():
             setattr(cash, key, value)
@@ -289,10 +354,12 @@ class InvestingSummaryService:
         holding_repo: HoldingRepository,
         cash_repo: CashBalanceRepository,
         finance_setting_repo: FinanceSettingRepository | None = None,
+        fx_rate_repo: FxRateRepository | None = None,
     ):
         self.holding_repo = holding_repo
         self.cash_repo = cash_repo
         self.finance_setting_repo = finance_setting_repo
+        self.fx_rate_repo = fx_rate_repo
 
     async def get_summary(self, workspace_id: int) -> InvestingSummaryResponse:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -326,6 +393,7 @@ class InvestingSummaryService:
                 daily_change=None,
                 reporting_currency=reporting_currency,
                 valuation_status="empty",
+                fx_as_of=None,
             )
 
         if reporting_currency is None:
@@ -346,6 +414,7 @@ class InvestingSummaryService:
                     daily_change=None,
                     reporting_currency=currency,
                     valuation_status="single_currency_native",
+                    fx_as_of=None,
                 )
 
             # Multi-currency portfolio without configured reporting currency.
@@ -357,18 +426,106 @@ class InvestingSummaryService:
                 daily_change=None,
                 reporting_currency=None,
                 valuation_status="multi_currency_unconverted",
+                fx_as_of=None,
             )
 
         if any(curr != reporting_currency for curr in used_currencies):
-            # Explicit reporting currency exists, but conversion engine/rates not implemented yet.
+            if self.fx_rate_repo is None:
+                return InvestingSummaryResponse(
+                    portfolio_value=None,
+                    holdings_count=len(holdings),
+                    cash_total=None,
+                    currency_breakdown=breakdown,
+                    daily_change=None,
+                    reporting_currency=reporting_currency,
+                    valuation_status="conversion_required",
+                    fx_as_of=None,
+                )
+
+            converted_portfolio = Decimal("0")
+            converted_cash = Decimal("0")
+            valuation_as_of = datetime.now(UTC)
+
+            for holding in holdings:
+                native_value = holding.quantity * holding.avg_cost
+                curr = holding.currency.upper()
+                if curr == reporting_currency:
+                    converted_portfolio += native_value
+                    continue
+                rate_row = await self.fx_rate_repo.get_latest_rate(
+                    curr, reporting_currency, as_of=valuation_as_of
+                )
+                if rate_row is None and curr != "USD" and reporting_currency != "USD":
+                    base_to_usd = await self.fx_rate_repo.get_latest_rate(
+                        curr, "USD", as_of=valuation_as_of
+                    )
+                    usd_to_quote = await self.fx_rate_repo.get_latest_rate(
+                        "USD", reporting_currency, as_of=valuation_as_of
+                    )
+                    if base_to_usd and usd_to_quote:
+                        converted_portfolio += (
+                            native_value
+                            * Decimal(str(base_to_usd.rate))
+                            * Decimal(str(usd_to_quote.rate))
+                        )
+                        continue
+                if rate_row is None:
+                    return InvestingSummaryResponse(
+                        portfolio_value=None,
+                        holdings_count=len(holdings),
+                        cash_total=None,
+                        currency_breakdown=breakdown,
+                        daily_change=None,
+                        reporting_currency=reporting_currency,
+                        valuation_status="conversion_required",
+                        fx_as_of=None,
+                    )
+                converted_portfolio += native_value * Decimal(str(rate_row.rate))
+
+            for cash in cash_balances:
+                curr = cash.currency.upper()
+                if curr == reporting_currency:
+                    converted_cash += cash.balance
+                    continue
+                rate_row = await self.fx_rate_repo.get_latest_rate(
+                    curr, reporting_currency, as_of=valuation_as_of
+                )
+                if rate_row is None and curr != "USD" and reporting_currency != "USD":
+                    base_to_usd = await self.fx_rate_repo.get_latest_rate(
+                        curr, "USD", as_of=valuation_as_of
+                    )
+                    usd_to_quote = await self.fx_rate_repo.get_latest_rate(
+                        "USD", reporting_currency, as_of=valuation_as_of
+                    )
+                    if base_to_usd and usd_to_quote:
+                        converted_cash += (
+                            cash.balance
+                            * Decimal(str(base_to_usd.rate))
+                            * Decimal(str(usd_to_quote.rate))
+                        )
+                        continue
+                if rate_row is None:
+                    return InvestingSummaryResponse(
+                        portfolio_value=None,
+                        holdings_count=len(holdings),
+                        cash_total=None,
+                        currency_breakdown=breakdown,
+                        daily_change=None,
+                        reporting_currency=reporting_currency,
+                        valuation_status="conversion_required",
+                        fx_as_of=None,
+                    )
+                converted_cash += cash.balance * Decimal(str(rate_row.rate))
+
             return InvestingSummaryResponse(
-                portfolio_value=None,
+                portfolio_value=converted_portfolio,
                 holdings_count=len(holdings),
-                cash_total=None,
+                cash_total=converted_cash,
                 currency_breakdown=breakdown,
                 daily_change=None,
                 reporting_currency=reporting_currency,
-                valuation_status="conversion_required",
+                valuation_status="converted_available",
+                fx_as_of=valuation_as_of,
             )
 
         portfolio_value = Decimal("0")
@@ -386,4 +543,5 @@ class InvestingSummaryService:
             daily_change=None,
             reporting_currency=reporting_currency,
             valuation_status="converted_available",
+            fx_as_of=None,
         )

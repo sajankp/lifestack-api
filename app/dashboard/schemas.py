@@ -21,7 +21,7 @@ class SpendingSummary(BaseModel):
 
 class InvestingSummary(BaseModel):
     status: str = "available"
-    portfolio_value: Decimal = Decimal("0")
+    portfolio_value: Decimal | None = Decimal("0")
     daily_change: Decimal | None = None
     holdings_count: int = 0
 

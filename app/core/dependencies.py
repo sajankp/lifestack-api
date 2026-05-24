@@ -11,8 +11,20 @@ from app.core.audit import AuditLogger
 from app.core.auth import get_user_info_from_token
 from app.core.database.postgres import get_db_session
 from app.core.exceptions import CSRFFailedError, UnauthorizedError
-from app.finance.repository import AccountRepository, CurrencyRepository, FinanceSettingRepository
-from app.finance.service import AccountService, CurrencyService
+from app.finance.repository import (
+    AccountRepository,
+    CapitalTransferRepository,
+    CurrencyRepository,
+    FinanceSettingRepository,
+    FxRateRepository,
+)
+from app.finance.service import (
+    AccountService,
+    CapitalTransferService,
+    CurrencyService,
+    FinanceSettingService,
+    FxRateService,
+)
 from app.investing.repository import CashBalanceRepository, HoldingRepository
 from app.investing.service import CashBalanceService, HoldingService, InvestingSummaryService
 from app.platform.repository import MembershipRepository, WorkspaceRepository
@@ -244,29 +256,16 @@ async def get_finance_setting_repo(
     return FinanceSettingRepository(session)
 
 
-async def get_investing_holding_service(
-    repo: HoldingRepository = Depends(get_investing_holding_repo),
-) -> HoldingService:
-    return HoldingService(repo)
+async def get_finance_fx_rate_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> FxRateRepository:
+    return FxRateRepository(session)
 
 
-async def get_investing_cash_balance_service(
-    repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
-) -> CashBalanceService:
-    return CashBalanceService(repo)
-
-
-async def get_investing_summary_service(
-    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
-    cash_repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
-    finance_setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
-) -> InvestingSummaryService:
-    return InvestingSummaryService(holding_repo, cash_repo, finance_setting_repo)
-
-
-# ---------------------------------------------------------------------------
-# Finance references
-# ---------------------------------------------------------------------------
+async def get_finance_transfer_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> CapitalTransferRepository:
+    return CapitalTransferRepository(session)
 
 
 async def get_finance_currency_repo(
@@ -281,6 +280,36 @@ async def get_finance_account_repo(
     return AccountRepository(session)
 
 
+async def get_investing_holding_service(
+    repo: HoldingRepository = Depends(get_investing_holding_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> HoldingService:
+    return HoldingService(repo, account_repo, currency_repo)
+
+
+async def get_investing_cash_balance_service(
+    repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> CashBalanceService:
+    return CashBalanceService(repo, account_repo, currency_repo)
+
+
+async def get_investing_summary_service(
+    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
+    cash_repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
+    finance_setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
+    fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
+) -> InvestingSummaryService:
+    return InvestingSummaryService(holding_repo, cash_repo, finance_setting_repo, fx_rate_repo)
+
+
+# ---------------------------------------------------------------------------
+# Finance references
+# ---------------------------------------------------------------------------
+
+
 async def get_finance_currency_service(
     repo: CurrencyRepository = Depends(get_finance_currency_repo),
 ) -> CurrencyService:
@@ -292,6 +321,28 @@ async def get_finance_account_service(
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
 ) -> AccountService:
     return AccountService(account_repo, currency_repo)
+
+
+async def get_finance_setting_service(
+    setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> FinanceSettingService:
+    return FinanceSettingService(setting_repo, currency_repo)
+
+
+async def get_finance_fx_rate_service(
+    fx_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> FxRateService:
+    return FxRateService(fx_repo, currency_repo)
+
+
+async def get_finance_transfer_service(
+    transfer_repo: CapitalTransferRepository = Depends(get_finance_transfer_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> CapitalTransferService:
+    return CapitalTransferService(transfer_repo, account_repo, currency_repo)
 
 
 async def get_current_workspace_id(

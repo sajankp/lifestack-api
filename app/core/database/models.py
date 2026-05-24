@@ -6,7 +6,9 @@ from app.auth.models import AuthSession, User  # noqa: F401
 from app.core.audit import AuditLog  # noqa: F401
 from app.finance.models import (  # noqa: F401
     Account,
+    CapitalTransfer,
     Currency,
+    FxRate,
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
 )

@@ -94,5 +94,6 @@ class InvestingSummaryResponse(BaseModel):
     daily_change: Decimal | None = None
     reporting_currency: str | None = None
     valuation_status: str = "unavailable"
+    fx_as_of: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
