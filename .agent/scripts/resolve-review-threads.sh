@@ -75,11 +75,6 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "Error: jq is required." >&2
-  exit 1
-fi
-
 OWNER="${REPO%%/*}"
 NAME="${REPO##*/}"
 
@@ -110,8 +105,7 @@ mutation($threadId: ID!) {
 }
 GRAPHQL
 
-json="$(gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$PR_NUMBER")"
-threads="$(echo "$json" | jq -c '.data.repository.pullRequest.reviewThreads.nodes[]')"
+threads="$({ gh api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F number="$PR_NUMBER" --jq '.data.repository.pullRequest.reviewThreads.nodes[] | [.id, .isResolved, .isOutdated] | @tsv' || true; } )"
 
 if [[ -z "$threads" ]]; then
   echo "No review threads found for $REPO PR #$PR_NUMBER"
@@ -122,13 +116,9 @@ count_total=0
 count_target=0
 resolved_now=0
 
-while IFS= read -r thread; do
-  [[ -z "$thread" ]] && continue
+while IFS=$'\t' read -r id is_resolved is_outdated; do
+  [[ -z "${id:-}" ]] && continue
   count_total=$((count_total + 1))
-
-  id="$(echo "$thread" | jq -r '.id')"
-  is_resolved="$(echo "$thread" | jq -r '.isResolved')"
-  is_outdated="$(echo "$thread" | jq -r '.isOutdated')"
 
   if [[ "$is_resolved" == "true" ]]; then
     continue
