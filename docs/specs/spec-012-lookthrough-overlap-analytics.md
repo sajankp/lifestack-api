@@ -1,5 +1,5 @@
 # Feature Spec: Look-Through Exposure and Overlap Analytics for ETF/Mutual Fund Portfolios
-**Status:** Implemented (V1.2 backend)
+**Status:** Implemented (V1.2)
 **Spec ID:** 012
 
 ## Implementation Notes (2026-05-24)
@@ -20,6 +20,9 @@
   - use latest snapshot on or before requested date
   - include warning metadata and `analysis_status=partial` when coverage is incomplete
 - Integration coverage added for mixed direct + pooled holdings, look-through exposure, and overlap metrics.
+- Frontend delivery is completed in the paired web repository:
+  - investing look-through analytics UI tab
+  - unit tests and Playwright E2E coverage
 
 ## 1. Overview
 Users often hold a mix of direct stocks and pooled vehicles (ETFs, mutual funds). Portfolio totals alone hide concentration and duplicate exposure created by overlapping fund constituents.
