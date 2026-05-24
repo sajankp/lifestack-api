@@ -1,6 +1,6 @@
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from app.core.audit import AuditLogger
@@ -424,6 +424,9 @@ class BudgetService:
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
     ) -> tuple[Sequence[SpendingBudget], int]:
         return await self.budget_repo.get_all(workspace_id, limit, offset)
+
+    async def get_month_total_budget(self, workspace_id: int, month_start: date) -> Decimal:
+        return await self.budget_repo.get_month_total(workspace_id, month_start)
 
     async def get_budget(self, workspace_id: int, public_id: uuid.UUID) -> SpendingBudget:
         budget = await self.budget_repo.get_by_public_id(workspace_id, public_id)

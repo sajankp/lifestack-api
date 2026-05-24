@@ -11,7 +11,7 @@ from app.dashboard.schemas import (
 )
 from app.investing.service import InvestingSummaryService
 from app.spending.models import TransactionType
-from app.spending.service import TransactionService
+from app.spending.service import BudgetService, TransactionService
 from app.todo.service import TodoService
 
 logger = structlog.get_logger()
@@ -22,10 +22,12 @@ class DashboardService:
         self,
         todo_service: TodoService,
         transaction_service: TransactionService,
+        budget_service: BudgetService,
         investing_summary_service: InvestingSummaryService,
     ):
         self.todo_service = todo_service
         self.transaction_service = transaction_service
+        self.budget_service = budget_service
         self.investing_summary_service = investing_summary_service
 
     async def get_summary(self, workspace_id: int) -> DashboardSummary:
@@ -54,7 +56,15 @@ class DashboardService:
                 from_date=start_of_month,
                 to_date=now,
             )
-            spending_res = SpendingSummary(status="available", month_spent=month_spent)
+            month_budget = await self.budget_service.get_month_total_budget(
+                workspace_id=workspace_id,
+                month_start=start_of_month.date(),
+            )
+            spending_res = SpendingSummary(
+                status="available",
+                month_spent=month_spent,
+                month_budget=month_budget,
+            )
         except Exception:
             logger.exception("dashboard_spending_fetch_failed", workspace_id=workspace_id)
             spending_res = SpendingSummary(status="unavailable")

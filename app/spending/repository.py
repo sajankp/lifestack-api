@@ -195,3 +195,12 @@ class BudgetRepository:
         await self.session.flush()
         await self.session.refresh(budget)
         return budget
+
+    async def get_month_total(self, workspace_id: int, month_start: date) -> Decimal:
+        query = select(func.sum(SpendingBudget.amount)).where(
+            SpendingBudget.workspace_id == workspace_id,
+            SpendingBudget.month_start == month_start,
+        )
+        result = await self.session.execute(query)
+        total = result.scalar_one_or_none()
+        return Decimal(total or 0)
