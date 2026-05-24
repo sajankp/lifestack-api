@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
@@ -26,9 +26,11 @@ from app.spending.schemas import (
     BudgetUpdate,
     CategoryCreate,
     CategoryResponse,
+    CategorySpendTotal,
     CategoryUpdate,
     TransactionCreate,
     TransactionResponse,
+    TransactionSummaryResponse,
     TransactionUpdate,
 )
 from app.spending.service import BudgetService, CategoryService, TransactionService
@@ -183,6 +185,55 @@ async def list_transactions(
     )
 
 
+@router.get("/transactions/summary", response_model=TransactionSummaryResponse)
+async def get_transaction_summary(
+    transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
+    category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    category_id: uuid.UUID | None = Query(None),
+    from_date: datetime = Query(...),
+    to_date: datetime = Query(...),
+):
+    category_filter: uuid.UUID | None = category_id
+    income_total = await transaction_service.get_sum_by_type(
+        workspace_id=workspace_id,
+        type_filter=TransactionType.income,
+        from_date=from_date,
+        to_date=to_date,
+        category_public_id=category_filter,
+    )
+    expense_total = await transaction_service.get_sum_by_type(
+        workspace_id=workspace_id,
+        type_filter=TransactionType.expense,
+        from_date=from_date,
+        to_date=to_date,
+        category_public_id=category_filter,
+    )
+    cat_cache = await _build_category_cache(category_service, workspace_id)
+    if category_filter is not None:
+        category = await category_service.get_category(workspace_id, category_filter)
+        category_totals = [CategorySpendTotal(category_id=category.public_id, total=expense_total)]
+    else:
+        raw_totals = await transaction_service.get_category_totals(
+            workspace_id=workspace_id,
+            from_date=from_date,
+            to_date=to_date,
+            type_filter=TransactionType.expense,
+        )
+        category_totals = [
+            CategorySpendTotal(category_id=cat_cache[cat_id], total=total)
+            for cat_id, total in raw_totals.items()
+        ]
+
+    return TransactionSummaryResponse(
+        income_total=income_total,
+        expense_total=expense_total,
+        net_total=income_total - expense_total,
+        category_totals=category_totals,
+    )
+
+
 @router.post(
     "/transactions", response_model=TransactionResponse, status_code=status.HTTP_201_CREATED
 )
@@ -260,9 +311,10 @@ async def list_budgets(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     pagination: Annotated[PaginationParams, Depends()],
+    month_start: date | None = Query(None),
 ):
     budgets, total = await budget_service.list_budgets(
-        workspace_id, pagination.limit, pagination.offset
+        workspace_id, pagination.limit, pagination.offset, month_start=month_start
     )
     cat_cache = await _build_category_cache(category_service, workspace_id)
     return PaginatedResponse(

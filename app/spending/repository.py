@@ -107,7 +107,12 @@ class TransactionRepository:
         return result.scalars().all(), total
 
     async def get_sum_by_type(
-        self, workspace_id: int, type_filter: str, from_date: datetime, to_date: datetime
+        self,
+        workspace_id: int,
+        type_filter: str,
+        from_date: datetime,
+        to_date: datetime,
+        category_id: int | None = None,
     ) -> Decimal:
         query = select(func.sum(SpendingTransaction.amount)).where(
             SpendingTransaction.workspace_id == workspace_id,
@@ -115,9 +120,36 @@ class TransactionRepository:
             SpendingTransaction.occurred_at >= from_date,
             SpendingTransaction.occurred_at <= to_date,
         )
+        if category_id is not None:
+            query = query.where(SpendingTransaction.category_id == category_id)
         result = await self.session.execute(query)
         val = result.scalar_one_or_none()
         return Decimal(val or 0)
+
+    async def get_category_totals(
+        self,
+        workspace_id: int,
+        from_date: datetime,
+        to_date: datetime,
+        type_filter: str | None = None,
+    ) -> Sequence[tuple[int, Decimal]]:
+        query = (
+            select(
+                SpendingTransaction.category_id,
+                func.sum(SpendingTransaction.amount).label("total"),
+            )
+            .where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.occurred_at >= from_date,
+                SpendingTransaction.occurred_at <= to_date,
+            )
+            .group_by(SpendingTransaction.category_id)
+        )
+        if type_filter is not None:
+            query = query.where(SpendingTransaction.type == type_filter)
+        result = await self.session.execute(query)
+        rows = result.all()
+        return [(category_id, Decimal(total or 0)) for category_id, total in rows]
 
     async def get_by_public_id(
         self, workspace_id: int, public_id: UUID
@@ -152,9 +184,15 @@ class BudgetRepository:
         self.session = session
 
     async def get_all(
-        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        month_start: date | None = None,
     ) -> tuple[Sequence[SpendingBudget], int]:
         base = select(SpendingBudget).where(SpendingBudget.workspace_id == workspace_id)
+        if month_start is not None:
+            base = base.where(SpendingBudget.month_start == month_start)
         total = (
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()

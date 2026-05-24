@@ -175,12 +175,10 @@ async def test_finance_settings_fx_and_transfers_flow(client: AsyncClient):
             "source": "test-seed",
         },
     )
-    assert fx_upsert.status_code == 201
+    assert fx_upsert.status_code == 405
 
     fx_get = await client.get("/v1/finance/fx-rates", params={"base": "GBP", "quote": "USD"})
-    assert fx_get.status_code == 200
-    assert fx_get.json()["base_currency_code"] == "GBP"
-    assert fx_get.json()["quote_currency_code"] == "USD"
+    assert fx_get.status_code == 404
 
     transfer_res = await client.post(
         "/v1/finance/transfers",

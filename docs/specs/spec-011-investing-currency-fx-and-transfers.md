@@ -8,7 +8,7 @@
   - `workspace_finance_settings`, `fx_rates`, `capital_transfers`
 - Added APIs:
   - `GET /v1/finance/settings`, `PATCH /v1/finance/settings`
-  - `POST /v1/finance/fx-rates`, `GET /v1/finance/fx-rates`
+  - `GET /v1/finance/fx-rates`
   - `GET /v1/finance/transfers`, `GET /v1/finance/transfers/{public_id}`, `POST /v1/finance/transfers`
 - Investing summary now supports valuation status semantics:
   - `single_currency_native`, `multi_currency_unconverted`, `conversion_required`, `converted_available`
@@ -166,7 +166,7 @@ Rationale:
 
 ### 6.2 FX endpoints
 - `GET /v1/finance/fx-rates?base=USD&quote=INR&as_of=...`
-- Internal scheduler ingestion endpoint/service only (no public mutation endpoint in V1.1).
+- Internal scheduler ingestion uses the service layer only (no public mutation endpoint in V1.1).
 
 Provider decision:
 - V1.1 uses a provider adapter with a day-level historical/reference-rate provider as the initial implementation.
