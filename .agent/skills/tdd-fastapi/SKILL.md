@@ -1,6 +1,6 @@
 ---
-name: TDD for FastAPI
-description: Test-Driven Development patterns for FastAPI with pytest
+name: tdd-fastapi
+description: Use for FastAPI feature work that should follow a strict Red-Green-Refactor cycle with pytest, including writing failing tests first, implementing minimal code to pass, and validating full-suite stability.
 ---
 
 # TDD for FastAPI/pytest (Lifestack)

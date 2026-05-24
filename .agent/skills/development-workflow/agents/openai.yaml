@@ -1,0 +1,4 @@
+interface:
+  display_name: "Development Workflow"
+  short_description: "Help with Development Workflow tasks"
+  default_prompt: "Use $development-workflow to deliver this feature with spec approval gates, failing tests first, and full verification."

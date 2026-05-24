@@ -1,6 +1,6 @@
 ---
-name: Development Workflow
-description: Spec-driven development with test-first implementation and verification gates
+name: development-workflow
+description: Use when delivering a new feature or architectural change that needs spec-first execution, explicit approval gates, test-first implementation, full verification, and PR handoff.
 ---
 
 # Development Workflow Agent

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tdd FastAPI"
+  short_description: "Help with Tdd FastAPI tasks"
+  default_prompt: "Use $tdd-fastapi to implement this FastAPI change test-first with a strict Red-Green-Refactor flow."

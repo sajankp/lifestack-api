@@ -1,6 +1,6 @@
 ---
-name: PR Review Workflow
-description: Process open GitHub PRs with structured review triage, fixes, and re-review
+name: pr-review-workflow
+description: Use when processing open GitHub pull requests end-to-end, including review triage, spec-consistency checks, fix validation, thread replies and resolution, and re-review requests.
 ---
 
 # PR Review Workflow Agent
