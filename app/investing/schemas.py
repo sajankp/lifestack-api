@@ -208,3 +208,24 @@ class OverlapAnalyticsResponse(BaseModel):
     overlaps: list[OverlapRow]
 
     model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class HoldingPriceItem(BaseModel):
+    holding_public_id: uuid.UUID
+    unit_price: Decimal = Field(..., gt=0)
+
+
+class HoldingPriceBulkCreate(BaseModel):
+    price_date: date
+    prices: list[HoldingPriceItem] = Field(default_factory=list, min_length=1)
+
+
+class PerformanceSummaryResponse(BaseModel):
+    total_value: Decimal
+    total_cost: Decimal
+    total_gain_loss: Decimal
+    total_gain_loss_pct: Decimal | None
+    snapshot_date: date
+    currency: str
+
+    model_config = ConfigDict(json_encoders={Decimal: str})

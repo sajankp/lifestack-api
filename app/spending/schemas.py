@@ -149,3 +149,60 @@ class BudgetResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class SpendingTrendPoint(BaseModel):
+    month: str
+    total_income: Decimal
+    total_expense: Decimal
+    net: Decimal
+    transaction_count: int
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class SpendingTrendResponse(BaseModel):
+    from_month: str = Field(serialization_alias="from")
+    to_month: str = Field(serialization_alias="to")
+    months: list[SpendingTrendPoint]
+
+    model_config = ConfigDict(populate_by_name=True, json_encoders={Decimal: str})
+
+
+class RecurringTransactionCreate(BaseModel):
+    category_id: uuid.UUID
+    amount: Decimal = Field(..., gt=0, decimal_places=2)
+    type: TransactionType
+    description: str | None = Field(default=None, max_length=500)
+    frequency: str = Field(default="monthly")
+    interval: int = Field(default=1, ge=1)
+    anchor_date: date
+    end_date: date | None = None
+
+
+class RecurringTransactionUpdate(BaseModel):
+    amount: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    description: str | None = Field(default=None, max_length=500)
+    frequency: str | None = None
+    interval: int | None = Field(default=None, ge=1)
+    end_date: date | None = None
+    is_active: bool | None = None
+
+
+class RecurringTransactionResponse(BaseModel):
+    public_id: uuid.UUID
+    category_id: uuid.UUID
+    amount: Decimal
+    type: TransactionType
+    description: str | None
+    frequency: str
+    interval: int
+    anchor_date: date
+    next_due_date: date
+    end_date: date | None
+    is_active: bool
+    last_generated_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})

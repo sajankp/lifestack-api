@@ -7,7 +7,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
-from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction
+from app.spending.models import (
+    RecurringTransaction,
+    SpendingBudget,
+    SpendingCategory,
+    SpendingTransaction,
+)
 
 
 class CategoryRepository:
@@ -242,3 +247,50 @@ class BudgetRepository:
         result = await self.session.execute(query)
         total = result.scalar_one_or_none()
         return Decimal(total or 0)
+
+
+class RecurringTransactionRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_all(
+        self,
+        workspace_id: int,
+        is_active: bool | None = True,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Sequence[RecurringTransaction], int]:
+        base = select(RecurringTransaction).where(RecurringTransaction.workspace_id == workspace_id)
+        if is_active is not None:
+            base = base.where(RecurringTransaction.is_active == is_active)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(RecurringTransaction.created_at.desc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), int(total)
+
+    async def get_by_public_id(
+        self, workspace_id: int, public_id: UUID
+    ) -> RecurringTransaction | None:
+        return (
+            await self.session.execute(
+                select(RecurringTransaction).where(
+                    RecurringTransaction.workspace_id == workspace_id,
+                    RecurringTransaction.public_id == public_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def create(self, recurring: RecurringTransaction) -> RecurringTransaction:
+        self.session.add(recurring)
+        await self.session.flush()
+        await self.session.refresh(recurring)
+        return recurring
+
+    async def save(self, recurring: RecurringTransaction) -> RecurringTransaction:
+        self.session.add(recurring)
+        await self.session.flush()
+        await self.session.refresh(recurring)
+        return recurring

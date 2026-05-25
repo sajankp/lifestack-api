@@ -1,6 +1,6 @@
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from app.core.audit import AuditLogger
@@ -12,17 +12,27 @@ from app.core.exceptions import (
 )
 from app.core.pagination import DEFAULT_LIMIT
 from app.spending.models import (
+    RecurringTransaction,
     SpendingBudget,
     SpendingCategory,
     SpendingTransaction,
     TransactionType,
 )
-from app.spending.repository import BudgetRepository, CategoryRepository, TransactionRepository
+from app.spending.repository import (
+    BudgetRepository,
+    CategoryRepository,
+    RecurringTransactionRepository,
+    TransactionRepository,
+)
 from app.spending.schemas import (
     BudgetCreate,
     BudgetUpdate,
     CategoryCreate,
     CategoryUpdate,
+    RecurringTransactionCreate,
+    RecurringTransactionUpdate,
+    SpendingTrendPoint,
+    SpendingTrendResponse,
     TransactionCreate,
     TransactionUpdate,
 )
@@ -418,6 +428,49 @@ class TransactionService:
                 },
             )
 
+    async def get_monthly_trends(
+        self, workspace_id: int, from_month: date, to_month: date
+    ) -> SpendingTrendResponse:
+        cursor = from_month.replace(day=1)
+        end = to_month.replace(day=1)
+        points: list[SpendingTrendPoint] = []
+        while cursor <= end:
+            if cursor.month == 12:
+                next_month = cursor.replace(year=cursor.year + 1, month=1)
+            else:
+                next_month = cursor.replace(month=cursor.month + 1)
+            start_dt = datetime(cursor.year, cursor.month, 1, tzinfo=UTC)
+            end_dt = datetime(next_month.year, next_month.month, 1, tzinfo=UTC)
+            income = await self.get_sum_by_type(
+                workspace_id, TransactionType.income, start_dt, end_dt
+            )
+            expense = await self.get_sum_by_type(
+                workspace_id, TransactionType.expense, start_dt, end_dt
+            )
+            txs, total = await self.transaction_repo.get_all(
+                workspace_id=workspace_id,
+                from_date=start_dt,
+                to_date=end_dt,
+                limit=1,
+                offset=0,
+            )
+            _ = txs
+            points.append(
+                SpendingTrendPoint(
+                    month=cursor.strftime("%Y-%m"),
+                    total_income=income,
+                    total_expense=expense,
+                    net=income - expense,
+                    transaction_count=total,
+                )
+            )
+            cursor = next_month
+        return SpendingTrendResponse(
+            from_month=from_month.strftime("%Y-%m"),
+            to_month=to_month.strftime("%Y-%m"),
+            months=points,
+        )
+
 
 class BudgetService:
     def __init__(
@@ -458,6 +511,83 @@ class BudgetService:
         if not budget:
             raise NotFoundError(detail=f"Budget with id {public_id} not found in this workspace")
         return budget
+
+
+def _advance_due_date(current: date, frequency: str, interval: int) -> date:
+    if frequency == "daily":
+        return current + timedelta(days=interval)
+    if frequency == "weekly":
+        return current + timedelta(weeks=interval)
+    if frequency == "yearly":
+        return current.replace(year=current.year + interval)
+    # monthly default
+    month = current.month - 1 + interval
+    year = current.year + month // 12
+    month = month % 12 + 1
+    day = min(current.day, 28)
+    return date(year, month, day)
+
+
+class RecurringTransactionService:
+    def __init__(
+        self,
+        recurring_repo: RecurringTransactionRepository,
+        tx_repo: TransactionRepository,
+        category_repo: CategoryRepository,
+    ):
+        self.recurring_repo = recurring_repo
+        self.tx_repo = tx_repo
+        self.category_repo = category_repo
+
+    async def list_recurring(
+        self, workspace_id: int, is_active: bool | None, limit: int, offset: int
+    ) -> tuple[Sequence[RecurringTransaction], int]:
+        return await self.recurring_repo.get_all(workspace_id, is_active, limit, offset)
+
+    async def create_recurring(
+        self, workspace_id: int, user_id: int, payload: RecurringTransactionCreate
+    ) -> RecurringTransaction:
+        category = await self.category_repo.get_by_public_id(workspace_id, payload.category_id)
+        if not category:
+            raise NotFoundError(
+                detail=f"Category with id {payload.category_id} not found in this workspace"
+            )
+        recurring = RecurringTransaction(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            category_id=category.id,  # type: ignore[arg-type]
+            amount=payload.amount,
+            type=payload.type,
+            description=payload.description,
+            frequency=payload.frequency,
+            interval=payload.interval,
+            anchor_date=payload.anchor_date,
+            next_due_date=payload.anchor_date,
+            end_date=payload.end_date,
+        )
+        return await self.recurring_repo.create(recurring)
+
+    async def get_recurring(self, workspace_id: int, public_id: uuid.UUID) -> RecurringTransaction:
+        recurring = await self.recurring_repo.get_by_public_id(workspace_id, public_id)
+        if not recurring:
+            raise NotFoundError(detail=f"Recurring transaction with id {public_id} not found")
+        return recurring
+
+    async def update_recurring(
+        self, workspace_id: int, public_id: uuid.UUID, payload: RecurringTransactionUpdate
+    ) -> RecurringTransaction:
+        recurring = await self.get_recurring(workspace_id, public_id)
+        update_data = payload.model_dump(exclude_unset=True)
+        for key, value in update_data.items():
+            setattr(recurring, key, value)
+        recurring.updated_at = datetime.now(UTC)
+        return await self.recurring_repo.save(recurring)
+
+    async def deactivate_recurring(self, workspace_id: int, public_id: uuid.UUID) -> None:
+        recurring = await self.get_recurring(workspace_id, public_id)
+        recurring.is_active = False
+        recurring.updated_at = datetime.now(UTC)
+        await self.recurring_repo.save(recurring)
 
     async def create_budget(
         self,

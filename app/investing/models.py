@@ -152,3 +152,37 @@ class CashBalance(SQLModel, table=True):
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
+
+
+class HoldingPrice(SQLModel, table=True):
+    __tablename__ = "holding_prices"
+    id: int | None = Field(default=None, primary_key=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    holding_id: int = Field(foreign_key="investing_holdings.id", index=True)
+    price_date: date = Field(sa_type=sa.Date())
+    unit_price: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=6))
+    source: str = Field(default="manual", max_length=16)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (sa.UniqueConstraint("holding_id", "price_date", name="uq_holding_price_day"),)
+
+
+class PortfolioSnapshot(SQLModel, table=True):
+    __tablename__ = "portfolio_snapshots"
+    id: int | None = Field(default=None, primary_key=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    snapshot_date: date = Field(sa_type=sa.Date())
+    total_value: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    total_cost: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    holdings_value: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    cash_value: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    currency_code: str = Field(max_length=10)
+    fx_rates_used: dict = Field(default_factory=dict, sa_type=sa.JSON())
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    __table_args__ = (
+        sa.UniqueConstraint("workspace_id", "snapshot_date", name="uq_snapshot_workspace_date"),
+    )

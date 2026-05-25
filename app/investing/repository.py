@@ -6,7 +6,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
-from app.investing.models import CashBalance, Company, Holding, Instrument, InstrumentConstituent
+from app.investing.models import (
+    CashBalance,
+    Company,
+    Holding,
+    HoldingPrice,
+    Instrument,
+    InstrumentConstituent,
+    PortfolioSnapshot,
+)
 
 
 class HoldingRepository:
@@ -303,3 +311,100 @@ class InstrumentConstituentRepository:
             if row.as_of_date == latest:
                 grouped[iid].append(row)
         return grouped
+
+
+class HoldingPriceRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def upsert_price(
+        self,
+        workspace_id: int,
+        holding_id: int,
+        price_date: date,
+        unit_price,
+        source: str = "manual",
+    ) -> HoldingPrice:
+        existing = (
+            await self.session.execute(
+                select(HoldingPrice).where(
+                    HoldingPrice.workspace_id == workspace_id,
+                    HoldingPrice.holding_id == holding_id,
+                    HoldingPrice.price_date == price_date,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing:
+            existing.unit_price = unit_price
+            existing.source = source
+            self.session.add(existing)
+            await self.session.flush()
+            return existing
+        row = HoldingPrice(
+            workspace_id=workspace_id,
+            holding_id=holding_id,
+            price_date=price_date,
+            unit_price=unit_price,
+            source=source,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def list_prices(
+        self, workspace_id: int, holding_id: int, from_date: date, to_date: date
+    ) -> list[HoldingPrice]:
+        return list(
+            (
+                await self.session.execute(
+                    select(HoldingPrice)
+                    .where(
+                        HoldingPrice.workspace_id == workspace_id,
+                        HoldingPrice.holding_id == holding_id,
+                        HoldingPrice.price_date >= from_date,
+                        HoldingPrice.price_date <= to_date,
+                    )
+                    .order_by(HoldingPrice.price_date.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+class PortfolioSnapshotRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def upsert(self, snapshot: PortfolioSnapshot) -> PortfolioSnapshot:
+        existing = (
+            await self.session.execute(
+                select(PortfolioSnapshot).where(
+                    PortfolioSnapshot.workspace_id == snapshot.workspace_id,
+                    PortfolioSnapshot.snapshot_date == snapshot.snapshot_date,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing:
+            existing.total_value = snapshot.total_value
+            existing.total_cost = snapshot.total_cost
+            existing.holdings_value = snapshot.holdings_value
+            existing.cash_value = snapshot.cash_value
+            existing.currency_code = snapshot.currency_code
+            existing.fx_rates_used = snapshot.fx_rates_used
+            self.session.add(existing)
+            await self.session.flush()
+            return existing
+        self.session.add(snapshot)
+        await self.session.flush()
+        return snapshot
+
+    async def latest(self, workspace_id: int) -> PortfolioSnapshot | None:
+        return (
+            await self.session.execute(
+                select(PortfolioSnapshot)
+                .where(PortfolioSnapshot.workspace_id == workspace_id)
+                .order_by(PortfolioSnapshot.snapshot_date.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()

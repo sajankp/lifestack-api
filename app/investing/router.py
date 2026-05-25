@@ -14,6 +14,7 @@ from app.core.dependencies import (
     get_investing_constituent_service,
     get_investing_holding_service,
     get_investing_instrument_service,
+    get_investing_performance_service,
     get_investing_summary_service,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
@@ -23,6 +24,7 @@ from app.investing.schemas import (
     CashBalanceUpdate,
     ExposureAnalyticsResponse,
     HoldingCreate,
+    HoldingPriceBulkCreate,
     HoldingResponse,
     HoldingUpdate,
     InstrumentConstituentResponse,
@@ -31,6 +33,7 @@ from app.investing.schemas import (
     InstrumentResponse,
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
+    PerformanceSummaryResponse,
 )
 from app.investing.service import (
     CashBalanceService,
@@ -39,6 +42,7 @@ from app.investing.service import (
     HoldingService,
     InstrumentService,
     InvestingSummaryService,
+    PerformanceService,
 )
 
 router = APIRouter(prefix="/investing", tags=["investing"])
@@ -261,3 +265,23 @@ async def get_overlap_analytics(
 ):
     as_of_date = date.fromisoformat(as_of)
     return await analytics_service.overlap(workspace_id, as_of_date)
+
+
+@router.post("/prices", status_code=status.HTTP_201_CREATED)
+async def submit_prices(
+    payload: HoldingPriceBulkCreate,
+    performance_service: Annotated[PerformanceService, Depends(get_investing_performance_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    await performance_service.submit_prices(workspace_id, payload)
+    return {"ok": True}
+
+
+@router.get("/performance/summary", response_model=PerformanceSummaryResponse)
+async def get_performance_summary(
+    performance_service: Annotated[PerformanceService, Depends(get_investing_performance_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    return await performance_service.summary(workspace_id)

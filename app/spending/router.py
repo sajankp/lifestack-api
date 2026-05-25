@@ -11,6 +11,7 @@ from app.core.dependencies import (
     get_current_workspace_id,
     get_spending_budget_service,
     get_spending_category_service,
+    get_spending_recurring_service,
     get_spending_transaction_service,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
@@ -28,12 +29,21 @@ from app.spending.schemas import (
     CategoryResponse,
     CategorySpendTotal,
     CategoryUpdate,
+    RecurringTransactionCreate,
+    RecurringTransactionResponse,
+    RecurringTransactionUpdate,
+    SpendingTrendResponse,
     TransactionCreate,
     TransactionResponse,
     TransactionSummaryResponse,
     TransactionUpdate,
 )
-from app.spending.service import BudgetService, CategoryService, TransactionService
+from app.spending.service import (
+    BudgetService,
+    CategoryService,
+    RecurringTransactionService,
+    TransactionService,
+)
 
 router = APIRouter(prefix="/spending", tags=["spending"])
 
@@ -59,6 +69,12 @@ def _budget_response(budget: SpendingBudget, category_public_id: uuid.UUID) -> B
     data = budget.model_dump()
     data["category_id"] = category_public_id
     return BudgetResponse.model_validate(data)
+
+
+def _recurring_response(recurring, category_public_id: uuid.UUID) -> RecurringTransactionResponse:
+    data = recurring.model_dump()
+    data["category_id"] = category_public_id
+    return RecurringTransactionResponse.model_validate(data)
 
 
 async def _build_category_cache(
@@ -233,6 +249,19 @@ async def get_transaction_summary(
     )
 
 
+@router.get("/analytics/trends", response_model=SpendingTrendResponse)
+async def get_spending_trends(
+    transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    from_month: date = Query(..., alias="from"),
+    to_month: date = Query(..., alias="to"),
+):
+    start = from_month.replace(day=1)
+    end = to_month.replace(day=1)
+    return await transaction_service.get_monthly_trends(workspace_id, start, end)
+
+
 @router.post(
     "/transactions", response_model=TransactionResponse, status_code=status.HTTP_201_CREATED
 )
@@ -359,3 +388,86 @@ async def update_budget(
     )
     cat_cache = await _build_category_cache(category_service, workspace_id)
     return _budget_response(budget, cat_cache[budget.category_id])
+
+
+@router.get("/recurring", response_model=PaginatedResponse[RecurringTransactionResponse])
+async def list_recurring(
+    recurring_service: Annotated[
+        RecurringTransactionService, Depends(get_spending_recurring_service)
+    ],
+    category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+    is_active: bool | None = Query(True),
+):
+    items, total = await recurring_service.list_recurring(
+        workspace_id, is_active, pagination.limit, pagination.offset
+    )
+    cat_cache = await _build_category_cache(category_service, workspace_id)
+    return PaginatedResponse(
+        items=[_recurring_response(item, cat_cache[item.category_id]) for item in items],
+        total=total,
+        limit=pagination.limit,
+        offset=pagination.offset,
+    )
+
+
+@router.post(
+    "/recurring", response_model=RecurringTransactionResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_recurring(
+    payload: RecurringTransactionCreate,
+    recurring_service: Annotated[
+        RecurringTransactionService, Depends(get_spending_recurring_service)
+    ],
+    category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+):
+    item = await recurring_service.create_recurring(workspace_id, user["id"], payload)
+    category = await category_service.get_category(workspace_id, payload.category_id)
+    return _recurring_response(item, category.public_id)
+
+
+@router.get("/recurring/{recurring_id}", response_model=RecurringTransactionResponse)
+async def get_recurring(
+    recurring_id: uuid.UUID,
+    recurring_service: Annotated[
+        RecurringTransactionService, Depends(get_spending_recurring_service)
+    ],
+    category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    item = await recurring_service.get_recurring(workspace_id, recurring_id)
+    cat_cache = await _build_category_cache(category_service, workspace_id)
+    return _recurring_response(item, cat_cache[item.category_id])
+
+
+@router.patch("/recurring/{recurring_id}", response_model=RecurringTransactionResponse)
+async def patch_recurring(
+    recurring_id: uuid.UUID,
+    payload: RecurringTransactionUpdate,
+    recurring_service: Annotated[
+        RecurringTransactionService, Depends(get_spending_recurring_service)
+    ],
+    category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    item = await recurring_service.update_recurring(workspace_id, recurring_id, payload)
+    cat_cache = await _build_category_cache(category_service, workspace_id)
+    return _recurring_response(item, cat_cache[item.category_id])
+
+
+@router.delete("/recurring/{recurring_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_recurring(
+    recurring_id: uuid.UUID,
+    recurring_service: Annotated[
+        RecurringTransactionService, Depends(get_spending_recurring_service)
+    ],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    await recurring_service.deactivate_recurring(workspace_id, recurring_id)
