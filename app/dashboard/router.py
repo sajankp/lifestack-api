@@ -2,33 +2,21 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
+from app.application.workflows import DashboardSummaryWorkflow
 from app.core.dependencies import (
     get_current_workspace_id,
-    get_investing_summary_service,
-    get_spending_budget_service,
-    get_spending_transaction_service,
-    get_todo_service,
+    get_dashboard_summary_workflow,
 )
 from app.dashboard.schemas import DashboardSummary
-from app.dashboard.service import DashboardService
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
-async def get_dashboard_service(
-    todo_service=Depends(get_todo_service),
-    transaction_service=Depends(get_spending_transaction_service),
-    budget_service=Depends(get_spending_budget_service),
-    investing_summary_service=Depends(get_investing_summary_service),
-) -> DashboardService:
-    return DashboardService(
-        todo_service, transaction_service, budget_service, investing_summary_service
-    )
-
-
 @router.get("/summary", response_model=DashboardSummary)
 async def get_summary(
-    dashboard_service: Annotated[DashboardService, Depends(get_dashboard_service)],
+    dashboard_workflow: Annotated[
+        DashboardSummaryWorkflow, Depends(get_dashboard_summary_workflow)
+    ],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
 ):
-    return await dashboard_service.get_summary(workspace_id)
+    return await dashboard_workflow.get_summary(workspace_id)

@@ -65,6 +65,13 @@ Create `exports` table:
 - Export metadata persists `schema_version` for compatibility tracking.
 - Workspace export concurrency guard prevents multiple simultaneous `pending` exports.
 
+## 8. Future Evolution
+- V1 intentionally favors a simple personal-OS-friendly path: synchronous generation for small datasets with a strict row cap.
+- A future version may move export generation to a background workflow with explicit lifecycle states such as `pending`, `generating`, `ready`, and `failed`.
+- Ready/failure notifications may later be surfaced through the notification system, starting with in-app delivery and optionally email when that delivery phase exists.
+- Artifact storage may later move from database-backed or directly uploaded small artifacts to object storage when export size or operational needs justify it.
+- List/history endpoints may later adopt fuller pagination controls as export volume becomes more operationally significant.
+
 ## Observability Hooks
 - Emit structured logs for export request, generation start, generation end, download served.
 - Emit counters for export request outcomes by format and status.

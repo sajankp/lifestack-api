@@ -690,6 +690,42 @@ class InvestingSummaryService:
         self.finance_setting_repo = finance_setting_repo
         self.fx_rate_repo = fx_rate_repo
 
+    @staticmethod
+    def _build_required_pairs(
+        used_currencies: list[str], reporting_currency: str
+    ) -> set[tuple[str, str]]:
+        required_pairs: set[tuple[str, str]] = set()
+        for curr in used_currencies:
+            if curr == reporting_currency:
+                continue
+            required_pairs.add((curr, reporting_currency))
+            if curr != "USD" and reporting_currency != "USD":
+                required_pairs.add((curr, "USD"))
+                required_pairs.add(("USD", reporting_currency))
+        return required_pairs
+
+    @staticmethod
+    def _convert_amount(
+        amount: Decimal,
+        source_currency: str,
+        reporting_currency: str,
+        fx_lookup: dict[tuple[str, str], object],
+    ) -> Decimal | None:
+        if source_currency == reporting_currency:
+            return amount
+
+        direct = fx_lookup.get((source_currency, reporting_currency))
+        if direct is not None:
+            return amount * Decimal(str(direct.rate))
+
+        if source_currency != "USD" and reporting_currency != "USD":
+            base_to_usd = fx_lookup.get((source_currency, "USD"))
+            usd_to_quote = fx_lookup.get(("USD", reporting_currency))
+            if base_to_usd is not None and usd_to_quote is not None:
+                return amount * Decimal(str(base_to_usd.rate)) * Decimal(str(usd_to_quote.rate))
+
+        return None
+
     async def get_summary(self, workspace_id: int) -> InvestingSummaryResponse:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
         cash_balances, _ = await self.cash_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -771,46 +807,20 @@ class InvestingSummaryService:
                     fx_as_of=None,
                 )
 
-            converted_portfolio = Decimal("0")
-            converted_cash = Decimal("0")
             valuation_as_of = datetime.now(UTC)
-            required_pairs: set[tuple[str, str]] = set()
-            for holding in holdings:
-                curr = holding.currency.upper()
-                if curr != reporting_currency:
-                    required_pairs.add((curr, reporting_currency))
-                    if curr != "USD" and reporting_currency != "USD":
-                        required_pairs.add((curr, "USD"))
-                        required_pairs.add(("USD", reporting_currency))
-            for cash in cash_balances:
-                curr = cash.currency.upper()
-                if curr != reporting_currency:
-                    required_pairs.add((curr, reporting_currency))
-                    if curr != "USD" and reporting_currency != "USD":
-                        required_pairs.add((curr, "USD"))
-                        required_pairs.add(("USD", reporting_currency))
+            required_pairs = self._build_required_pairs(used_currencies, reporting_currency)
             fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
                 list(required_pairs), as_of=valuation_as_of
             )
 
+            converted_portfolio = Decimal("0")
             for holding in holdings:
                 native_value = holding.quantity * holding.avg_cost
                 curr = holding.currency.upper()
-                if curr == reporting_currency:
-                    converted_portfolio += native_value
-                    continue
-                rate_row = fx_lookup.get((curr, reporting_currency))
-                if rate_row is None and curr != "USD" and reporting_currency != "USD":
-                    base_to_usd = fx_lookup.get((curr, "USD"))
-                    usd_to_quote = fx_lookup.get(("USD", reporting_currency))
-                    if base_to_usd and usd_to_quote:
-                        converted_portfolio += (
-                            native_value
-                            * Decimal(str(base_to_usd.rate))
-                            * Decimal(str(usd_to_quote.rate))
-                        )
-                        continue
-                if rate_row is None:
+                converted_value = self._convert_amount(
+                    native_value, curr, reporting_currency, fx_lookup
+                )
+                if converted_value is None:
                     return InvestingSummaryResponse(
                         portfolio_value=None,
                         holdings_count=len(holdings),
@@ -821,25 +831,15 @@ class InvestingSummaryService:
                         valuation_status="conversion_required",
                         fx_as_of=None,
                     )
-                converted_portfolio += native_value * Decimal(str(rate_row.rate))
+                converted_portfolio += converted_value
 
+            converted_cash = Decimal("0")
             for cash in cash_balances:
                 curr = cash.currency.upper()
-                if curr == reporting_currency:
-                    converted_cash += cash.balance
-                    continue
-                rate_row = fx_lookup.get((curr, reporting_currency))
-                if rate_row is None and curr != "USD" and reporting_currency != "USD":
-                    base_to_usd = fx_lookup.get((curr, "USD"))
-                    usd_to_quote = fx_lookup.get(("USD", reporting_currency))
-                    if base_to_usd and usd_to_quote:
-                        converted_cash += (
-                            cash.balance
-                            * Decimal(str(base_to_usd.rate))
-                            * Decimal(str(usd_to_quote.rate))
-                        )
-                        continue
-                if rate_row is None:
+                converted_value = self._convert_amount(
+                    cash.balance, curr, reporting_currency, fx_lookup
+                )
+                if converted_value is None:
                     return InvestingSummaryResponse(
                         portfolio_value=None,
                         holdings_count=len(holdings),
@@ -850,7 +850,7 @@ class InvestingSummaryService:
                         valuation_status="conversion_required",
                         fx_as_of=None,
                     )
-                converted_cash += cash.balance * Decimal(str(rate_row.rate))
+                converted_cash += converted_value
 
             return InvestingSummaryResponse(
                 portfolio_value=converted_portfolio,

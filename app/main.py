@@ -28,6 +28,7 @@ from app.core.logging import setup_logging
 from app.core.middleware import SecurityHeadersMiddleware, StructlogMiddleware
 from app.core.scheduler import register_interval_job, shutdown_scheduler, start_scheduler
 from app.dashboard.router import router as dashboard_router
+from app.exports.router import router as exports_router
 from app.finance.router import router as finance_router
 from app.investing.router import router as investing_router
 from app.spending.router import router as spending_router
@@ -120,6 +121,7 @@ def create_app() -> FastAPI:
     _app.include_router(investing_router, prefix=settings.API_V1_STR)
     _app.include_router(finance_router, prefix=settings.API_V1_STR)
     _app.include_router(dashboard_router, prefix=settings.API_V1_STR)
+    _app.include_router(exports_router, prefix=settings.API_V1_STR)
 
     _app.include_router(health_router)
 

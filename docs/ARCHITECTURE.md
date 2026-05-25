@@ -343,7 +343,7 @@ Retain the proven auth pattern from the existing todo app:
 |--------|----------------|
 | Algorithm | HS256 (HMAC-SHA256) |
 | Access Token TTL | 30 minutes (configurable via `ACCESS_TOKEN_EXPIRE_SECONDS`) |
-| Refresh Token TTL | 1 hour (configurable via `REFRESH_TOKEN_EXPIRE_SECONDS`) |
+| Refresh Token TTL | 7 days (configurable via `REFRESH_TOKEN_EXPIRE_SECONDS`) |
 | Token Storage | HttpOnly secure cookies (`access_token`, `refresh_token`) |
 | Password Hashing | Argon2id only (new project, no legacy hashes) |
 | Session Tracking | Session ID (`sid`) embedded in JWT claims and validated against DB-backed `auth_sessions` rows |

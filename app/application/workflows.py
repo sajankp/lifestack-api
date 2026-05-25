@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import structlog
 from sqlalchemy import func, select
@@ -8,11 +9,26 @@ from app.auth.schemas import UserCreate
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.audit import AuditLogger
+from app.dashboard.schemas import (
+    DashboardSummary,
+    InvestingSummary,
+    SpendingSummary,
+    SystemSummary,
+    TodosSummary,
+)
+from app.investing.service import InvestingSummaryService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.platform.service import WorkspaceService
-from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction
-from app.spending.service import CategoryService
+from app.spending.models import (
+    SpendingBudget,
+    SpendingCategory,
+    SpendingTransaction,
+    TransactionType,
+)
+from app.spending.service import BudgetService, CategoryService, TransactionService
 from app.todo.models import PriorityEnum, Todo
+from app.todo.repository import TodoRepository
+from app.todo.service import TodoService
 
 logger = structlog.get_logger(__name__)
 
@@ -46,6 +62,116 @@ class UserRegistrationWorkflow:
         await self.category_service.provision_default_categories(workspace.id)  # type: ignore[arg-type]
 
         return True
+
+
+class DashboardSummaryWorkflow:
+    def __init__(
+        self,
+        todo_service: TodoService,
+        transaction_service: TransactionService,
+        budget_service: BudgetService,
+        investing_summary_service: InvestingSummaryService,
+    ):
+        self.todo_service = todo_service
+        self.transaction_service = transaction_service
+        self.budget_service = budget_service
+        self.investing_summary_service = investing_summary_service
+
+    async def get_summary(self, workspace_id: int) -> DashboardSummary:
+        now = datetime.now(UTC)
+
+        todos_res = TodosSummary()
+        try:
+            open_count, overdue_count = await self.todo_service.get_summary_counts(
+                workspace_id, now
+            )
+            next_due_items = await self.todo_service.get_next_due_items(workspace_id, now, limit=5)
+            active_guardrail_todo_count = await self.todo_service.get_active_guardrail_todo_count(
+                workspace_id
+            )
+            todos_res = TodosSummary(
+                status="available",
+                open_count=open_count,
+                overdue_count=overdue_count,
+                next_due_items=[
+                    {
+                        "public_id": str(todo.public_id),
+                        "title": todo.title,
+                        "due_date": todo.due_date.isoformat() if todo.due_date else None,
+                        "priority": todo.priority,
+                    }
+                    for todo in next_due_items
+                ],
+                active_guardrail_todo_count=active_guardrail_todo_count,
+            )
+        except Exception:
+            logger.exception("dashboard_todos_fetch_failed", workspace_id=workspace_id)
+            todos_res = TodosSummary(status="unavailable")
+
+        spending_res = SpendingSummary()
+        try:
+            start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            category_totals = await self.transaction_service.get_category_totals(
+                workspace_id=workspace_id,
+                from_date=start_of_month,
+                to_date=now,
+                type_filter=TransactionType.expense,
+            )
+            budgets, _ = await self.budget_service.list_budgets(
+                workspace_id=workspace_id,
+                month_start=start_of_month.date(),
+                limit=5000,
+                offset=0,
+            )
+            month_spent = sum(category_totals.values(), Decimal("0"))
+            month_budget = sum((budget.amount for budget in budgets), Decimal("0"))
+            budget_amount_by_category = {budget.category_id: budget.amount for budget in budgets}
+            top_overspent_categories = []
+            for category_id, spent in category_totals.items():
+                budget_amount = budget_amount_by_category.get(category_id)
+                if not budget_amount or budget_amount <= 0:
+                    continue
+                overspend = spent - budget_amount
+                if overspend <= 0:
+                    continue
+                ratio = spent / budget_amount
+                top_overspent_categories.append({
+                    "category_id": category_id,
+                    "spent": spent,
+                    "budget": budget_amount,
+                    "overspend": overspend,
+                    "ratio": ratio,
+                })
+            top_overspent_categories.sort(key=lambda item: item["overspend"], reverse=True)
+            spending_res = SpendingSummary(
+                status="available",
+                month_spent=month_spent,
+                month_budget=month_budget,
+                top_overspent_categories=top_overspent_categories[:5],
+            )
+        except Exception:
+            logger.exception("dashboard_spending_fetch_failed", workspace_id=workspace_id)
+            spending_res = SpendingSummary(status="unavailable")
+
+        investing_res = InvestingSummary()
+        try:
+            investing_summary = await self.investing_summary_service.get_summary(workspace_id)
+            investing_res = InvestingSummary(
+                status="available",
+                portfolio_value=investing_summary.portfolio_value,
+                daily_change=investing_summary.daily_change,
+                holdings_count=investing_summary.holdings_count,
+            )
+        except Exception:
+            logger.exception("dashboard_investing_fetch_failed", workspace_id=workspace_id)
+            investing_res = InvestingSummary(status="unavailable")
+
+        return DashboardSummary(
+            todos=todos_res,
+            spending=spending_res,
+            investing=investing_res,
+            system=SystemSummary(generated_at=now),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +267,7 @@ async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace:
     todos_map = {todo.system_key: todo for todo in todos_res.scalars().all()}
 
     audit_logger = AuditLogger(session)
+    todo_service = TodoService(TodoRepository(session))
 
     # 7. Evaluate each budget against thresholds
     for budget in budgets:
@@ -170,78 +297,28 @@ async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace:
             )
             priority = PriorityEnum.high if is_critical else PriorityEnum.medium
 
-            if todo:
-                # Update existing todo only when something actually changed
-                before_snap = _snapshot_todo(todo)
-                updated = False
-
-                if todo.completed:
-                    todo.completed = False
-                    updated = True
-                if todo.title != title:
-                    todo.title = title
-                    updated = True
-                if todo.description != desc:
-                    todo.description = desc
-                    updated = True
-                if todo.priority != priority:
-                    todo.priority = priority
-                    updated = True
-
-                if updated:
-                    todo.updated_at = datetime.now(UTC)
-                    session.add(todo)
-                    await session.flush()
-                    after_snap = _snapshot_todo(todo)
-                    changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
-                    await audit_logger.log(
-                        workspace_id=workspace.id,
-                        actor_id=user_id,
-                        action="budget_guardrail_triggered",
-                        module="application",
-                        entity_type="todo",
-                        entity_id=todo.id,  # type: ignore[arg-type]
-                        details={
-                            "entity_public_id": str(todo.public_id),
-                            "before": before_snap,
-                            "after": after_snap,
-                            "changed_fields": changed_fields,
-                        },
-                    )
-                    logger.info(
-                        "budget_guardrail_todo_updated",
-                        workspace_id=workspace.id,
-                        category=category.name,
-                        severity=severity,
-                        ratio=f"{ratio:.1%}",
-                    )
-            else:
-                # Create a new system todo for this category breach
-                todo = Todo(
+            todo, change = await todo_service.ensure_system_task(
+                workspace_id=workspace.id,  # type: ignore[arg-type]
+                user_id=user_id,  # type: ignore[arg-type]
+                system_key=system_key,
+                title=title,
+                description=desc,
+                priority=priority,
+                existing_todo=todo,
+                audit_logger=audit_logger,
+                audit_module="application",
+                audit_action="budget_guardrail_triggered",
+            )
+            todos_map[system_key] = todo
+            if change == "updated":
+                logger.info(
+                    "budget_guardrail_todo_updated",
                     workspace_id=workspace.id,
-                    user_id=user_id,
-                    title=title,
-                    description=desc,
-                    priority=priority,
-                    system_key=system_key,
+                    category=category.name,
+                    severity=severity,
+                    ratio=f"{ratio:.1%}",
                 )
-                session.add(todo)
-                await session.flush()
-                after_snap = _snapshot_todo(todo)
-                await audit_logger.log(
-                    workspace_id=workspace.id,
-                    actor_id=user_id,
-                    action="budget_guardrail_triggered",
-                    module="application",
-                    entity_type="todo",
-                    entity_id=todo.id,  # type: ignore[arg-type]
-                    details={
-                        "entity_public_id": str(todo.public_id),
-                        "before": None,
-                        "after": after_snap,
-                        "changed_fields": list(after_snap.keys()),
-                    },
-                )
+            elif change == "created":
                 logger.info(
                     "budget_guardrail_todo_created",
                     workspace_id=workspace.id,
