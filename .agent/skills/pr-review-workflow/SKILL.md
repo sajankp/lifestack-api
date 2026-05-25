@@ -7,6 +7,28 @@ description: Use when processing open GitHub pull requests end-to-end, including
 
 Use this agent when you need to process open pull requests end-to-end.
 
+## Applicability
+
+- Backend-focused in `lifestack-api`.
+- Use the frontend copy in `lifestack-web` for UI-only PRs.
+
+## Quick Commands
+
+```bash
+gh pr list --state open
+gh pr view <number> --json reviews,comments,statusCheckRollup,mergeStateStatus,url
+bash .agent/scripts/resolve-review-threads.sh --mode outdated --dry-run
+bash .agent/scripts/resolve-review-threads.sh --mode outdated
+```
+
+## 1-Minute Checklist
+
+- Open PR and gather current status/checks.
+- Triage review comments as `Accept` / `Reject` / `Discuss`.
+- Apply fixes and run required local tests.
+- Reply + resolve threads (`outdated` first).
+- Request `/gemini review` only after tests pass.
+
 ## Scope
 
 - List and prioritize open PRs
@@ -20,6 +42,14 @@ Use this agent when you need to process open pull requests end-to-end.
 - Never commit, merge, or close a PR without explicit user approval.
 - Run local tests before push.
 - Validate review suggestions against approved spec and project patterns.
+- Do not run `--mode all` until dry-run + manual validation confirms non-outdated threads are addressed.
+- Request `/gemini review` only after tests pass.
+
+## Review Triage Matrix
+
+- `Accept`: bug/risk fix, spec-consistent, and project-pattern consistent.
+- `Reject`: speculative preference, style-only churn, or spec conflict.
+- `Discuss`: architecture-impacting, API contract-changing, or cross-module tradeoff.
 
 ## Steps
 
@@ -37,11 +67,52 @@ Use this agent when you need to process open pull requests end-to-end.
 Use:
 
 ```bash
-.agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode outdated --dry-run
-.agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode outdated
+bash .agent/scripts/resolve-review-threads.sh --mode outdated --dry-run
+bash .agent/scripts/resolve-review-threads.sh --mode outdated
 ```
 
 Use `--mode all` only after manual validation of unresolved non-outdated threads.
+
+### Practical Notes
+
+- Script locations are in this repo: `.agent/scripts/`.
+- It auto-detects repo and current PR by default.
+- You can still target explicitly: `--repo owner/repo --pr <number>` (for example: `org/repo`).
+- If execute permissions are missing, run with `bash` as shown above.
+- Useful follow-up helper for specific threads:
+
+```bash
+bash .agent/scripts/resolve-specific-threads.sh --thread <thread_id> --dry-run
+bash .agent/scripts/resolve-specific-threads.sh --thread <thread_id>
+```
+
+## Comment Templates
+
+```text
+Addressed in <commit_sha>:
+- <change 1>
+- <change 2>
+Validation:
+- <test command>
+```
+
+```text
+Not applying this suggestion because it conflicts with <spec/file>. Proposed alternative: <alternative>.
+```
+
+```text
+/gemini review
+Follow-up pushed in <commit_sha>; all previously raised points addressed and validated locally.
+```
+
+## Troubleshooting
+
+- Permission denied on scripts:
+  - Run with `bash .agent/scripts/<script>.sh ...`
+- Could not auto-detect PR:
+  - Pass explicit `--repo owner/name --pr <number>`
+- Protected branch push rejected:
+  - Create branch + PR; do not force direct push to `main`.
 
 ## Escalation Triggers
 
