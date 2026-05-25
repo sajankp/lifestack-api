@@ -4,7 +4,7 @@ set -euo pipefail
 # Resolve GitHub PR review threads via GraphQL using gh CLI.
 #
 # Usage:
-#   .agent/scripts/resolve-review-threads.sh --repo owner/name --pr 10 --mode outdated
+#   .agent/scripts/resolve-review-threads.sh --mode outdated
 #   .agent/scripts/resolve-review-threads.sh --repo owner/name --pr 10 --mode all --dry-run
 #
 # Modes:
@@ -18,11 +18,11 @@ DRY_RUN="false"
 
 usage() {
   cat <<USAGE
-Usage: $0 --repo <owner/name> --pr <number> [--mode outdated|all] [--dry-run]
+Usage: $0 [--repo <owner/name>] [--pr <number>] [--mode outdated|all] [--dry-run]
 
 Options:
-  --repo       Repository in owner/name format (required)
-  --pr         Pull request number (required)
+  --repo       Repository in owner/name format (optional: auto-detected from git remote)
+  --pr         Pull request number (optional: auto-detected from current branch PR)
   --mode       Thread selection mode: outdated|all (default: outdated)
   --dry-run    Print targeted thread IDs without resolving
   -h, --help   Show this help
@@ -59,12 +59,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$REPO" || -z "$PR_NUMBER" ]]; then
-  echo "Error: --repo and --pr are required." >&2
-  usage
-  exit 1
-fi
-
 if [[ "$MODE" != "outdated" && "$MODE" != "all" ]]; then
   echo "Error: --mode must be 'outdated' or 'all'." >&2
   exit 1
@@ -72,6 +66,23 @@ fi
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "Error: gh CLI is required." >&2
+  exit 1
+fi
+
+if [[ -z "$REPO" ]]; then
+  remote_url="$(git config --get remote.origin.url 2>/dev/null || true)"
+  if [[ "$remote_url" =~ github.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+    REPO="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+  fi
+fi
+
+if [[ -z "$PR_NUMBER" ]]; then
+  PR_NUMBER="$(gh pr view --json number --jq '.number' 2>/dev/null || true)"
+fi
+
+if [[ -z "$REPO" || -z "$PR_NUMBER" ]]; then
+  echo "Error: unable to determine --repo and/or --pr. Provide them explicitly." >&2
+  usage
   exit 1
 fi
 

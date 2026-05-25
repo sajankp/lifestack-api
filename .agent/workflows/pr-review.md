@@ -183,13 +183,13 @@ If GraphQL thread resolution is repetitive, use the helper script:
 
 ```bash
 # Safer default: resolve only outdated unresolved threads
-.agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode outdated
+bash .agent/scripts/resolve-review-threads.sh --mode outdated
 
 # Resolve all unresolved threads (use only when validated)
-.agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode all
+bash .agent/scripts/resolve-review-threads.sh --mode all
 
 # Preview only
-.agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode outdated --dry-run
+bash .agent/scripts/resolve-review-threads.sh --mode outdated --dry-run
 ```
 
 Recommended flow:
@@ -202,13 +202,13 @@ For targeted non-outdated threads that were verified manually, use:
 
 ```bash
 # Single thread
-.agent/scripts/resolve-specific-threads.sh --thread <thread_id> --reply "Addressed in commit <sha>: <summary>"
+bash .agent/scripts/resolve-specific-threads.sh --thread <thread_id> --reply "Addressed in commit <sha>: <summary>"
 
 # Multiple threads from file (one ID per line)
-.agent/scripts/resolve-specific-threads.sh --threads-file .tmp/thread-ids.txt --reply-file .tmp/reply.md
+bash .agent/scripts/resolve-specific-threads.sh --threads-file .tmp/thread-ids.txt --reply-file .tmp/reply.md
 
 # Preview actions
-.agent/scripts/resolve-specific-threads.sh --thread <thread_id> --dry-run
+bash .agent/scripts/resolve-specific-threads.sh --thread <thread_id> --dry-run
 ```
 
 
