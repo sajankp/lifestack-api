@@ -3,7 +3,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.workflows import UserRegistrationWorkflow
+from app.application.workflows import DashboardSummaryWorkflow, UserRegistrationWorkflow
 from app.auth.repository import AuthSessionRepository, UserRepository
 from app.auth.service import AuthService
 from app.config import settings
@@ -462,3 +462,17 @@ async def get_user_registration_workflow(
     category_service: CategoryService = Depends(get_spending_category_service),
 ) -> UserRegistrationWorkflow:
     return UserRegistrationWorkflow(auth_service, workspace_service, category_service)
+
+
+async def get_dashboard_summary_workflow(
+    todo_service: TodoService = Depends(get_todo_service),
+    transaction_service: TransactionService = Depends(get_spending_transaction_service),
+    budget_service: BudgetService = Depends(get_spending_budget_service),
+    investing_summary_service: InvestingSummaryService = Depends(get_investing_summary_service),
+) -> DashboardSummaryWorkflow:
+    return DashboardSummaryWorkflow(
+        todo_service=todo_service,
+        transaction_service=transaction_service,
+        budget_service=budget_service,
+        investing_summary_service=investing_summary_service,
+    )
