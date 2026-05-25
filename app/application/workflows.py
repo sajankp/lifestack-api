@@ -26,6 +26,7 @@ from app.spending.models import (
 )
 from app.spending.service import BudgetService, CategoryService, TransactionService
 from app.todo.models import PriorityEnum, Todo
+from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
 
 logger = structlog.get_logger(__name__)
@@ -273,6 +274,7 @@ async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace:
     todos_map = {todo.system_key: todo for todo in todos_res.scalars().all()}
 
     audit_logger = AuditLogger(session)
+    todo_service = TodoService(TodoRepository(session))
 
     # 7. Evaluate each budget against thresholds
     for budget in budgets:
@@ -302,78 +304,28 @@ async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace:
             )
             priority = PriorityEnum.high if is_critical else PriorityEnum.medium
 
-            if todo:
-                # Update existing todo only when something actually changed
-                before_snap = _snapshot_todo(todo)
-                updated = False
-
-                if todo.completed:
-                    todo.completed = False
-                    updated = True
-                if todo.title != title:
-                    todo.title = title
-                    updated = True
-                if todo.description != desc:
-                    todo.description = desc
-                    updated = True
-                if todo.priority != priority:
-                    todo.priority = priority
-                    updated = True
-
-                if updated:
-                    todo.updated_at = datetime.now(UTC)
-                    session.add(todo)
-                    await session.flush()
-                    after_snap = _snapshot_todo(todo)
-                    changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
-                    await audit_logger.log(
-                        workspace_id=workspace.id,
-                        actor_id=user_id,
-                        action="budget_guardrail_triggered",
-                        module="application",
-                        entity_type="todo",
-                        entity_id=todo.id,  # type: ignore[arg-type]
-                        details={
-                            "entity_public_id": str(todo.public_id),
-                            "before": before_snap,
-                            "after": after_snap,
-                            "changed_fields": changed_fields,
-                        },
-                    )
-                    logger.info(
-                        "budget_guardrail_todo_updated",
-                        workspace_id=workspace.id,
-                        category=category.name,
-                        severity=severity,
-                        ratio=f"{ratio:.1%}",
-                    )
-            else:
-                # Create a new system todo for this category breach
-                todo = Todo(
+            todo, change = await todo_service.ensure_system_task(
+                workspace_id=workspace.id,  # type: ignore[arg-type]
+                user_id=user_id,  # type: ignore[arg-type]
+                system_key=system_key,
+                title=title,
+                description=desc,
+                priority=priority,
+                existing_todo=todo,
+                audit_logger=audit_logger,
+                audit_module="application",
+                audit_action="budget_guardrail_triggered",
+            )
+            todos_map[system_key] = todo
+            if change == "updated":
+                logger.info(
+                    "budget_guardrail_todo_updated",
                     workspace_id=workspace.id,
-                    user_id=user_id,
-                    title=title,
-                    description=desc,
-                    priority=priority,
-                    system_key=system_key,
+                    category=category.name,
+                    severity=severity,
+                    ratio=f"{ratio:.1%}",
                 )
-                session.add(todo)
-                await session.flush()
-                after_snap = _snapshot_todo(todo)
-                await audit_logger.log(
-                    workspace_id=workspace.id,
-                    actor_id=user_id,
-                    action="budget_guardrail_triggered",
-                    module="application",
-                    entity_type="todo",
-                    entity_id=todo.id,  # type: ignore[arg-type]
-                    details={
-                        "entity_public_id": str(todo.public_id),
-                        "before": None,
-                        "after": after_snap,
-                        "changed_fields": list(after_snap.keys()),
-                    },
-                )
+            elif change == "created":
                 logger.info(
                     "budget_guardrail_todo_created",
                     workspace_id=workspace.id,

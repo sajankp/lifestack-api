@@ -2,7 +2,7 @@ import csv
 import io
 import json
 import uuid
-from asyncio import to_thread
+from asyncio import Semaphore, to_thread
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -21,6 +21,8 @@ from app.todo.models import Todo
 
 SCHEMA_VERSION = 1
 SYNC_LIMIT_PER_MODULE = 5000
+ARTIFACT_BUILD_CONCURRENCY = 2
+_artifact_build_semaphore = Semaphore(ARTIFACT_BUILD_CONCURRENCY)
 
 
 def _serialize_scalar(value: object) -> object:
@@ -220,10 +222,11 @@ class ExportService:
             for module in modules:
                 payload["data"][module] = await self._load_module_payload(workspace_id, module)
 
-            if export_record.format == ExportFormat.json:
-                blob, mime_type, filename = await to_thread(self._build_json_artifact, payload)
-            else:
-                blob, mime_type, filename = await to_thread(self._build_csv_artifact, payload)
+            async with _artifact_build_semaphore:
+                if export_record.format == ExportFormat.json:
+                    blob, mime_type, filename = await to_thread(self._build_json_artifact, payload)
+                else:
+                    blob, mime_type, filename = await to_thread(self._build_csv_artifact, payload)
 
             export_record.artifact_blob = blob
             export_record.artifact_mime_type = mime_type

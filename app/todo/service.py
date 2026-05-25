@@ -1,11 +1,12 @@
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Literal
 
 from app.core.audit import AuditLogger
 from app.core.exceptions import NotFoundError
 from app.core.pagination import DEFAULT_LIMIT
-from app.todo.models import Todo
+from app.todo.models import PriorityEnum, Todo
 from app.todo.repository import TodoRepository
 from app.todo.schemas import TodoCreate, TodoUpdate
 
@@ -49,6 +50,89 @@ class TodoService:
         if not todo:
             raise NotFoundError(detail=f"Todo with id {public_id} not found")
         return todo
+
+    async def ensure_system_task(
+        self,
+        *,
+        workspace_id: int,
+        user_id: int,
+        system_key: str,
+        title: str,
+        description: str,
+        priority: PriorityEnum,
+        existing_todo: Todo | None = None,
+        audit_logger: AuditLogger | None = None,
+        audit_module: str = "todo",
+        audit_action: str = "update",
+    ) -> tuple[Todo, Literal["created", "updated", "unchanged"]]:
+        todo = existing_todo
+        if todo is None:
+            todo = Todo(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                title=title,
+                description=description,
+                priority=priority,
+                system_key=system_key,
+            )
+            todo = await self.repository.create(todo)
+            if audit_logger:
+                after_snap = _snapshot_todo(todo)
+                await audit_logger.log(
+                    workspace_id=workspace_id,
+                    actor_id=user_id,
+                    action=audit_action,
+                    module=audit_module,
+                    entity_type="todo",
+                    entity_id=todo.id,
+                    details={
+                        "entity_public_id": str(todo.public_id),
+                        "before": None,
+                        "after": after_snap,
+                        "changed_fields": list(after_snap.keys()),
+                    },
+                )
+            return todo, "created"
+
+        before_snap = _snapshot_todo(todo)
+        updated = False
+        if todo.completed:
+            todo.completed = False
+            updated = True
+        if todo.title != title:
+            todo.title = title
+            updated = True
+        if todo.description != description:
+            todo.description = description
+            updated = True
+        if todo.priority != priority:
+            todo.priority = priority
+            updated = True
+
+        if not updated:
+            return todo, "unchanged"
+
+        todo.updated_at = datetime.now(UTC)
+        todo = await self.repository.save(todo)
+
+        if audit_logger:
+            after_snap = _snapshot_todo(todo)
+            changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action=audit_action,
+                module=audit_module,
+                entity_type="todo",
+                entity_id=todo.id,
+                details={
+                    "entity_public_id": str(todo.public_id),
+                    "before": before_snap,
+                    "after": after_snap,
+                    "changed_fields": changed_fields,
+                },
+            )
+        return todo, "updated"
 
     async def create_todo(
         self,
