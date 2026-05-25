@@ -105,6 +105,25 @@ Not applying this suggestion because it conflicts with <spec/file>. Proposed alt
 Follow-up pushed in <commit_sha>; all previously raised points addressed and validated locally.
 ```
 
+## Comment Posting Format
+
+Always post PR comments as true multiline markdown. Never send escaped newline text (for example `\n` inside one string), because GitHub renders that poorly.
+
+Preferred command:
+
+```bash
+gh pr comment <pr_number> --repo <owner>/<repo> --body-file - <<'EOF'
+Follow-up fixes pushed for review findings and CI hardening:
+- <fix 1>
+- <fix 2>
+
+Validation:
+- <test command>
+
+/gemini review
+EOF
+```
+
 ## Troubleshooting
 
 - Permission denied on scripts:

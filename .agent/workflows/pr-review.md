@@ -229,6 +229,25 @@ You can do this by:
 
 Wait for the new review before proceeding to merge.
 
+### Step 2.6.1: Post Re-Review Comments with Proper Newlines
+
+When posting follow-up PR comments, use real multiline markdown. Do not send literal escaped newline text like `\n` in a single-line body.
+
+Use:
+
+```bash
+gh pr comment <pr_number> --repo <owner>/<repo> --body-file - <<'EOF'
+Follow-up fixes pushed for review findings and CI hardening:
+- <fix 1>
+- <fix 2>
+
+Validation:
+- <test command>
+
+/gemini review
+EOF
+```
+
 ## Step 3: Check Status
 
 Retrieve the current status of the pull request. Pay close attention to:
