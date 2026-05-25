@@ -37,11 +37,22 @@ Use this agent when you need to process open pull requests end-to-end.
 Use:
 
 ```bash
-.agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode outdated --dry-run
-.agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode outdated
+bash .agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode outdated --dry-run
+bash .agent/scripts/resolve-review-threads.sh --repo <owner>/<repo> --pr <number> --mode outdated
 ```
 
 Use `--mode all` only after manual validation of unresolved non-outdated threads.
+
+### Practical Notes
+
+- Script location is in this repo: `.agent/scripts/resolve-review-threads.sh`.
+- It can target any repo by `--repo owner/name` (for example: `sajankp/lifestack-web`).
+- If execute permissions are missing, run with `bash` as shown above.
+- Useful follow-up helper for specific threads:
+
+```bash
+bash .agent/scripts/resolve-specific-threads.sh --repo <owner>/<repo> --thread-id <thread_id>
+```
 
 ## Escalation Triggers
 
