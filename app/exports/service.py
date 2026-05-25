@@ -1,6 +1,8 @@
 import csv
 import io
 import json
+import uuid
+from asyncio import to_thread
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -25,6 +27,8 @@ def _serialize_scalar(value: object) -> object:
     if isinstance(value, datetime):
         return value.astimezone(UTC).isoformat()
     if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, uuid.UUID):
         return str(value)
     return value
 
@@ -217,9 +221,9 @@ class ExportService:
                 payload["data"][module] = await self._load_module_payload(workspace_id, module)
 
             if export_record.format == ExportFormat.json:
-                blob, mime_type, filename = self._build_json_artifact(payload)
+                blob, mime_type, filename = await to_thread(self._build_json_artifact, payload)
             else:
-                blob, mime_type, filename = self._build_csv_artifact(payload)
+                blob, mime_type, filename = await to_thread(self._build_csv_artifact, payload)
 
             export_record.artifact_blob = blob
             export_record.artifact_mime_type = mime_type
@@ -254,7 +258,7 @@ class ExportService:
 
         return export_record
 
-    async def get_export(self, workspace_id: int, export_public_id) -> ExportRecord:
+    async def get_export(self, workspace_id: int, export_public_id: uuid.UUID) -> ExportRecord:
         record = await self.repository.get_by_public_id(workspace_id, export_public_id)
         if record is None:
             raise NotFoundError(detail=f"Export with id {export_public_id} not found")

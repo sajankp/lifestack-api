@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.application.workflows import DashboardSummaryWorkflow
 from app.dashboard.schemas import DashboardSummary
-from app.dashboard.service import DashboardService
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def mock_investing_service():
 def service(
     mock_todo_service, mock_transaction_service, mock_budget_service, mock_investing_service
 ):
-    return DashboardService(
+    return DashboardSummaryWorkflow(
         todo_service=mock_todo_service,
         transaction_service=mock_transaction_service,
         budget_service=mock_budget_service,

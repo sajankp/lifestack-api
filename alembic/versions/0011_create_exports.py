@@ -47,9 +47,17 @@ def upgrade() -> None:
     op.create_index(op.f("ix_exports_public_id"), "exports", ["public_id"], unique=True)
     op.create_index(op.f("ix_exports_workspace_id"), "exports", ["workspace_id"], unique=False)
     op.create_index(op.f("ix_exports_requested_by"), "exports", ["requested_by"], unique=False)
+    op.create_index(
+        "ix_exports_pending_workspace",
+        "exports",
+        ["workspace_id"],
+        unique=True,
+        postgresql_where=sa.text("status = 'pending'"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("ix_exports_pending_workspace", table_name="exports")
     op.drop_index(op.f("ix_exports_requested_by"), table_name="exports")
     op.drop_index(op.f("ix_exports_workspace_id"), table_name="exports")
     op.drop_index(op.f("ix_exports_public_id"), table_name="exports")
