@@ -2,12 +2,13 @@ import csv
 import io
 import json
 import uuid
-from asyncio import Semaphore, to_thread
+from asyncio import to_thread
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from decimal import Decimal
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import structlog
 from sqlalchemy import func, select
 
 from app.core.audit import AuditLogger
@@ -21,8 +22,8 @@ from app.todo.models import Todo
 
 SCHEMA_VERSION = 1
 SYNC_LIMIT_PER_MODULE = 5000
-ARTIFACT_BUILD_CONCURRENCY = 2
-_artifact_build_semaphore = Semaphore(ARTIFACT_BUILD_CONCURRENCY)
+
+logger = structlog.get_logger(__name__)
 
 
 def _serialize_scalar(value: object) -> object:
@@ -40,6 +41,10 @@ def _row_to_dict(model: object) -> dict:
         return {}
     payload = model.model_dump()
     return {key: _serialize_scalar(value) for key, value in payload.items()}
+
+
+def _serialize_rows(rows: list[object]) -> list[dict]:
+    return [_row_to_dict(row) for row in rows]
 
 
 def _normalize_modules(requested_modules: Iterable[str]) -> list[str]:
@@ -96,7 +101,7 @@ class ExportService:
                 .where(Todo.workspace_id == workspace_id)
                 .order_by(Todo.created_at.asc())
             )
-            return {"todos": [_row_to_dict(todo) for todo in todo_rows.scalars().all()]}
+            return {"todos": await to_thread(_serialize_rows, list(todo_rows.scalars().all()))}
 
         if module == "spending":
             categories = await self.session.execute(
@@ -114,10 +119,17 @@ class ExportService:
                 .where(SpendingBudget.workspace_id == workspace_id)
                 .order_by(SpendingBudget.month_start.asc())
             )
+            serialized_categories, serialized_transactions, serialized_budgets = await to_thread(
+                lambda: (
+                    _serialize_rows(list(categories.scalars().all())),
+                    _serialize_rows(list(transactions.scalars().all())),
+                    _serialize_rows(list(budgets.scalars().all())),
+                )
+            )
             return {
-                "categories": [_row_to_dict(row) for row in categories.scalars().all()],
-                "transactions": [_row_to_dict(row) for row in transactions.scalars().all()],
-                "budgets": [_row_to_dict(row) for row in budgets.scalars().all()],
+                "categories": serialized_categories,
+                "transactions": serialized_transactions,
+                "budgets": serialized_budgets,
             }
 
         holdings = await self.session.execute(
@@ -130,15 +142,19 @@ class ExportService:
             .where(CashBalance.workspace_id == workspace_id)
             .order_by(CashBalance.created_at.asc())
         )
+        serialized_holdings, serialized_cash = await to_thread(
+            lambda: (
+                _serialize_rows(list(holdings.scalars().all())),
+                _serialize_rows(list(cash_balances.scalars().all())),
+            )
+        )
         return {
-            "holdings": [_row_to_dict(row) for row in holdings.scalars().all()],
-            "cash_balances": [_row_to_dict(row) for row in cash_balances.scalars().all()],
+            "holdings": serialized_holdings,
+            "cash_balances": serialized_cash,
         }
 
     def _build_json_artifact(self, payload: dict) -> tuple[bytes, str, str]:
-        content = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), indent=2).encode(
-            "utf-8"
-        )
+        content = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
         return content, "application/json", "lifestack-export.json"
 
     def _build_csv_artifact(self, payload: dict) -> tuple[bytes, str, str]:
@@ -222,11 +238,10 @@ class ExportService:
             for module in modules:
                 payload["data"][module] = await self._load_module_payload(workspace_id, module)
 
-            async with _artifact_build_semaphore:
-                if export_record.format == ExportFormat.json:
-                    blob, mime_type, filename = await to_thread(self._build_json_artifact, payload)
-                else:
-                    blob, mime_type, filename = await to_thread(self._build_csv_artifact, payload)
+            if export_record.format == ExportFormat.json:
+                blob, mime_type, filename = await to_thread(self._build_json_artifact, payload)
+            else:
+                blob, mime_type, filename = await to_thread(self._build_csv_artifact, payload)
 
             export_record.artifact_blob = blob
             export_record.artifact_mime_type = mime_type
@@ -234,7 +249,7 @@ class ExportService:
             export_record.status = ExportStatus.ready
             export_record.completed_at = datetime.now(UTC)
             export_record.storage_key = f"db://exports/{export_record.public_id}"
-            export_record = await self.repository.save(export_record)
+            export_record = await self.repository.save(export_record, refresh=False)
 
             await audit_logger.log(
                 workspace_id=workspace_id,
@@ -254,15 +269,25 @@ class ExportService:
                 },
             )
         except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "export_generation_failed",
+                workspace_id=workspace_id,
+                export_public_id=str(export_record.public_id),
+                requested_by=requested_by,
+            )
             export_record.status = ExportStatus.failed
             export_record.error_message = str(exc)
             export_record.completed_at = datetime.now(UTC)
-            export_record = await self.repository.save(export_record)
+            export_record = await self.repository.save(export_record, refresh=False)
 
         return export_record
 
-    async def get_export(self, workspace_id: int, export_public_id: uuid.UUID) -> ExportRecord:
-        record = await self.repository.get_by_public_id(workspace_id, export_public_id)
+    async def get_export(
+        self, workspace_id: int, export_public_id: uuid.UUID, include_blob: bool = False
+    ) -> ExportRecord:
+        record = await self.repository.get_by_public_id(
+            workspace_id, export_public_id, include_blob=include_blob
+        )
         if record is None:
             raise NotFoundError(detail=f"Export with id {export_public_id} not found")
         return record

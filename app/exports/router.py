@@ -1,7 +1,8 @@
 import uuid
+from io import BytesIO
 
 from fastapi import APIRouter, Depends, status
-from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 
 from app.core.audit import AuditLogger
 from app.core.dependencies import (
@@ -53,15 +54,15 @@ async def download_export(
     workspace_id: int = Depends(get_current_workspace_id),
     _user: dict = Depends(get_current_user),
 ):
-    record = await service.get_export(workspace_id, export_public_id)
+    record = await service.get_export(workspace_id, export_public_id, include_blob=True)
     if record.artifact_blob is None or record.status != ExportStatus.ready:
         raise NotFoundError(detail="Export artifact is not available")
 
     headers = {
         "Content-Disposition": f'attachment; filename="{record.artifact_filename or "export.bin"}"'
     }
-    return Response(
-        content=record.artifact_blob,
+    return StreamingResponse(
+        BytesIO(record.artifact_blob),
         media_type=record.artifact_mime_type or "application/octet-stream",
         headers=headers,
     )
