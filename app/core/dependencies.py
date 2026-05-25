@@ -11,6 +11,8 @@ from app.core.audit import AuditLogger
 from app.core.auth import get_user_info_from_token
 from app.core.database.postgres import get_db_session
 from app.core.exceptions import CSRFFailedError, UnauthorizedError
+from app.exports.repository import ExportRepository
+from app.exports.service import ExportService
 from app.finance.repository import (
     AccountRepository,
     CapitalTransferRepository,
@@ -400,6 +402,19 @@ async def get_finance_transfer_service(
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
 ) -> CapitalTransferService:
     return CapitalTransferService(transfer_repo, account_repo, currency_repo)
+
+
+# ---------------------------------------------------------------------------
+# Exports
+# ---------------------------------------------------------------------------
+
+
+async def get_export_repo(session: AsyncSession = Depends(get_db_session)) -> ExportRepository:
+    return ExportRepository(session)
+
+
+async def get_export_service(repo: ExportRepository = Depends(get_export_repo)) -> ExportService:
+    return ExportService(repo)
 
 
 async def get_current_workspace_id(

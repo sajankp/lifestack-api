@@ -36,6 +36,14 @@ class TodoService:
     async def get_summary_counts(self, workspace_id: int, now: datetime) -> tuple[int, int]:
         return await self.repository.get_summary_counts(workspace_id, now)
 
+    async def get_next_due_items(
+        self, workspace_id: int, now: datetime, limit: int = 5
+    ) -> Sequence[Todo]:
+        return await self.repository.get_next_due_items(workspace_id, now, limit)
+
+    async def get_active_guardrail_todo_count(self, workspace_id: int) -> int:
+        return await self.repository.get_active_guardrail_todo_count(workspace_id)
+
     async def get_todo(self, workspace_id: int, public_id: uuid.UUID) -> Todo:
         todo = await self.repository.get_by_public_id(workspace_id, public_id)
         if not todo:

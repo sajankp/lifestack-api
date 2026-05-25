@@ -39,8 +39,24 @@ class DashboardService:
             open_count, overdue_count = await self.todo_service.get_summary_counts(
                 workspace_id, now
             )
+            next_due_items = await self.todo_service.get_next_due_items(workspace_id, now, limit=5)
+            active_guardrail_todo_count = await self.todo_service.get_active_guardrail_todo_count(
+                workspace_id
+            )
             todos_res = TodosSummary(
-                status="available", open_count=open_count, overdue_count=overdue_count
+                status="available",
+                open_count=open_count,
+                overdue_count=overdue_count,
+                next_due_items=[
+                    {
+                        "public_id": str(todo.public_id),
+                        "title": todo.title,
+                        "due_date": todo.due_date.isoformat() if todo.due_date else None,
+                        "priority": todo.priority,
+                    }
+                    for todo in next_due_items
+                ],
+                active_guardrail_todo_count=active_guardrail_todo_count,
             )
         except Exception:
             logger.exception("dashboard_todos_fetch_failed", workspace_id=workspace_id)
@@ -60,10 +76,41 @@ class DashboardService:
                 workspace_id=workspace_id,
                 month_start=start_of_month.date(),
             )
+            category_totals = await self.transaction_service.get_category_totals(
+                workspace_id=workspace_id,
+                from_date=start_of_month,
+                to_date=now,
+                type_filter=TransactionType.expense,
+            )
+            budgets, _ = await self.budget_service.list_budgets(
+                workspace_id=workspace_id,
+                month_start=start_of_month.date(),
+                limit=5000,
+                offset=0,
+            )
+            budget_amount_by_category = {budget.category_id: budget.amount for budget in budgets}
+            top_overspent_categories = []
+            for category_id, spent in category_totals.items():
+                budget_amount = budget_amount_by_category.get(category_id)
+                if not budget_amount or budget_amount <= 0:
+                    continue
+                overspend = spent - budget_amount
+                if overspend <= 0:
+                    continue
+                ratio = spent / budget_amount
+                top_overspent_categories.append({
+                    "category_id": category_id,
+                    "spent": spent,
+                    "budget": budget_amount,
+                    "overspend": overspend,
+                    "ratio": ratio,
+                })
+            top_overspent_categories.sort(key=lambda item: item["overspend"], reverse=True)
             spending_res = SpendingSummary(
                 status="available",
                 month_spent=month_spent,
                 month_budget=month_budget,
+                top_overspent_categories=top_overspent_categories[:5],
             )
         except Exception:
             logger.exception("dashboard_spending_fetch_failed", workspace_id=workspace_id)

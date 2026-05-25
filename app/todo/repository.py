@@ -43,6 +43,32 @@ class TodoRepository:
             return 0, 0
         return row.get("open_count") or 0, row.get("overdue_count") or 0
 
+    async def get_next_due_items(
+        self, workspace_id: int, now: datetime, limit: int = 5
+    ) -> Sequence[Todo]:
+        result = await self.session.execute(
+            select(Todo)
+            .where(
+                Todo.workspace_id == workspace_id,
+                Todo.completed.is_(False),
+                Todo.due_date.is_not(None),
+                Todo.due_date >= now,
+            )
+            .order_by(Todo.due_date.asc())
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def get_active_guardrail_todo_count(self, workspace_id: int) -> int:
+        result = await self.session.execute(
+            select(func.count(Todo.id)).where(
+                Todo.workspace_id == workspace_id,
+                Todo.completed.is_(False),
+                Todo.system_key.like("budget:guardrail:%"),
+            )
+        )
+        return int(result.scalar() or 0)
+
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> Todo | None:
         query = select(Todo).where(Todo.workspace_id == workspace_id, Todo.public_id == public_id)
         result = await self.session.execute(query)
