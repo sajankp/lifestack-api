@@ -5,7 +5,6 @@ import uuid
 from asyncio import to_thread
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from decimal import Decimal
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import structlog
@@ -26,25 +25,10 @@ SYNC_LIMIT_PER_MODULE = 5000
 logger = structlog.get_logger(__name__)
 
 
-def _serialize_scalar(value: object) -> object:
-    if isinstance(value, datetime):
-        return value.astimezone(UTC).isoformat()
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, uuid.UUID):
-        return str(value)
-    return value
-
-
 def _row_to_dict(model: object) -> dict:
     if not hasattr(model, "model_dump"):
         return {}
-    payload = model.model_dump()
-    return {key: _serialize_scalar(value) for key, value in payload.items()}
-
-
-def _serialize_rows(rows: list[object]) -> list[dict]:
-    return [_row_to_dict(row) for row in rows]
+    return model.model_dump(mode="json")
 
 
 def _normalize_modules(requested_modules: Iterable[str]) -> list[str]:
@@ -71,18 +55,24 @@ class ExportService:
             return int(result.scalar() or 0)
 
         if module == "spending":
-            category_count_q = select(func.count(SpendingCategory.id)).where(
-                SpendingCategory.workspace_id == workspace_id
+            counts_q = select(
+                select(func.count(SpendingCategory.id))
+                .where(SpendingCategory.workspace_id == workspace_id)
+                .scalar_subquery()
+                .label("category_count"),
+                select(func.count(SpendingTransaction.id))
+                .where(SpendingTransaction.workspace_id == workspace_id)
+                .scalar_subquery()
+                .label("tx_count"),
+                select(func.count(SpendingBudget.id))
+                .where(SpendingBudget.workspace_id == workspace_id)
+                .scalar_subquery()
+                .label("budget_count"),
             )
-            tx_count_q = select(func.count(SpendingTransaction.id)).where(
-                SpendingTransaction.workspace_id == workspace_id
-            )
-            budget_count_q = select(func.count(SpendingBudget.id)).where(
-                SpendingBudget.workspace_id == workspace_id
-            )
-            category_count = int((await self.session.execute(category_count_q)).scalar() or 0)
-            tx_count = int((await self.session.execute(tx_count_q)).scalar() or 0)
-            budget_count = int((await self.session.execute(budget_count_q)).scalar() or 0)
+            counts_row = (await self.session.execute(counts_q)).one()
+            category_count = int(counts_row.category_count or 0)
+            tx_count = int(counts_row.tx_count or 0)
+            budget_count = int(counts_row.budget_count or 0)
             return category_count + tx_count + budget_count
 
         # investing
@@ -95,62 +85,56 @@ class ExportService:
         return holding_count + cash_count
 
     async def _load_module_payload(self, workspace_id: int, module: str) -> dict[str, list[dict]]:
+        async def _stream_to_rows(query):
+            rows: list[dict] = []
+            stream = await self.session.stream_scalars(query)
+            async for row in stream:
+                rows.append(_row_to_dict(row))
+            return rows
+
         if module == "todo":
-            todo_rows = await self.session.execute(
+            todo_rows = await _stream_to_rows(
                 select(Todo)
                 .where(Todo.workspace_id == workspace_id)
                 .order_by(Todo.created_at.asc())
             )
-            return {"todos": await to_thread(_serialize_rows, list(todo_rows.scalars().all()))}
+            return {"todos": todo_rows}
 
         if module == "spending":
-            categories = await self.session.execute(
+            categories = await _stream_to_rows(
                 select(SpendingCategory)
                 .where(SpendingCategory.workspace_id == workspace_id)
                 .order_by(SpendingCategory.created_at.asc())
             )
-            transactions = await self.session.execute(
+            transactions = await _stream_to_rows(
                 select(SpendingTransaction)
                 .where(SpendingTransaction.workspace_id == workspace_id)
                 .order_by(SpendingTransaction.occurred_at.asc())
             )
-            budgets = await self.session.execute(
+            budgets = await _stream_to_rows(
                 select(SpendingBudget)
                 .where(SpendingBudget.workspace_id == workspace_id)
                 .order_by(SpendingBudget.month_start.asc())
             )
-            serialized_categories, serialized_transactions, serialized_budgets = await to_thread(
-                lambda: (
-                    _serialize_rows(list(categories.scalars().all())),
-                    _serialize_rows(list(transactions.scalars().all())),
-                    _serialize_rows(list(budgets.scalars().all())),
-                )
-            )
             return {
-                "categories": serialized_categories,
-                "transactions": serialized_transactions,
-                "budgets": serialized_budgets,
+                "categories": categories,
+                "transactions": transactions,
+                "budgets": budgets,
             }
 
-        holdings = await self.session.execute(
+        holdings = await _stream_to_rows(
             select(Holding)
             .where(Holding.workspace_id == workspace_id)
             .order_by(Holding.created_at.asc())
         )
-        cash_balances = await self.session.execute(
+        cash_balances = await _stream_to_rows(
             select(CashBalance)
             .where(CashBalance.workspace_id == workspace_id)
             .order_by(CashBalance.created_at.asc())
         )
-        serialized_holdings, serialized_cash = await to_thread(
-            lambda: (
-                _serialize_rows(list(holdings.scalars().all())),
-                _serialize_rows(list(cash_balances.scalars().all())),
-            )
-        )
         return {
-            "holdings": serialized_holdings,
-            "cash_balances": serialized_cash,
+            "holdings": holdings,
+            "cash_balances": cash_balances,
         }
 
     def _build_json_artifact(self, payload: dict) -> tuple[bytes, str, str]:
