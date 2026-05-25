@@ -25,7 +25,8 @@ class CaptureService:
         if module in {"todo", "spending"}:
             return module
         t = text.lower()
-        has_money = bool(amount_hint or re.search(r"[$₹£]\s*\d|\d+(?:\.\d+)?", t))
+        money_keywords = any(word in t for word in ["spent", "paid", "cost", "expense", "income"])
+        has_money = bool(amount_hint or re.search(r"[$₹£]\s*\d", t) or money_keywords)
         has_todo = any(
             w in t for w in ["todo", "task", "buy", "call", "email", "remind", "fix", "do"]
         )
@@ -48,7 +49,12 @@ class CaptureService:
             return today + timedelta(days=1)
         if v == "next week":
             return today + timedelta(days=7)
-        return datetime.fromisoformat(value).date()
+        try:
+            return datetime.fromisoformat(value).date()
+        except ValueError:
+            raise ValidationError(
+                detail="Invalid due_date format. Use YYYY-MM-DD, today, tomorrow, or next week."
+            ) from None
 
     async def capture(
         self, user_id: int, workspace_id: int, text: str, module: str | None, hints: dict | None
@@ -81,7 +87,10 @@ class CaptureService:
             category = next((c for c in cats if c.name.lower() == "other"), None)
         if category is None:
             raise ValidationError(detail="No spending category available for capture")
-        amount = Decimal(hints.get("amount") or "0")
+        try:
+            amount = Decimal(hints.get("amount") or "0")
+        except Exception as exc:
+            raise ValidationError(detail="Invalid amount format in hints.amount") from exc
         if amount <= 0:
             m = re.search(r"(\d+(?:\.\d{1,2})?)", text)
             if m:

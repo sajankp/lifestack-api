@@ -371,6 +371,22 @@ class HoldingPriceRepository:
             .all()
         )
 
+    async def latest_price_on_or_before(
+        self, workspace_id: int, holding_id: int, as_of: date
+    ) -> HoldingPrice | None:
+        return (
+            await self.session.execute(
+                select(HoldingPrice)
+                .where(
+                    HoldingPrice.workspace_id == workspace_id,
+                    HoldingPrice.holding_id == holding_id,
+                    HoldingPrice.price_date <= as_of,
+                )
+                .order_by(HoldingPrice.price_date.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
 
 class PortfolioSnapshotRepository:
     def __init__(self, session: AsyncSession):

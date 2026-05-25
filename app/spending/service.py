@@ -9,6 +9,7 @@ from app.core.exceptions import (
     ConflictError,
     ForbiddenError,
     NotFoundError,
+    ValidationError,
 )
 from app.core.pagination import DEFAULT_LIMIT
 from app.spending.models import (
@@ -629,6 +630,10 @@ class RecurringTransactionService:
     async def create_recurring(
         self, workspace_id: int, user_id: int, payload: RecurringTransactionCreate
     ) -> RecurringTransaction:
+        if payload.frequency not in {"daily", "weekly", "monthly", "yearly"}:
+            raise ValidationError(
+                detail="Invalid frequency. Use daily, weekly, monthly, or yearly."
+            )
         category = await self.category_repo.get_by_public_id(workspace_id, payload.category_id)
         if not category:
             raise NotFoundError(
@@ -660,6 +665,15 @@ class RecurringTransactionService:
     ) -> RecurringTransaction:
         recurring = await self.get_recurring(workspace_id, public_id)
         update_data = payload.model_dump(exclude_unset=True)
+        if "frequency" in update_data and update_data["frequency"] not in {
+            "daily",
+            "weekly",
+            "monthly",
+            "yearly",
+        }:
+            raise ValidationError(
+                detail="Invalid frequency. Use daily, weekly, monthly, or yearly."
+            )
         for key, value in update_data.items():
             setattr(recurring, key, value)
         recurring.updated_at = datetime.now(UTC)

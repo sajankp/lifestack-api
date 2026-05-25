@@ -444,7 +444,13 @@ class PerformanceService:
         holdings_value = Decimal("0")
         total_cost = Decimal("0")
         for h in holdings:
-            holdings_value += h.quantity * h.avg_cost
+            if h.id is None:
+                continue
+            latest_price = await self.holding_price_repo.latest_price_on_or_before(
+                workspace_id, h.id, snapshot_date
+            )
+            unit_price = latest_price.unit_price if latest_price is not None else h.avg_cost
+            holdings_value += h.quantity * unit_price
             total_cost += h.quantity * h.avg_cost
         cash_value = sum((c.balance for c in cash_balances), Decimal("0"))
         total_value = holdings_value + cash_value
