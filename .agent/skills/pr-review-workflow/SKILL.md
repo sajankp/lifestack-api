@@ -21,6 +21,14 @@ bash .agent/scripts/resolve-review-threads.sh --mode outdated --dry-run
 bash .agent/scripts/resolve-review-threads.sh --mode outdated
 ```
 
+## 1-Minute Checklist
+
+- Open PR and gather current status/checks.
+- Triage review comments as `Accept` / `Reject` / `Discuss`.
+- Apply fixes and run required local tests.
+- Reply + resolve threads (`outdated` first).
+- Request `/gemini review` only after tests pass.
+
 ## Scope
 
 - List and prioritize open PRs
