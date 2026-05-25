@@ -75,9 +75,9 @@ Use `--mode all` only after manual validation of unresolved non-outdated threads
 
 ### Practical Notes
 
-- Script location is in this repo: `.agent/scripts/resolve-review-threads.sh`.
+- Script locations are in this repo: `.agent/scripts/`.
 - It auto-detects repo and current PR by default.
-- You can still target explicitly: `--repo owner/name --pr <number>`.
+- You can still target explicitly: `--repo owner/repo --pr <number>` (for example: `org/repo`).
 - If execute permissions are missing, run with `bash` as shown above.
 - Useful follow-up helper for specific threads:
 

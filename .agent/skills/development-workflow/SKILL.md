@@ -69,8 +69,11 @@ Spec -> Tests (failing) -> Implement -> Verify -> PR
 - Mark spec `Implemented`
 - Open PR and hand off to PR review workflow
 - For review-thread cleanup during handoff:
-  - `bash .agent/scripts/resolve-review-threads.sh --mode outdated --dry-run`
-  - `bash .agent/scripts/resolve-review-threads.sh --mode outdated`
+
+```bash
+bash .agent/scripts/resolve-review-threads.sh --mode outdated --dry-run
+bash .agent/scripts/resolve-review-threads.sh --mode outdated
+```
 
 ## Commit Prefixes
 
