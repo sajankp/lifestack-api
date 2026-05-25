@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import structlog
 from sqlalchemy import func, select
@@ -110,16 +111,6 @@ class DashboardSummaryWorkflow:
         spending_res = SpendingSummary()
         try:
             start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            month_spent = await self.transaction_service.get_sum_by_type(
-                workspace_id=workspace_id,
-                type_filter=TransactionType.expense,
-                from_date=start_of_month,
-                to_date=now,
-            )
-            month_budget = await self.budget_service.get_month_total_budget(
-                workspace_id=workspace_id,
-                month_start=start_of_month.date(),
-            )
             category_totals = await self.transaction_service.get_category_totals(
                 workspace_id=workspace_id,
                 from_date=start_of_month,
@@ -132,6 +123,8 @@ class DashboardSummaryWorkflow:
                 limit=5000,
                 offset=0,
             )
+            month_spent = sum(category_totals.values(), Decimal("0"))
+            month_budget = sum((budget.amount for budget in budgets), Decimal("0"))
             budget_amount_by_category = {budget.category_id: budget.amount for budget in budgets}
             top_overspent_categories = []
             for category_id, spent in category_totals.items():

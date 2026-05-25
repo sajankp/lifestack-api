@@ -62,10 +62,7 @@ async def test_get_summary_success(
     mock_todo_service.get_active_guardrail_todo_count.return_value = 3
 
     # 2. Setup Spending mock returns
-    mock_transaction_service.get_sum_by_type.return_value = Decimal("450.50")
-    mock_budget_service.get_month_total_budget.return_value = Decimal("1000.00")
-
-    # Category totals for top overspent categories calculation
+    # Category totals for month_spent + top overspent categories calculation
     mock_transaction_service.get_category_totals.return_value = {
         101: Decimal("120.00"),  # budget 100 -> overspend 20
         102: Decimal("300.00"),  # budget 200 -> overspend 100
@@ -102,8 +99,8 @@ async def test_get_summary_success(
 
     # Spending Summary
     assert summary.spending.status == "available"
-    assert summary.spending.month_spent == Decimal("450.50")
-    assert summary.spending.month_budget == Decimal("1000.00")
+    assert summary.spending.month_spent == Decimal("560.00")
+    assert summary.spending.month_budget == Decimal("400.00")
 
     # Check top overspent categories sorting and filtration
     # Category 102 overspend = 100, ratio = 1.5
@@ -134,8 +131,6 @@ async def test_get_summary_graceful_failures(
 
     # Case A: Todo service fails, others succeed
     mock_todo_service.get_summary_counts.side_effect = RuntimeError("Todo Service Failed")
-    mock_transaction_service.get_sum_by_type.return_value = Decimal("10.0")
-    mock_budget_service.get_month_total_budget.return_value = Decimal("20.0")
     mock_transaction_service.get_category_totals.return_value = {}
     mock_budget_service.list_budgets.return_value = ([], 0)
     mock_investing_service.get_summary.return_value = MagicMock(
@@ -153,7 +148,9 @@ async def test_get_summary_graceful_failures(
     mock_todo_service.get_next_due_items.return_value = []
     mock_todo_service.get_active_guardrail_todo_count.return_value = 0
 
-    mock_transaction_service.get_sum_by_type.side_effect = RuntimeError("DB error on transactions")
+    mock_transaction_service.get_category_totals.side_effect = RuntimeError(
+        "DB error on transactions"
+    )
 
     summary = await service.get_summary(workspace_id)
     assert summary.todos.status == "available"
@@ -161,7 +158,7 @@ async def test_get_summary_graceful_failures(
     assert summary.investing.status == "available"
 
     # Case C: Investing service fails, others succeed
-    mock_transaction_service.get_sum_by_type.side_effect = None
+    mock_transaction_service.get_category_totals.side_effect = None
     mock_investing_service.get_summary.side_effect = Exception("Investing service down")
 
     summary = await service.get_summary(workspace_id)
