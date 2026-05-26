@@ -85,6 +85,7 @@ class NotificationRepository:
             )
             .values(is_read=True, read_at=datetime.now(UTC))
         )
+        await self.session.flush()
         return int(res.rowcount or 0)
 
     async def delete_notification(self, notification: Notification) -> None:
@@ -94,6 +95,7 @@ class NotificationRepository:
             )
         )
         await self.session.delete(notification)
+        await self.session.flush()
 
     async def get_preferences(
         self, workspace_id: int, user_id: int

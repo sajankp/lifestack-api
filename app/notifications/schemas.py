@@ -28,4 +28,6 @@ class NotificationPreferenceResponse(BaseModel):
 
 class NotificationPreferenceUpdate(BaseModel):
     channel_in_app: bool | None = None
+    channel_email: bool | None = None
+    channel_push: bool | None = None
     is_muted: bool | None = None

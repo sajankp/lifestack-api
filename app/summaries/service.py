@@ -80,27 +80,23 @@ class WeeklySummaryService:
                 )
             ).scalar_one()
         )
-
-        income = (
+        spending_totals = (
             await self.session.execute(
-                select(func.coalesce(func.sum(SpendingTransaction.amount), 0)).where(
+                select(
+                    SpendingTransaction.type,
+                    func.coalesce(func.sum(SpendingTransaction.amount), 0),
+                )
+                .where(
                     SpendingTransaction.workspace_id == workspace_id,
-                    SpendingTransaction.type == TransactionType.income,
                     SpendingTransaction.occurred_at >= start_dt,
                     SpendingTransaction.occurred_at < end_dt,
                 )
+                .group_by(SpendingTransaction.type)
             )
-        ).scalar_one()
-        expense = (
-            await self.session.execute(
-                select(func.coalesce(func.sum(SpendingTransaction.amount), 0)).where(
-                    SpendingTransaction.workspace_id == workspace_id,
-                    SpendingTransaction.type == TransactionType.expense,
-                    SpendingTransaction.occurred_at >= start_dt,
-                    SpendingTransaction.occurred_at < end_dt,
-                )
-            )
-        ).scalar_one()
+        ).all()
+        spending_by_type = dict(spending_totals)
+        income = spending_by_type.get(TransactionType.income, 0)
+        expense = spending_by_type.get(TransactionType.expense, 0)
 
         holdings_value = (
             await self.session.execute(
@@ -117,23 +113,49 @@ class WeeklySummaryService:
             )
         ).scalar_one()
 
-        summary = WeeklySummary(
-            workspace_id=workspace_id,
-            week_start=week_start,
-            week_end=week_end,
-            todo_summary={"tasks_created": todo_created, "tasks_completed": todo_completed},
-            spending_summary={
+        existing = (
+            await self.session.execute(
+                select(WeeklySummary).where(
+                    WeeklySummary.workspace_id == workspace_id,
+                    WeeklySummary.week_start == week_start,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.week_end = week_end
+            existing.todo_summary = {
+                "tasks_created": todo_created,
+                "tasks_completed": todo_completed,
+            }
+            existing.spending_summary = {
                 "total_income": str(income),
                 "total_expense": str(expense),
                 "net": str(income - expense),
-            },
-            investing_summary={
+            }
+            existing.investing_summary = {
                 "portfolio_value_end": str(holdings_value + cash_value),
                 "currency": "USD",
-            },
-            highlights={"flags": []},
-        )
-        self.session.add(summary)
+            }
+            existing.generated_at = datetime.now(UTC)
+            summary = existing
+        else:
+            summary = WeeklySummary(
+                workspace_id=workspace_id,
+                week_start=week_start,
+                week_end=week_end,
+                todo_summary={"tasks_created": todo_created, "tasks_completed": todo_completed},
+                spending_summary={
+                    "total_income": str(income),
+                    "total_expense": str(expense),
+                    "net": str(income - expense),
+                },
+                investing_summary={
+                    "portfolio_value_end": str(holdings_value + cash_value),
+                    "currency": "USD",
+                },
+                highlights={"flags": []},
+            )
+            self.session.add(summary)
         await self.session.flush()
         await self.notification_service.notify(
             workspace_id=workspace_id,

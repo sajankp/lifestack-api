@@ -351,6 +351,48 @@ class HoldingPriceRepository:
         await self.session.flush()
         return row
 
+    async def bulk_upsert_prices(
+        self,
+        workspace_id: int,
+        price_date: date,
+        prices: list[tuple[int, object]],
+        source: str = "manual",
+    ) -> None:
+        if not prices:
+            return
+        holding_ids = [holding_id for holding_id, _ in prices]
+        existing = (
+            (
+                await self.session.execute(
+                    select(HoldingPrice).where(
+                        HoldingPrice.workspace_id == workspace_id,
+                        HoldingPrice.holding_id.in_(holding_ids),
+                        HoldingPrice.price_date == price_date,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        existing_map = {row.holding_id: row for row in existing}
+        for holding_id, unit_price in prices:
+            row = existing_map.get(holding_id)
+            if row is not None:
+                row.unit_price = unit_price
+                row.source = source
+                self.session.add(row)
+                continue
+            self.session.add(
+                HoldingPrice(
+                    workspace_id=workspace_id,
+                    holding_id=holding_id,
+                    price_date=price_date,
+                    unit_price=unit_price,
+                    source=source,
+                )
+            )
+        await self.session.flush()
+
     async def list_prices(
         self, workspace_id: int, holding_id: int, from_date: date, to_date: date
     ) -> list[HoldingPrice]:
@@ -386,6 +428,41 @@ class HoldingPriceRepository:
                 .limit(1)
             )
         ).scalar_one_or_none()
+
+    async def latest_prices_on_or_before_bulk(
+        self, workspace_id: int, holding_ids: list[int], as_of: date
+    ) -> dict[int, HoldingPrice]:
+        if not holding_ids:
+            return {}
+        latest_dates_subquery = (
+            select(
+                HoldingPrice.holding_id.label("holding_id"),
+                func.max(HoldingPrice.price_date).label("max_price_date"),
+            )
+            .where(
+                HoldingPrice.workspace_id == workspace_id,
+                HoldingPrice.holding_id.in_(holding_ids),
+                HoldingPrice.price_date <= as_of,
+            )
+            .group_by(HoldingPrice.holding_id)
+            .subquery()
+        )
+        rows = (
+            (
+                await self.session.execute(
+                    select(HoldingPrice)
+                    .join(
+                        latest_dates_subquery,
+                        (HoldingPrice.holding_id == latest_dates_subquery.c.holding_id)
+                        & (HoldingPrice.price_date == latest_dates_subquery.c.max_price_date),
+                    )
+                    .where(HoldingPrice.workspace_id == workspace_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {row.holding_id: row for row in rows}
 
 
 class PortfolioSnapshotRepository:

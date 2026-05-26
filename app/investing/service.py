@@ -426,29 +426,32 @@ class PerformanceService:
     async def submit_prices(self, workspace_id: int, payload: HoldingPriceBulkCreate) -> None:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
         by_public = {h.public_id: h for h in holdings}
+        prices_to_upsert: list[tuple[int, object]] = []
         for item in payload.prices:
             holding = by_public.get(item.holding_public_id)
             if holding is None or holding.id is None:
                 raise NotFoundError(detail=f"Holding with id {item.holding_public_id} not found")
-            await self.holding_price_repo.upsert_price(
-                workspace_id=workspace_id,
-                holding_id=holding.id,
-                price_date=payload.price_date,
-                unit_price=item.unit_price,
-                source="manual",
-            )
+            prices_to_upsert.append((holding.id, item.unit_price))
+        await self.holding_price_repo.bulk_upsert_prices(
+            workspace_id=workspace_id,
+            price_date=payload.price_date,
+            prices=prices_to_upsert,
+            source="manual",
+        )
 
     async def create_snapshot(self, workspace_id: int, snapshot_date: date) -> None:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
         cash_balances, _ = await self.cash_repo.get_all(workspace_id, limit=10000, offset=0)
         holdings_value = Decimal("0")
         total_cost = Decimal("0")
+        holding_ids = [h.id for h in holdings if h.id is not None]
+        latest_prices = await self.holding_price_repo.latest_prices_on_or_before_bulk(
+            workspace_id, holding_ids, snapshot_date
+        )
         for h in holdings:
             if h.id is None:
                 continue
-            latest_price = await self.holding_price_repo.latest_price_on_or_before(
-                workspace_id, h.id, snapshot_date
-            )
+            latest_price = latest_prices.get(h.id)
             unit_price = latest_price.unit_price if latest_price is not None else h.avg_cost
             holdings_value += h.quantity * unit_price
             total_cost += h.quantity * h.avg_cost
@@ -473,7 +476,8 @@ class PerformanceService:
             today = datetime.now(UTC).date()
             await self.create_snapshot(workspace_id, today)
             snapshot = await self.snapshot_repo.latest(workspace_id)
-        assert snapshot is not None
+        if snapshot is None:
+            raise ValidationError(detail="Failed to generate portfolio snapshot")
         gain = snapshot.total_value - snapshot.total_cost
         pct = (gain / snapshot.total_cost * Decimal("100")) if snapshot.total_cost else None
         return PerformanceSummaryResponse(

@@ -1,6 +1,7 @@
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -174,7 +175,7 @@ class RecurringTransactionCreate(BaseModel):
     amount: Decimal = Field(..., gt=0, decimal_places=2)
     type: TransactionType
     description: str | None = Field(default=None, max_length=500)
-    frequency: str = Field(default="monthly")
+    frequency: Literal["daily", "weekly", "monthly", "yearly"] = Field(default="monthly")
     interval: int = Field(default=1, ge=1)
     anchor_date: date
     end_date: date | None = None
@@ -183,7 +184,7 @@ class RecurringTransactionCreate(BaseModel):
 class RecurringTransactionUpdate(BaseModel):
     amount: Decimal | None = Field(default=None, gt=0, decimal_places=2)
     description: str | None = Field(default=None, max_length=500)
-    frequency: str | None = None
+    frequency: Literal["daily", "weekly", "monthly", "yearly"] | None = None
     interval: int | None = Field(default=None, ge=1)
     end_date: date | None = None
     is_active: bool | None = None

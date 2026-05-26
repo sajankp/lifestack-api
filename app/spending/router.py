@@ -426,8 +426,7 @@ async def create_recurring(
     user: Annotated[dict, Depends(get_current_user)],
 ):
     item = await recurring_service.create_recurring(workspace_id, user["id"], payload)
-    category = await category_service.get_category(workspace_id, payload.category_id)
-    return _recurring_response(item, category.public_id)
+    return _recurring_response(item, payload.category_id)
 
 
 @router.get("/recurring/{recurring_id}", response_model=RecurringTransactionResponse)

@@ -50,7 +50,7 @@ class CaptureService:
         if v == "next week":
             return today + timedelta(days=7)
         try:
-            return datetime.fromisoformat(value).date()
+            return datetime.strptime(value.strip(), "%Y-%m-%d").date()
         except ValueError:
             raise ValidationError(
                 detail="Invalid due_date format. Use YYYY-MM-DD, today, tomorrow, or next week."
