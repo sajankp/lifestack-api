@@ -95,23 +95,23 @@ class WeeklySummaryService:
             )
         ).all()
         spending_by_type = dict(spending_totals)
-        income = spending_by_type.get(TransactionType.income, 0)
-        expense = spending_by_type.get(TransactionType.expense, 0)
+        income = spending_by_type.get(TransactionType.income.value, 0)
+        expense = spending_by_type.get(TransactionType.expense.value, 0)
 
-        holdings_value = (
+        holdings_subquery = select(
+            func.coalesce(func.sum(Holding.quantity * Holding.avg_cost), 0)
+        ).where(Holding.workspace_id == workspace_id)
+        cash_subquery = select(func.coalesce(func.sum(CashBalance.balance), 0)).where(
+            CashBalance.workspace_id == workspace_id
+        )
+        holdings_value, cash_value = (
             await self.session.execute(
-                select(func.coalesce(func.sum(Holding.quantity * Holding.avg_cost), 0)).where(
-                    Holding.workspace_id == workspace_id
+                select(
+                    holdings_subquery.scalar_subquery(),
+                    cash_subquery.scalar_subquery(),
                 )
             )
-        ).scalar_one()
-        cash_value = (
-            await self.session.execute(
-                select(func.coalesce(func.sum(CashBalance.balance), 0)).where(
-                    CashBalance.workspace_id == workspace_id
-                )
-            )
-        ).scalar_one()
+        ).one()
 
         existing = (
             await self.session.execute(

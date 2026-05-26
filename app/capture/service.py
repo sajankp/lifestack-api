@@ -26,7 +26,7 @@ class CaptureService:
             return module
         t = text.lower()
         money_keywords = any(word in t for word in ["spent", "paid", "cost", "expense", "income"])
-        has_money = bool(amount_hint or re.search(r"[$₹£]\s*\d", t) or money_keywords)
+        has_money = bool(amount_hint or re.search(r"[$₹£€¥₩]\s*\d", t) or money_keywords)
         has_todo = any(
             w in t for w in ["todo", "task", "buy", "call", "email", "remind", "fix", "do"]
         )
@@ -92,7 +92,8 @@ class CaptureService:
         except Exception as exc:
             raise ValidationError(detail="Invalid amount format in hints.amount") from exc
         if amount <= 0:
-            m = re.search(r"(\d+(?:\.\d{1,2})?)", text)
+            clean_text = re.sub(r"\d{4}-\d{2}-\d{2}", "", text)
+            m = re.search(r"(\d+(?:\.\d{1,2})?)", clean_text)
             if m:
                 amount = Decimal(m.group(1))
         if amount <= 0:

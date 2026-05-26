@@ -435,6 +435,8 @@ class TransactionService:
     async def get_monthly_trends(
         self, workspace_id: int, from_month: date, to_month: date
     ) -> SpendingTrendResponse:
+        if from_month > to_month:
+            raise ValidationError(detail="from_month cannot be after to_month")
         start_dt = datetime(from_month.year, from_month.month, 1, tzinfo=UTC)
         if to_month.month == 12:
             end_dt = datetime(to_month.year + 1, 1, 1, tzinfo=UTC)
@@ -450,7 +452,7 @@ class TransactionService:
                         func.sum(
                             case(
                                 (
-                                    SpendingTransaction.type == TransactionType.income,
+                                    SpendingTransaction.type == TransactionType.income.value,
                                     SpendingTransaction.amount,
                                 ),
                                 else_=0,
@@ -462,7 +464,7 @@ class TransactionService:
                         func.sum(
                             case(
                                 (
-                                    SpendingTransaction.type == TransactionType.expense,
+                                    SpendingTransaction.type == TransactionType.expense.value,
                                     SpendingTransaction.amount,
                                 ),
                                 else_=0,
@@ -682,10 +684,6 @@ class RecurringTransactionService:
     async def create_recurring(
         self, workspace_id: int, user_id: int, payload: RecurringTransactionCreate
     ) -> RecurringTransaction:
-        if payload.frequency not in {"daily", "weekly", "monthly", "yearly"}:
-            raise ValidationError(
-                detail="Invalid frequency. Use daily, weekly, monthly, or yearly."
-            )
         category = await self.category_repo.get_by_public_id(workspace_id, payload.category_id)
         if not category:
             raise NotFoundError(
