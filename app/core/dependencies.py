@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.workflows import DashboardSummaryWorkflow, UserRegistrationWorkflow
 from app.auth.repository import AuthSessionRepository, UserRepository
 from app.auth.service import AuthService
+from app.capture.service import CaptureService
 from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.auth import get_user_info_from_token
@@ -30,9 +31,11 @@ from app.finance.service import (
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
+    HoldingPriceRepository,
     HoldingRepository,
     InstrumentConstituentRepository,
     InstrumentRepository,
+    PortfolioSnapshotRepository,
 )
 from app.investing.service import (
     CashBalanceService,
@@ -41,11 +44,26 @@ from app.investing.service import (
     HoldingService,
     InstrumentService,
     InvestingSummaryService,
+    PerformanceService,
 )
+from app.notifications.repository import NotificationRepository
+from app.notifications.service import NotificationService
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
-from app.spending.repository import BudgetRepository, CategoryRepository, TransactionRepository
-from app.spending.service import BudgetService, CategoryService, TransactionService
+from app.spending.repository import (
+    BudgetRepository,
+    CategoryRepository,
+    RecurringTransactionRepository,
+    TransactionRepository,
+)
+from app.spending.service import (
+    BudgetService,
+    CategoryService,
+    RecurringTransactionService,
+    TransactionService,
+)
+from app.summaries.repository import WeeklySummaryRepository
+from app.summaries.service import WeeklySummaryService
 from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
 
@@ -228,6 +246,12 @@ async def get_budget_repo(
     return BudgetRepository(session)
 
 
+async def get_recurring_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> RecurringTransactionRepository:
+    return RecurringTransactionRepository(session)
+
+
 async def get_spending_category_service(
     repo: CategoryRepository = Depends(get_category_repo),
 ) -> CategoryService:
@@ -246,6 +270,14 @@ async def get_spending_budget_service(
     cat_repo: CategoryRepository = Depends(get_category_repo),
 ) -> BudgetService:
     return BudgetService(budget_repo, cat_repo)
+
+
+async def get_spending_recurring_service(
+    recurring_repo: RecurringTransactionRepository = Depends(get_recurring_repo),
+    tx_repo: TransactionRepository = Depends(get_transaction_repo),
+    cat_repo: CategoryRepository = Depends(get_category_repo),
+) -> RecurringTransactionService:
+    return RecurringTransactionService(recurring_repo, tx_repo, cat_repo)
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +313,18 @@ async def get_investing_constituent_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> InstrumentConstituentRepository:
     return InstrumentConstituentRepository(session)
+
+
+async def get_investing_holding_price_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> HoldingPriceRepository:
+    return HoldingPriceRepository(session)
+
+
+async def get_investing_snapshot_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> PortfolioSnapshotRepository:
+    return PortfolioSnapshotRepository(session)
 
 
 async def get_finance_setting_repo(
@@ -364,6 +408,15 @@ async def get_investing_analytics_service(
     return ExposureAnalyticsService(holding_repo, instrument_repo, company_repo, constituent_repo)
 
 
+async def get_investing_performance_service(
+    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
+    cash_repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
+    holding_price_repo: HoldingPriceRepository = Depends(get_investing_holding_price_repo),
+    snapshot_repo: PortfolioSnapshotRepository = Depends(get_investing_snapshot_repo),
+) -> PerformanceService:
+    return PerformanceService(holding_repo, cash_repo, holding_price_repo, snapshot_repo)
+
+
 # ---------------------------------------------------------------------------
 # Finance references
 # ---------------------------------------------------------------------------
@@ -415,6 +468,40 @@ async def get_export_repo(session: AsyncSession = Depends(get_db_session)) -> Ex
 
 async def get_export_service(repo: ExportRepository = Depends(get_export_repo)) -> ExportService:
     return ExportService(repo)
+
+
+async def get_notification_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> NotificationRepository:
+    return NotificationRepository(session)
+
+
+async def get_notification_service(
+    repo: NotificationRepository = Depends(get_notification_repo),
+) -> NotificationService:
+    return NotificationService(repo)
+
+
+async def get_weekly_summary_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> WeeklySummaryRepository:
+    return WeeklySummaryRepository(session)
+
+
+async def get_weekly_summary_service(
+    repo: WeeklySummaryRepository = Depends(get_weekly_summary_repo),
+    session: AsyncSession = Depends(get_db_session),
+    notification_service: NotificationService = Depends(get_notification_service),
+) -> WeeklySummaryService:
+    return WeeklySummaryService(repo, session, notification_service)
+
+
+async def get_capture_service(
+    todo_service: TodoService = Depends(get_todo_service),
+    transaction_service: TransactionService = Depends(get_spending_transaction_service),
+    category_service: CategoryService = Depends(get_spending_category_service),
+) -> CaptureService:
+    return CaptureService(todo_service, transaction_service, category_service)
 
 
 async def get_current_workspace_id(

@@ -19,13 +19,16 @@ from app.investing.models import (
     Instrument,
     InstrumentConstituent,
     InstrumentType,
+    PortfolioSnapshot,
 )
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
+    HoldingPriceRepository,
     HoldingRepository,
     InstrumentConstituentRepository,
     InstrumentRepository,
+    PortfolioSnapshotRepository,
 )
 from app.investing.schemas import (
     CashBalanceCreate,
@@ -33,6 +36,7 @@ from app.investing.schemas import (
     ExposureAnalyticsResponse,
     ExposureCompanyRow,
     HoldingCreate,
+    HoldingPriceBulkCreate,
     HoldingUpdate,
     InstrumentConstituentResponse,
     InstrumentConstituentUpsert,
@@ -40,6 +44,7 @@ from app.investing.schemas import (
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
     OverlapRow,
+    PerformanceSummaryResponse,
 )
 
 
@@ -403,6 +408,86 @@ class CashBalanceService:
                     "changed_fields": [],
                 },
             )
+
+
+class PerformanceService:
+    def __init__(
+        self,
+        holding_repo: HoldingRepository,
+        cash_repo: CashBalanceRepository,
+        holding_price_repo: HoldingPriceRepository,
+        snapshot_repo: PortfolioSnapshotRepository,
+    ):
+        self.holding_repo = holding_repo
+        self.cash_repo = cash_repo
+        self.holding_price_repo = holding_price_repo
+        self.snapshot_repo = snapshot_repo
+
+    async def submit_prices(self, workspace_id: int, payload: HoldingPriceBulkCreate) -> None:
+        holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
+        by_public = {h.public_id: h for h in holdings}
+        prices_to_upsert: list[tuple[int, object]] = []
+        for item in payload.prices:
+            holding = by_public.get(item.holding_public_id)
+            if holding is None or holding.id is None:
+                raise NotFoundError(detail=f"Holding with id {item.holding_public_id} not found")
+            prices_to_upsert.append((holding.id, item.unit_price))
+        await self.holding_price_repo.bulk_upsert_prices(
+            workspace_id=workspace_id,
+            price_date=payload.price_date,
+            prices=prices_to_upsert,
+            source="manual",
+        )
+
+    async def create_snapshot(self, workspace_id: int, snapshot_date: date) -> None:
+        holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
+        cash_balances, _ = await self.cash_repo.get_all(workspace_id, limit=10000, offset=0)
+        holdings_value = Decimal("0")
+        total_cost = Decimal("0")
+        holding_ids = [h.id for h in holdings if h.id is not None]
+        latest_prices = await self.holding_price_repo.latest_prices_on_or_before_bulk(
+            workspace_id, holding_ids, snapshot_date
+        )
+        for h in holdings:
+            if h.id is None:
+                continue
+            latest_price = latest_prices.get(h.id)
+            unit_price = latest_price.unit_price if latest_price is not None else h.avg_cost
+            holdings_value += h.quantity * unit_price
+            total_cost += h.quantity * h.avg_cost
+        cash_value = sum((c.balance for c in cash_balances), Decimal("0"))
+        total_value = holdings_value + cash_value
+        await self.snapshot_repo.upsert(
+            PortfolioSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=snapshot_date,
+                total_value=total_value,
+                total_cost=total_cost,
+                holdings_value=holdings_value,
+                cash_value=cash_value,
+                currency_code="USD",
+                fx_rates_used={},
+            )
+        )
+
+    async def summary(self, workspace_id: int) -> PerformanceSummaryResponse:
+        snapshot = await self.snapshot_repo.latest(workspace_id)
+        if snapshot is None:
+            today = datetime.now(UTC).date()
+            await self.create_snapshot(workspace_id, today)
+            snapshot = await self.snapshot_repo.latest(workspace_id)
+        if snapshot is None:
+            raise ValidationError(detail="Failed to generate portfolio snapshot")
+        gain = snapshot.total_value - snapshot.total_cost
+        pct = (gain / snapshot.total_cost * Decimal("100")) if snapshot.total_cost else None
+        return PerformanceSummaryResponse(
+            total_value=snapshot.total_value,
+            total_cost=snapshot.total_cost,
+            total_gain_loss=gain,
+            total_gain_loss_pct=pct,
+            snapshot_date=snapshot.snapshot_date,
+            currency=snapshot.currency_code,
+        )
 
 
 class InstrumentService:

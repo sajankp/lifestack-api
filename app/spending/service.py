@@ -1,7 +1,10 @@
+import calendar
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+
+from sqlalchemy import case, func, select
 
 from app.core.audit import AuditLogger
 from app.core.exceptions import (
@@ -9,20 +12,31 @@ from app.core.exceptions import (
     ConflictError,
     ForbiddenError,
     NotFoundError,
+    ValidationError,
 )
 from app.core.pagination import DEFAULT_LIMIT
 from app.spending.models import (
+    RecurringTransaction,
     SpendingBudget,
     SpendingCategory,
     SpendingTransaction,
     TransactionType,
 )
-from app.spending.repository import BudgetRepository, CategoryRepository, TransactionRepository
+from app.spending.repository import (
+    BudgetRepository,
+    CategoryRepository,
+    RecurringTransactionRepository,
+    TransactionRepository,
+)
 from app.spending.schemas import (
     BudgetCreate,
     BudgetUpdate,
     CategoryCreate,
     CategoryUpdate,
+    RecurringTransactionCreate,
+    RecurringTransactionUpdate,
+    SpendingTrendPoint,
+    SpendingTrendResponse,
     TransactionCreate,
     TransactionUpdate,
 )
@@ -418,6 +432,97 @@ class TransactionService:
                 },
             )
 
+    async def get_monthly_trends(
+        self, workspace_id: int, from_month: date, to_month: date
+    ) -> SpendingTrendResponse:
+        if from_month > to_month:
+            raise ValidationError(detail="from_month cannot be after to_month")
+        start_dt = datetime(from_month.year, from_month.month, 1, tzinfo=UTC)
+        if to_month.month == 12:
+            end_dt = datetime(to_month.year + 1, 1, 1, tzinfo=UTC)
+        else:
+            end_dt = datetime(to_month.year, to_month.month + 1, 1, tzinfo=UTC)
+
+        month_bucket = func.date_trunc("month", SpendingTransaction.occurred_at)
+        rows = (
+            await self.transaction_repo.session.execute(
+                select(
+                    month_bucket.label("month"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    SpendingTransaction.type == TransactionType.income.value,
+                                    SpendingTransaction.amount,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("income"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (
+                                    SpendingTransaction.type == TransactionType.expense.value,
+                                    SpendingTransaction.amount,
+                                ),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("expense"),
+                    func.count(SpendingTransaction.id).label("count"),
+                )
+                .where(
+                    SpendingTransaction.workspace_id == workspace_id,
+                    SpendingTransaction.occurred_at >= start_dt,
+                    SpendingTransaction.occurred_at < end_dt,
+                )
+                .group_by(month_bucket)
+                .order_by(month_bucket)
+            )
+        ).all()
+        data_by_month: dict[str, SpendingTrendPoint] = {}
+        for row in rows:
+            month_str = row.month.strftime("%Y-%m")
+            income = Decimal(row.income)
+            expense = Decimal(row.expense)
+            data_by_month[month_str] = SpendingTrendPoint(
+                month=month_str,
+                total_income=income,
+                total_expense=expense,
+                net=income - expense,
+                transaction_count=int(row.count),
+            )
+
+        cursor = from_month.replace(day=1)
+        end = to_month.replace(day=1)
+        points: list[SpendingTrendPoint] = []
+        while cursor <= end:
+            month_str = cursor.strftime("%Y-%m")
+            points.append(
+                data_by_month.get(
+                    month_str,
+                    SpendingTrendPoint(
+                        month=month_str,
+                        total_income=Decimal("0"),
+                        total_expense=Decimal("0"),
+                        net=Decimal("0"),
+                        transaction_count=0,
+                    ),
+                )
+            )
+            if cursor.month == 12:
+                cursor = cursor.replace(year=cursor.year + 1, month=1)
+            else:
+                cursor = cursor.replace(month=cursor.month + 1)
+        return SpendingTrendResponse(
+            from_month=from_month.strftime("%Y-%m"),
+            to_month=to_month.strftime("%Y-%m"),
+            months=points,
+        )
+
 
 class BudgetService:
     def __init__(
@@ -540,3 +645,97 @@ class BudgetService:
                 },
             )
         return budget
+
+
+def _advance_due_date(current: date, frequency: str, interval: int) -> date:
+    if frequency == "daily":
+        return current + timedelta(days=interval)
+    if frequency == "weekly":
+        return current + timedelta(weeks=interval)
+    if frequency == "yearly":
+        try:
+            return current.replace(year=current.year + interval)
+        except ValueError:
+            return date(current.year + interval, 2, 28)
+    # monthly default
+    month = current.month - 1 + interval
+    year = current.year + month // 12
+    month = month % 12 + 1
+    day = min(current.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+class RecurringTransactionService:
+    def __init__(
+        self,
+        recurring_repo: RecurringTransactionRepository,
+        tx_repo: TransactionRepository,
+        category_repo: CategoryRepository,
+    ):
+        self.recurring_repo = recurring_repo
+        self.tx_repo = tx_repo
+        self.category_repo = category_repo
+
+    async def list_recurring(
+        self, workspace_id: int, is_active: bool | None, limit: int, offset: int
+    ) -> tuple[Sequence[RecurringTransaction], int]:
+        return await self.recurring_repo.get_all(workspace_id, is_active, limit, offset)
+
+    async def create_recurring(
+        self, workspace_id: int, user_id: int, payload: RecurringTransactionCreate
+    ) -> RecurringTransaction:
+        category = await self.category_repo.get_by_public_id(workspace_id, payload.category_id)
+        if not category:
+            raise NotFoundError(
+                detail=f"Category with id {payload.category_id} not found in this workspace"
+            )
+        if payload.end_date and payload.end_date < payload.anchor_date:
+            raise ValidationError(detail="end_date cannot be before anchor_date")
+        recurring = RecurringTransaction(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            category_id=category.id,  # type: ignore[arg-type]
+            amount=payload.amount,
+            type=payload.type,
+            description=payload.description,
+            frequency=payload.frequency,
+            interval=payload.interval,
+            anchor_date=payload.anchor_date,
+            next_due_date=payload.anchor_date,
+            end_date=payload.end_date,
+        )
+        return await self.recurring_repo.create(recurring)
+
+    async def get_recurring(self, workspace_id: int, public_id: uuid.UUID) -> RecurringTransaction:
+        recurring = await self.recurring_repo.get_by_public_id(workspace_id, public_id)
+        if not recurring:
+            raise NotFoundError(detail=f"Recurring transaction with id {public_id} not found")
+        return recurring
+
+    async def update_recurring(
+        self, workspace_id: int, public_id: uuid.UUID, payload: RecurringTransactionUpdate
+    ) -> RecurringTransaction:
+        recurring = await self.get_recurring(workspace_id, public_id)
+        update_data = payload.model_dump(exclude_unset=True)
+        if "frequency" in update_data and update_data["frequency"] not in {
+            "daily",
+            "weekly",
+            "monthly",
+            "yearly",
+        }:
+            raise ValidationError(
+                detail="Invalid frequency. Use daily, weekly, monthly, or yearly."
+            )
+        new_end = update_data.get("end_date", recurring.end_date)
+        if new_end and new_end < recurring.anchor_date:
+            raise ValidationError(detail="end_date cannot be before anchor_date")
+        for key, value in update_data.items():
+            setattr(recurring, key, value)
+        recurring.updated_at = datetime.now(UTC)
+        return await self.recurring_repo.save(recurring)
+
+    async def deactivate_recurring(self, workspace_id: int, public_id: uuid.UUID) -> None:
+        recurring = await self.get_recurring(workspace_id, public_id)
+        recurring.is_active = False
+        recurring.updated_at = datetime.now(UTC)
+        await self.recurring_repo.save(recurring)

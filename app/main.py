@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from app.application.jobs import budget_guardrails_job
 from app.auth.router import router as auth_router
+from app.capture.router import router as capture_router
 from app.config import settings
 from app.core.database import postgres
 from app.core.dependencies import limiter
@@ -31,7 +32,9 @@ from app.dashboard.router import router as dashboard_router
 from app.exports.router import router as exports_router
 from app.finance.router import router as finance_router
 from app.investing.router import router as investing_router
+from app.notifications.router import router as notifications_router
 from app.spending.router import router as spending_router
+from app.summaries.router import router as summaries_router
 from app.todo.router import router as todo_router
 
 # Initialize logging before creating the app
@@ -122,6 +125,9 @@ def create_app() -> FastAPI:
     _app.include_router(finance_router, prefix=settings.API_V1_STR)
     _app.include_router(dashboard_router, prefix=settings.API_V1_STR)
     _app.include_router(exports_router, prefix=settings.API_V1_STR)
+    _app.include_router(notifications_router, prefix=settings.API_V1_STR)
+    _app.include_router(summaries_router, prefix=settings.API_V1_STR)
+    _app.include_router(capture_router, prefix=settings.API_V1_STR)
 
     _app.include_router(health_router)
 
