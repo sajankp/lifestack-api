@@ -116,3 +116,48 @@ async def test_todo_crud_flow_is_workspace_scoped(client: AsyncClient):
 
     get_again_res = await client.get(f"/v1/todo/{user_one_todo_id}")
     assert get_again_res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_recurring_todo_rule_crud(client: AsyncClient):
+    user = {
+        "email": "recurringtodo@example.com",
+        "username": "recurringtodo",
+        "password": "todopassword",
+    }
+    register_res = await client.post("/v1/auth/register", json=user)
+    assert register_res.status_code == 200
+    login_res = await client.post(
+        "/v1/auth/login", data={"username": user["username"], "password": user["password"]}
+    )
+    assert login_res.status_code == 200
+
+    create_res = await client.post(
+        "/v1/todo/recurring/",
+        json={
+            "title": "Pay electricity",
+            "description": "Monthly reminder",
+            "priority": "medium",
+            "frequency": "monthly",
+            "interval": 1,
+            "anchor_date": "2026-01-01",
+        },
+    )
+    assert create_res.status_code == 201
+    rule = create_res.json()
+    assert rule["title"] == "Pay electricity"
+    assert rule["frequency"] == "monthly"
+
+    list_res = await client.get("/v1/todo/recurring/")
+    assert list_res.status_code == 200
+    assert list_res.json()["total"] == 1
+
+    patch_res = await client.patch(
+        f"/v1/todo/recurring/{rule['public_id']}",
+        json={"is_active": False},
+    )
+    assert patch_res.status_code == 200
+    assert patch_res.json()["is_active"] is False
+
+    delete_res = await client.delete(f"/v1/todo/recurring/{rule['public_id']}")
+    assert delete_res.status_code == 204

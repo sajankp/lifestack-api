@@ -35,6 +35,6 @@ from app.spending.models import (  # noqa: F401
     SpendingTransaction,
 )
 from app.summaries.models import WeeklySummary  # noqa: F401
-from app.todo.models import Todo  # noqa: F401
+from app.todo.models import RecurringTodoRule, Todo  # noqa: F401
 
 metadata = SQLModel.metadata

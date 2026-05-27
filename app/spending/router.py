@@ -37,6 +37,7 @@ from app.spending.schemas import (
     TransactionResponse,
     TransactionSummaryResponse,
     TransactionUpdate,
+    UpcomingPreviewResponse,
 )
 from app.spending.service import (
     BudgetService,
@@ -427,6 +428,21 @@ async def create_recurring(
 ):
     item = await recurring_service.create_recurring(workspace_id, user["id"], payload)
     return _recurring_response(item, payload.category_id)
+
+
+@router.get("/recurring/upcoming", response_model=UpcomingPreviewResponse)
+async def get_upcoming_preview(
+    recurring_service: Annotated[
+        RecurringTransactionService, Depends(get_spending_recurring_service)
+    ],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    days: int = Query(default=30, ge=1, le=365),
+):
+    """Return a read-only projection of upcoming recurring transactions (no DB writes)."""
+    return await recurring_service.upcoming_preview(
+        workspace_id, days, recurring_service.category_repo
+    )
 
 
 @router.get("/recurring/{recurring_id}", response_model=RecurringTransactionResponse)

@@ -4,11 +4,16 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from app.core.audit import AuditLogger
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
-from app.todo.models import PriorityEnum, Todo
+from app.todo.models import PriorityEnum, RecurringTodoRule, Todo
 from app.todo.repository import TodoRepository
-from app.todo.schemas import TodoCreate, TodoUpdate
+from app.todo.schemas import (
+    RecurringTodoRuleCreate,
+    RecurringTodoRuleUpdate,
+    TodoCreate,
+    TodoUpdate,
+)
 
 
 def _snapshot_todo(todo: Todo) -> dict:
@@ -18,6 +23,20 @@ def _snapshot_todo(todo: Todo) -> dict:
         "due_date": todo.due_date.isoformat() if todo.due_date else None,
         "priority": todo.priority,
         "completed": todo.completed,
+    }
+
+
+def _snapshot_recurring_rule(rule: RecurringTodoRule) -> dict:
+    return {
+        "title": rule.title,
+        "description": rule.description,
+        "priority": rule.priority,
+        "frequency": rule.frequency,
+        "interval": rule.interval,
+        "anchor_date": rule.anchor_date.isoformat() if rule.anchor_date else None,
+        "next_due_date": rule.next_due_date.isoformat() if rule.next_due_date else None,
+        "end_date": rule.end_date.isoformat() if rule.end_date else None,
+        "is_active": rule.is_active,
     }
 
 
@@ -229,6 +248,134 @@ class TodoService:
                 entity_id=todo.id,
                 details={
                     "entity_public_id": str(todo.public_id),
+                    "before": before_snap,
+                    "after": None,
+                    "changed_fields": [],
+                },
+            )
+
+    async def list_recurring_rules(
+        self,
+        workspace_id: int,
+        is_active: bool | None = True,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Sequence[RecurringTodoRule], int]:
+        return await self.repository.get_recurring_rules(workspace_id, is_active, limit, offset)
+
+    async def get_recurring_rule(
+        self, workspace_id: int, public_id: uuid.UUID
+    ) -> RecurringTodoRule:
+        rule = await self.repository.get_recurring_rule_by_public_id(workspace_id, public_id)
+        if not rule:
+            raise NotFoundError(detail=f"Recurring todo rule with id {public_id} not found")
+        return rule
+
+    async def create_recurring_rule(
+        self,
+        user_id: int,
+        workspace_id: int,
+        rule_in: RecurringTodoRuleCreate,
+        audit_logger: AuditLogger | None = None,
+    ) -> RecurringTodoRule:
+        next_due = rule_in.anchor_date
+        if rule_in.end_date and next_due > rule_in.end_date:
+            raise ValidationError(detail="anchor_date cannot be after end_date")
+        rule = RecurringTodoRule(
+            user_id=user_id,
+            workspace_id=workspace_id,
+            title=rule_in.title,
+            description=rule_in.description,
+            priority=rule_in.priority,
+            frequency=rule_in.frequency,
+            interval=rule_in.interval,
+            anchor_date=rule_in.anchor_date,
+            next_due_date=next_due,
+            end_date=rule_in.end_date,
+        )
+        rule = await self.repository.create_recurring_rule(rule)
+        if audit_logger:
+            after_snap = _snapshot_recurring_rule(rule)
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action="create",
+                module="todo",
+                entity_type="recurring_todo_rule",
+                entity_id=rule.id,
+                details={
+                    "entity_public_id": str(rule.public_id),
+                    "before": None,
+                    "after": after_snap,
+                    "changed_fields": list(after_snap.keys()),
+                },
+            )
+        return rule
+
+    async def update_recurring_rule(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        rule_in: RecurringTodoRuleUpdate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> RecurringTodoRule:
+        rule = await self.get_recurring_rule(workspace_id, public_id)
+        before_snap = _snapshot_recurring_rule(rule)
+        update_data = rule_in.model_dump(exclude_unset=True)
+        if not update_data:
+            return rule
+
+        for key, value in update_data.items():
+            setattr(rule, key, value)
+
+        if rule.end_date and rule.anchor_date > rule.end_date:
+            raise ValidationError(detail="anchor_date cannot be after end_date")
+
+        if rule.end_date and rule.next_due_date > rule.end_date:
+            rule.is_active = False
+        rule.updated_at = datetime.now(UTC)
+        rule = await self.repository.save_recurring_rule(rule)
+
+        if audit_logger and actor_id is not None:
+            after_snap = _snapshot_recurring_rule(rule)
+            changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="update",
+                module="todo",
+                entity_type="recurring_todo_rule",
+                entity_id=rule.id,
+                details={
+                    "entity_public_id": str(rule.public_id),
+                    "before": before_snap,
+                    "after": after_snap,
+                    "changed_fields": changed_fields,
+                },
+            )
+        return rule
+
+    async def delete_recurring_rule(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
+        rule = await self.get_recurring_rule(workspace_id, public_id)
+        before_snap = _snapshot_recurring_rule(rule)
+        await self.repository.delete_recurring_rule(rule)
+        if audit_logger and actor_id is not None:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="delete",
+                module="todo",
+                entity_type="recurring_todo_rule",
+                entity_id=rule.id,
+                details={
+                    "entity_public_id": str(rule.public_id),
                     "before": before_snap,
                     "after": None,
                     "changed_fields": [],
