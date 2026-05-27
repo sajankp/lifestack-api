@@ -424,9 +424,8 @@ async def process_workspace_recurring_transactions(
     generated_txs: list[tuple[SpendingTransaction, RecurringTransaction]] = []
 
     for recurrence in due_recurrences:
-        # Safety: skip if the due date predates the catch-up boundary
-        effective_due = max(recurrence.next_due_date, catchup_boundary)
-        if effective_due > recurrence.next_due_date:
+        # Safety: if due date predates boundary, fast-forward preserving cadence alignment.
+        if recurrence.next_due_date < catchup_boundary:
             # The scheduler was down for too long; log warning and fast-forward
             if not catchup_warned:
                 logger.warning(
@@ -437,7 +436,20 @@ async def process_workspace_recurring_transactions(
                     cap_days=catchup_limit_days,
                 )
                 catchup_warned = True
-            recurrence.next_due_date = effective_due
+            while recurrence.next_due_date < catchup_boundary:
+                next_due = _advance_due_date(
+                    recurrence.next_due_date, recurrence.frequency, recurrence.interval
+                )
+                if next_due <= recurrence.next_due_date:
+                    logger.error(
+                        "recurring_catchup_advance_failed",
+                        workspace_id=workspace.id,
+                        recurrence_id=recurrence.id,
+                        prev_due=str(recurrence.next_due_date),
+                        next_due=str(next_due),
+                    )
+                    break
+                recurrence.next_due_date = next_due
 
         generated_count = 0
 
@@ -567,7 +579,19 @@ async def process_workspace_recurring_todos(session: AsyncSession, workspace: Wo
 
     generated = 0
     for rule in rules:
-        rule.next_due_date = max(rule.next_due_date, catchup_boundary)
+        if rule.next_due_date < catchup_boundary:
+            while rule.next_due_date < catchup_boundary:
+                next_due = _advance_due_date(rule.next_due_date, rule.frequency, rule.interval)
+                if next_due <= rule.next_due_date:
+                    logger.error(
+                        "recurring_todo_catchup_advance_failed",
+                        workspace_id=workspace.id,
+                        rule_id=rule.id,
+                        prev_due=str(rule.next_due_date),
+                        next_due=str(next_due),
+                    )
+                    break
+                rule.next_due_date = next_due
         while rule.is_active and rule.next_due_date <= today:
             if rule.end_date and rule.next_due_date > rule.end_date:
                 rule.is_active = False
