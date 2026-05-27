@@ -32,7 +32,7 @@ from app.spending.service import (
     TransactionService,
     _advance_due_date,
 )
-from app.todo.models import PriorityEnum, Todo
+from app.todo.models import PriorityEnum, RecurringTodoRule, Todo
 from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
 
@@ -521,3 +521,60 @@ async def process_workspace_recurring_transactions(
 
     await session.flush()
     return total_generated
+
+
+async def process_workspace_recurring_todos(session: AsyncSession, workspace: Workspace) -> int:
+    """Generate due todos from recurring todo rules for one workspace."""
+    today = datetime.now(UTC).date()
+    logger.info("processing_recurring_todos", workspace_id=workspace.id, today=str(today))
+
+    members_res = await session.execute(
+        select(WorkspaceMembership.user_id)
+        .where(WorkspaceMembership.workspace_id == workspace.id)
+        .order_by(
+            (WorkspaceMembership.role == "owner").desc(), WorkspaceMembership.created_at.asc()
+        )
+        .limit(1)
+    )
+    user_id = members_res.scalar()
+    if not user_id:
+        logger.warning("no_members_in_workspace_recurring_todos", workspace_id=workspace.id)
+        return 0
+
+    rules_res = await session.execute(
+        select(RecurringTodoRule).where(
+            RecurringTodoRule.workspace_id == workspace.id,
+            RecurringTodoRule.is_active == True,  # noqa: E712
+            RecurringTodoRule.next_due_date <= today,
+        )
+    )
+    rules = rules_res.scalars().all()
+    if not rules:
+        return 0
+
+    generated = 0
+    for rule in rules:
+        while rule.is_active and rule.next_due_date <= today:
+            due_dt = datetime.combine(rule.next_due_date, datetime.min.time()).replace(tzinfo=UTC)
+            session.add(
+                Todo(
+                    workspace_id=workspace.id,
+                    user_id=user_id,
+                    title=rule.title,
+                    description=rule.description,
+                    due_date=due_dt,
+                    priority=rule.priority,
+                    completed=False,
+                )
+            )
+            generated += 1
+            rule.next_due_date = _advance_due_date(
+                rule.next_due_date, rule.frequency, rule.interval
+            )
+            rule.last_generated_at = datetime.now(UTC)
+            if rule.end_date and rule.next_due_date > rule.end_date:
+                rule.is_active = False
+            session.add(rule)
+
+    await session.flush()
+    return generated

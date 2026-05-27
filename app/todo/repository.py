@@ -6,7 +6,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
-from app.todo.models import Todo
+from app.todo.models import RecurringTodoRule, Todo
 
 
 class TodoRepository:
@@ -89,3 +89,47 @@ class TodoRepository:
         await self.session.flush()
         await self.session.refresh(todo)
         return todo
+
+    async def get_recurring_rules(
+        self,
+        workspace_id: int,
+        is_active: bool | None = True,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Sequence[RecurringTodoRule], int]:
+        base = select(RecurringTodoRule).where(RecurringTodoRule.workspace_id == workspace_id)
+        if is_active is not None:
+            base = base.where(RecurringTodoRule.is_active == is_active)
+        total_q = select(func.count()).select_from(base.subquery())
+        total = (await self.session.execute(total_q)).scalar_one()
+        result = await self.session.execute(
+            base.order_by(RecurringTodoRule.created_at.desc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), total
+
+    async def get_recurring_rule_by_public_id(
+        self, workspace_id: int, public_id: UUID
+    ) -> RecurringTodoRule | None:
+        result = await self.session.execute(
+            select(RecurringTodoRule).where(
+                RecurringTodoRule.workspace_id == workspace_id,
+                RecurringTodoRule.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def create_recurring_rule(self, rule: RecurringTodoRule) -> RecurringTodoRule:
+        self.session.add(rule)
+        await self.session.flush()
+        await self.session.refresh(rule)
+        return rule
+
+    async def save_recurring_rule(self, rule: RecurringTodoRule) -> RecurringTodoRule:
+        self.session.add(rule)
+        await self.session.flush()
+        await self.session.refresh(rule)
+        return rule
+
+    async def delete_recurring_rule(self, rule: RecurringTodoRule) -> None:
+        await self.session.delete(rule)
+        await self.session.flush()

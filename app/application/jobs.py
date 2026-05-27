@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 
 from app.application.workflows import (
     evaluate_workspace_budget_guardrails,
+    process_workspace_recurring_todos,
     process_workspace_recurring_transactions,
 )
 from app.core.database import postgres
@@ -155,6 +156,7 @@ async def recurring_transactions_job() -> None:
         workspaces = workspaces_res.scalars().all()
 
         total_generated = 0
+        total_todos_generated = 0
         for workspace in workspaces:
             ws_start = datetime.now(UTC)
             try:
@@ -165,6 +167,11 @@ async def recurring_transactions_job() -> None:
                             timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
                         )
                         total_generated += count
+                        todo_count = await asyncio.wait_for(
+                            process_workspace_recurring_todos(ws_session, workspace),
+                            timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
+                        )
+                        total_todos_generated += todo_count
 
                 duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
                 logger.info(
@@ -201,4 +208,5 @@ async def recurring_transactions_job() -> None:
             duration_ms=total_ms,
             workspace_count=len(workspaces),
             total_generated=total_generated,
+            total_todos_generated=total_todos_generated,
         )

@@ -1,5 +1,6 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,6 +29,44 @@ class TodoUpdate(BaseModel):
 
 class TodoResponse(TodoBase):
     public_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RecurringTodoRuleCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=100)
+    description: str | None = Field(default="", max_length=500)
+    priority: PriorityEnum = Field(default=PriorityEnum.medium)
+    frequency: Literal["daily", "weekly", "monthly", "yearly"] = Field(default="weekly")
+    interval: int = Field(default=1, ge=1)
+    anchor_date: date
+    end_date: date | None = None
+
+
+class RecurringTodoRuleUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    priority: PriorityEnum | None = Field(default=None)
+    frequency: Literal["daily", "weekly", "monthly", "yearly"] | None = Field(default=None)
+    interval: int | None = Field(default=None, ge=1)
+    end_date: date | None = None
+    is_active: bool | None = None
+
+
+class RecurringTodoRuleResponse(BaseModel):
+    public_id: uuid.UUID
+    title: str
+    description: str | None
+    priority: PriorityEnum
+    frequency: str
+    interval: int
+    anchor_date: date
+    next_due_date: date
+    end_date: date | None
+    is_active: bool
+    last_generated_at: datetime | None
     created_at: datetime
     updated_at: datetime
 

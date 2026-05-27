@@ -44,3 +44,9 @@ Start `spec-015-notifications.md` with a narrow V1 slice:
 - notification data model + repository/service
 - create/list/acknowledge API
 - minimal in-app delivery workflow integration
+
+## Follow-up Slice
+- `spec-019-recurring-todos.md` extends Phase 1 usability:
+  - recurring todo rule CRUD
+  - scheduler-driven todo generation
+  - Todo UI due-date + recurring rule management

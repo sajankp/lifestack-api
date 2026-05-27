@@ -11,7 +11,14 @@ from app.core.dependencies import (
     get_todo_service,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
-from app.todo.schemas import TodoCreate, TodoResponse, TodoUpdate
+from app.todo.schemas import (
+    RecurringTodoRuleCreate,
+    RecurringTodoRuleResponse,
+    RecurringTodoRuleUpdate,
+    TodoCreate,
+    TodoResponse,
+    TodoUpdate,
+)
 from app.todo.service import TodoService
 
 router = APIRouter(prefix="/todo", tags=["todo"])
@@ -84,4 +91,62 @@ async def delete_todo(
 ):
     await todo_service.delete_todo(
         workspace_id, todo_id, actor_id=user["id"], audit_logger=audit_logger
+    )
+
+
+@router.get("/recurring/", response_model=PaginatedResponse[RecurringTodoRuleResponse])
+async def list_recurring_todos(
+    todo_service: Annotated[TodoService, Depends(get_todo_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+    is_active: bool | None = Query(True),
+):
+    items, total = await todo_service.list_recurring_rules(
+        workspace_id, is_active, pagination.limit, pagination.offset
+    )
+    return PaginatedResponse(
+        items=items, total=total, limit=pagination.limit, offset=pagination.offset
+    )
+
+
+@router.post(
+    "/recurring/", response_model=RecurringTodoRuleResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_recurring_todo(
+    rule_in: RecurringTodoRuleCreate,
+    todo_service: Annotated[TodoService, Depends(get_todo_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+):
+    return await todo_service.create_recurring_rule(
+        user["id"], workspace_id, rule_in, audit_logger=audit_logger
+    )
+
+
+@router.patch("/recurring/{rule_id}", response_model=RecurringTodoRuleResponse)
+async def update_recurring_todo(
+    rule_id: uuid.UUID,
+    rule_in: RecurringTodoRuleUpdate,
+    todo_service: Annotated[TodoService, Depends(get_todo_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+):
+    return await todo_service.update_recurring_rule(
+        workspace_id, rule_id, rule_in, actor_id=user["id"], audit_logger=audit_logger
+    )
+
+
+@router.delete("/recurring/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_recurring_todo(
+    rule_id: uuid.UUID,
+    todo_service: Annotated[TodoService, Depends(get_todo_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+):
+    await todo_service.delete_recurring_rule(
+        workspace_id, rule_id, actor_id=user["id"], audit_logger=audit_logger
     )
