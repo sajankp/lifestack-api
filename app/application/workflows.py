@@ -582,9 +582,19 @@ async def process_workspace_recurring_todos(session: AsyncSession, workspace: Wo
                 )
             )
             generated += 1
+            prev_due = rule.next_due_date
             rule.next_due_date = _advance_due_date(
                 rule.next_due_date, rule.frequency, rule.interval
             )
+            if rule.next_due_date <= prev_due:
+                logger.error(
+                    "recurring_todo_advance_failed",
+                    workspace_id=workspace.id,
+                    rule_id=rule.id,
+                    prev_due=str(prev_due),
+                    next_due=str(rule.next_due_date),
+                )
+                break
             rule.last_generated_at = datetime.now(UTC)
             if rule.end_date and rule.next_due_date > rule.end_date:
                 rule.is_active = False
