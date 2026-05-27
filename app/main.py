@@ -10,7 +10,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
-from app.application.jobs import budget_guardrails_job
+from app.application.jobs import budget_guardrails_job, recurring_transactions_job
 from app.auth.router import router as auth_router
 from app.capture.router import router as capture_router
 from app.config import settings
@@ -68,6 +68,12 @@ async def lifespan(_app: FastAPI):
             budget_guardrails_job,
             job_id="budget_guardrails",
             hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
+            idempotent=True,
+        )
+        register_interval_job(
+            recurring_transactions_job,
+            job_id="recurring_transactions",
+            hours=24,
             idempotent=True,
         )
         start_scheduler()

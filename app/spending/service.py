@@ -39,6 +39,8 @@ from app.spending.schemas import (
     SpendingTrendResponse,
     TransactionCreate,
     TransactionUpdate,
+    UpcomingPreviewResponse,
+    UpcomingTransactionItem,
 )
 
 # Default system categories seeded during registration
@@ -739,3 +741,58 @@ class RecurringTransactionService:
         recurring.is_active = False
         recurring.updated_at = datetime.now(UTC)
         await self.recurring_repo.save(recurring)
+
+    async def upcoming_preview(
+        self, workspace_id: int, days: int, category_repo: CategoryRepository
+    ) -> UpcomingPreviewResponse:
+        """Project upcoming transactions for the next N days without writing to the DB."""
+
+        if days < 1 or days > 365:
+            raise ValidationError(detail="days must be between 1 and 365")
+
+        today = date.today()
+        horizon = today + timedelta(days=days)
+
+        # Fetch all active recurring rules for this workspace
+        all_active, _ = await self.recurring_repo.get_all(
+            workspace_id, is_active=True, limit=10000, offset=0
+        )
+
+        # Build category public_id lookup
+        cats, _ = await category_repo.get_all(workspace_id, limit=10000, offset=0)
+        cat_pub_id: dict[int, uuid.UUID] = {c.id: c.public_id for c in cats}  # type: ignore[union-attr]
+
+        items: list[UpcomingTransactionItem] = []
+        for recurrence in all_active:
+            # Start projecting from next_due_date
+            projected = recurrence.next_due_date
+            iterations = 0
+            while projected <= horizon and iterations < 365:
+                iterations += 1
+                if recurrence.end_date and projected > recurrence.end_date:
+                    break
+                if projected >= today:
+                    cat_public_id = cat_pub_id.get(recurrence.category_id)
+                    if cat_public_id is None:
+                        break
+                    items.append(
+                        UpcomingTransactionItem(
+                            recurring_public_id=recurrence.public_id,
+                            category_id=cat_public_id,
+                            amount=recurrence.amount,
+                            type=recurrence.type,
+                            description=recurrence.description,
+                            projected_date=projected,
+                            frequency=recurrence.frequency,
+                            interval=recurrence.interval,
+                        )
+                    )
+                projected = _advance_due_date(projected, recurrence.frequency, recurrence.interval)
+
+        items.sort(key=lambda x: x.projected_date)
+        return UpcomingPreviewResponse(
+            days=days,
+            from_date=today,
+            to_date=horizon,
+            items=items,
+        )

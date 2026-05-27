@@ -16,7 +16,10 @@ from datetime import UTC, datetime
 import structlog
 from sqlalchemy import func, select
 
-from app.application.workflows import evaluate_workspace_budget_guardrails
+from app.application.workflows import (
+    evaluate_workspace_budget_guardrails,
+    process_workspace_recurring_transactions,
+)
 from app.core.database import postgres
 from app.platform.models import Workspace
 
@@ -111,4 +114,91 @@ async def budget_guardrails_job() -> None:
             job_name="budget_guardrails_job",
             duration_ms=total_ms,
             workspace_count=len(workspaces),
+        )
+
+
+# Postgres advisory lock key — separate from budget_guardrails (1001) to allow concurrent runs
+RECURRING_TRANSACTIONS_LOCK_KEY = 1002
+
+
+async def recurring_transactions_job() -> None:
+    """
+    Cron-triggered job that generates spending transactions for all due recurring
+    rules across all active workspaces (Spec 013).
+
+    Execution model mirrors budget_guardrails_job:
+      1. Acquire a Postgres advisory transaction lock (key 1002) to prevent concurrent
+         execution during rolling deploys.
+      2. Fetch the list of active workspaces within the same lock transaction.
+      3. Iterate workspaces, processing each in its own isolated DB transaction.
+         One workspace failure is logged and skipped; others continue.
+      4. Each workspace has a bounded timeout to avoid unbounded drain on shutdown.
+    """
+    start_time = datetime.now(UTC)
+    logger.info("recurring_transactions_job_start", job_name="recurring_transactions_job")
+
+    async with postgres.async_session_maker() as session, session.begin():
+        lock_res = await session.execute(
+            select(func.pg_try_advisory_xact_lock(RECURRING_TRANSACTIONS_LOCK_KEY))
+        )
+        has_lock = lock_res.scalar()
+        if not has_lock:
+            logger.info(
+                "recurring_transactions_job_skipped_lock_held",
+                job_name="recurring_transactions_job",
+            )
+            return
+
+        workspaces_res = await session.execute(
+            select(Workspace).where(Workspace.is_active == True)  # noqa: E712
+        )
+        workspaces = workspaces_res.scalars().all()
+
+        total_generated = 0
+        for workspace in workspaces:
+            ws_start = datetime.now(UTC)
+            try:
+                async with postgres.async_session_maker() as ws_session:  # noqa: SIM117
+                    async with ws_session.begin():
+                        count = await asyncio.wait_for(
+                            process_workspace_recurring_transactions(ws_session, workspace),
+                            timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
+                        )
+                        total_generated += count
+
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.info(
+                    "recurring_transactions_workspace_success",
+                    job_name="recurring_transactions_job",
+                    workspace_id=workspace.id,
+                    duration_ms=duration_ms,
+                    status="success",
+                )
+            except TimeoutError:
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.error(
+                    "recurring_transactions_workspace_timeout",
+                    job_name="recurring_transactions_job",
+                    workspace_id=workspace.id,
+                    duration_ms=duration_ms,
+                    status="timeout",
+                )
+            except Exception:
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.error(
+                    "recurring_transactions_workspace_failed",
+                    job_name="recurring_transactions_job",
+                    workspace_id=workspace.id,
+                    duration_ms=duration_ms,
+                    status="failed",
+                    exc_info=True,
+                )
+
+        total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+        logger.info(
+            "recurring_transactions_job_completed",
+            job_name="recurring_transactions_job",
+            duration_ms=total_ms,
+            workspace_count=len(workspaces),
+            total_generated=total_generated,
         )

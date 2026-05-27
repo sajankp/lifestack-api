@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import structlog
@@ -20,12 +20,18 @@ from app.investing.service import InvestingSummaryService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.platform.service import WorkspaceService
 from app.spending.models import (
+    RecurringTransaction,
     SpendingBudget,
     SpendingCategory,
     SpendingTransaction,
     TransactionType,
 )
-from app.spending.service import BudgetService, CategoryService, TransactionService
+from app.spending.service import (
+    BudgetService,
+    CategoryService,
+    TransactionService,
+    _advance_due_date,
+)
 from app.todo.models import PriorityEnum, Todo
 from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
@@ -355,3 +361,163 @@ async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace:
                     workspace_id=workspace.id,
                     category=category.name,
                 )
+
+
+# ---------------------------------------------------------------------------
+# Recurring Transactions Workflow (Spec 013)
+# ---------------------------------------------------------------------------
+
+
+async def process_workspace_recurring_transactions(
+    session: AsyncSession, workspace: Workspace
+) -> int:
+    """
+    Generate spending transactions for all due recurring rules in a workspace.
+
+    For each active recurring transaction whose next_due_date <= today:
+    - Generate a SpendingTransaction (with recurring_transaction_id linked).
+    - Advance next_due_date by frequency * interval.
+    - Repeat until next_due_date > today (catch-up mode).
+    - Cap catch-up at settings.RECURRING_TXN_CATCHUP_LIMIT_DAYS to prevent runaway.
+    - If the new next_due_date > end_date, deactivate the rule.
+    - Emit an audit event per generated transaction.
+
+    Returns the total number of transactions generated across all recurrences.
+    """
+    today = datetime.now(UTC).date()
+    catchup_limit_days = settings.RECURRING_TXN_CATCHUP_LIMIT_DAYS
+    catchup_boundary = today - timedelta(days=catchup_limit_days)
+
+    logger.info("processing_recurring_transactions", workspace_id=workspace.id, today=str(today))
+
+    # Fetch the workspace owner for the audit actor_id
+    members_res = await session.execute(
+        select(WorkspaceMembership.user_id)
+        .where(WorkspaceMembership.workspace_id == workspace.id)
+        .order_by(
+            (WorkspaceMembership.role == "owner").desc(), WorkspaceMembership.created_at.asc()
+        )
+        .limit(1)
+    )
+    user_id = members_res.scalar()
+    if not user_id:
+        logger.warning("no_members_in_workspace_recurring", workspace_id=workspace.id)
+        return 0
+
+    # Fetch all due recurring rules for this workspace
+    due_recurrences_res = await session.execute(
+        select(RecurringTransaction).where(
+            RecurringTransaction.workspace_id == workspace.id,
+            RecurringTransaction.is_active == True,  # noqa: E712
+            RecurringTransaction.next_due_date <= today,
+        )
+    )
+    due_recurrences = due_recurrences_res.scalars().all()
+
+    if not due_recurrences:
+        logger.info("no_due_recurrences", workspace_id=workspace.id)
+        return 0
+
+    audit_logger = AuditLogger(session)
+    total_generated = 0
+    catchup_warned = False
+
+    for recurrence in due_recurrences:
+        # Safety: skip if the due date predates the catch-up boundary
+        effective_due = max(recurrence.next_due_date, catchup_boundary)
+        if effective_due > recurrence.next_due_date:
+            # The scheduler was down for too long; log warning and fast-forward
+            if not catchup_warned:
+                logger.warning(
+                    "recurring_catchup_cap_applied",
+                    workspace_id=workspace.id,
+                    recurrence_id=recurrence.id,
+                    days_overdue=(today - recurrence.next_due_date).days,
+                    cap_days=catchup_limit_days,
+                )
+                catchup_warned = True
+            recurrence.next_due_date = effective_due
+
+        generated_count = 0
+
+        # Inner catch-up loop — generate one transaction per missed period
+        while recurrence.next_due_date <= today:
+            # Respect end_date: skip if already past it
+            if recurrence.end_date and recurrence.next_due_date > recurrence.end_date:
+                recurrence.is_active = False
+                break
+
+            # Generate the spending transaction
+            occurred_at = datetime.combine(recurrence.next_due_date, datetime.min.time()).replace(
+                tzinfo=UTC
+            )
+            tx = SpendingTransaction(
+                workspace_id=workspace.id,
+                user_id=user_id,
+                category_id=recurrence.category_id,
+                amount=recurrence.amount,
+                type=recurrence.type,
+                description=recurrence.description,
+                occurred_at=occurred_at,
+                recurring_transaction_id=recurrence.id,
+            )
+            session.add(tx)
+            await session.flush()
+
+            # Audit the generated transaction (conforms to AuditLogger contract)
+            after_snap = {
+                "amount": str(tx.amount),
+                "type": tx.type,
+                "occurred_at": tx.occurred_at.isoformat(),
+                "description": tx.description,
+                "recurring_transaction_id": recurrence.id,
+                "recurring_public_id": str(recurrence.public_id),
+            }
+            await audit_logger.log(
+                workspace_id=workspace.id,
+                actor_id=user_id,
+                action="recurring_transaction_generated",
+                module="application",
+                entity_type="spending_transaction",
+                entity_id=tx.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(tx.public_id),
+                    "before": None,
+                    "after": after_snap,
+                    "changed_fields": list(after_snap.keys()),
+                },
+            )
+
+            # Advance to next occurrence
+            recurrence.next_due_date = _advance_due_date(
+                recurrence.next_due_date, recurrence.frequency, recurrence.interval
+            )
+            recurrence.last_generated_at = datetime.now(UTC)
+            generated_count += 1
+            total_generated += 1
+
+            # Deactivate if past end_date after advancing
+            if recurrence.end_date and recurrence.next_due_date > recurrence.end_date:
+                recurrence.is_active = False
+                logger.info(
+                    "recurring_transaction_exhausted",
+                    workspace_id=workspace.id,
+                    recurrence_id=recurrence.id,
+                )
+                break
+
+        session.add(recurrence)
+
+        if generated_count > 0:
+            logger.info(
+                "recurring_transactions_generated",
+                workspace_id=workspace.id,
+                recurrence_id=recurrence.id,
+                count=generated_count,
+            )
+        elif generated_count == 0 and not recurrence.is_active:
+            # Was already past end_date when we picked it up
+            session.add(recurrence)
+
+    await session.flush()
+    return total_generated

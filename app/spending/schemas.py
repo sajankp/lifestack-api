@@ -207,3 +207,27 @@ class RecurringTransactionResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class UpcomingTransactionItem(BaseModel):
+    """A projected (not-yet-generated) transaction from a recurring rule."""
+
+    recurring_public_id: uuid.UUID
+    category_id: uuid.UUID
+    amount: Decimal
+    type: TransactionType
+    description: str | None
+    projected_date: date
+    frequency: str
+    interval: int
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class UpcomingPreviewResponse(BaseModel):
+    days: int
+    from_date: date
+    to_date: date
+    items: list[UpcomingTransactionItem]
+
+    model_config = ConfigDict(json_encoders={Decimal: str})

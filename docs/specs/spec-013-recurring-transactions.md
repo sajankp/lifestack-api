@@ -1,5 +1,5 @@
 # Feature Spec: Recurring Transactions & Subscriptions
-**Status:** Proposed
+**Status:** In Progress
 **Spec ID:** 013
 
 ## 1. Overview
