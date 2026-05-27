@@ -6,7 +6,6 @@ from typing import Literal
 from app.core.audit import AuditLogger
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
-from app.spending.service import _advance_due_date
 from app.todo.models import PriorityEnum, RecurringTodoRule, Todo
 from app.todo.repository import TodoRepository
 from app.todo.schemas import (
@@ -330,6 +329,9 @@ class TodoService:
         for key, value in update_data.items():
             setattr(rule, key, value)
 
+        if rule.end_date and rule.anchor_date > rule.end_date:
+            raise ValidationError(detail="anchor_date cannot be after end_date")
+
         if rule.end_date and rule.next_due_date > rule.end_date:
             rule.is_active = False
         rule.updated_at = datetime.now(UTC)
@@ -379,34 +381,3 @@ class TodoService:
                     "changed_fields": [],
                 },
             )
-
-    async def generate_due_recurring_todos(self, workspace_id: int, actor_id: int) -> int:
-        rules, _ = await self.repository.get_recurring_rules(
-            workspace_id, is_active=True, limit=1000, offset=0
-        )
-        today = datetime.now(UTC).date()
-        generated = 0
-        for rule in rules:
-            while rule.is_active and rule.next_due_date <= today:
-                due_dt = datetime.combine(rule.next_due_date, datetime.min.time()).replace(
-                    tzinfo=UTC
-                )
-                todo = Todo(
-                    workspace_id=workspace_id,
-                    user_id=actor_id,
-                    title=rule.title,
-                    description=rule.description,
-                    priority=rule.priority,
-                    due_date=due_dt,
-                    completed=False,
-                )
-                await self.repository.create(todo)
-                generated += 1
-                rule.next_due_date = _advance_due_date(
-                    rule.next_due_date, rule.frequency, rule.interval
-                )
-                rule.last_generated_at = datetime.now(UTC)
-                if rule.end_date and rule.next_due_date > rule.end_date:
-                    rule.is_active = False
-                await self.repository.save_recurring_rule(rule)
-        return generated

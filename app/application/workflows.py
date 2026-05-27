@@ -565,6 +565,10 @@ async def process_workspace_recurring_todos(session: AsyncSession, workspace: Wo
     generated = 0
     for rule in rules:
         while rule.is_active and rule.next_due_date <= today:
+            if rule.end_date and rule.next_due_date > rule.end_date:
+                rule.is_active = False
+                session.add(rule)
+                break
             due_dt = datetime.combine(rule.next_due_date, datetime.min.time()).replace(tzinfo=UTC)
             session.add(
                 Todo(
