@@ -435,7 +435,6 @@ async def get_upcoming_preview(
     recurring_service: Annotated[
         RecurringTransactionService, Depends(get_spending_recurring_service)
     ],
-    category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     days: int = Query(default=30, ge=1, le=365),

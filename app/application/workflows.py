@@ -489,9 +489,19 @@ async def process_workspace_recurring_transactions(
             )
 
             # Advance to next occurrence
+            prev_due = recurrence.next_due_date
             recurrence.next_due_date = _advance_due_date(
                 recurrence.next_due_date, recurrence.frequency, recurrence.interval
             )
+            if recurrence.next_due_date <= prev_due:
+                logger.error(
+                    "recurring_transaction_advance_failed",
+                    workspace_id=workspace.id,
+                    recurrence_id=recurrence.id,
+                    prev_due=str(prev_due),
+                    next_due=str(recurrence.next_due_date),
+                )
+                break
             recurrence.last_generated_at = datetime.now(UTC)
             generated_count += 1
             total_generated += 1

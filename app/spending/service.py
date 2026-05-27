@@ -750,7 +750,7 @@ class RecurringTransactionService:
         if days < 1 or days > 365:
             raise ValidationError(detail="days must be between 1 and 365")
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         horizon = today + timedelta(days=days)
 
         # Fetch all active recurring rules for this workspace

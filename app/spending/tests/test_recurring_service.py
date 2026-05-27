@@ -1,7 +1,7 @@
 """Unit tests for RecurringTransactionService and _advance_due_date."""
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
@@ -196,9 +196,8 @@ async def test_upcoming_preview_success(recurring_service, mock_recurring_repo, 
         1,
     )
 
-    # Stub active recurring rules
-    # Mock date.today() is not easily possible if it's imported directly, but we can set next_due_date near today's actual date
-    today = date.today()
+    # Stub active recurring rules using UTC-derived date for consistency with service logic.
+    today = datetime.now(UTC).date()
     existing = RecurringTransaction(
         id=1,
         public_id=rule_public_id,
