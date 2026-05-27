@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     # Recurring Transactions (Spec 013)
     RECURRING_TXN_GENERATION_HOUR: int = 0  # UTC hour to run generation job
     RECURRING_TXN_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up generation
+    RECURRING_TODO_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up todo generation
 
     @computed_field
     @property

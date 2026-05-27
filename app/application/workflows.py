@@ -421,6 +421,7 @@ async def process_workspace_recurring_transactions(
     audit_logger = AuditLogger(session)
     total_generated = 0
     catchup_warned = False
+    generated_txs: list[tuple[SpendingTransaction, RecurringTransaction]] = []
 
     for recurrence in due_recurrences:
         # Safety: skip if the due date predates the catch-up boundary
@@ -462,31 +463,7 @@ async def process_workspace_recurring_transactions(
                 recurring_transaction_id=recurrence.id,
             )
             session.add(tx)
-            await session.flush()
-
-            # Audit the generated transaction (conforms to AuditLogger contract)
-            after_snap = {
-                "amount": str(tx.amount),
-                "type": tx.type,
-                "occurred_at": tx.occurred_at.isoformat(),
-                "description": tx.description,
-                "recurring_transaction_id": recurrence.id,
-                "recurring_public_id": str(recurrence.public_id),
-            }
-            await audit_logger.log(
-                workspace_id=workspace.id,
-                actor_id=user_id,
-                action="recurring_transaction_generated",
-                module="application",
-                entity_type="spending_transaction",
-                entity_id=tx.id,  # type: ignore[arg-type]
-                details={
-                    "entity_public_id": str(tx.public_id),
-                    "before": None,
-                    "after": after_snap,
-                    "changed_fields": list(after_snap.keys()),
-                },
-            )
+            generated_txs.append((tx, recurrence))
 
             # Advance to next occurrence
             prev_due = recurrence.next_due_date
@@ -530,12 +507,38 @@ async def process_workspace_recurring_transactions(
             session.add(recurrence)
 
     await session.flush()
+    for tx, recurrence in generated_txs:
+        # Audit generated transactions after a single batch flush so tx IDs exist.
+        after_snap = {
+            "amount": str(tx.amount),
+            "type": tx.type,
+            "occurred_at": tx.occurred_at.isoformat(),
+            "description": tx.description,
+            "recurring_transaction_id": recurrence.id,
+            "recurring_public_id": str(recurrence.public_id),
+        }
+        await audit_logger.log(
+            workspace_id=workspace.id,
+            actor_id=user_id,
+            action="recurring_transaction_generated",
+            module="application",
+            entity_type="spending_transaction",
+            entity_id=tx.id,  # type: ignore[arg-type]
+            details={
+                "entity_public_id": str(tx.public_id),
+                "before": None,
+                "after": after_snap,
+                "changed_fields": list(after_snap.keys()),
+            },
+        )
     return total_generated
 
 
 async def process_workspace_recurring_todos(session: AsyncSession, workspace: Workspace) -> int:
     """Generate due todos from recurring todo rules for one workspace."""
     today = datetime.now(UTC).date()
+    catchup_limit_days = settings.RECURRING_TODO_CATCHUP_LIMIT_DAYS
+    catchup_boundary = today - timedelta(days=catchup_limit_days)
     logger.info("processing_recurring_todos", workspace_id=workspace.id, today=str(today))
 
     members_res = await session.execute(
@@ -564,10 +567,10 @@ async def process_workspace_recurring_todos(session: AsyncSession, workspace: Wo
 
     generated = 0
     for rule in rules:
+        rule.next_due_date = max(rule.next_due_date, catchup_boundary)
         while rule.is_active and rule.next_due_date <= today:
             if rule.end_date and rule.next_due_date > rule.end_date:
                 rule.is_active = False
-                session.add(rule)
                 break
             due_dt = datetime.combine(rule.next_due_date, datetime.min.time()).replace(tzinfo=UTC)
             session.add(
@@ -598,7 +601,7 @@ async def process_workspace_recurring_todos(session: AsyncSession, workspace: Wo
             rule.last_generated_at = datetime.now(UTC)
             if rule.end_date and rule.next_due_date > rule.end_date:
                 rule.is_active = False
-            session.add(rule)
+        session.add(rule)
 
     await session.flush()
     return generated

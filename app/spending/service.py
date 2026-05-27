@@ -767,7 +767,7 @@ class RecurringTransactionService:
             # Start projecting from next_due_date
             projected = recurrence.next_due_date
             iterations = 0
-            while projected <= horizon and iterations < 365:
+            while projected <= horizon and iterations < 500:
                 iterations += 1
                 if recurrence.end_date and projected > recurrence.end_date:
                     break

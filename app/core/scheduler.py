@@ -41,6 +41,25 @@ def register_interval_job(
     )
 
 
+def register_daily_job(
+    job_func,
+    *,
+    job_id: str,
+    hour_utc: int,
+    minute_utc: int = 0,
+) -> None:
+    """Register a daily cron job anchored to a specific UTC hour/minute."""
+    scheduler.add_job(
+        job_func,
+        "cron",
+        hour=hour_utc,
+        minute=minute_utc,
+        id=job_id,
+        replace_existing=True,
+        timezone="UTC",
+    )
+
+
 def start_scheduler() -> None:
     """Start the background scheduler."""
     if not scheduler.running:

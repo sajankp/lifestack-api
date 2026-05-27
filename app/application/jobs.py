@@ -138,8 +138,8 @@ async def recurring_transactions_job() -> None:
     start_time = datetime.now(UTC)
     logger.info("recurring_transactions_job_start", job_name="recurring_transactions_job")
 
-    async with postgres.async_session_maker() as session:
-        lock_res = await session.execute(
+    async with postgres.engine.connect() as conn:
+        lock_res = await conn.execute(
             select(func.pg_try_advisory_lock(RECURRING_TRANSACTIONS_LOCK_KEY))
         )
         has_lock = lock_res.scalar()
@@ -151,19 +151,22 @@ async def recurring_transactions_job() -> None:
             return
 
         try:
-            workspaces_res = await session.execute(
-                select(Workspace).where(Workspace.is_active == True)  # noqa: E712
-            )
-            workspaces = workspaces_res.scalars().all()
-            await session.commit()
+            async with postgres.async_session_maker() as session:
+                workspaces_res = await session.execute(
+                    select(Workspace.id).where(Workspace.is_active == True)  # noqa: E712
+                )
+                workspace_ids = list(workspaces_res.scalars().all())
 
             total_generated = 0
             total_todos_generated = 0
-            for workspace in workspaces:
+            for workspace_id in workspace_ids:
                 ws_start = datetime.now(UTC)
                 try:
                     async with postgres.async_session_maker() as ws_session:  # noqa: SIM117
                         async with ws_session.begin():
+                            workspace = await ws_session.get(Workspace, workspace_id)
+                            if workspace is None or not workspace.is_active:
+                                continue
                             count = await asyncio.wait_for(
                                 process_workspace_recurring_transactions(ws_session, workspace),
                                 timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
@@ -208,9 +211,9 @@ async def recurring_transactions_job() -> None:
                 "recurring_transactions_job_completed",
                 job_name="recurring_transactions_job",
                 duration_ms=total_ms,
-                workspace_count=len(workspaces),
+                workspace_count=len(workspace_ids),
                 total_generated=total_generated,
                 total_todos_generated=total_todos_generated,
             )
         finally:
-            await session.execute(select(func.pg_advisory_unlock(RECURRING_TRANSACTIONS_LOCK_KEY)))
+            await conn.execute(select(func.pg_advisory_unlock(RECURRING_TRANSACTIONS_LOCK_KEY)))
