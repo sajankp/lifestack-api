@@ -15,11 +15,15 @@ logger = structlog.get_logger(__name__)
 
 GEMINI_LIVE_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
-# Active model — Gemini 3.1 Flash Live (supports bidiGenerateContent natively).
-# Fallback options (commented out for reference, uncomment if API key lacks 3.1 access):
-#   "models/gemini-2.5-flash-native-audio-latest"
-#   "models/gemini-2.5-flash-native-audio-preview-09-2025"
-GEMINI_MODEL = "models/gemini-3.1-flash-live-preview"
+# Active model — Gemini 2.5 Flash Native Audio.
+# This model supports ["TEXT", "AUDIO"] responseModalities which is required
+# for function calling (the model emits text during tool-call reasoning).
+#
+# gemini-3.1-flash-live-preview is NOT used because it only supports ["AUDIO"]
+# modality, which conflicts with function calling (empty-output error on tool turns).
+# Uncomment when 3.1 gains function-calling + TEXT support:
+#   GEMINI_MODEL = "models/gemini-3.1-flash-live-preview"
+GEMINI_MODEL = "models/gemini-2.5-flash-native-audio-latest"
 
 
 class AudioDecoder:
@@ -111,14 +115,17 @@ async def execute_agent_tool(name: str, args: dict, user_id: int, workspace_id: 
 
 def _build_setup_message() -> dict:
     """
-    Build the Gemini Live API setup payload for Gemini 3.1 Flash Live.
+    Build the Gemini Live API setup payload for Gemini 2.5 Flash Native Audio.
 
-    Key settings (per official docs):
-    - responseModalities: ["TEXT", "AUDIO"] — both are required even on 3.1 Flash
-      Live when function calling is enabled. The model emits text during tool-call
-      reasoning steps; audio-only mode causes a server-side empty-output error.
-    - thinkingConfig.thinkingLevel: "minimal" — optimises for lowest latency.
-    - Function calling is sequential only (NON_BLOCKING not supported on 3.1).
+    Key settings:
+    - responseModalities: ["TEXT", "AUDIO"] — required for function calling.
+      The model emits text during tool-call reasoning; audio-only mode causes
+      a server-side empty-output error on tool turns.
+    - Function calling is sequential (model waits for tool response before continuing).
+
+    Note on Gemini 3.1 Flash Live Preview:
+    That model only supports ["AUDIO"] modality which is incompatible with function
+    calling (causes 1007 errors). Switch back to 3.1 once it supports TEXT+AUDIO.
     """
     return {
         "setup": {
@@ -129,9 +136,9 @@ def _build_setup_message() -> dict:
                 # or tool calls" errors from the server when the model reasons.
                 "responseModalities": ["TEXT", "AUDIO"],
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Aoede"}}},
-                # thinkingConfig is intentionally omitted — it is not a valid field
-                # in the raw WebSocket JSON protocol (SDK-only abstraction). The
-                # model defaults to minimal thinking latency without it.
+                # Disable dynamic thinking (2.5 model default) — thinking-only turns
+                # with no actual output trigger the empty-output server error.
+                "thinkingConfig": {"thinkingBudget": 0},
             },
             "systemInstruction": {
                 "parts": [
