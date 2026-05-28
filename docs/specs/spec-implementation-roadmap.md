@@ -53,3 +53,6 @@ Implement approved/proposed specs in an order that minimizes rework, preserves a
 ## Recommended Next Use
 - Keep this file as a completed roadmap snapshot.
 - Track new work in follow-up specs/roadmaps rather than re-opening this sequence.
+
+## Next Candidate
+- `spec-020-bulk-import-csv.md` (CSV template-based bulk import for spending/budgets/investing with fail-all semantics and streaming validation).

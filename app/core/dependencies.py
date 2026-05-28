@@ -28,6 +28,8 @@ from app.finance.service import (
     FinanceSettingService,
     FxRateService,
 )
+from app.imports.repository import ImportRepository
+from app.imports.service import ImportService
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
@@ -415,6 +417,24 @@ async def get_investing_performance_service(
     snapshot_repo: PortfolioSnapshotRepository = Depends(get_investing_snapshot_repo),
 ) -> PerformanceService:
     return PerformanceService(holding_repo, cash_repo, holding_price_repo, snapshot_repo)
+
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+
+
+async def get_import_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> ImportRepository:
+    return ImportRepository(session)
+
+
+async def get_import_service(
+    repo: ImportRepository = Depends(get_import_repo),
+    session: AsyncSession = Depends(get_db_session),
+) -> ImportService:
+    return ImportService(repo, session)
 
 
 # ---------------------------------------------------------------------------

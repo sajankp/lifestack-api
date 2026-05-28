@@ -1,0 +1,82 @@
+import io
+import uuid
+from datetime import UTC, datetime
+
+import pytest
+from httpx import AsyncClient
+
+
+async def _register_and_login(client: AsyncClient, suffix: str):
+    username = f"import_{suffix}"
+    email = f"{username}@example.com"
+    password = "Password123!"
+    reg = await client.post(
+        "/v1/auth/register", json={"email": email, "username": username, "password": password}
+    )
+    assert reg.status_code == 200
+    login = await client.post("/v1/auth/login", data={"username": username, "password": password})
+    assert login.status_code == 200
+    return {"cookies": dict(login.cookies)}
+
+
+@pytest.mark.asyncio
+async def test_import_spending_transactions_fail_all_on_single_error(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
+    food = next(c for c in cats if c["name"] == "Food & Dining")
+
+    csv_content = (
+        "occurred_at,type,amount,category,description\n"
+        f"{datetime.now(UTC).isoformat()},expense,10.00,{food['public_id']},valid row\n"
+        f"{datetime.now(UTC).isoformat()},expense,-5.00,{food['public_id']},invalid amount\n"
+    )
+
+    files = {"file": ("tx.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    data = {"module": "spending-transactions"}
+    validate = await client.post("/v1/imports", data=data, files=files, cookies=creds["cookies"])
+    assert validate.status_code == 200, validate.text
+    payload = validate.json()
+    assert payload["import_batch"]["status"] == "failed_validation"
+    assert payload["import_batch"]["error_rows"] == 1
+
+    import_id = payload["import_batch"]["public_id"]
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code == 422
+
+    tx_list = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
+    assert tx_list.status_code == 200
+    assert tx_list.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_import_spending_budgets_validates_and_commits(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
+    food = next(c for c in cats if c["name"] == "Food & Dining")
+    transport = next(c for c in cats if c["name"] == "Transport")
+
+    csv_content = (
+        "month_start,category,amount\n"
+        f"2026-06-01,{food['public_id']},500.00\n"
+        f"2026-06-01,{transport['public_id']},200.00\n"
+    )
+
+    files = {"file": ("budgets.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    data = {"module": "spending-budgets"}
+    validate = await client.post("/v1/imports", data=data, files=files, cookies=creds["cookies"])
+    assert validate.status_code == 200, validate.text
+    body = validate.json()
+    assert body["import_batch"]["status"] == "validated"
+    assert body["import_batch"]["error_rows"] == 0
+    import_id = body["import_batch"]["public_id"]
+
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code == 200, commit.text
+    assert commit.json()["inserted_rows"] == 2
+    assert commit.json()["import_batch"]["status"] == "completed"
+
+    budgets = await client.get("/v1/spending/budgets", cookies=creds["cookies"])
+    assert budgets.status_code == 200
+    assert budgets.json()["total"] == 2

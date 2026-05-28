@@ -94,6 +94,16 @@ class Settings(BaseSettings):
     RECURRING_TXN_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up generation
     RECURRING_TODO_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up todo generation
 
+    # Bulk import storage (Spec 020)
+    IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3
+    IMPORT_LOCAL_PATH: str = "/tmp/lifestack-imports"
+    IMPORT_S3_ENDPOINT: str | None = None
+    IMPORT_S3_BUCKET: str | None = None
+    IMPORT_S3_REGION: str | None = None
+    IMPORT_S3_ACCESS_KEY: str | None = None
+    IMPORT_S3_SECRET_KEY: str | None = None
+    IMPORT_S3_FORCE_PATH_STYLE: bool = False
+
     @computed_field
     @property
     def sync_database_url(self) -> str:
