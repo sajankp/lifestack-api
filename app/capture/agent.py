@@ -15,6 +15,12 @@ logger = structlog.get_logger(__name__)
 
 GEMINI_LIVE_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
+# Active model — Gemini 3.1 Flash Live (supports bidiGenerateContent natively).
+# Fallback options (commented out for reference, uncomment if API key lacks 3.1 access):
+#   "models/gemini-2.5-flash-native-audio-latest"
+#   "models/gemini-2.5-flash-native-audio-preview-09-2025"
+GEMINI_MODEL = "models/gemini-3.1-flash-live-preview"
+
 
 class AudioDecoder:
     def __init__(self):
@@ -103,6 +109,220 @@ async def execute_agent_tool(name: str, args: dict, user_id: int, workspace_id: 
             return {"status": "error", "message": str(e)}
 
 
+def _build_setup_message() -> dict:
+    """
+    Build the Gemini Live API setup payload for Gemini 3.1 Flash Live.
+
+    Key settings (per official docs):
+    - responseModalities: ["TEXT", "AUDIO"] — both are required even on 3.1 Flash
+      Live when function calling is enabled. The model emits text during tool-call
+      reasoning steps; audio-only mode causes a server-side empty-output error.
+    - thinkingConfig.thinkingLevel: "minimal" — optimises for lowest latency.
+    - Function calling is sequential only (NON_BLOCKING not supported on 3.1).
+    """
+    return {
+        "setup": {
+            "model": GEMINI_MODEL,
+            "generationConfig": {
+                # TEXT + AUDIO required: model emits text during tool-call reasoning.
+                # Audio-only causes "model output must contain either output text
+                # or tool calls" errors from the server when the model reasons.
+                "responseModalities": ["TEXT", "AUDIO"],
+                "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Aoede"}}},
+                # thinkingConfig is intentionally omitted — it is not a valid field
+                # in the raw WebSocket JSON protocol (SDK-only abstraction). The
+                # model defaults to minimal thinking latency without it.
+            },
+            "systemInstruction": {
+                "parts": [
+                    {
+                        "text": (
+                            "You are a helpful personal voice assistant. You have access to tools to "
+                            "create todo tasks, log spending transactions, and update cash balances. "
+                            "Always use these tools when asked. Keep your verbal responses concise and natural."
+                        )
+                    }
+                ]
+            },
+            "tools": [
+                {
+                    "functionDeclarations": [
+                        {
+                            "name": "create_todo_task",
+                            "description": "Create a new todo task/item for the user.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "title": {
+                                        "type": "STRING",
+                                        "description": "The title or text of the todo task.",
+                                    },
+                                    "due_date": {
+                                        "type": "STRING",
+                                        "description": "Optional due date in YYYY-MM-DD format (e.g. '2026-05-29').",
+                                    },
+                                    "priority": {
+                                        "type": "STRING",
+                                        "description": "The priority, one of 'low', 'medium', or 'high'.",
+                                    },
+                                },
+                                "required": ["title"],
+                            },
+                        },
+                        {
+                            "name": "log_spending_transaction",
+                            "description": "Record/log a new spending transaction (expense).",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "The transaction amount as a string (e.g., '14.99').",
+                                    },
+                                    "category_name": {
+                                        "type": "STRING",
+                                        "description": "The name of the spending category (e.g., 'food', 'utilities', 'shopping').",
+                                    },
+                                    "description": {
+                                        "type": "STRING",
+                                        "description": "Description of what the money was spent on.",
+                                    },
+                                },
+                                "required": ["amount", "category_name", "description"],
+                            },
+                        },
+                        {
+                            "name": "log_cash_balance",
+                            "description": "Record/update cash balance for an investing account.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "The name of the brokerage or bank account (e.g., 'Brokerage Cash').",
+                                    },
+                                    "balance": {
+                                        "type": "STRING",
+                                        "description": "The cash balance amount as a string (e.g. '1200.50').",
+                                    },
+                                    "currency": {
+                                        "type": "STRING",
+                                        "description": "The currency code (e.g. 'USD', 'EUR', 'GBP').",
+                                    },
+                                },
+                                "required": ["account_name", "balance", "currency"],
+                            },
+                        },
+                    ]
+                }
+            ],
+        }
+    }
+
+
+async def _connect_gemini(gemini_url: str) -> tuple:
+    """
+    Connect to the Gemini Live API using GEMINI_MODEL.
+    Returns (websocket, context_manager) on success.
+    Raises RuntimeError if connection or setup fails.
+    """
+    logger.info("connecting_to_gemini", model=GEMINI_MODEL)
+    ws_conn = websockets.connect(gemini_url)
+    ws = await ws_conn.__aenter__()
+
+    try:
+        setup_message = _build_setup_message()
+        await ws.send(json.dumps(setup_message))
+
+        first_msg_raw = await asyncio.wait_for(ws.recv(), timeout=8.0)
+        first_msg = json.loads(first_msg_raw)
+
+        if "setupComplete" not in first_msg:
+            raise RuntimeError(f"Unexpected setup response from Gemini: {first_msg}")
+
+        logger.info("gemini_ws_setup_completed", model=GEMINI_MODEL)
+        return ws, ws_conn
+
+    except Exception:
+        with suppress(Exception):
+            await ws_conn.__aexit__(None, None, None)
+        raise
+
+
+async def _handle_gemini_message(
+    msg: dict, client_ws: WebSocket, gemini_ws, user_id: int, workspace_id: int
+):
+    """
+    Parse a single message from Gemini and forward content to the client.
+
+    Gemini 3.1 Flash Live difference from 2.5:
+    A single serverContent event may contain MULTIPLE parts simultaneously
+    (e.g., inlineData audio blob AND a transcript text part in the same event).
+    We must iterate ALL parts in every event — not assume one-part-per-event.
+    """
+    # ── error (server-side model/API errors) ─────────────────────────────────
+    gemini_error = msg.get("error")
+    if gemini_error:
+        error_msg = gemini_error.get("message", "Unknown error from Gemini API")
+        logger.error("gemini_api_error", error=error_msg)
+        await client_ws.send_json({"type": "error", "message": error_msg})
+        return
+    # ── serverContent ────────────────────────────────────────────────────────
+    server_content = msg.get("serverContent")
+    if server_content:
+        model_turn = server_content.get("modelTurn")
+        if model_turn:
+            parts = model_turn.get("parts") or []
+            for part in parts:
+                # Transcript text (may arrive in same event as audio on 3.1)
+                text = part.get("text")
+                if text:
+                    await client_ws.send_json({"type": "transcript", "content": text})
+
+                # Audio blob — raw 24kHz 16-bit PCM, base64-encoded
+                inline_data = part.get("inlineData")
+                if inline_data:
+                    audio_b64 = inline_data.get("data")
+                    if audio_b64:
+                        audio_bytes = base64.b64decode(audio_b64)
+                        await client_ws.send_bytes(audio_bytes)
+
+    # ── toolCall ─────────────────────────────────────────────────────────────
+    tool_call = msg.get("toolCall")
+    if tool_call:
+        function_calls = tool_call.get("functionCalls") or []
+        for fc in function_calls:
+            call_id = fc.get("id")
+            name = fc.get("name")
+            args = fc.get("args") or {}
+
+            await client_ws.send_json({"type": "tool_call", "name": name, "arguments": args})
+
+            result = await execute_agent_tool(name, args, user_id, workspace_id)
+
+            await client_ws.send_json({
+                "type": "tool_response",
+                "name": name,
+                "status": result.get("status", "success"),
+                "entity_id": result.get("entity_public_id"),
+                "result": result,
+            })
+
+            # Return result to Gemini — sequential on 3.1 (NON_BLOCKING not supported)
+            tool_response_payload = {
+                "toolResponse": {
+                    "functionResponses": [
+                        {
+                            "id": call_id,
+                            "name": name,
+                            "response": {"output": result},
+                        }
+                    ]
+                }
+            }
+            await gemini_ws.send(json.dumps(tool_response_payload))
+
+
 async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: int):
     api_key = settings.GEMINI_API_KEY
     if not api_key:
@@ -118,273 +338,78 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
     decoder = AudioDecoder()
     await decoder.start()
 
-    models_to_try = [
-        "models/gemini-3.1-flash-live-preview",  # Best: Gemini 3.1 Flash Live (if API key has access)
-        "models/gemini-2.5-flash-native-audio-latest",  # Fallback: Gemini 2.5 Flash Native Audio (stable)
-        "models/gemini-2.5-flash-native-audio-preview-09-2025",  # Last resort: preview variant
-    ]
     gemini_ws = None
-    active_model = None
     ws_context_manager = None
 
     try:
-        for model_name in models_to_try:
-            try:
-                logger.info("attempting_gemini_connection", model=model_name)
-                ws_conn = websockets.connect(gemini_url)
-                ws = await ws_conn.__aenter__()
+        gemini_ws, ws_context_manager = await _connect_gemini(gemini_url)
+        logger.info("gemini_session_active", model=GEMINI_MODEL)
 
-                setup_message = {
-                    "setup": {
-                        "model": model_name,
-                        "generationConfig": {
-                            "responseModalities": ["TEXT", "AUDIO"],
-                            "speechConfig": {
-                                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Aoede"}}
-                            },
-                        },
-                        "systemInstruction": {
-                            "parts": [
-                                {
-                                    "text": (
-                                        "You are a helpful personal voice assistant. You have access to tools to "
-                                        "create todo tasks, log spending transactions, and update cash balances. "
-                                        "Always use these tools when asked. Keep your verbal responses concise and natural."
-                                    )
-                                }
-                            ]
-                        },
-                        "tools": [
-                            {
-                                "functionDeclarations": [
-                                    {
-                                        "name": "create_todo_task",
-                                        "description": "Create a new todo task/item for the user.",
-                                        "parameters": {
-                                            "type": "OBJECT",
-                                            "properties": {
-                                                "title": {
-                                                    "type": "STRING",
-                                                    "description": "The title or text of the todo task.",
-                                                },
-                                                "due_date": {
-                                                    "type": "STRING",
-                                                    "description": "Optional due date in YYYY-MM-DD format (e.g. '2026-05-29').",
-                                                },
-                                                "priority": {
-                                                    "type": "STRING",
-                                                    "description": "The priority, one of 'low', 'medium', or 'high'.",
-                                                },
-                                            },
-                                            "required": ["title"],
-                                        },
-                                    },
-                                    {
-                                        "name": "log_spending_transaction",
-                                        "description": "Record/log a new spending transaction (expense).",
-                                        "parameters": {
-                                            "type": "OBJECT",
-                                            "properties": {
-                                                "amount": {
-                                                    "type": "STRING",
-                                                    "description": "The transaction amount as a string (e.g., '14.99').",
-                                                },
-                                                "category_name": {
-                                                    "type": "STRING",
-                                                    "description": "The name of the spending category (e.g., 'food', 'utilities', 'shopping').",
-                                                },
-                                                "description": {
-                                                    "type": "STRING",
-                                                    "description": "Description of what the money was spent on.",
-                                                },
-                                            },
-                                            "required": ["amount", "category_name", "description"],
-                                        },
-                                    },
-                                    {
-                                        "name": "log_cash_balance",
-                                        "description": "Record/update cash balance for an investing account.",
-                                        "parameters": {
-                                            "type": "OBJECT",
-                                            "properties": {
-                                                "account_name": {
-                                                    "type": "STRING",
-                                                    "description": "The name of the brokerage or bank account (e.g., 'Brokerage Cash').",
-                                                },
-                                                "balance": {
-                                                    "type": "STRING",
-                                                    "description": "The cash balance amount as a string (e.g. '1200.50').",
-                                                },
-                                                "currency": {
-                                                    "type": "STRING",
-                                                    "description": "The currency code (e.g. 'USD', 'EUR', 'GBP').",
-                                                },
-                                            },
-                                            "required": ["account_name", "balance", "currency"],
-                                        },
-                                    },
-                                ]
-                            }
-                        ],
-                    }
-                }
-                await ws.send(json.dumps(setup_message))
-
-                first_msg_raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
-                first_msg = json.loads(first_msg_raw)
-
-                if "setupComplete" in first_msg:
-                    logger.info("gemini_ws_setup_completed", model=model_name)
-                    gemini_ws = ws
-                    active_model = model_name
-                    ws_context_manager = ws_conn
-                    break
-                else:
-                    logger.warning("gemini_setup_failed", model=model_name, response=first_msg)
-                    await ws_conn.__aexit__(None, None, None)
-            except Exception as conn_err:
-                logger.warning("gemini_connection_failed", model=model_name, error=str(conn_err))
-                if "ws_conn" in locals():
-                    with suppress(Exception):
-                        await ws_conn.__aexit__(None, None, None)
-
-        if not gemini_ws:
-            raise RuntimeError(
-                "Failed to establish a Live API session with any of the supported models."
-            )
-
-            # Background task to stream decoded PCM to Gemini
-            async def pcm_to_gemini_loop():
-                try:
-                    while True:
-                        # 2048 bytes of 16kHz 16-bit mono PCM is ~64ms of audio
-                        chunk = await decoder.read_pcm_chunk(2048)
-                        if not chunk:
-                            await asyncio.sleep(0.01)
-                            continue
-
-                        b64_data = base64.b64encode(chunk).decode("utf-8")
-                        await gemini_ws.send(
-                            json.dumps({
-                                "realtimeInput": {
-                                    "mediaChunks": [
-                                        {"mimeType": "audio/pcm;rate=16000", "data": b64_data}
-                                    ]
-                                }
-                            })
-                        )
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.error("pcm_to_gemini_loop_error", error=str(e))
-
-            # Background task to stream Gemini responses to Client
-            async def gemini_to_client_loop():
-                try:
-                    async for raw_msg in gemini_ws:
-                        msg = json.loads(raw_msg)
-
-                        # Handle serverContent
-                        server_content = msg.get("serverContent")
-                        if server_content:
-                            model_turn = server_content.get("modelTurn")
-                            if model_turn:
-                                parts = model_turn.get("parts") or []
-                                for part in parts:
-                                    # Send transcript text
-                                    text = part.get("text")
-                                    if text:
-                                        await client_ws.send_json({
-                                            "type": "transcript",
-                                            "content": text,
-                                        })
-
-                                    # Send binary audio chunk
-                                    inline_data = part.get("inlineData")
-                                    if inline_data:
-                                        audio_b64 = inline_data.get("data")
-                                        if audio_b64:
-                                            audio_bytes = base64.b64decode(audio_b64)
-                                            await client_ws.send_bytes(audio_bytes)
-
-                        # Handle toolCall
-                        tool_call = msg.get("toolCall")
-                        if tool_call:
-                            function_calls = tool_call.get("functionCalls") or []
-                            for fc in function_calls:
-                                call_id = fc.get("id")
-                                name = fc.get("name")
-                                args = fc.get("args") or {}
-
-                                await client_ws.send_json({
-                                    "type": "tool_call",
-                                    "name": name,
-                                    "arguments": args,
-                                })
-
-                                result = await execute_agent_tool(name, args, user_id, workspace_id)
-
-                                await client_ws.send_json({
-                                    "type": "tool_response",
-                                    "name": name,
-                                    "status": result.get("status", "success"),
-                                    "entity_id": result.get("entity_public_id"),
-                                    "result": result,
-                                })
-
-                                # Send result back to Gemini
-                                tool_response_payload = {
-                                    "toolResponse": {
-                                        "functionResponses": [
-                                            {
-                                                "id": call_id,
-                                                "name": name,
-                                                "response": {"output": result},
-                                            }
-                                        ]
-                                    }
-                                }
-                                await gemini_ws.send(json.dumps(tool_response_payload))
-
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.error("gemini_to_client_loop_error", error=str(e))
-
-            # Start background worker loops
-            pcm_task = asyncio.create_task(pcm_to_gemini_loop())
-            gemini_task = asyncio.create_task(gemini_to_client_loop())
-
-            # Read client messages
+        # ── Background: stream decoded PCM → Gemini ───────────────────────────
+        async def pcm_to_gemini_loop():
             try:
                 while True:
-                    message = await client_ws.receive()
+                    # 2048 bytes of 16kHz 16-bit mono PCM ≈ 64ms of audio
+                    chunk = await decoder.read_pcm_chunk(2048)
+                    if not chunk:
+                        await asyncio.sleep(0.01)
+                        continue
 
-                    if "bytes" in message:
-                        # Client audio chunk
-                        await decoder.send_encoded_chunk(message["bytes"])
+                    b64_data = base64.b64encode(chunk).decode("utf-8")
+                    await gemini_ws.send(
+                        json.dumps({
+                            "realtimeInput": {
+                                "mediaChunks": [
+                                    {"mimeType": "audio/pcm;rate=16000", "data": b64_data}
+                                ]
+                            }
+                        })
+                    )
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error("pcm_to_gemini_loop_error", error=str(e))
 
-                    elif "text" in message:
-                        # Client control/text message
-                        client_msg = json.loads(message["text"])
-                        msg_type = client_msg.get("type")
+        # ── Background: Gemini responses → Client ────────────────────────────
+        async def gemini_to_client_loop():
+            try:
+                async for raw_msg in gemini_ws:
+                    msg = json.loads(raw_msg)
+                    # Log every Gemini message at debug level to trace empty-output issues.
+                    # Keys only (no audio data) to keep logs readable.
+                    logger.debug("gemini_raw_message", keys=list(msg.keys()))
+                    await _handle_gemini_message(msg, client_ws, gemini_ws, user_id, workspace_id)
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error("gemini_to_client_loop_error", error=str(e))
 
-                        if msg_type == "text":
-                            content = client_msg.get("content", "")
-                            await gemini_ws.send(
-                                json.dumps({
-                                    "clientContent": {
-                                        "turns": [{"role": "user", "parts": [{"text": content}]}],
-                                        "turnComplete": True,
-                                    }
-                                })
-                            )
-            except WebSocketDisconnect:
-                logger.info("client_websocket_disconnected")
-            finally:
-                pcm_task.cancel()
-                gemini_task.cancel()
-                await asyncio.gather(pcm_task, gemini_task, return_exceptions=True)
+        pcm_task = asyncio.create_task(pcm_to_gemini_loop())
+        gemini_task = asyncio.create_task(gemini_to_client_loop())
+
+        # ── Main loop: read client messages ──────────────────────────────────
+        try:
+            while True:
+                message = await client_ws.receive()
+
+                if "bytes" in message:
+                    # Encoded audio (WebM/Opus etc.) — ffmpeg decodes to PCM
+                    await decoder.send_encoded_chunk(message["bytes"])
+
+                elif "text" in message:
+                    client_msg = json.loads(message["text"])
+                    msg_type = client_msg.get("type")
+
+                    if msg_type == "text":
+                        content = client_msg.get("content", "")
+                        # Gemini 3.1: use realtimeInput for live text (not clientContent)
+                        await gemini_ws.send(json.dumps({"realtimeInput": {"text": content}}))
+        except WebSocketDisconnect:
+            logger.info("client_websocket_disconnected")
+        finally:
+            pcm_task.cancel()
+            gemini_task.cancel()
+            await asyncio.gather(pcm_task, gemini_task, return_exceptions=True)
 
     except Exception as e:
         logger.error("gemini_live_session_error", error=str(e))
@@ -395,6 +420,6 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
             })
     finally:
         await decoder.close()
-        if "ws_context_manager" in locals() and ws_context_manager:
+        if ws_context_manager is not None:
             with suppress(Exception):
                 await ws_context_manager.__aexit__(None, None, None)
