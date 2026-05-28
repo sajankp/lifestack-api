@@ -27,13 +27,13 @@ class AgentTools:
         self.todo_repo = TodoRepository(session)
         self.todo_service = TodoService(self.todo_repo)
 
+        self.account_repo = AccountRepository(session)
         self.tx_repo = TransactionRepository(session)
         self.cat_repo = CategoryRepository(session)
-        self.tx_service = TransactionService(self.tx_repo, self.cat_repo)
+        self.tx_service = TransactionService(self.tx_repo, self.cat_repo, self.account_repo)
         self.category_service = CategoryService(self.cat_repo)
 
         self.cash_repo = CashBalanceRepository(session)
-        self.account_repo = AccountRepository(session)
         self.currency_repo = CurrencyRepository(session)
         self.cash_service = CashBalanceService(
             self.cash_repo, self.account_repo, self.currency_repo
