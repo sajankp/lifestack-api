@@ -193,8 +193,13 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Investing module (Spec 008 baseline) | ✅ Done |
 | Investing currency/account governance + FX + transfer ledger (Spec 011) | ✅ Done |
 | Look-through exposure + overlap analytics APIs (Spec 012 backend) | ✅ Done |
-| Recurring transactions scheduler workflow | 🔨 In Progress (Spec 013) |
-| Data export (CSV / JSON) | ⏳ Planned |
+| Recurring transactions scheduler workflow (Spec 013) | ✅ Done |
+| Recurring todo rules + scheduler generation (Spec 019) | ✅ Done |
+| Notifications inbox + preferences (Spec 015, in-app) | ✅ Done |
+| Weekly summaries API + dashboard integration (Spec 016) | ✅ Done |
+| Spending analytics endpoints (Spec 017) | ✅ Done |
+| Quick capture API routing (Spec 018) | ✅ Done |
+| Data export (CSV / JSON) | ✅ Done |
 | Voice-first capture for todos and spending | Stage 2 |
 | AI assistant over existing modules | Stage 3 |
 | Mobile companion app | Stage 4 |

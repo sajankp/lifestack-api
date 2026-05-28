@@ -1,8 +1,10 @@
 # Spec Implementation Roadmap (013-018)
 
 ## Status
-- Working plan (post-PR16/PR17 merge)
-- Scope: backend-first sequencing and implementation slices
+- Phase 1 baseline completed on `main` for Specs 013 and 015-018.
+- Spec 014 (investment performance) remains deferred/not shipped in this roadmap closeout.
+- Phase 1.1 recurring todos (Spec 019) implemented
+- This document is now a historical sequencing record plus follow-up reference
 
 ## Goal
 Implement approved/proposed specs in an order that minimizes rework, preserves architecture boundaries, and keeps each PR reviewable.
@@ -39,14 +41,15 @@ Implement approved/proposed specs in an order that minimizes rework, preserves a
 - At least one integration test for happy path and one for isolation/negative path.
 - PR threads resolved with explicit rationale when suggestions are deferred.
 
-## Immediate Next Step
-Start `spec-015-notifications.md` with a narrow V1 slice:
-- notification data model + repository/service
-- create/list/acknowledge API
-- minimal in-app delivery workflow integration
+## Delivery Outcome
+- `spec-015-notifications.md`: delivered with in-app inbox + unread + preference flows.
+- `spec-016-weekly-summary.md`: delivered with persisted summaries and latest-summary dashboard exposure.
+- `spec-017-spending-analytics.md`: delivered with trends + breakdown + budget-performance + savings-rate endpoints.
+- `spec-018-quick-capture.md`: delivered with rule-based capture routing and todo/spending dispatch.
+- `spec-013-recurring-transactions.md`: delivered with scheduler generation, catch-up controls, and upcoming preview.
+- `spec-014-investment-performance.md`: deferred from this sequence.
+- `spec-019-recurring-todos.md`: delivered with recurring rule CRUD and scheduler-driven todo generation.
 
-## Follow-up Slice
-- `spec-019-recurring-todos.md` extends Phase 1 usability:
-  - recurring todo rule CRUD
-  - scheduler-driven todo generation
-  - Todo UI due-date + recurring rule management
+## Recommended Next Use
+- Keep this file as a completed roadmap snapshot.
+- Track new work in follow-up specs/roadmaps rather than re-opening this sequence.
