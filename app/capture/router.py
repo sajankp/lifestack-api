@@ -1,15 +1,10 @@
-from typing import Annotated
-
 import structlog
-from fastapi import APIRouter, Depends, WebSocket
+from fastapi import APIRouter, WebSocket
 
 from app.auth.repository import AuthSessionRepository
 from app.capture.agent import run_agent_session
-from app.capture.schemas import CaptureRequest, CaptureResponse
-from app.capture.service import CaptureService
 from app.core.auth import get_user_info_from_token
 from app.core.database.postgres import async_session_maker
-from app.core.dependencies import get_capture_service, get_current_user, get_current_workspace_id
 from app.core.exceptions import UnauthorizedError
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
@@ -81,20 +76,3 @@ async def websocket_agent_endpoint(websocket: WebSocket):
             pass
         return
     await run_agent_session(websocket, user_id, workspace_id)
-
-
-@router.post("", response_model=CaptureResponse)
-async def post_capture(
-    payload: CaptureRequest,
-    service: Annotated[CaptureService, Depends(get_capture_service)],
-    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    user: Annotated[dict, Depends(get_current_user)],
-):
-    result = await service.capture(
-        user["id"],
-        workspace_id,
-        payload.text,
-        payload.module,
-        payload.hints.model_dump() if payload.hints else None,
-    )
-    return CaptureResponse.model_validate(result)

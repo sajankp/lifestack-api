@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.workflows import DashboardSummaryWorkflow, UserRegistrationWorkflow
 from app.auth.repository import AuthSessionRepository, UserRepository
 from app.auth.service import AuthService
-from app.capture.service import CaptureService
 from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.auth import get_user_info_from_token
@@ -514,14 +513,6 @@ async def get_weekly_summary_service(
     notification_service: NotificationService = Depends(get_notification_service),
 ) -> WeeklySummaryService:
     return WeeklySummaryService(repo, session, notification_service)
-
-
-async def get_capture_service(
-    todo_service: TodoService = Depends(get_todo_service),
-    transaction_service: TransactionService = Depends(get_spending_transaction_service),
-    category_service: CategoryService = Depends(get_spending_category_service),
-) -> CaptureService:
-    return CaptureService(todo_service, transaction_service, category_service)
 
 
 async def get_current_workspace_id(
