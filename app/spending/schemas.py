@@ -47,6 +47,8 @@ class TransactionCreate(BaseModel):
     type: TransactionType
     occurred_at: datetime
     description: str | None = Field(default=None, max_length=500)
+    wallet_name: str | None = Field(default=None, max_length=120)
+    labels: str | None = Field(default=None, max_length=500)
 
     @field_validator("amount")
     @classmethod
@@ -63,6 +65,8 @@ class TransactionUpdate(BaseModel):
     type: TransactionType | None = None
     occurred_at: datetime | None = None
     description: str | None = Field(default=None, max_length=500)
+    wallet_name: str | None = Field(default=None, max_length=120)
+    labels: str | None = Field(default=None, max_length=500)
 
     @field_validator("amount")
     @classmethod
@@ -79,6 +83,8 @@ class TransactionResponse(BaseModel):
     type: TransactionType
     occurred_at: datetime
     description: str | None
+    wallet_name: str | None
+    labels: str | None
     created_at: datetime
     updated_at: datetime
 

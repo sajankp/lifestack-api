@@ -55,6 +55,8 @@ class SpendingTransaction(SQLModel, table=True):
     type: TransactionType = Field(sa_type=sa.String())
     occurred_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
     description: str | None = Field(default=None, max_length=500)
+    wallet_name: str | None = Field(default=None, max_length=120)
+    labels: str | None = Field(default=None, max_length=500)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

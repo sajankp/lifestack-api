@@ -76,6 +76,8 @@ def _snapshot_transaction(transaction: SpendingTransaction) -> dict:
         "type": transaction.type,
         "occurred_at": transaction.occurred_at.isoformat() if transaction.occurred_at else None,
         "description": transaction.description,
+        "wallet_name": transaction.wallet_name,
+        "labels": transaction.labels,
     }
 
 
@@ -343,6 +345,8 @@ class TransactionService:
             type=tx_in.type,
             occurred_at=tx_in.occurred_at,
             description=tx_in.description,
+            wallet_name=tx_in.wallet_name,
+            labels=tx_in.labels,
         )
         transaction = await self.transaction_repo.create(transaction)
 

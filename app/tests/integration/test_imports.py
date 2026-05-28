@@ -114,3 +114,41 @@ async def test_import_accepts_utf8_bom_csv(client: AsyncClient):
     assert validate.status_code == 200, validate.text
     payload = validate.json()
     assert payload["import_batch"]["status"] == "validated"
+
+
+@pytest.mark.asyncio
+async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    categories = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()[
+        "items"
+    ]
+    other = next(c for c in categories if c["name"] == "Other")
+
+    # Spendee-like export format.
+    csv_content = (
+        'Date,Wallet,Type,"Category name",Amount,Currency,Note,Labels,Author\n'
+        '2026-02-17T00:50:58+00:00,Main Wallet,Expense,Other,-3700.00,INR,School fee,family,"Sajan"\n'
+    )
+    files = {"file": ("spendee.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    data = {"module": "spending-transactions"}
+    validate = await client.post("/v1/imports", data=data, files=files, cookies=creds["cookies"])
+    assert validate.status_code == 200, validate.text
+    payload = validate.json()
+    assert payload["import_batch"]["status"] == "validated"
+    import_id = payload["import_batch"]["public_id"]
+
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code == 200, commit.text
+    assert commit.json()["inserted_rows"] == 1
+
+    txs = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
+    assert txs.status_code == 200
+    assert txs.json()["total"] == 1
+    row = txs.json()["items"][0]
+    assert row["category_id"] == other["public_id"]
+    assert row["type"] == "expense"
+    # Negative Spendee expense should be normalized to positive stored amount.
+    assert row["amount"] == "3700.00"
+    assert row["wallet_name"] == "Main Wallet"
+    assert row["labels"] == "family"
