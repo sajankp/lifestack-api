@@ -1,7 +1,8 @@
 # Spec Implementation Roadmap (013-018)
 
 ## Status
-- Phase 1 baseline completed on `main` (Specs 013-018 implemented)
+- Phase 1 baseline completed on `main` for Specs 013 and 015-018.
+- Spec 014 (investment performance) remains deferred/not shipped in this roadmap closeout.
 - Phase 1.1 recurring todos (Spec 019) implemented
 - This document is now a historical sequencing record plus follow-up reference
 
@@ -46,6 +47,7 @@ Implement approved/proposed specs in an order that minimizes rework, preserves a
 - `spec-017-spending-analytics.md`: delivered with trends + breakdown + budget-performance + savings-rate endpoints.
 - `spec-018-quick-capture.md`: delivered with rule-based capture routing and todo/spending dispatch.
 - `spec-013-recurring-transactions.md`: delivered with scheduler generation, catch-up controls, and upcoming preview.
+- `spec-014-investment-performance.md`: deferred from this sequence.
 - `spec-019-recurring-todos.md`: delivered with recurring rule CRUD and scheduler-driven todo generation.
 
 ## Recommended Next Use
