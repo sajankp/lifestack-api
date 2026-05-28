@@ -134,7 +134,7 @@ def _build_setup_message() -> dict:
                 # TEXT + AUDIO required: model emits text during tool-call reasoning.
                 # Audio-only causes "model output must contain either output text
                 # or tool calls" errors from the server when the model reasons.
-                "responseModalities": ["AUDIO"],
+                "responseModalities": ["TEXT", "AUDIO"],
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Aoede"}}},
                 # Disable dynamic thinking (2.5 model default) — thinking-only turns
                 # with no actual output trigger the empty-output server error.

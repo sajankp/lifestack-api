@@ -1,3 +1,5 @@
+from contextlib import suppress
+
 import structlog
 from fastapi import APIRouter, WebSocket
 
@@ -61,18 +63,12 @@ async def authenticate_ws(websocket: WebSocket) -> tuple[int, int]:
 
 @router.websocket("/agent/ws")
 async def websocket_agent_endpoint(websocket: WebSocket):
-    await websocket.accept()
     try:
         user_id, workspace_id = await authenticate_ws(websocket)
     except Exception as e:
         logger.error("ws_authentication_failed", error=str(e))
-        try:
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Authentication failed: {str(e)}",
-            })
+        with suppress(Exception):
             await websocket.close(code=4001)
-        except Exception:
-            pass
         return
+    await websocket.accept()
     await run_agent_session(websocket, user_id, workspace_id)
