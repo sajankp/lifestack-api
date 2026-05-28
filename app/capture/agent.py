@@ -54,7 +54,7 @@ class AudioDecoder:
             try:
                 self.process.stdin.write(chunk)
                 await self.process.stdin.drain()
-            except (ConnectionResetError, BrokenPipeError):
+            except Exception:
                 pass
 
     async def read_pcm_chunk(self, size: int = 1024) -> bytes:
@@ -359,8 +359,7 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
                     # 2048 bytes of 16kHz 16-bit mono PCM ≈ 64ms of audio
                     chunk = await decoder.read_pcm_chunk(2048)
                     if not chunk:
-                        await asyncio.sleep(0.01)
-                        continue
+                        break
 
                     b64_data = base64.b64encode(chunk).decode("utf-8")
                     await gemini_ws.send(
@@ -391,11 +390,7 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
             except Exception as e:
                 logger.error("gemini_to_client_loop_error", error=str(e))
 
-        pcm_task = asyncio.create_task(pcm_to_gemini_loop())
-        gemini_task = asyncio.create_task(gemini_to_client_loop())
-
-        # ── Main loop: read client messages ──────────────────────────────────
-        try:
+        async def client_to_gemini_loop():
             while True:
                 message = await client_ws.receive()
 
@@ -411,12 +406,27 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
                         content = client_msg.get("content", "")
                         # Gemini 3.1: use realtimeInput for live text (not clientContent)
                         await gemini_ws.send(json.dumps({"realtimeInput": {"text": content}}))
-        except WebSocketDisconnect:
-            logger.info("client_websocket_disconnected")
+
+        pcm_task = asyncio.create_task(pcm_to_gemini_loop())
+        gemini_task = asyncio.create_task(gemini_to_client_loop())
+        client_task = asyncio.create_task(client_to_gemini_loop())
+        try:
+            done, _ = await asyncio.wait(
+                [pcm_task, gemini_task, client_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in done:
+                if task.cancelled():
+                    continue
+                exc = task.exception()
+                if exc and isinstance(exc, WebSocketDisconnect):
+                    logger.info("client_websocket_disconnected")
+                elif exc:
+                    raise exc
         finally:
-            pcm_task.cancel()
-            gemini_task.cancel()
-            await asyncio.gather(pcm_task, gemini_task, return_exceptions=True)
+            for task in [pcm_task, gemini_task, client_task]:
+                task.cancel()
+            await asyncio.gather(pcm_task, gemini_task, client_task, return_exceptions=True)
 
     except Exception as e:
         logger.error("gemini_live_session_error", error=str(e))

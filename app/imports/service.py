@@ -267,7 +267,8 @@ class ImportService:
                 if module == ImportModule.spending_transactions:
                     if header_mode == "spendee":
                         occurred_raw = self._norm(row.get("Date"))
-                        type_raw = self._norm(row.get("Type")).lower()
+                        raw_type = self._norm(row.get("Type"))
+                        type_raw = raw_type.lower() if raw_type else ""
                         amount_raw = self._norm(row.get("Amount"))
                         category_raw = self._norm(row.get("Category name"))
                         description_raw = self._norm(row.get("Note")) or None
@@ -275,7 +276,8 @@ class ImportService:
                         labels_raw = self._norm(row.get("Labels")) or None
                     else:
                         occurred_raw = self._norm(row.get("occurred_at"))
-                        type_raw = self._norm(row.get("type")).lower()
+                        raw_type = self._norm(row.get("type"))
+                        type_raw = raw_type.lower() if raw_type else ""
                         amount_raw = self._norm(row.get("amount"))
                         category_raw = self._norm(row.get("category"))
                         description_raw = self._norm(row.get("description")) or None
@@ -321,8 +323,12 @@ class ImportService:
                         )
                         amount = None
 
-                    category_id = by_public.get(category_raw) or by_name.get(category_raw.lower())
-                    if not category_raw:
+                    category_id = None
+                    if category_raw:
+                        category_id = by_public.get(category_raw) or by_name.get(
+                            category_raw.lower()
+                        )
+                    else:
                         add_error("category", "required", "category is required", category_raw)
 
                     payload = {

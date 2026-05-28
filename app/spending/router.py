@@ -300,10 +300,8 @@ async def create_transaction(
         user["id"], workspace_id, tx_in, audit_logger=audit_logger
     )
     cat = await category_service.get_category(workspace_id, tx_in.category_id)
-    account_cache = await _build_account_cache(account_service, workspace_id)
-    return _transaction_response(
-        tx, cat.public_id, account_cache.get(tx.account_id) if tx.account_id is not None else None
-    )
+    account_public_id = tx_in.account_id if tx.account_id is not None else None
+    return _transaction_response(tx, cat.public_id, account_public_id)
 
 
 @router.get("/transactions/{transaction_id}", response_model=TransactionResponse)
