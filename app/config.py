@@ -97,11 +97,26 @@ class Settings(BaseSettings):
     # Bulk import storage (Spec 020)
     IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3
     IMPORT_LOCAL_PATH: str = "/tmp/lifestack-imports"
-    IMPORT_S3_ENDPOINT: str | None = None
-    IMPORT_S3_BUCKET: str | None = None
-    IMPORT_S3_REGION: str | None = None
-    IMPORT_S3_ACCESS_KEY: str | None = None
-    IMPORT_S3_SECRET_KEY: str | None = None
+    IMPORT_S3_ENDPOINT: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("IMPORT_S3_ENDPOINT", "CLOUDFLARE_R2_ENDPOINT"),
+    )
+    IMPORT_S3_BUCKET: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("IMPORT_S3_BUCKET", "CLOUDFLARE_R2_BUCKET"),
+    )
+    IMPORT_S3_REGION: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("IMPORT_S3_REGION", "CLOUDFLARE_R2_REGION"),
+    )
+    IMPORT_S3_ACCESS_KEY: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("IMPORT_S3_ACCESS_KEY", "CLOUDFLARE_R2_ACCESS_KEY"),
+    )
+    IMPORT_S3_SECRET_KEY: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("IMPORT_S3_SECRET_KEY", "CLOUDFLARE_R2_SECRET_KEY"),
+    )
     IMPORT_S3_FORCE_PATH_STYLE: bool = False
 
     @computed_field

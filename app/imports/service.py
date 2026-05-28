@@ -1,7 +1,6 @@
 import csv
 import hashlib
 import io
-import os
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -11,6 +10,7 @@ from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import Account, Currency
@@ -67,7 +67,7 @@ class ImportService:
         return hasher.hexdigest(), total
 
     async def _store_file_if_configured(self, batch: ImportBatch, upload: UploadFile) -> None:
-        backend = os.getenv("IMPORT_STORAGE_BACKEND", "none").lower()
+        backend = settings.IMPORT_STORAGE_BACKEND.lower()
         batch.storage_backend = backend
         if backend == "none":
             return
@@ -75,7 +75,7 @@ class ImportService:
         await upload.seek(0)
         key = f"imports/{batch.workspace_id}/{batch.public_id}/{batch.filename}"
         if backend == "local":
-            base = Path(os.getenv("IMPORT_LOCAL_PATH", "/tmp/lifestack-imports"))
+            base = Path(settings.IMPORT_LOCAL_PATH)
             path = base / key
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("wb") as f:
@@ -89,12 +89,12 @@ class ImportService:
             return
 
         if backend == "s3":
-            endpoint = os.getenv("IMPORT_S3_ENDPOINT")
-            bucket = os.getenv("IMPORT_S3_BUCKET")
-            region = os.getenv("IMPORT_S3_REGION")
-            access_key = os.getenv("IMPORT_S3_ACCESS_KEY")
-            secret_key = os.getenv("IMPORT_S3_SECRET_KEY")
-            force_path_style = os.getenv("IMPORT_S3_FORCE_PATH_STYLE", "false").lower() == "true"
+            endpoint = settings.IMPORT_S3_ENDPOINT
+            bucket = settings.IMPORT_S3_BUCKET
+            region = settings.IMPORT_S3_REGION
+            access_key = settings.IMPORT_S3_ACCESS_KEY
+            secret_key = settings.IMPORT_S3_SECRET_KEY
+            force_path_style = settings.IMPORT_S3_FORCE_PATH_STYLE
             if not endpoint or not bucket or not access_key or not secret_key:
                 raise ValidationError(
                     detail="S3 storage backend configured without required credentials"

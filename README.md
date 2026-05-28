@@ -243,6 +243,26 @@ API docs: `http://localhost:8000/docs`
 
 MCP integration is intentionally not documented here until its auth and usage flow are finalized.
 
+## Bulk Import Storage Configuration
+
+Spec 020 bulk CSV imports support configurable file persistence:
+
+- `IMPORT_STORAGE_BACKEND=none|local|s3`
+- `IMPORT_LOCAL_PATH=/tmp/lifestack-imports` (when backend is `local`)
+- `IMPORT_S3_*` for S3-compatible providers (AWS S3, MinIO, Cloudflare R2)
+
+Cloudflare R2 can be configured either with `IMPORT_S3_*` or the alias envs:
+
+- `CLOUDFLARE_R2_ENDPOINT`
+- `CLOUDFLARE_R2_BUCKET`
+- `CLOUDFLARE_R2_REGION`
+- `CLOUDFLARE_R2_ACCESS_KEY`
+- `CLOUDFLARE_R2_SECRET_KEY`
+
+R2 endpoint format:
+
+- `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`
+
 ---
 
 ## Open Source
