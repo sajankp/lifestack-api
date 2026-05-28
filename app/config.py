@@ -94,6 +94,31 @@ class Settings(BaseSettings):
     RECURRING_TXN_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up generation
     RECURRING_TODO_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up todo generation
 
+    # Bulk import storage (Spec 020)
+    IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3
+    IMPORT_LOCAL_PATH: str = "/var/lib/lifestack/imports"
+    IMPORT_S3_ENDPOINT: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("IMPORT_S3_ENDPOINT", "CLOUDFLARE_R2_ENDPOINT"),
+    )
+    IMPORT_S3_BUCKET: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("IMPORT_S3_BUCKET", "CLOUDFLARE_R2_BUCKET"),
+    )
+    IMPORT_S3_REGION: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("IMPORT_S3_REGION", "CLOUDFLARE_R2_REGION"),
+    )
+    IMPORT_S3_ACCESS_KEY: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("IMPORT_S3_ACCESS_KEY", "CLOUDFLARE_R2_ACCESS_KEY"),
+    )
+    IMPORT_S3_SECRET_KEY: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("IMPORT_S3_SECRET_KEY", "CLOUDFLARE_R2_SECRET_KEY"),
+    )
+    IMPORT_S3_FORCE_PATH_STYLE: bool = False
+
     @computed_field
     @property
     def sync_database_url(self) -> str:
