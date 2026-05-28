@@ -1,7 +1,7 @@
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow
@@ -43,17 +43,20 @@ class ImportRepository:
     async def list_batches(
         self, workspace_id: int, limit: int, offset: int
     ) -> tuple[Sequence[ImportBatch], int]:
-        base = select(ImportBatch).where(ImportBatch.workspace_id == workspace_id)
-        total = len((await self.session.execute(base)).scalars().all())
-        rows = (
-            (
-                await self.session.execute(
-                    base.order_by(ImportBatch.created_at.desc()).limit(limit).offset(offset)
-                )
-            )
-            .scalars()
-            .all()
+        count_stmt = (
+            select(func.count())
+            .select_from(ImportBatch)
+            .where(ImportBatch.workspace_id == workspace_id)
         )
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        rows_stmt = (
+            select(ImportBatch)
+            .where(ImportBatch.workspace_id == workspace_id)
+            .order_by(ImportBatch.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        rows = (await self.session.execute(rows_stmt)).scalars().all()
         return rows, total
 
     async def list_errors(self, import_batch_id: int, limit: int = 200) -> Sequence[ImportError]:
@@ -72,6 +75,26 @@ class ImportRepository:
             .order_by(ImportPreviewRow.row_number.asc())
         )
         return res.scalars().all()
+
+    async def preview_rows_exist(self, import_batch_id: int) -> bool:
+        stmt = (
+            select(ImportPreviewRow.id)
+            .where(ImportPreviewRow.import_batch_id == import_batch_id)
+            .limit(1)
+        )
+        return (await self.session.execute(stmt)).first() is not None
+
+    async def iter_preview_rows_chunk(
+        self, import_batch_id: int, limit: int, offset: int
+    ) -> Sequence[ImportPreviewRow]:
+        stmt = (
+            select(ImportPreviewRow)
+            .where(ImportPreviewRow.import_batch_id == import_batch_id)
+            .order_by(ImportPreviewRow.row_number.asc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return (await self.session.execute(stmt)).scalars().all()
 
     async def clear_preview_rows(self, import_batch_id: int) -> None:
         await self.session.execute(

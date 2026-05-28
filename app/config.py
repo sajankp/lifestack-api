@@ -96,7 +96,7 @@ class Settings(BaseSettings):
 
     # Bulk import storage (Spec 020)
     IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3
-    IMPORT_LOCAL_PATH: str = "/tmp/lifestack-imports"
+    IMPORT_LOCAL_PATH: str = "/var/lib/lifestack/imports"
     IMPORT_S3_ENDPOINT: str | None = Field(
         default=None,
         validation_alias=AliasChoices("IMPORT_S3_ENDPOINT", "CLOUDFLARE_R2_ENDPOINT"),

@@ -1,3 +1,4 @@
+import asyncio
 import csv
 import hashlib
 import io
@@ -38,6 +39,10 @@ except Exception:  # pragma: no cover
 
 
 class ImportService:
+    MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+    MAX_VALIDATION_ROWS = 10_000
+    COMMIT_CHUNK_SIZE = 1000
+
     def __init__(self, repository: ImportRepository, session: AsyncSession):
         self.repository = repository
         self.session = session
@@ -62,6 +67,10 @@ class ImportService:
             if not chunk:
                 break
             total += len(chunk)
+            if total > self.MAX_FILE_SIZE_BYTES:
+                raise ValidationError(
+                    detail=f"File exceeds the maximum allowed limit of {self.MAX_FILE_SIZE_BYTES // (1024 * 1024)}MB."
+                )
             hasher.update(chunk)
         await upload.seek(0)
         return hasher.hexdigest(), total
@@ -112,7 +121,7 @@ class ImportService:
                     s3={"addressing_style": "path" if force_path_style else "auto"}
                 ),
             )
-            client.upload_fileobj(upload.file, bucket, key)
+            await asyncio.to_thread(client.upload_fileobj, upload.file, bucket, key)
             batch.storage_key = f"s3://{bucket}/{key}"
             await upload.seek(0)
             return
@@ -190,218 +199,234 @@ class ImportService:
 
         await upload.seek(0)
         wrapped = io.TextIOWrapper(upload.file, encoding="utf-8", newline="")
-        reader = csv.DictReader(wrapped)
-        expected_headers = TEMPLATE_HEADERS[module]
-        headers = reader.fieldnames or []
-        if headers != expected_headers:
-            err = ImportError(
-                import_batch_id=batch.id,
-                row_number=1,
-                field_name="header",
-                error_code="invalid_header",
-                message=f"Expected headers: {expected_headers}",
-                raw_value=",".join(headers),
-            )
-            await self.repository.add_errors([err])
-            batch.status = ImportStatus.failed_validation
-            batch.validated_at = datetime.now(UTC)
-            batch.error_rows = 1
-            batch = await self.repository.save_batch(batch)
-            return batch, [err]
-
-        errors: list[ImportError] = []
-        previews: list[ImportPreviewRow] = []
-        total_rows = 0
-        valid_rows = 0
-
-        for row_no, row in enumerate(reader, start=2):
-            total_rows += 1
-            row_errors: list[ImportError] = []
-
-            def add_error(
-                field: str,
-                code: str,
-                msg: str,
-                value: str | None = None,
-                *,
-                current_row_no: int = row_no,
-                current_row_errors: list[ImportError] = row_errors,
-            ):
-                current_row_errors.append(
-                    ImportError(
-                        import_batch_id=batch.id,
-                        row_number=current_row_no,
-                        field_name=field,
-                        error_code=code,
-                        message=msg,
-                        raw_value=value,
-                    )
+        try:
+            reader = csv.DictReader(wrapped)
+            expected_headers = TEMPLATE_HEADERS[module]
+            headers = reader.fieldnames or []
+            if headers != expected_headers:
+                err = ImportError(
+                    import_batch_id=batch.id,
+                    row_number=1,
+                    field_name="header",
+                    error_code="invalid_header",
+                    message=f"Expected headers: {expected_headers}",
+                    raw_value=",".join(headers),
                 )
+                await self.repository.add_errors([err])
+                batch.status = ImportStatus.failed_validation
+                batch.validated_at = datetime.now(UTC)
+                batch.error_rows = 1
+                batch = await self.repository.save_batch(batch)
+                return batch, [err]
 
-            payload: dict
-            if module == ImportModule.spending_transactions:
-                occurred_raw = self._norm(row.get("occurred_at"))
-                type_raw = self._norm(row.get("type")).lower()
-                amount_raw = self._norm(row.get("amount"))
-                category_raw = self._norm(row.get("category"))
-                description_raw = self._norm(row.get("description")) or None
+            errors: list[ImportError] = []
+            previews: list[ImportPreviewRow] = []
+            total_rows = 0
+            valid_rows = 0
 
-                try:
-                    occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
-                except Exception:
-                    add_error(
-                        "occurred_at",
-                        "invalid_datetime",
-                        "occurred_at must be ISO datetime/date",
-                        occurred_raw,
+            for row_no, row in enumerate(reader, start=2):
+                if total_rows >= self.MAX_VALIDATION_ROWS:
+                    raise ValidationError(
+                        detail=f"File exceeds the maximum allowed limit of {self.MAX_VALIDATION_ROWS} rows."
                     )
-                    occurred_at = None
+                total_rows += 1
+                row_errors: list[ImportError] = []
 
-                if type_raw not in {"income", "expense"}:
-                    add_error("type", "invalid_enum", "type must be income or expense", type_raw)
-
-                try:
-                    amount = Decimal(amount_raw)
-                    if amount <= 0:
-                        raise InvalidOperation
-                except Exception:
-                    add_error(
-                        "amount", "invalid_decimal", "amount must be a positive decimal", amount_raw
-                    )
-                    amount = None
-
-                category_id = by_public.get(category_raw) or by_name.get(category_raw.lower())
-                if category_id is None:
-                    add_error(
-                        "category", "not_found", "category not found in workspace", category_raw
-                    )
-
-                payload = {
-                    "occurred_at": occurred_at.isoformat() if occurred_at else None,
-                    "type": type_raw,
-                    "amount": str(amount) if amount is not None else None,
-                    "category_id": category_id,
-                    "description": description_raw,
-                }
-
-            elif module == ImportModule.spending_budgets:
-                month_raw = self._norm(row.get("month_start"))
-                category_raw = self._norm(row.get("category"))
-                amount_raw = self._norm(row.get("amount"))
-
-                try:
-                    month_start = datetime.fromisoformat(month_raw).date()
-                    if month_start.day != 1:
-                        raise ValueError
-                except Exception:
-                    add_error(
-                        "month_start", "invalid_month", "month_start must be YYYY-MM-01", month_raw
-                    )
-                    month_start = None
-
-                category_id = by_public.get(category_raw) or by_name.get(category_raw.lower())
-                if category_id is None:
-                    add_error(
-                        "category", "not_found", "category not found in workspace", category_raw
+                def add_error(
+                    field: str,
+                    code: str,
+                    msg: str,
+                    value: str | None = None,
+                    *,
+                    current_row_no: int = row_no,
+                    current_row_errors: list[ImportError] = row_errors,
+                ) -> None:
+                    current_row_errors.append(
+                        ImportError(
+                            import_batch_id=batch.id,
+                            row_number=current_row_no,
+                            field_name=field,
+                            error_code=code,
+                            message=msg,
+                            raw_value=value,
+                        )
                     )
 
-                try:
-                    amount = Decimal(amount_raw)
-                    if amount <= 0:
-                        raise InvalidOperation
-                except Exception:
-                    add_error(
-                        "amount", "invalid_decimal", "amount must be a positive decimal", amount_raw
+                payload: dict
+                if module == ImportModule.spending_transactions:
+                    occurred_raw = self._norm(row.get("occurred_at"))
+                    type_raw = self._norm(row.get("type")).lower()
+                    amount_raw = self._norm(row.get("amount"))
+                    category_raw = self._norm(row.get("category"))
+                    description_raw = self._norm(row.get("description")) or None
+
+                    try:
+                        occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
+                    except Exception:
+                        add_error(
+                            "occurred_at",
+                            "invalid_datetime",
+                            "occurred_at must be ISO datetime/date",
+                            occurred_raw,
+                        )
+                        occurred_at = None
+
+                    if type_raw not in {"income", "expense"}:
+                        add_error(
+                            "type", "invalid_enum", "type must be income or expense", type_raw
+                        )
+
+                    try:
+                        amount = Decimal(amount_raw)
+                        if amount <= 0:
+                            raise InvalidOperation
+                    except Exception:
+                        add_error(
+                            "amount",
+                            "invalid_decimal",
+                            "amount must be a positive decimal",
+                            amount_raw,
+                        )
+                        amount = None
+
+                    category_id = by_public.get(category_raw) or by_name.get(category_raw.lower())
+                    if category_id is None:
+                        add_error(
+                            "category", "not_found", "category not found in workspace", category_raw
+                        )
+
+                    payload = {
+                        "occurred_at": occurred_at.isoformat() if occurred_at else None,
+                        "type": type_raw,
+                        "amount": str(amount) if amount is not None else None,
+                        "category_id": category_id,
+                        "description": description_raw,
+                    }
+                elif module == ImportModule.spending_budgets:
+                    month_raw = self._norm(row.get("month_start"))
+                    category_raw = self._norm(row.get("category"))
+                    amount_raw = self._norm(row.get("amount"))
+
+                    try:
+                        month_start = datetime.fromisoformat(month_raw).date()
+                        if month_start.day != 1:
+                            raise ValueError
+                    except Exception:
+                        add_error(
+                            "month_start",
+                            "invalid_month",
+                            "month_start must be YYYY-MM-01",
+                            month_raw,
+                        )
+                        month_start = None
+
+                    category_id = by_public.get(category_raw) or by_name.get(category_raw.lower())
+                    if category_id is None:
+                        add_error(
+                            "category", "not_found", "category not found in workspace", category_raw
+                        )
+
+                    try:
+                        amount = Decimal(amount_raw)
+                        if amount <= 0:
+                            raise InvalidOperation
+                    except Exception:
+                        add_error(
+                            "amount",
+                            "invalid_decimal",
+                            "amount must be a positive decimal",
+                            amount_raw,
+                        )
+                        amount = None
+
+                    payload = {
+                        "month_start": month_start.isoformat() if month_start else None,
+                        "category_id": category_id,
+                        "amount": str(amount) if amount is not None else None,
+                    }
+                else:
+                    symbol_raw = self._norm(row.get("symbol")).upper()
+                    account_name_raw = self._norm(row.get("account_name"))
+                    quantity_raw = self._norm(row.get("quantity"))
+                    avg_cost_raw = self._norm(row.get("avg_cost"))
+                    currency_raw = self._norm(row.get("currency")).upper()
+
+                    if not symbol_raw:
+                        add_error("symbol", "required", "symbol is required", symbol_raw)
+                    if account_name_raw.lower() not in account_map:
+                        add_error(
+                            "account_name",
+                            "not_found",
+                            "account_name not found in workspace",
+                            account_name_raw,
+                        )
+                    if currency_raw not in currency_set:
+                        add_error(
+                            "currency",
+                            "invalid_currency",
+                            "currency must exist in reference table",
+                            currency_raw,
+                        )
+
+                    try:
+                        quantity = Decimal(quantity_raw)
+                        if quantity <= 0:
+                            raise InvalidOperation
+                    except Exception:
+                        add_error(
+                            "quantity",
+                            "invalid_decimal",
+                            "quantity must be a positive decimal",
+                            quantity_raw,
+                        )
+                        quantity = None
+
+                    try:
+                        avg_cost = Decimal(avg_cost_raw)
+                        if avg_cost <= 0:
+                            raise InvalidOperation
+                    except Exception:
+                        add_error(
+                            "avg_cost",
+                            "invalid_decimal",
+                            "avg_cost must be a positive decimal",
+                            avg_cost_raw,
+                        )
+                        avg_cost = None
+
+                    payload = {
+                        "symbol": symbol_raw,
+                        "account_name": account_name_raw,
+                        "quantity": str(quantity) if quantity is not None else None,
+                        "avg_cost": str(avg_cost) if avg_cost is not None else None,
+                        "currency": currency_raw,
+                    }
+
+                if row_errors:
+                    errors.extend(row_errors)
+                else:
+                    valid_rows += 1
+                    previews.append(
+                        ImportPreviewRow(
+                            import_batch_id=batch.id,
+                            row_number=row_no,
+                            payload_json=payload,
+                        )
                     )
-                    amount = None
 
-                payload = {
-                    "month_start": month_start.isoformat() if month_start else None,
-                    "category_id": category_id,
-                    "amount": str(amount) if amount is not None else None,
-                }
+                if total_rows % 1000 == 0:
+                    await self.repository.add_preview_rows(previews)
+                    previews = []
+                    if errors:
+                        await self.repository.add_errors(errors)
+                        errors = []
 
-            else:
-                symbol_raw = self._norm(row.get("symbol")).upper()
-                account_name_raw = self._norm(row.get("account_name"))
-                quantity_raw = self._norm(row.get("quantity"))
-                avg_cost_raw = self._norm(row.get("avg_cost"))
-                currency_raw = self._norm(row.get("currency")).upper()
-
-                if not symbol_raw:
-                    add_error("symbol", "required", "symbol is required", symbol_raw)
-                if account_name_raw.lower() not in account_map:
-                    add_error(
-                        "account_name",
-                        "not_found",
-                        "account_name not found in workspace",
-                        account_name_raw,
-                    )
-                if currency_raw not in currency_set:
-                    add_error(
-                        "currency",
-                        "invalid_currency",
-                        "currency must exist in reference table",
-                        currency_raw,
-                    )
-
-                try:
-                    quantity = Decimal(quantity_raw)
-                    if quantity <= 0:
-                        raise InvalidOperation
-                except Exception:
-                    add_error(
-                        "quantity",
-                        "invalid_decimal",
-                        "quantity must be a positive decimal",
-                        quantity_raw,
-                    )
-                    quantity = None
-
-                try:
-                    avg_cost = Decimal(avg_cost_raw)
-                    if avg_cost <= 0:
-                        raise InvalidOperation
-                except Exception:
-                    add_error(
-                        "avg_cost",
-                        "invalid_decimal",
-                        "avg_cost must be a positive decimal",
-                        avg_cost_raw,
-                    )
-                    avg_cost = None
-
-                payload = {
-                    "symbol": symbol_raw,
-                    "account_name": account_name_raw,
-                    "quantity": str(quantity) if quantity is not None else None,
-                    "avg_cost": str(avg_cost) if avg_cost is not None else None,
-                    "currency": currency_raw,
-                }
-
-            if row_errors:
-                errors.extend(row_errors)
-            else:
-                valid_rows += 1
-                previews.append(
-                    ImportPreviewRow(
-                        import_batch_id=batch.id,
-                        row_number=row_no,
-                        payload_json=payload,
-                    )
-                )
-
-            if total_rows % 1000 == 0:
+            if previews:
                 await self.repository.add_preview_rows(previews)
-                previews = []
-                if errors:
-                    await self.repository.add_errors(errors)
-                    errors = []
-
-        if previews:
-            await self.repository.add_preview_rows(previews)
-        if errors:
-            await self.repository.add_errors(errors)
+            if errors:
+                await self.repository.add_errors(errors)
+        finally:
+            wrapped.detach()
 
         persisted_errors = await self.repository.list_errors(batch.id, limit=10000)
         batch.total_rows = total_rows
@@ -452,8 +477,7 @@ class ImportService:
         if batch.status != ImportStatus.validated or batch.error_rows > 0:
             raise ValidationError(detail="Only fully validated imports can be committed")
 
-        rows = await self.repository.iter_preview_rows(batch.id)
-        if not rows:
+        if not await self.repository.preview_rows_exist(batch.id):
             raise ValidationError(detail="No validated rows to commit")
 
         batch.status = ImportStatus.committing
@@ -462,47 +486,56 @@ class ImportService:
 
         inserted = 0
         try:
-            if batch.module == ImportModule.spending_transactions:
-                for row in rows:
-                    p = row.payload_json
-                    tx = SpendingTransaction(
-                        workspace_id=workspace_id,
-                        user_id=user_id,
-                        category_id=int(p["category_id"]),
-                        amount=Decimal(p["amount"]),
-                        type=TransactionType(p["type"]),
-                        occurred_at=datetime.fromisoformat(p["occurred_at"]),
-                        description=p.get("description"),
-                    )
-                    self.session.add(tx)
-                    inserted += 1
-            elif batch.module == ImportModule.spending_budgets:
-                for row in rows:
-                    p = row.payload_json
-                    budget = SpendingBudget(
-                        workspace_id=workspace_id,
-                        category_id=int(p["category_id"]),
-                        amount=Decimal(p["amount"]),
-                        month_start=datetime.fromisoformat(p["month_start"]).date(),
-                    )
-                    self.session.add(budget)
-                    inserted += 1
-            else:
-                for row in rows:
-                    p = row.payload_json
-                    holding = Holding(
-                        workspace_id=workspace_id,
-                        user_id=user_id,
-                        symbol=p["symbol"],
-                        account_name=p["account_name"],
-                        quantity=Decimal(p["quantity"]),
-                        avg_cost=Decimal(p["avg_cost"]),
-                        currency=p["currency"],
-                    )
-                    self.session.add(holding)
-                    inserted += 1
+            offset = 0
+            while True:
+                rows = await self.repository.iter_preview_rows_chunk(
+                    batch.id, self.COMMIT_CHUNK_SIZE, offset
+                )
+                if not rows:
+                    break
 
-            await self.session.flush()
+                if batch.module == ImportModule.spending_transactions:
+                    for row in rows:
+                        p = row.payload_json
+                        tx = SpendingTransaction(
+                            workspace_id=workspace_id,
+                            user_id=user_id,
+                            category_id=int(p["category_id"]),
+                            amount=Decimal(p["amount"]),
+                            type=TransactionType(p["type"]),
+                            occurred_at=datetime.fromisoformat(p["occurred_at"]),
+                            description=p.get("description"),
+                        )
+                        self.session.add(tx)
+                        inserted += 1
+                elif batch.module == ImportModule.spending_budgets:
+                    for row in rows:
+                        p = row.payload_json
+                        budget = SpendingBudget(
+                            workspace_id=workspace_id,
+                            category_id=int(p["category_id"]),
+                            amount=Decimal(p["amount"]),
+                            month_start=datetime.fromisoformat(p["month_start"]).date(),
+                        )
+                        self.session.add(budget)
+                        inserted += 1
+                else:
+                    for row in rows:
+                        p = row.payload_json
+                        holding = Holding(
+                            workspace_id=workspace_id,
+                            user_id=user_id,
+                            symbol=p["symbol"],
+                            account_name=p["account_name"],
+                            quantity=Decimal(p["quantity"]),
+                            avg_cost=Decimal(p["avg_cost"]),
+                            currency=p["currency"],
+                        )
+                        self.session.add(holding)
+                        inserted += 1
+
+                await self.session.flush()
+                offset += self.COMMIT_CHUNK_SIZE
             batch.status = ImportStatus.completed
             batch.committed_at = datetime.now(UTC)
             batch.updated_at = datetime.now(UTC)
