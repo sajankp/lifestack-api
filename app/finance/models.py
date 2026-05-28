@@ -10,6 +10,8 @@ class AccountType(StrEnum):
     bank = "bank"
     brokerage = "brokerage"
     wallet = "wallet"
+    card = "card"
+    gift_card = "gift_card"
 
 
 class TransferModule(StrEnum):
