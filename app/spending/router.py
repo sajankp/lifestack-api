@@ -9,12 +9,14 @@ from app.core.dependencies import (
     get_audit_logger,
     get_current_user,
     get_current_workspace_id,
+    get_finance_account_service,
     get_spending_budget_service,
     get_spending_category_service,
     get_spending_recurring_service,
     get_spending_transaction_service,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
+from app.finance.service import AccountService
 from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
@@ -59,10 +61,13 @@ def _category_response(cat: SpendingCategory) -> CategoryResponse:
 
 
 def _transaction_response(
-    tx: SpendingTransaction, category_public_id: uuid.UUID
+    tx: SpendingTransaction,
+    category_public_id: uuid.UUID,
+    account_public_id: uuid.UUID | None = None,
 ) -> TransactionResponse:
     data = tx.model_dump()
     data["category_id"] = category_public_id
+    data["account_id"] = account_public_id
     return TransactionResponse.model_validate(data)
 
 
@@ -84,6 +89,13 @@ async def _build_category_cache(
     """Fetch all categories once and build an int-id → public_id lookup."""
     cats, _ = await category_service.list_categories(workspace_id, limit=10000, offset=0)
     return {c.id: c.public_id for c in cats}  # type: ignore[union-attr]
+
+
+async def _build_account_cache(
+    account_service: AccountService, workspace_id: int
+) -> dict[int, uuid.UUID]:
+    accounts, _ = await account_service.list_accounts(workspace_id, limit=10000, offset=0)
+    return {a.id: a.public_id for a in accounts}  # type: ignore[union-attr]
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +187,7 @@ async def delete_category(
 async def list_transactions(
     transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     pagination: Annotated[PaginationParams, Depends()],
@@ -194,8 +207,16 @@ async def list_transactions(
     )
     # Build category cache once before the loop
     cat_cache = await _build_category_cache(category_service, workspace_id)
+    account_cache = await _build_account_cache(account_service, workspace_id)
     return PaginatedResponse(
-        items=[_transaction_response(tx, cat_cache[tx.category_id]) for tx in txs],
+        items=[
+            _transaction_response(
+                tx,
+                cat_cache[tx.category_id],
+                account_cache.get(tx.account_id) if tx.account_id is not None else None,
+            )
+            for tx in txs
+        ],
         total=total,
         limit=pagination.limit,
         offset=pagination.offset,
@@ -270,6 +291,7 @@ async def create_transaction(
     tx_in: TransactionCreate,
     transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -278,7 +300,10 @@ async def create_transaction(
         user["id"], workspace_id, tx_in, audit_logger=audit_logger
     )
     cat = await category_service.get_category(workspace_id, tx_in.category_id)
-    return _transaction_response(tx, cat.public_id)
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    return _transaction_response(
+        tx, cat.public_id, account_cache.get(tx.account_id) if tx.account_id is not None else None
+    )
 
 
 @router.get("/transactions/{transaction_id}", response_model=TransactionResponse)
@@ -286,12 +311,18 @@ async def get_transaction(
     transaction_id: uuid.UUID,
     transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
 ):
     tx = await transaction_service.get_transaction(workspace_id, transaction_id)
     cat_cache = await _build_category_cache(category_service, workspace_id)
-    return _transaction_response(tx, cat_cache[tx.category_id])
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    return _transaction_response(
+        tx,
+        cat_cache[tx.category_id],
+        account_cache.get(tx.account_id) if tx.account_id is not None else None,
+    )
 
 
 @router.patch("/transactions/{transaction_id}", response_model=TransactionResponse)
@@ -300,6 +331,7 @@ async def update_transaction(
     tx_in: TransactionUpdate,
     transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -312,7 +344,12 @@ async def update_transaction(
         audit_logger=audit_logger,
     )
     cat_cache = await _build_category_cache(category_service, workspace_id)
-    return _transaction_response(tx, cat_cache[tx.category_id])
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    return _transaction_response(
+        tx,
+        cat_cache[tx.category_id],
+        account_cache.get(tx.account_id) if tx.account_id is not None else None,
+    )
 
 
 @router.delete("/transactions/{transaction_id}", status_code=status.HTTP_204_NO_CONTENT)

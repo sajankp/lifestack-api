@@ -47,6 +47,7 @@ class SpendingTransaction(SQLModel, table=True):
     workspace_id: int = Field(foreign_key="workspaces.id", index=True)
     user_id: int = Field(foreign_key="users.id", index=True)
     category_id: int = Field(foreign_key="spending_categories.id", index=True)
+    account_id: int | None = Field(default=None, foreign_key="accounts.id", index=True)
     recurring_transaction_id: int | None = Field(
         default=None, foreign_key="recurring_transactions.id", index=True
     )

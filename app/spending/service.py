@@ -15,6 +15,7 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.core.pagination import DEFAULT_LIMIT
+from app.finance.repository import AccountRepository
 from app.spending.models import (
     RecurringTransaction,
     SpendingBudget,
@@ -72,6 +73,7 @@ def _snapshot_category(category: SpendingCategory) -> dict:
 def _snapshot_transaction(transaction: SpendingTransaction) -> dict:
     return {
         "category_id": transaction.category_id,
+        "account_id": transaction.account_id,
         "amount": str(transaction.amount) if transaction.amount is not None else None,
         "type": transaction.type,
         "occurred_at": transaction.occurred_at.isoformat() if transaction.occurred_at else None,
@@ -250,9 +252,11 @@ class TransactionService:
         self,
         transaction_repo: TransactionRepository,
         category_repo: CategoryRepository,
+        account_repo: AccountRepository,
     ):
         self.transaction_repo = transaction_repo
         self.category_repo = category_repo
+        self.account_repo = account_repo
 
     async def _resolve_category(
         self, workspace_id: int, category_public_id: uuid.UUID
@@ -337,10 +341,22 @@ class TransactionService:
         audit_logger: AuditLogger | None = None,
     ) -> SpendingTransaction:
         category = await self._resolve_category(workspace_id, tx_in.category_id)
+        account_id: int | None = None
+        if tx_in.account_id is not None:
+            account = await self.account_repo.get_by_public_id(workspace_id, tx_in.account_id)
+            if not account:
+                raise NotFoundError(
+                    detail=(
+                        f"Account with id {tx_in.account_id} not found in this workspace. "
+                        "Cross-workspace account references are not permitted."
+                    )
+                )
+            account_id = account.id  # type: ignore[assignment]
         transaction = SpendingTransaction(
             workspace_id=workspace_id,
             user_id=user_id,
             category_id=category.id,  # type: ignore[assignment]
+            account_id=account_id,
             amount=tx_in.amount,
             type=tx_in.type,
             occurred_at=tx_in.occurred_at,
@@ -386,6 +402,20 @@ class TransactionService:
         if "category_id" in update_data:
             cat = await self._resolve_category(workspace_id, update_data.pop("category_id"))
             transaction.category_id = cat.id  # type: ignore[assignment]
+        if "account_id" in update_data:
+            account_public_id = update_data.pop("account_id")
+            if account_public_id is None:
+                transaction.account_id = None
+            else:
+                account = await self.account_repo.get_by_public_id(workspace_id, account_public_id)
+                if not account:
+                    raise NotFoundError(
+                        detail=(
+                            f"Account with id {account_public_id} not found in this workspace. "
+                            "Cross-workspace account references are not permitted."
+                        )
+                    )
+                transaction.account_id = account.id  # type: ignore[assignment]
 
         for key, value in update_data.items():
             setattr(transaction, key, value)

@@ -262,8 +262,10 @@ async def get_spending_category_service(
 async def get_spending_transaction_service(
     tx_repo: TransactionRepository = Depends(get_transaction_repo),
     cat_repo: CategoryRepository = Depends(get_category_repo),
+    session: AsyncSession = Depends(get_db_session),
 ) -> TransactionService:
-    return TransactionService(tx_repo, cat_repo)
+    account_repo = AccountRepository(session)
+    return TransactionService(tx_repo, cat_repo, account_repo)
 
 
 async def get_spending_budget_service(
