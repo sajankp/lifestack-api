@@ -80,3 +80,37 @@ async def test_import_spending_budgets_validates_and_commits(client: AsyncClient
     budgets = await client.get("/v1/spending/budgets", cookies=creds["cookies"])
     assert budgets.status_code == 200
     assert budgets.json()["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_import_template_download_as_attachment(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    response = await client.get(
+        "/v1/imports/templates/spending-transactions", cookies=creds["cookies"]
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert (
+        response.headers["content-disposition"]
+        == 'attachment; filename="spending-transactions-template.csv"'
+    )
+    assert "occurred_at,type,amount,category,description" in response.text
+
+
+@pytest.mark.asyncio
+async def test_import_accepts_utf8_bom_csv(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
+    food = next(c for c in cats if c["name"] == "Food & Dining")
+
+    csv_content = (
+        "\ufeffoccurred_at,type,amount,category,description\n"
+        f"{datetime.now(UTC).isoformat()},expense,10.00,{food['public_id']},valid row\n"
+    )
+    files = {"file": ("tx.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    data = {"module": "spending-transactions"}
+    validate = await client.post("/v1/imports", data=data, files=files, cookies=creds["cookies"])
+    assert validate.status_code == 200, validate.text
+    payload = validate.json()
+    assert payload["import_batch"]["status"] == "validated"

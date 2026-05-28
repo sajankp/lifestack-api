@@ -198,7 +198,7 @@ class ImportService:
         currency_set = await self._currency_set()
 
         await upload.seek(0)
-        wrapped = io.TextIOWrapper(upload.file, encoding="utf-8", newline="")
+        wrapped = io.TextIOWrapper(upload.file, encoding="utf-8-sig", newline="")
         try:
             reader = csv.DictReader(wrapped)
             expected_headers = TEMPLATE_HEADERS[module]
@@ -436,6 +436,8 @@ class ImportService:
         batch.status = (
             ImportStatus.validated if batch.error_rows == 0 else ImportStatus.failed_validation
         )
+        if batch.status == ImportStatus.failed_validation:
+            await self.repository.clear_preview_rows(batch.id)
         batch.updated_at = datetime.now(UTC)
         batch = await self.repository.save_batch(batch)
 
@@ -480,6 +482,9 @@ class ImportService:
         if not await self.repository.preview_rows_exist(batch.id):
             raise ValidationError(detail="No validated rows to commit")
 
+        transitioned = await self.repository.begin_commit_transition(batch.id)
+        if not transitioned:
+            raise ValidationError(detail="Import is no longer in a committable state")
         batch.status = ImportStatus.committing
         batch.updated_at = datetime.now(UTC)
         await self.repository.save_batch(batch)
@@ -557,6 +562,10 @@ class ImportService:
                 },
             )
         except Exception:
+            await self.session.rollback()
+            batch = await self.repository.get_by_public_id(workspace_id, import_public_id)
+            if not batch:
+                raise
             batch.status = ImportStatus.failed_commit
             batch.updated_at = datetime.now(UTC)
             await self.repository.save_batch(batch)

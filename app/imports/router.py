@@ -1,7 +1,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 
 from app.core.audit import AuditLogger
 from app.core.dependencies import (
@@ -30,7 +30,11 @@ async def download_template(
     _workspace_id: int = Depends(get_current_workspace_id),
     _user: dict = Depends(get_current_user),
 ):
-    return service.template_csv(module)
+    return Response(
+        content=service.template_csv(module),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{module.value}-template.csv"'},
+    )
 
 
 @router.post("", response_model=ImportValidateResponse)

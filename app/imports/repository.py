@@ -1,10 +1,10 @@
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.imports.models import ImportBatch, ImportError, ImportPreviewRow
+from app.imports.models import ImportBatch, ImportError, ImportPreviewRow, ImportStatus
 
 
 class ImportRepository:
@@ -100,3 +100,16 @@ class ImportRepository:
         await self.session.execute(
             delete(ImportPreviewRow).where(ImportPreviewRow.import_batch_id == import_batch_id)
         )
+
+    async def begin_commit_transition(self, batch_id: int) -> bool:
+        stmt = (
+            update(ImportBatch)
+            .where(
+                ImportBatch.id == batch_id,
+                ImportBatch.status == ImportStatus.validated,
+                ImportBatch.error_rows == 0,
+            )
+            .values(status=ImportStatus.committing)
+        )
+        result = await self.session.execute(stmt)
+        return (result.rowcount or 0) == 1
