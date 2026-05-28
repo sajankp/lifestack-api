@@ -13,7 +13,7 @@ from app.core.database import postgres
 
 logger = structlog.get_logger(__name__)
 
-GEMINI_LIVE_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
+GEMINI_LIVE_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
 
 class AudioDecoder:
@@ -118,106 +118,140 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
     decoder = AudioDecoder()
     await decoder.start()
 
-    try:
-        async with websockets.connect(gemini_url) as gemini_ws:
-            logger.info("gemini_ws_connected")
+    models_to_try = [
+        "models/gemini-3.1-flash-live-preview",  # Best: Gemini 3.1 Flash Live (if API key has access)
+        "models/gemini-2.5-flash-native-audio-latest",  # Fallback: Gemini 2.5 Flash Native Audio (stable)
+        "models/gemini-2.5-flash-native-audio-preview-09-2025",  # Last resort: preview variant
+    ]
+    gemini_ws = None
+    active_model = None
+    ws_context_manager = None
 
-            # 1. Send initial setup message
-            setup_message = {
-                "setup": {
-                    "model": "models/gemini-2.0-flash-exp",
-                    "generationConfig": {
-                        "responseModalities": ["AUDIO"],
-                        "speechConfig": {
-                            "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Aoede"}}
+    try:
+        for model_name in models_to_try:
+            try:
+                logger.info("attempting_gemini_connection", model=model_name)
+                ws_conn = websockets.connect(gemini_url)
+                ws = await ws_conn.__aenter__()
+
+                setup_message = {
+                    "setup": {
+                        "model": model_name,
+                        "generationConfig": {
+                            "responseModalities": ["TEXT", "AUDIO"],
+                            "speechConfig": {
+                                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Aoede"}}
+                            },
                         },
-                    },
-                    "systemInstruction": {
-                        "parts": [
-                            {
-                                "text": (
-                                    "You are a helpful personal voice assistant. You have access to tools to "
-                                    "create todo tasks, log spending transactions, and update cash balances. "
-                                    "Always use these tools when asked. Keep your verbal responses concise and natural."
-                                )
-                            }
-                        ]
-                    },
-                    "tools": [
-                        {
-                            "functionDeclarations": [
+                        "systemInstruction": {
+                            "parts": [
                                 {
-                                    "name": "create_todo_task",
-                                    "description": "Create a new todo task/item for the user.",
-                                    "parameters": {
-                                        "type": "OBJECT",
-                                        "properties": {
-                                            "title": {
-                                                "type": "STRING",
-                                                "description": "The title or text of the todo task.",
-                                            },
-                                            "due_date": {
-                                                "type": "STRING",
-                                                "description": "Optional due date in YYYY-MM-DD format (e.g. '2026-05-29').",
-                                            },
-                                            "priority": {
-                                                "type": "STRING",
-                                                "description": "The priority, one of 'low', 'medium', or 'high'.",
-                                            },
-                                        },
-                                        "required": ["title"],
-                                    },
-                                },
-                                {
-                                    "name": "log_spending_transaction",
-                                    "description": "Record/log a new spending transaction (expense).",
-                                    "parameters": {
-                                        "type": "OBJECT",
-                                        "properties": {
-                                            "amount": {
-                                                "type": "STRING",
-                                                "description": "The transaction amount as a string (e.g., '14.99').",
-                                            },
-                                            "category_name": {
-                                                "type": "STRING",
-                                                "description": "The name of the spending category (e.g., 'food', 'utilities', 'shopping').",
-                                            },
-                                            "description": {
-                                                "type": "STRING",
-                                                "description": "Description of what the money was spent on.",
-                                            },
-                                        },
-                                        "required": ["amount", "category_name", "description"],
-                                    },
-                                },
-                                {
-                                    "name": "log_cash_balance",
-                                    "description": "Record/update cash balance for an investing account.",
-                                    "parameters": {
-                                        "type": "OBJECT",
-                                        "properties": {
-                                            "account_name": {
-                                                "type": "STRING",
-                                                "description": "The name of the brokerage or bank account (e.g., 'Brokerage Cash').",
-                                            },
-                                            "balance": {
-                                                "type": "STRING",
-                                                "description": "The cash balance amount as a string (e.g. '1200.50').",
-                                            },
-                                            "currency": {
-                                                "type": "STRING",
-                                                "description": "The currency code (e.g. 'USD', 'EUR', 'GBP').",
-                                            },
-                                        },
-                                        "required": ["account_name", "balance", "currency"],
-                                    },
-                                },
+                                    "text": (
+                                        "You are a helpful personal voice assistant. You have access to tools to "
+                                        "create todo tasks, log spending transactions, and update cash balances. "
+                                        "Always use these tools when asked. Keep your verbal responses concise and natural."
+                                    )
+                                }
                             ]
-                        }
-                    ],
+                        },
+                        "tools": [
+                            {
+                                "functionDeclarations": [
+                                    {
+                                        "name": "create_todo_task",
+                                        "description": "Create a new todo task/item for the user.",
+                                        "parameters": {
+                                            "type": "OBJECT",
+                                            "properties": {
+                                                "title": {
+                                                    "type": "STRING",
+                                                    "description": "The title or text of the todo task.",
+                                                },
+                                                "due_date": {
+                                                    "type": "STRING",
+                                                    "description": "Optional due date in YYYY-MM-DD format (e.g. '2026-05-29').",
+                                                },
+                                                "priority": {
+                                                    "type": "STRING",
+                                                    "description": "The priority, one of 'low', 'medium', or 'high'.",
+                                                },
+                                            },
+                                            "required": ["title"],
+                                        },
+                                    },
+                                    {
+                                        "name": "log_spending_transaction",
+                                        "description": "Record/log a new spending transaction (expense).",
+                                        "parameters": {
+                                            "type": "OBJECT",
+                                            "properties": {
+                                                "amount": {
+                                                    "type": "STRING",
+                                                    "description": "The transaction amount as a string (e.g., '14.99').",
+                                                },
+                                                "category_name": {
+                                                    "type": "STRING",
+                                                    "description": "The name of the spending category (e.g., 'food', 'utilities', 'shopping').",
+                                                },
+                                                "description": {
+                                                    "type": "STRING",
+                                                    "description": "Description of what the money was spent on.",
+                                                },
+                                            },
+                                            "required": ["amount", "category_name", "description"],
+                                        },
+                                    },
+                                    {
+                                        "name": "log_cash_balance",
+                                        "description": "Record/update cash balance for an investing account.",
+                                        "parameters": {
+                                            "type": "OBJECT",
+                                            "properties": {
+                                                "account_name": {
+                                                    "type": "STRING",
+                                                    "description": "The name of the brokerage or bank account (e.g., 'Brokerage Cash').",
+                                                },
+                                                "balance": {
+                                                    "type": "STRING",
+                                                    "description": "The cash balance amount as a string (e.g. '1200.50').",
+                                                },
+                                                "currency": {
+                                                    "type": "STRING",
+                                                    "description": "The currency code (e.g. 'USD', 'EUR', 'GBP').",
+                                                },
+                                            },
+                                            "required": ["account_name", "balance", "currency"],
+                                        },
+                                    },
+                                ]
+                            }
+                        ],
+                    }
                 }
-            }
-            await gemini_ws.send(json.dumps(setup_message))
+                await ws.send(json.dumps(setup_message))
+
+                first_msg_raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                first_msg = json.loads(first_msg_raw)
+
+                if "setupComplete" in first_msg:
+                    logger.info("gemini_ws_setup_completed", model=model_name)
+                    gemini_ws = ws
+                    active_model = model_name
+                    ws_context_manager = ws_conn
+                    break
+                else:
+                    logger.warning("gemini_setup_failed", model=model_name, response=first_msg)
+                    await ws_conn.__aexit__(None, None, None)
+            except Exception as conn_err:
+                logger.warning("gemini_connection_failed", model=model_name, error=str(conn_err))
+                if "ws_conn" in locals():
+                    with suppress(Exception):
+                        await ws_conn.__aexit__(None, None, None)
+
+        if not gemini_ws:
+            raise RuntimeError(
+                "Failed to establish a Live API session with any of the supported models."
+            )
 
             # Background task to stream decoded PCM to Gemini
             async def pcm_to_gemini_loop():
@@ -361,3 +395,6 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
             })
     finally:
         await decoder.close()
+        if "ws_context_manager" in locals() and ws_context_manager:
+            with suppress(Exception):
+                await ws_context_manager.__aexit__(None, None, None)
