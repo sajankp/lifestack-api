@@ -47,6 +47,7 @@ class SpendingTransaction(SQLModel, table=True):
     workspace_id: int = Field(foreign_key="workspaces.id", index=True)
     user_id: int = Field(foreign_key="users.id", index=True)
     category_id: int = Field(foreign_key="spending_categories.id", index=True)
+    account_id: int | None = Field(default=None, foreign_key="accounts.id", index=True)
     recurring_transaction_id: int | None = Field(
         default=None, foreign_key="recurring_transactions.id", index=True
     )
@@ -55,6 +56,8 @@ class SpendingTransaction(SQLModel, table=True):
     type: TransactionType = Field(sa_type=sa.String())
     occurred_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
     description: str | None = Field(default=None, max_length=500)
+    wallet_name: str | None = Field(default=None, max_length=120)
+    labels: str | None = Field(default=None, max_length=500)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

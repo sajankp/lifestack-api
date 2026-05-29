@@ -27,6 +27,18 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
     ],
 }
 
+SPENDEE_TRANSACTION_HEADERS = [
+    "Date",
+    "Wallet",
+    "Type",
+    "Category name",
+    "Amount",
+    "Currency",
+    "Note",
+    "Labels",
+    "Author",
+]
+
 
 class ImportErrorResponse(BaseModel):
     row_number: int

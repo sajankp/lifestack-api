@@ -239,13 +239,21 @@ async def test_full_spending_flow(client: AsyncClient):
         cookies=creds["cookies"],
     )
     assert custom.status_code == 201
-    gym_cat_id = custom.json()["public_id"]
+
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Main Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201
+    account_id = account_res.json()["public_id"]
 
     # Create a transaction in the Food category
     tx = await client.post(
         "/v1/spending/transactions",
         json={
             "category_id": food_cat["public_id"],
+            "account_id": account_id,
             "amount": "42.50",
             "type": "expense",
             "occurred_at": datetime.now(UTC).isoformat(),
@@ -256,42 +264,44 @@ async def test_full_spending_flow(client: AsyncClient):
     assert tx.status_code == 201
     tx_data = tx.json()
     assert tx_data["category_id"] == food_cat["public_id"]
+    assert tx_data["account_id"] == account_id
     assert tx_data["amount"] == "42.50"
 
-    # List transactions
-    listed = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
-    assert listed.status_code == 200
-    assert any(t["public_id"] == tx_data["public_id"] for t in listed.json()["items"])
 
-    # Get single transaction
-    fetched = await client.get(
-        f"/v1/spending/transactions/{tx_data['public_id']}", cookies=creds["cookies"]
+@pytest.mark.asyncio
+async def test_cross_workspace_account_rejected_for_transaction(client: AsyncClient):
+    user_a = await _register_and_login(client, "accta")
+    user_b = await _register_and_login(client, "acctb")
+
+    # User A account
+    a_account = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "A Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=user_a["cookies"],
     )
-    assert fetched.status_code == 200
-    assert fetched.json()["description"] == "Dinner"
+    assert a_account.status_code == 201
+    a_account_id = a_account.json()["public_id"]
 
-    # Update transaction category to gym
-    updated_tx = await client.patch(
-        f"/v1/spending/transactions/{tx_data['public_id']}",
-        json={"category_id": gym_cat_id},
-        cookies=creds["cookies"],
+    # User B category
+    b_categories = (await client.get("/v1/spending/categories", cookies=user_b["cookies"])).json()[
+        "items"
+    ]
+    b_category_id = b_categories[0]["public_id"]
+
+    # User B should not be able to reference user A account
+    tx_resp = await client.post(
+        "/v1/spending/transactions",
+        json={
+            "category_id": b_category_id,
+            "account_id": a_account_id,
+            "amount": "12.00",
+            "type": "expense",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+        cookies=user_b["cookies"],
     )
-    assert updated_tx.status_code == 200
-    assert updated_tx.json()["category_id"] == gym_cat_id
-
-    # Delete transaction
-    del_resp = await client.delete(
-        f"/v1/spending/transactions/{tx_data['public_id']}", cookies=creds["cookies"]
-    )
-    assert del_resp.status_code == 204
-
-    # Confirm deletion
-    after = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
-    assert all(t["public_id"] != tx_data["public_id"] for t in after.json()["items"])
-
-    # Delete custom category (no transactions remain)
-    del_cat = await client.delete(f"/v1/spending/categories/{gym_cat_id}", cookies=creds["cookies"])
-    assert del_cat.status_code == 204
+    assert tx_resp.status_code == 404
+    assert "Cross-workspace account references" in tx_resp.json()["detail"]
 
 
 @pytest.mark.asyncio

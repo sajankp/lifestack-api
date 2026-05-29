@@ -16,31 +16,28 @@ dependencies = [
     "uvicorn[standard]>=0.41.0",
     "pydantic[email]>=2.12.0",
     "pydantic-settings>=2.7.0",
-
     # Database
     "sqlmodel>=0.0.37",
     "sqlalchemy[asyncio]>=2.0.36",
     "asyncpg>=0.31.0",
     "alembic>=1.18.0",
-
     # Auth
     "python-jose[cryptography]>=3.3.0",
     "python-multipart>=0.0.12",
     "pwdlib[argon2]>=0.2.0",
-
     # Rate Limiting
     "slowapi>=0.1.9",
     "redis>=5.0.0",
-
     # Observability
     "structlog>=24.1.0",
     "opentelemetry-api>=1.24.0",
     "opentelemetry-sdk>=1.24.0",
     "opentelemetry-instrumentation-fastapi>=0.45b0",
     "prometheus-client>=0.20.0",
-
     # Scheduler
     "apscheduler>=3.11.0",
+    "google-generativeai>=0.8.6",
+    "websockets>=16.0",
 ]
 
 [dependency-groups]

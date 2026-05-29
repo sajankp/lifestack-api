@@ -23,7 +23,7 @@ from app.imports.models import (
     ImportStatus,
 )
 from app.imports.repository import ImportRepository
-from app.imports.schemas import TEMPLATE_HEADERS
+from app.imports.schemas import SPENDEE_TRANSACTION_HEADERS, TEMPLATE_HEADERS
 from app.investing.models import Holding
 from app.spending.models import (
     SpendingBudget,
@@ -201,15 +201,21 @@ class ImportService:
         wrapped = io.TextIOWrapper(upload.file, encoding="utf-8-sig", newline="")
         try:
             reader = csv.DictReader(wrapped)
-            expected_headers = TEMPLATE_HEADERS[module]
             headers = reader.fieldnames or []
-            if headers != expected_headers:
+            header_mode = "default"
+            valid_headers = [TEMPLATE_HEADERS[module]]
+            if module == ImportModule.spending_transactions:
+                valid_headers.append(SPENDEE_TRANSACTION_HEADERS)
+            if headers not in valid_headers:
                 err = ImportError(
                     import_batch_id=batch.id,
                     row_number=1,
                     field_name="header",
                     error_code="invalid_header",
-                    message=f"Expected headers: {expected_headers}",
+                    message=(
+                        "Unexpected CSV headers. Expected one of: "
+                        + " OR ".join([str(h) for h in valid_headers])
+                    ),
                     raw_value=",".join(headers),
                 )
                 await self.repository.add_errors([err])
@@ -218,6 +224,11 @@ class ImportService:
                 batch.error_rows = 1
                 batch = await self.repository.save_batch(batch)
                 return batch, [err]
+            if (
+                module == ImportModule.spending_transactions
+                and headers == SPENDEE_TRANSACTION_HEADERS
+            ):
+                header_mode = "spendee"
 
             errors: list[ImportError] = []
             previews: list[ImportPreviewRow] = []
@@ -254,11 +265,24 @@ class ImportService:
 
                 payload: dict
                 if module == ImportModule.spending_transactions:
-                    occurred_raw = self._norm(row.get("occurred_at"))
-                    type_raw = self._norm(row.get("type")).lower()
-                    amount_raw = self._norm(row.get("amount"))
-                    category_raw = self._norm(row.get("category"))
-                    description_raw = self._norm(row.get("description")) or None
+                    if header_mode == "spendee":
+                        occurred_raw = self._norm(row.get("Date"))
+                        raw_type = self._norm(row.get("Type"))
+                        type_raw = raw_type.lower() if raw_type else ""
+                        amount_raw = self._norm(row.get("Amount"))
+                        category_raw = self._norm(row.get("Category name"))
+                        description_raw = self._norm(row.get("Note")) or None
+                        wallet_name_raw = self._norm(row.get("Wallet")) or None
+                        labels_raw = self._norm(row.get("Labels")) or None
+                    else:
+                        occurred_raw = self._norm(row.get("occurred_at"))
+                        raw_type = self._norm(row.get("type"))
+                        type_raw = raw_type.lower() if raw_type else ""
+                        amount_raw = self._norm(row.get("amount"))
+                        category_raw = self._norm(row.get("category"))
+                        description_raw = self._norm(row.get("description")) or None
+                        wallet_name_raw = None
+                        labels_raw = None
 
                     try:
                         occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
@@ -278,6 +302,16 @@ class ImportService:
 
                     try:
                         amount = Decimal(amount_raw)
+                        if header_mode == "spendee" and type_raw == "expense" and amount < 0:
+                            amount = abs(amount)
+                        if header_mode == "spendee" and type_raw == "income" and amount < 0:
+                            add_error(
+                                "amount",
+                                "invalid_decimal",
+                                "income rows cannot have negative amount",
+                                amount_raw,
+                            )
+                            amount = None
                         if amount <= 0:
                             raise InvalidOperation
                     except Exception:
@@ -289,18 +323,23 @@ class ImportService:
                         )
                         amount = None
 
-                    category_id = by_public.get(category_raw) or by_name.get(category_raw.lower())
-                    if category_id is None:
-                        add_error(
-                            "category", "not_found", "category not found in workspace", category_raw
+                    category_id = None
+                    if category_raw:
+                        category_id = by_public.get(category_raw) or by_name.get(
+                            category_raw.lower()
                         )
+                    else:
+                        add_error("category", "required", "category is required", category_raw)
 
                     payload = {
                         "occurred_at": occurred_at.isoformat() if occurred_at else None,
                         "type": type_raw,
                         "amount": str(amount) if amount is not None else None,
                         "category_id": category_id,
+                        "category_name": category_raw if category_raw else None,
                         "description": description_raw,
+                        "wallet_name": wallet_name_raw,
+                        "labels": labels_raw,
                     }
                 elif module == ImportModule.spending_budgets:
                     month_raw = self._norm(row.get("month_start"))
@@ -491,6 +530,8 @@ class ImportService:
 
         inserted = 0
         try:
+            category_name_to_id = await self._category_maps(workspace_id)
+            by_name, _by_public = category_name_to_id
             offset = 0
             while True:
                 rows = await self.repository.iter_preview_rows_chunk(
@@ -502,14 +543,37 @@ class ImportService:
                 if batch.module == ImportModule.spending_transactions:
                     for row in rows:
                         p = row.payload_json
+                        category_id = p.get("category_id")
+                        if category_id is None:
+                            category_name_raw = self._norm(p.get("category_name"))
+                            if not category_name_raw:
+                                raise ValidationError(detail="category is required")
+                            category_name = category_name_raw.lower()
+                            if category_name in by_name:
+                                category_id = by_name[category_name]
+                            else:
+                                category = SpendingCategory(
+                                    workspace_id=workspace_id,
+                                    name=category_name_raw,
+                                    normalized_name=category_name,
+                                    is_system=False,
+                                )
+                                self.session.add(category)
+                                await self.session.flush()
+                                category_id = category.id
+                                if category_id is None:
+                                    raise ValidationError(detail="failed to create category")
+                                by_name[category_name] = category_id
                         tx = SpendingTransaction(
                             workspace_id=workspace_id,
                             user_id=user_id,
-                            category_id=int(p["category_id"]),
+                            category_id=int(category_id),
                             amount=Decimal(p["amount"]),
                             type=TransactionType(p["type"]),
                             occurred_at=datetime.fromisoformat(p["occurred_at"]),
                             description=p.get("description"),
+                            wallet_name=p.get("wallet_name"),
+                            labels=p.get("labels"),
                         )
                         self.session.add(tx)
                         inserted += 1

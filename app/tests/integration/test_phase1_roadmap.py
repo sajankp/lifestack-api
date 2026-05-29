@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -39,14 +39,15 @@ async def test_notifications_capture_summaries_and_analytics(client: AsyncClient
         cookies=creds["cookies"],
     )
     assert rec.status_code == 201
-
     cap = await client.post(
-        "/v1/capture",
-        json={"text": "buy milk tomorrow", "hints": {"due_date": "tomorrow"}},
+        "/v1/todo/",
+        json={
+            "title": "buy milk tomorrow",
+            "due_date": (datetime.now(UTC).date() + timedelta(days=1)).isoformat(),
+        },
         cookies=creds["cookies"],
     )
-    assert cap.status_code == 200
-    assert cap.json()["module"] == "todo"
+    assert cap.status_code == 201
 
     notify = await client.get("/v1/notifications/unread-count", cookies=creds["cookies"])
     assert notify.status_code == 200

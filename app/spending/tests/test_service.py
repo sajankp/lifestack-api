@@ -173,8 +173,13 @@ def mock_cat_repo_for_tx():
 
 
 @pytest.fixture
-def tx_service(mock_tx_repo, mock_cat_repo_for_tx):
-    return TransactionService(mock_tx_repo, mock_cat_repo_for_tx)
+def mock_account_repo_for_tx():
+    return AsyncMock()
+
+
+@pytest.fixture
+def tx_service(mock_tx_repo, mock_cat_repo_for_tx, mock_account_repo_for_tx):
+    return TransactionService(mock_tx_repo, mock_cat_repo_for_tx, mock_account_repo_for_tx)
 
 
 @pytest.mark.asyncio
