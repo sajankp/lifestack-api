@@ -39,10 +39,10 @@ Define the minimum backend API integration contract required for the Lifestack a
 - `GET /v1/finance/currencies`
 - `GET /v1/finance/accounts`
 - `POST /v1/finance/accounts`
-- `PATCH /v1/finance/accounts/{public_id}`
+- `PATCH /v1/finance/accounts/{account_id}`
 - `GET /v1/finance/fx-rates`
 - `GET /v1/finance/transfers`
-- `GET /v1/finance/transfers/{public_id}`
+- `GET /v1/finance/transfers/{transfer_id}`
 - `POST /v1/finance/transfers`
 
 Contract rules:
@@ -53,15 +53,14 @@ Contract rules:
 ### 4.3 Investing Runtime (Required)
 - `GET /v1/investing/holdings`
 - `POST /v1/investing/holdings`
-- `PATCH /v1/investing/holdings/{public_id}`
-- `DELETE /v1/investing/holdings/{public_id}`
+- `PATCH /v1/investing/holdings/{holding_id}`
+- `DELETE /v1/investing/holdings/{holding_id}`
 - `GET /v1/investing/cash-balances`
 - `POST /v1/investing/cash-balances`
-- `PATCH /v1/investing/cash-balances/{public_id}`
-- `DELETE /v1/investing/cash-balances/{public_id}`
+- `PATCH /v1/investing/cash-balances/{cash_balance_id}`
+- `DELETE /v1/investing/cash-balances/{cash_balance_id}`
 - `GET /v1/investing/summary`
 - `GET /v1/investing/performance/summary`
-- `GET /v1/investing/performance/history`
 
 Contract rules:
 - Decimal values serialize as strings.
@@ -74,7 +73,7 @@ Contract rules:
 - `GET /v1/notifications`
 - `GET /v1/notifications/unread-count`
 - `POST /v1/notifications/mark-all-read`
-- `PATCH /v1/notifications/{id}/read`
+- `PATCH /v1/notifications/{notification_id}/read`
 - `GET /v1/summaries/weekly/latest`
 
 Contract rules:
@@ -87,13 +86,12 @@ Contract rules:
 
 ### 4.6 Import Contract (Required for onboarding)
 - `POST /v1/imports` (multipart form: `module` + `file`)
-- `POST /v1/imports/{batch_public_id}/commit`
-- `GET /v1/imports/{batch_public_id}`
-- `GET /v1/imports/{batch_public_id}/errors`
+- `POST /v1/imports/{import_public_id}/commit`
+- `GET /v1/imports/{import_public_id}`
 
 Contract rules:
 - fail-all-on-error semantics for Phase 1 commit.
-- validation errors must be RFC7807-compatible and field-structured.
+- validation errors are returned in the `POST /v1/imports` and commit responses via RFC7807-compatible field structures when invalid input is submitted.
 
 ## 5) Non-Functional Requirements
 - All endpoints above must be tenant-safe and audited where mutations occur.
