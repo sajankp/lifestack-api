@@ -58,3 +58,4 @@ Implement approved/proposed specs in an order that minimizes rework, preserves a
 - `spec-020-bulk-import-csv.md` (CSV template-based bulk import for spending/budgets/investing with fail-all semantics and streaming validation).
 - `spec-022-workspace-currency-and-display-governance.md` (workspace-level currency display consistency with investing-native exceptions).
 - `spec-023-spending-wallet-ledger-and-transfers.md` (multi-wallet spending ledger + account transfers UX/API alignment).
+- `spec-024-phase1-runtime-api-integration-contract.md` (Phase 1 runtime API integration contract to ensure dashboard/spending/investing/notifications/imports app flows are fully wired and stable).
