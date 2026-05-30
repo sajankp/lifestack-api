@@ -95,9 +95,15 @@ async def delete_account(
     account_id: uuid.UUID,
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
 ):
-    await account_service.delete_account(workspace_id, account_id)
+    await account_service.delete_account(
+        workspace_id=workspace_id,
+        public_id=account_id,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
 
 
 @router.get("/settings", response_model=WorkspaceFinanceSettingResponse)

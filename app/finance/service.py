@@ -125,9 +125,17 @@ class AccountService:
         account.updated_at = datetime.now(UTC)
         return await self.account_repository.save(account)
 
-    async def delete_account(self, workspace_id: int, public_id: uuid.UUID) -> None:
+    async def delete_account(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
         account = await self.get_account(workspace_id, public_id)
-        account_id = int(account.id)  # type: ignore[arg-type]
+        if account.id is None:
+            raise ValidationError(detail="Account ID is missing.")
+        account_id = account.id
         if await self.account_repository.has_usage(workspace_id, account_id):
             raise ConflictError(
                 detail=(
@@ -135,7 +143,29 @@ class AccountService:
                     "Mark it inactive instead."
                 )
             )
+        before_snap = {
+            "public_id": str(account.public_id),
+            "name": account.name,
+            "account_type": str(account.account_type),
+            "default_currency_code": account.default_currency_code,
+            "is_active": account.is_active,
+        }
         await self.account_repository.delete(account)
+        if audit_logger is not None and actor_id is not None:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="delete",
+                module="finance",
+                entity_type="account",
+                entity_id=account_id,
+                details={
+                    "entity_public_id": str(public_id),
+                    "before": before_snap,
+                    "after": None,
+                    "changed_fields": list(before_snap.keys()),
+                },
+            )
 
 
 class FinanceSettingService:

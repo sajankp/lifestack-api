@@ -138,37 +138,33 @@ class AccountRepository:
         return account
 
     async def has_usage(self, workspace_id: int, account_id: int) -> bool:
-        spending_usage = (
+        spending_usage_exists = (
             await self.session.execute(
-                select(func.count()).select_from(
-                    select(SpendingTransaction)
-                    .where(
-                        SpendingTransaction.workspace_id == workspace_id,
-                        SpendingTransaction.account_id == account_id,
-                    )
-                    .subquery()
+                select(SpendingTransaction.id)
+                .where(
+                    SpendingTransaction.workspace_id == workspace_id,
+                    SpendingTransaction.account_id == account_id,
                 )
+                .limit(1)
             )
-        ).scalar_one()
-        if spending_usage > 0:
+        ).scalar_one_or_none()
+        if spending_usage_exists is not None:
             return True
 
-        transfer_usage = (
+        transfer_usage_exists = (
             await self.session.execute(
-                select(func.count()).select_from(
-                    select(CapitalTransfer)
-                    .where(
-                        CapitalTransfer.workspace_id == workspace_id,
-                        or_(
-                            CapitalTransfer.from_account_id == account_id,
-                            CapitalTransfer.to_account_id == account_id,
-                        ),
-                    )
-                    .subquery()
+                select(CapitalTransfer.id)
+                .where(
+                    CapitalTransfer.workspace_id == workspace_id,
+                    or_(
+                        CapitalTransfer.from_account_id == account_id,
+                        CapitalTransfer.to_account_id == account_id,
+                    ),
                 )
+                .limit(1)
             )
-        ).scalar_one()
-        return transfer_usage > 0
+        ).scalar_one_or_none()
+        return transfer_usage_exists is not None
 
     async def delete(self, account: Account) -> None:
         await self.session.delete(account)
