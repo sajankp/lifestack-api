@@ -125,6 +125,18 @@ class AccountService:
         account.updated_at = datetime.now(UTC)
         return await self.account_repository.save(account)
 
+    async def delete_account(self, workspace_id: int, public_id: uuid.UUID) -> None:
+        account = await self.get_account(workspace_id, public_id)
+        account_id = int(account.id)  # type: ignore[arg-type]
+        if await self.account_repository.has_usage(workspace_id, account_id):
+            raise ConflictError(
+                detail=(
+                    "Account is in use by transactions or transfers and cannot be deleted. "
+                    "Mark it inactive instead."
+                )
+            )
+        await self.account_repository.delete(account)
+
 
 class FinanceSettingService:
     def __init__(

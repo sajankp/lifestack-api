@@ -67,6 +67,13 @@ async def test_finance_currencies_bootstrap_and_account_crud(client: AsyncClient
     assert updated["account_type"] == "wallet"
     assert updated["default_currency_code"] == "INR"
 
+    delete_res = await client.delete(f"/v1/finance/accounts/{account['public_id']}")
+    assert delete_res.status_code == 204
+
+    list_after_delete = await client.get("/v1/finance/accounts")
+    assert list_after_delete.status_code == 200
+    assert list_after_delete.json()["total"] == 0
+
 
 @pytest.mark.asyncio
 async def test_finance_account_validation_and_workspace_isolation(client: AsyncClient):
@@ -127,6 +134,51 @@ async def test_finance_account_validation_and_workspace_isolation(client: AsyncC
         json={"name": "Should Not Work"},
     )
     assert patch_res.status_code == 404
+
+    delete_res = await client.delete(f"/v1/finance/accounts/{account_id}")
+    assert delete_res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_finance_account_delete_rejected_when_in_use(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="finance-delete-guard@example.com",
+        username="finance-delete-guard",
+        password="password123",
+    )
+
+    category_res = await client.get("/v1/spending/categories")
+    assert category_res.status_code == 200
+    category_id = category_res.json()["items"][0]["public_id"]
+
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Wallet In Use",
+            "account_type": "wallet",
+            "default_currency_code": "USD",
+        },
+    )
+    assert account_res.status_code == 201
+    account_id = account_res.json()["public_id"]
+
+    tx_res = await client.post(
+        "/v1/spending/transactions",
+        json={
+            "amount": "12.00",
+            "type": "expense",
+            "category_id": category_id,
+            "account_id": account_id,
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "description": "coffee",
+        },
+    )
+    assert tx_res.status_code == 201
+
+    delete_res = await client.delete(f"/v1/finance/accounts/{account_id}")
+    assert delete_res.status_code == 409
+    assert "cannot be deleted" in delete_res.json()["detail"]
 
 
 @pytest.mark.asyncio

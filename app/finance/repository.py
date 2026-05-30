@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -14,6 +14,7 @@ from app.finance.models import (
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
 )
+from app.spending.models import SpendingTransaction
 
 
 class CurrencyRepository:
@@ -135,6 +136,43 @@ class AccountRepository:
         await self.session.flush()
         await self.session.refresh(account)
         return account
+
+    async def has_usage(self, workspace_id: int, account_id: int) -> bool:
+        spending_usage = (
+            await self.session.execute(
+                select(func.count()).select_from(
+                    select(SpendingTransaction)
+                    .where(
+                        SpendingTransaction.workspace_id == workspace_id,
+                        SpendingTransaction.account_id == account_id,
+                    )
+                    .subquery()
+                )
+            )
+        ).scalar_one()
+        if spending_usage > 0:
+            return True
+
+        transfer_usage = (
+            await self.session.execute(
+                select(func.count()).select_from(
+                    select(CapitalTransfer)
+                    .where(
+                        CapitalTransfer.workspace_id == workspace_id,
+                        or_(
+                            CapitalTransfer.from_account_id == account_id,
+                            CapitalTransfer.to_account_id == account_id,
+                        ),
+                    )
+                    .subquery()
+                )
+            )
+        ).scalar_one()
+        return transfer_usage > 0
+
+    async def delete(self, account: Account) -> None:
+        await self.session.delete(account)
+        await self.session.flush()
 
 
 class FinanceSettingRepository:
