@@ -127,6 +127,18 @@ class AccountRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_by_ids(self, workspace_id: int, account_ids: Sequence[int]) -> Sequence[Account]:
+        if not account_ids:
+            return []
+        unique_ids = sorted(set(account_ids))
+        result = await self.session.execute(
+            select(Account).where(
+                Account.workspace_id == workspace_id,
+                Account.id.in_(unique_ids),
+            )
+        )
+        return result.scalars().all()
+
     async def create(self, account: Account) -> Account:
         self.session.add(account)
         await self.session.flush()

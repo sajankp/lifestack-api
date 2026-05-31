@@ -2,6 +2,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
@@ -356,16 +357,70 @@ class CapitalTransferService:
         self.account_repository = account_repository
         self.currency_repository = currency_repository
 
+    def _serialize_transfer(
+        self,
+        transfer: CapitalTransfer,
+        from_account: Account | None,
+        to_account: Account | None,
+    ) -> dict[str, Any]:
+        return {
+            "public_id": transfer.public_id,
+            "from_module": transfer.from_module,
+            "to_module": transfer.to_module,
+            "from_account_id": transfer.from_account_id,
+            "to_account_id": transfer.to_account_id,
+            "from_account_public_id": from_account.public_id if from_account else None,
+            "to_account_public_id": to_account.public_id if to_account else None,
+            "from_account_name": from_account.name if from_account else None,
+            "to_account_name": to_account.name if to_account else None,
+            "from_account_type": from_account.account_type if from_account else None,
+            "to_account_type": to_account.account_type if to_account else None,
+            "from_currency_code": transfer.from_currency_code,
+            "to_currency_code": transfer.to_currency_code,
+            "gross_amount": transfer.gross_amount,
+            "fx_rate_used": transfer.fx_rate_used,
+            "fx_fee_amount": transfer.fx_fee_amount,
+            "platform_fee_amount": transfer.platform_fee_amount,
+            "tax_amount": transfer.tax_amount,
+            "net_amount_received": transfer.net_amount_received,
+            "occurred_at": transfer.occurred_at,
+            "notes": transfer.notes,
+            "created_at": transfer.created_at,
+            "updated_at": transfer.updated_at,
+        }
+
     async def list_transfers(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
-    ) -> tuple[Sequence[CapitalTransfer], int]:
-        return await self.transfer_repository.list_workspace_transfers(workspace_id, limit, offset)
+    ) -> tuple[Sequence[dict[str, Any]], int]:
+        transfers, total = await self.transfer_repository.list_workspace_transfers(
+            workspace_id, limit, offset
+        )
+        account_ids = [
+            *[transfer.from_account_id for transfer in transfers],
+            *[transfer.to_account_id for transfer in transfers],
+        ]
+        accounts = await self.account_repository.list_by_ids(workspace_id, account_ids)
+        account_by_id = {account.id: account for account in accounts}
 
-    async def get_transfer(self, workspace_id: int, public_id: uuid.UUID) -> CapitalTransfer:
+        items = [
+            self._serialize_transfer(
+                transfer,
+                account_by_id.get(transfer.from_account_id),
+                account_by_id.get(transfer.to_account_id),
+            )
+            for transfer in transfers
+        ]
+        return items, total
+
+    async def get_transfer(self, workspace_id: int, public_id: uuid.UUID) -> dict[str, Any]:
         transfer = await self.transfer_repository.get_by_public_id(workspace_id, public_id)
         if not transfer:
             raise NotFoundError(detail=f"Transfer with id {public_id} not found in this workspace")
-        return transfer
+        from_account = await self.account_repository.get_by_id(
+            workspace_id, transfer.from_account_id
+        )
+        to_account = await self.account_repository.get_by_id(workspace_id, transfer.to_account_id)
+        return self._serialize_transfer(transfer, from_account, to_account)
 
     async def create_transfer(
         self,
@@ -373,7 +428,7 @@ class CapitalTransferService:
         actor_id: int,
         transfer_in: CapitalTransferCreate,
         audit_logger: AuditLogger | None = None,
-    ) -> CapitalTransfer:
+    ) -> dict[str, Any]:
         from_account = await self.account_repository.get_by_public_id(
             workspace_id, transfer_in.from_account_id
         )
@@ -459,4 +514,4 @@ class CapitalTransferService:
                 },
             )
 
-        return transfer
+        return self._serialize_transfer(transfer, from_account, to_account)

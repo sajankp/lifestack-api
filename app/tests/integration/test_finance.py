@@ -311,12 +311,25 @@ async def test_finance_settings_fx_and_transfers_flow(client: AsyncClient):
         },
     )
     assert transfer_res.status_code == 201
-    transfer_id = transfer_res.json()["public_id"]
+    transfer_body = transfer_res.json()
+    transfer_id = transfer_body["public_id"]
+    assert transfer_body["from_account_public_id"] == from_account.json()["public_id"]
+    assert transfer_body["to_account_public_id"] == to_account.json()["public_id"]
+    assert transfer_body["from_account_name"] == "Budget Bank"
+    assert transfer_body["to_account_name"] == "Global Brokerage"
+    assert transfer_body["from_account_type"] == "bank"
+    assert transfer_body["to_account_type"] == "brokerage"
 
     list_transfers = await client.get("/v1/finance/transfers")
     assert list_transfers.status_code == 200
-    assert list_transfers.json()["total"] == 1
+    list_body = list_transfers.json()
+    assert list_body["total"] == 1
+    assert list_body["items"][0]["from_account_name"] == "Budget Bank"
+    assert list_body["items"][0]["to_account_name"] == "Global Brokerage"
 
     get_transfer = await client.get(f"/v1/finance/transfers/{transfer_id}")
     assert get_transfer.status_code == 200
-    assert get_transfer.json()["net_amount_received"] == "792.00"
+    get_body = get_transfer.json()
+    assert get_body["net_amount_received"] == "792.00"
+    assert get_body["from_account_public_id"] == from_account.json()["public_id"]
+    assert get_body["to_account_public_id"] == to_account.json()["public_id"]

@@ -149,6 +149,12 @@ class CapitalTransferResponse(BaseModel):
     to_module: TransferModule
     from_account_id: int
     to_account_id: int
+    from_account_public_id: uuid.UUID | None = None
+    to_account_public_id: uuid.UUID | None = None
+    from_account_name: str | None = None
+    to_account_name: str | None = None
+    from_account_type: AccountType | None = None
+    to_account_type: AccountType | None = None
     from_currency_code: str
     to_currency_code: str
     gross_amount: Decimal
