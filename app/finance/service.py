@@ -6,7 +6,7 @@ from decimal import Decimal
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
-from app.finance.models import Account, CapitalTransfer
+from app.finance.models import Account, CapitalTransfer, CurrencyDisplayPreference
 from app.finance.repository import (
     AccountRepository,
     CapitalTransferRepository,
@@ -180,27 +180,115 @@ class FinanceSettingService:
     async def get_setting(self, workspace_id: int):
         return await self.setting_repository.get_by_workspace(workspace_id)
 
-    async def set_reporting_currency(self, workspace_id: int, reporting_currency_code: str | None):
-        if reporting_currency_code is not None:
-            currency = await self.currency_repository.get_by_code(reporting_currency_code)
-            if not currency or not currency.is_active:
-                raise ValidationError(
-                    detail=f"Unsupported reporting currency '{reporting_currency_code}'"
-                )
-            await self.currency_repository.ensure_workspace_defaults(workspace_id)
-            enabled = await self.currency_repository.is_enabled_for_workspace(
-                workspace_id, reporting_currency_code
-            )
-            if not enabled:
-                raise ValidationError(
-                    detail=(
-                        f"Reporting currency '{reporting_currency_code}' is not enabled "
-                        "for this workspace"
-                    )
-                )
-        return await self.setting_repository.upsert_reporting_currency(
-            workspace_id, reporting_currency_code
+    async def _validate_workspace_currency(
+        self, workspace_id: int, currency_code: str, *, label: str
+    ) -> None:
+        currency = await self.currency_repository.get_by_code(currency_code)
+        if not currency or not currency.is_active:
+            raise ValidationError(detail=f"Unsupported {label} '{currency_code}'")
+        await self.currency_repository.ensure_workspace_defaults(workspace_id)
+        enabled = await self.currency_repository.is_enabled_for_workspace(
+            workspace_id, currency_code
         )
+        if not enabled:
+            raise ValidationError(
+                detail=f"{label.title()} '{currency_code}' is not enabled for this workspace"
+            )
+
+    async def update_workspace_settings(self, workspace_id: int, updates: dict):
+        existing = await self.setting_repository.get_by_workspace(workspace_id)
+        reporting_currency_code = existing.reporting_currency_code if existing else None
+        currency_display_preference = (
+            existing.currency_display_preference if existing else CurrencyDisplayPreference.symbol
+        )
+
+        if "reporting_currency_code" in updates:
+            reporting_currency_code = updates["reporting_currency_code"]
+            if reporting_currency_code is not None:
+                await self._validate_workspace_currency(
+                    workspace_id,
+                    reporting_currency_code,
+                    label="reporting currency",
+                )
+
+        if "currency_display_preference" in updates:
+            currency_display_preference = (
+                updates["currency_display_preference"] or CurrencyDisplayPreference.symbol
+            )
+
+        return await self.setting_repository.upsert_workspace_settings(
+            workspace_id,
+            reporting_currency_code=reporting_currency_code,
+            currency_display_preference=currency_display_preference,
+        )
+
+    async def get_user_settings(self, workspace_id: int, user_id: int) -> dict:
+        workspace = await self.setting_repository.get_by_workspace(workspace_id)
+        user_setting = await self.setting_repository.get_user_setting(workspace_id, user_id)
+
+        workspace_reporting_currency_code = workspace.reporting_currency_code if workspace else None
+        workspace_currency_display_preference = (
+            workspace.currency_display_preference if workspace else CurrencyDisplayPreference.symbol
+        )
+        reporting_currency_override_code = (
+            user_setting.reporting_currency_override_code if user_setting else None
+        )
+        currency_display_preference_override = (
+            user_setting.currency_display_preference_override if user_setting else None
+        )
+        effective_reporting_currency_code = (
+            reporting_currency_override_code or workspace_reporting_currency_code
+        )
+        effective_currency_display_preference = (
+            currency_display_preference_override or workspace_currency_display_preference
+        )
+
+        updated_at = (
+            user_setting.updated_at
+            if user_setting
+            else workspace.updated_at
+            if workspace
+            else datetime.now(UTC)
+        )
+
+        return {
+            "reporting_currency_override_code": reporting_currency_override_code,
+            "currency_display_preference_override": currency_display_preference_override,
+            "workspace_reporting_currency_code": workspace_reporting_currency_code,
+            "workspace_currency_display_preference": workspace_currency_display_preference,
+            "effective_reporting_currency_code": effective_reporting_currency_code,
+            "effective_currency_display_preference": effective_currency_display_preference,
+            "updated_at": updated_at,
+        }
+
+    async def update_user_settings(self, workspace_id: int, user_id: int, updates: dict):
+        existing = await self.setting_repository.get_user_setting(workspace_id, user_id)
+        reporting_currency_override_code = (
+            existing.reporting_currency_override_code if existing else None
+        )
+        currency_display_preference_override = (
+            existing.currency_display_preference_override if existing else None
+        )
+
+        if "reporting_currency_override_code" in updates:
+            reporting_currency_override_code = updates["reporting_currency_override_code"]
+            if reporting_currency_override_code is not None:
+                await self._validate_workspace_currency(
+                    workspace_id,
+                    reporting_currency_override_code,
+                    label="override currency",
+                )
+
+        if "currency_display_preference_override" in updates:
+            currency_display_preference_override = updates["currency_display_preference_override"]
+
+        await self.setting_repository.upsert_user_settings(
+            workspace_id,
+            user_id,
+            reporting_currency_override_code=reporting_currency_override_code,
+            currency_display_preference_override=currency_display_preference_override,
+        )
+        return await self.get_user_settings(workspace_id, user_id)
 
 
 class FxRateService:

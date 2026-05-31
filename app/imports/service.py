@@ -511,7 +511,7 @@ class ImportService:
         user_id: int,
         import_public_id: uuid.UUID,
         audit_logger: AuditLogger,
-    ) -> tuple[ImportBatch, int]:
+    ) -> tuple[ImportBatch, int, list[str]]:
         batch = await self.repository.get_by_public_id(workspace_id, import_public_id)
         if not batch:
             raise NotFoundError(detail=f"Import batch with id {import_public_id} not found")
@@ -529,6 +529,7 @@ class ImportService:
         await self.repository.save_batch(batch)
 
         inserted = 0
+        auto_created_categories: list[str] = []
         try:
             category_name_to_id = await self._category_maps(workspace_id)
             by_name, _by_public = category_name_to_id
@@ -564,6 +565,7 @@ class ImportService:
                                 if category_id is None:
                                     raise ValidationError(detail="failed to create category")
                                 by_name[category_name] = category_id
+                                auto_created_categories.append(category.name)
                         tx = SpendingTransaction(
                             workspace_id=workspace_id,
                             user_id=user_id,
@@ -635,7 +637,7 @@ class ImportService:
             await self.repository.save_batch(batch)
             raise
 
-        return batch, inserted
+        return batch, inserted, auto_created_categories
 
     async def list_batches(self, workspace_id: int, limit: int, offset: int):
         return await self.repository.list_batches(workspace_id, limit, offset)

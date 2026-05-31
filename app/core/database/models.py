@@ -10,6 +10,7 @@ from app.finance.models import (  # noqa: F401
     CapitalTransfer,
     Currency,
     FxRate,
+    UserFinanceSetting,
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
 )

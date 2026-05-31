@@ -19,6 +19,11 @@ class TransferModule(StrEnum):
     investing = "investing"
 
 
+class CurrencyDisplayPreference(StrEnum):
+    symbol = "symbol"
+    code = "code"
+
+
 class Currency(SQLModel, table=True):
     __tablename__ = "currencies"
 
@@ -87,12 +92,46 @@ class WorkspaceFinanceSetting(SQLModel, table=True):
     reporting_currency_code: str | None = Field(
         default=None, foreign_key="currencies.code", max_length=10
     )
+    currency_display_preference: CurrencyDisplayPreference = Field(
+        default=CurrencyDisplayPreference.symbol,
+        sa_type=sa.String(length=24),
+    )
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+
+class UserFinanceSetting(SQLModel, table=True):
+    __tablename__ = "user_finance_settings"
+
+    id: int | None = Field(default=None, primary_key=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    reporting_currency_override_code: str | None = Field(
+        default=None, foreign_key="currencies.code", max_length=10
+    )
+    currency_display_preference_override: CurrencyDisplayPreference | None = Field(
+        default=None,
+        sa_type=sa.String(length=24),
+    )
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "workspace_id",
+            "user_id",
+            name="uq_user_finance_settings_workspace_user",
+        ),
     )
 
 

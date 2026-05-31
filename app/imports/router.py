@@ -1,4 +1,5 @@
 import uuid
+from collections import Counter
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import PlainTextResponse, Response
@@ -16,11 +17,26 @@ from app.imports.schemas import (
     ImportBatchResponse,
     ImportCommitResponse,
     ImportErrorResponse,
+    ImportErrorSummary,
     ImportValidateResponse,
 )
 from app.imports.service import ImportService
 
 router = APIRouter(prefix="/imports", tags=["imports"])
+
+
+def _build_error_summary(
+    total_errors: int,
+    errors: list[ImportErrorResponse],
+) -> ImportErrorSummary:
+    by_code = Counter(err.error_code for err in errors)
+    by_field = Counter(err.field_name for err in errors if err.field_name)
+    return ImportErrorSummary(
+        total_errors=total_errors,
+        returned_errors=len(errors),
+        by_code=dict(by_code),
+        by_field=dict(by_field),
+    )
 
 
 @router.get("/templates/{module}", response_class=PlainTextResponse)
@@ -49,9 +65,11 @@ async def upload_and_validate(
     batch, errors = await service.validate_upload(
         workspace_id, user["id"], module, file, audit_logger
     )
+    response_errors = [ImportErrorResponse.model_validate(e) for e in errors]
     return ImportValidateResponse(
         import_batch=ImportBatchResponse.model_validate(batch),
-        errors=[ImportErrorResponse.model_validate(e) for e in errors],
+        errors=response_errors,
+        error_summary=_build_error_summary(batch.error_rows, response_errors),
     )
 
 
@@ -63,12 +81,14 @@ async def commit_import(
     user: dict = Depends(get_current_user),
     audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
-    batch, inserted = await service.commit_import(
+    batch, inserted, auto_created_categories = await service.commit_import(
         workspace_id, user["id"], import_public_id, audit_logger
     )
     return ImportCommitResponse(
         import_batch=ImportBatchResponse.model_validate(batch),
         inserted_rows=inserted,
+        auto_created_categories=auto_created_categories,
+        auto_created_category_count=len(auto_created_categories),
     )
 
 
@@ -96,7 +116,9 @@ async def get_import_detail(
     _user: dict = Depends(get_current_user),
 ):
     batch, errors = await service.get_batch_with_errors(workspace_id, import_public_id)
+    response_errors = [ImportErrorResponse.model_validate(e) for e in errors]
     return ImportValidateResponse(
         import_batch=ImportBatchResponse.model_validate(batch),
-        errors=[ImportErrorResponse.model_validate(e) for e in errors],
+        errors=response_errors,
+        error_summary=_build_error_summary(batch.error_rows, response_errors),
     )

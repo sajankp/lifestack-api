@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.imports.models import ImportModule, ImportStatus
 
@@ -70,11 +70,21 @@ class ImportBatchResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ImportErrorSummary(BaseModel):
+    total_errors: int
+    returned_errors: int
+    by_code: dict[str, int]
+    by_field: dict[str, int]
+
+
 class ImportValidateResponse(BaseModel):
     import_batch: ImportBatchResponse
     errors: list[ImportErrorResponse]
+    error_summary: ImportErrorSummary
 
 
 class ImportCommitResponse(BaseModel):
     import_batch: ImportBatchResponse
     inserted_rows: int
+    auto_created_categories: list[str] = Field(default_factory=list)
+    auto_created_category_count: int = 0

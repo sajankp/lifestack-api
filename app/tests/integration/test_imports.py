@@ -39,8 +39,16 @@ async def test_import_spending_transactions_fail_all_on_single_error(client: Asy
     payload = validate.json()
     assert payload["import_batch"]["status"] == "failed_validation"
     assert payload["import_batch"]["error_rows"] == 1
+    assert payload["error_summary"]["total_errors"] == 1
+    assert payload["error_summary"]["returned_errors"] == 1
+    assert payload["error_summary"]["by_code"]["invalid_decimal"] == 1
+    assert payload["error_summary"]["by_field"]["amount"] == 1
 
     import_id = payload["import_batch"]["public_id"]
+    detail = await client.get(f"/v1/imports/{import_id}", cookies=creds["cookies"])
+    assert detail.status_code == 200
+    assert detail.json()["error_summary"]["total_errors"] == 1
+
     commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
     assert commit.status_code == 422
 
@@ -76,6 +84,8 @@ async def test_import_spending_budgets_validates_and_commits(client: AsyncClient
     assert commit.status_code == 200, commit.text
     assert commit.json()["inserted_rows"] == 2
     assert commit.json()["import_batch"]["status"] == "completed"
+    assert commit.json()["auto_created_category_count"] == 0
+    assert commit.json()["auto_created_categories"] == []
 
     budgets = await client.get("/v1/spending/budgets", cookies=creds["cookies"])
     assert budgets.status_code == 200
@@ -114,6 +124,7 @@ async def test_import_accepts_utf8_bom_csv(client: AsyncClient):
     assert validate.status_code == 200, validate.text
     payload = validate.json()
     assert payload["import_batch"]["status"] == "validated"
+    assert payload["error_summary"]["total_errors"] == 0
 
 
 @pytest.mark.asyncio
@@ -136,11 +147,14 @@ async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
     assert validate.status_code == 200, validate.text
     payload = validate.json()
     assert payload["import_batch"]["status"] == "validated"
+    assert payload["error_summary"]["total_errors"] == 0
     import_id = payload["import_batch"]["public_id"]
 
     commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
     assert commit.status_code == 200, commit.text
     assert commit.json()["inserted_rows"] == 1
+    assert commit.json()["auto_created_category_count"] == 0
+    assert commit.json()["auto_created_categories"] == []
 
     txs = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
     assert txs.status_code == 200
@@ -152,3 +166,37 @@ async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
     assert row["amount"] == "3700.00"
     assert row["wallet_name"] == "Main Wallet"
     assert row["labels"] == "family"
+
+
+@pytest.mark.asyncio
+async def test_import_commit_reports_auto_created_categories(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    csv_content = (
+        "occurred_at,type,amount,category,description\n"
+        f"{datetime.now(UTC).isoformat()},expense,15.00,Road Trips,new category import\n"
+    )
+
+    files = {"file": ("tx.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "spending-transactions"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200, validate.text
+    body = validate.json()
+    assert body["import_batch"]["status"] == "validated"
+    assert body["error_summary"]["total_errors"] == 0
+
+    import_id = body["import_batch"]["public_id"]
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code == 200, commit.text
+    commit_body = commit.json()
+    assert commit_body["inserted_rows"] == 1
+    assert commit_body["auto_created_category_count"] == 1
+    assert commit_body["auto_created_categories"] == ["Road Trips"]
+
+    categories = await client.get("/v1/spending/categories", cookies=creds["cookies"])
+    assert categories.status_code == 200
+    assert any(c["name"] == "Road Trips" for c in categories.json()["items"])

@@ -140,6 +140,23 @@ async def test_finance_account_validation_and_workspace_isolation(client: AsyncC
 
 
 @pytest.mark.asyncio
+async def test_finance_user_override_currency_validation(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="finance-user-override-validation@example.com",
+        username="finance-user-override-validation",
+        password="password123",
+    )
+
+    update_user_setting = await client.patch(
+        "/v1/finance/settings/user",
+        json={"reporting_currency_override_code": "EUR"},
+    )
+    assert update_user_setting.status_code == 422
+    assert update_user_setting.json()["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
 async def test_finance_account_delete_rejected_when_in_use(client: AsyncClient):
     await _register_and_login(
         client,
@@ -211,10 +228,52 @@ async def test_finance_settings_fx_and_transfers_flow(client: AsyncClient):
 
     setting_res = await client.patch(
         "/v1/finance/settings",
-        json={"reporting_currency_code": "USD"},
+        json={
+            "reporting_currency_code": "USD",
+            "currency_display_preference": "code",
+        },
     )
     assert setting_res.status_code == 200
     assert setting_res.json()["reporting_currency_code"] == "USD"
+    assert setting_res.json()["currency_display_preference"] == "code"
+
+    user_setting_res = await client.get("/v1/finance/settings/user")
+    assert user_setting_res.status_code == 200
+    user_setting_body = user_setting_res.json()
+    assert user_setting_body["workspace_reporting_currency_code"] == "USD"
+    assert user_setting_body["workspace_currency_display_preference"] == "code"
+    assert user_setting_body["effective_reporting_currency_code"] == "USD"
+    assert user_setting_body["effective_currency_display_preference"] == "code"
+    assert user_setting_body["reporting_currency_override_code"] is None
+    assert user_setting_body["currency_display_preference_override"] is None
+
+    update_user_setting = await client.patch(
+        "/v1/finance/settings/user",
+        json={
+            "reporting_currency_override_code": "INR",
+            "currency_display_preference_override": "symbol",
+        },
+    )
+    assert update_user_setting.status_code == 200
+    updated_user_setting_body = update_user_setting.json()
+    assert updated_user_setting_body["reporting_currency_override_code"] == "INR"
+    assert updated_user_setting_body["effective_reporting_currency_code"] == "INR"
+    assert updated_user_setting_body["currency_display_preference_override"] == "symbol"
+    assert updated_user_setting_body["effective_currency_display_preference"] == "symbol"
+
+    clear_user_override = await client.patch(
+        "/v1/finance/settings/user",
+        json={
+            "reporting_currency_override_code": None,
+            "currency_display_preference_override": None,
+        },
+    )
+    assert clear_user_override.status_code == 200
+    cleared_body = clear_user_override.json()
+    assert cleared_body["reporting_currency_override_code"] is None
+    assert cleared_body["currency_display_preference_override"] is None
+    assert cleared_body["effective_reporting_currency_code"] == "USD"
+    assert cleared_body["effective_currency_display_preference"] == "code"
 
     fx_upsert = await client.post(
         "/v1/finance/fx-rates",
