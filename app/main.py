@@ -10,7 +10,11 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
-from app.application.jobs import budget_guardrails_job, recurring_transactions_job
+from app.application.jobs import (
+    budget_guardrails_job,
+    recurring_transactions_job,
+    weekly_summary_job,
+)
 from app.auth.router import router as auth_router
 from app.capture.router import router as capture_router
 from app.config import settings
@@ -30,6 +34,7 @@ from app.core.middleware import SecurityHeadersMiddleware, StructlogMiddleware
 from app.core.scheduler import (
     register_daily_job,
     register_interval_job,
+    scheduler,
     shutdown_scheduler,
     start_scheduler,
 )
@@ -81,6 +86,16 @@ async def lifespan(_app: FastAPI):
             job_id="recurring_transactions",
             hour_utc=settings.RECURRING_TXN_GENERATION_HOUR,
         )
+        scheduler.add_job(
+            weekly_summary_job,
+            "cron",
+            day_of_week="mon",
+            hour=1,
+            minute=30,
+            id="weekly_summary",
+            replace_existing=True,
+            timezone="UTC",
+        )
         start_scheduler()
     yield
     if settings.SCHEDULER_ENABLED:
@@ -104,8 +119,15 @@ def create_app() -> FastAPI:
             CORSMiddleware,
             allow_origins=cors_origins,
             allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=[
+                "Content-Type",
+                "Authorization",
+                "X-Requested-With",
+                "X-Request-ID",
+                "Origin",
+                "Accept",
+            ],
         )
 
     # Core middlewares

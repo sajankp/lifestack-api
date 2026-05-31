@@ -8,12 +8,17 @@ from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
     get_weekly_summary_service,
+    require_min_role,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.summaries.schemas import WeeklySummaryResponse
 from app.summaries.service import WeeklySummaryService
 
-router = APIRouter(prefix="/summaries/weekly", tags=["summaries"])
+router = APIRouter(
+    prefix="/summaries/weekly",
+    tags=["summaries"],
+    dependencies=[Depends(require_min_role("member"))],
+)
 
 
 @router.get("", response_model=PaginatedResponse[WeeklySummaryResponse])

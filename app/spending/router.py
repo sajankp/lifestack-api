@@ -14,6 +14,7 @@ from app.core.dependencies import (
     get_spending_category_service,
     get_spending_recurring_service,
     get_spending_transaction_service,
+    require_min_role,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.finance.service import AccountService
@@ -128,6 +129,7 @@ async def create_category(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     cat = await category_service.create_category(
         workspace_id, category_in, actor_id=user["id"], audit_logger=audit_logger
@@ -154,6 +156,7 @@ async def update_category(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     cat = await category_service.update_category(
         workspace_id,
@@ -172,6 +175,7 @@ async def delete_category(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await category_service.delete_category(
         workspace_id, category_id, actor_id=user["id"], audit_logger=audit_logger
@@ -295,6 +299,7 @@ async def create_transaction(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     tx = await transaction_service.create_transaction(
         user["id"], workspace_id, tx_in, audit_logger=audit_logger
@@ -333,6 +338,7 @@ async def update_transaction(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     tx = await transaction_service.update_transaction(
         workspace_id,
@@ -357,6 +363,7 @@ async def delete_transaction(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await transaction_service.delete_transaction(
         workspace_id, transaction_id, actor_id=user["id"], audit_logger=audit_logger
@@ -397,6 +404,7 @@ async def create_budget(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     budget = await budget_service.create_budget(
         workspace_id, budget_in, actor_id=user["id"], audit_logger=audit_logger
@@ -414,6 +422,7 @@ async def update_budget(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     budget = await budget_service.update_budget(
         workspace_id,
@@ -460,6 +469,7 @@ async def create_recurring(
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     item = await recurring_service.create_recurring(workspace_id, user["id"], payload)
     return _recurring_response(item, payload.category_id)
@@ -505,6 +515,7 @@ async def patch_recurring(
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     item = await recurring_service.update_recurring(workspace_id, recurring_id, payload)
     cat_cache = await _build_category_cache(category_service, workspace_id)
@@ -519,5 +530,6 @@ async def delete_recurring(
     ],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await recurring_service.deactivate_recurring(workspace_id, recurring_id)

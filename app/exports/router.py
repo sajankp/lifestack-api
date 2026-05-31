@@ -10,13 +10,18 @@ from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
     get_export_service,
+    require_min_role,
 )
 from app.core.exceptions import NotFoundError
 from app.exports.models import ExportStatus
 from app.exports.schemas import ExportCreate, ExportResponse
 from app.exports.service import ExportService
 
-router = APIRouter(prefix="/exports", tags=["exports"])
+router = APIRouter(
+    prefix="/exports",
+    tags=["exports"],
+    dependencies=[Depends(require_min_role("member"))],
+)
 
 
 @router.post("", response_model=ExportResponse, status_code=status.HTTP_201_CREATED)

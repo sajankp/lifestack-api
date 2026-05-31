@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthSession, User
@@ -79,3 +79,12 @@ class AuthSessionRepository:
         await self.session.flush()
         await self.session.refresh(auth_session)
         return auth_session
+
+    async def revoke_all_by_user_id(self, user_id: int) -> int:
+        result = await self.session.execute(
+            update(AuthSession)
+            .where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(UTC))
+        )
+        await self.session.flush()
+        return result.rowcount

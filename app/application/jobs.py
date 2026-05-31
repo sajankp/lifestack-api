@@ -11,7 +11,7 @@ Boundary rules:
 """
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from sqlalchemy import func, select
@@ -22,9 +22,14 @@ from app.application.workflows import (
     process_workspace_recurring_transactions,
 )
 from app.core.database import postgres
-from app.platform.models import Workspace
+from app.notifications.repository import NotificationRepository
+from app.notifications.service import NotificationService
+from app.platform.models import Workspace, WorkspaceMembership
+from app.summaries.repository import WeeklySummaryRepository
+from app.summaries.service import WeeklySummaryService
 
 logger = structlog.get_logger(__name__)
+# ... (rest unchanged)
 
 # Postgres advisory lock key — prevents two running instances from executing
 # the same job concurrently during rolling deployments.
@@ -213,4 +218,119 @@ async def recurring_transactions_job() -> None:
             workspace_count=len(workspace_ids),
             total_generated=total_generated,
             total_todos_generated=total_todos_generated,
+        )
+
+
+WEEKLY_SUMMARY_LOCK_KEY = 1003
+
+
+async def weekly_summary_job() -> None:
+    """
+    Cron-triggered job that generates weekly summaries across all active workspaces.
+    Runs every Monday at 01:30 UTC.
+    """
+    start_time = datetime.now(UTC)
+    logger.info("weekly_summary_job_start", job_name="weekly_summary_job")
+
+    async with postgres.engine.connect() as conn, conn.begin():
+        lock_res = await conn.execute(
+            select(func.pg_try_advisory_xact_lock(WEEKLY_SUMMARY_LOCK_KEY))
+        )
+        has_lock = lock_res.scalar()
+        if not has_lock:
+            logger.info(
+                "weekly_summary_job_skipped_lock_held",
+                job_name="weekly_summary_job",
+            )
+            return
+
+        async with postgres.async_session_maker() as session:
+            workspaces_res = await session.execute(
+                select(Workspace.id).where(Workspace.is_active == True)  # noqa: E712
+            )
+            workspace_ids = list(workspaces_res.scalars().all())
+
+        # Calculate week_start as the Monday of the previous week
+        today = start_time.date()
+        days_since_monday = today.weekday()
+        last_monday = today - timedelta(days=days_since_monday + 7)
+
+        for workspace_id in workspace_ids:
+            ws_start = datetime.now(UTC)
+            try:
+                async with postgres.async_session_maker() as ws_session, ws_session.begin():
+                    workspace = await ws_session.get(Workspace, workspace_id)
+                    if workspace is None or not workspace.is_active:
+                        continue
+
+                    # Query all memberships for this workspace
+                    memberships_res = await ws_session.execute(
+                        select(WorkspaceMembership).where(
+                            WorkspaceMembership.workspace_id == workspace_id
+                        )
+                    )
+                    memberships = list(memberships_res.scalars().all())
+                    if not memberships:
+                        continue
+
+                    # Instantiate repos and service
+                    summary_repo = WeeklySummaryRepository(ws_session)
+                    notification_repo = NotificationRepository(ws_session)
+                    notification_service = NotificationService(notification_repo)
+                    service = WeeklySummaryService(summary_repo, ws_session, notification_service)
+
+                    # Generate summary for the first user
+                    primary_user_id = memberships[0].user_id
+                    await asyncio.wait_for(
+                        service.generate_for_workspace_week(
+                            workspace_id, primary_user_id, last_monday
+                        ),
+                        timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
+                    )
+
+                    # Notify remaining users
+                    for m in memberships[1:]:
+                        await notification_service.notify(
+                            workspace_id=workspace_id,
+                            user_id=m.user_id,
+                            category="system",
+                            severity="info",
+                            title=f"Weekly summary ready: {last_monday.isoformat()}",
+                            module="application",
+                        )
+
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.info(
+                    "weekly_summary_workspace_success",
+                    job_name="weekly_summary_job",
+                    workspace_id=workspace_id,
+                    duration_ms=duration_ms,
+                    status="success",
+                )
+            except TimeoutError:
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.error(
+                    "weekly_summary_workspace_timeout",
+                    job_name="weekly_summary_job",
+                    workspace_id=workspace_id,
+                    duration_ms=duration_ms,
+                    status="timeout",
+                )
+            except Exception:
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.error(
+                    "weekly_summary_workspace_failed",
+                    job_name="weekly_summary_job",
+                    workspace_id=workspace_id,
+                    duration_ms=duration_ms,
+                    status="failed",
+                    exc_info=True,
+                )
+
+        total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+        logger.info(
+            "weekly_summary_job_completed",
+            job_name="weekly_summary_job",
+            duration_ms=total_ms,
+            workspace_count=len(workspace_ids),
         )

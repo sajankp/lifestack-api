@@ -9,6 +9,7 @@ from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
     get_todo_service,
+    require_min_role,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.todo.schemas import (
@@ -47,6 +48,7 @@ async def create_todo(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     return await todo_service.create_todo(
         user["id"], workspace_id, todo_in, audit_logger=audit_logger
@@ -78,6 +80,7 @@ async def create_recurring_todo(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     return await todo_service.create_recurring_rule(
         user["id"], workspace_id, rule_in, audit_logger=audit_logger
@@ -92,6 +95,7 @@ async def update_recurring_todo(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     return await todo_service.update_recurring_rule(
         workspace_id, rule_id, rule_in, actor_id=user["id"], audit_logger=audit_logger
@@ -105,6 +109,7 @@ async def delete_recurring_todo(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await todo_service.delete_recurring_rule(
         workspace_id, rule_id, actor_id=user["id"], audit_logger=audit_logger
@@ -129,6 +134,7 @@ async def update_todo(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     return await todo_service.update_todo(
         workspace_id,
@@ -146,6 +152,7 @@ async def delete_todo(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await todo_service.delete_todo(
         workspace_id, todo_id, actor_id=user["id"], audit_logger=audit_logger

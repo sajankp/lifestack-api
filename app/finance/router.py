@@ -14,6 +14,7 @@ from app.core.dependencies import (
     get_finance_fx_rate_service,
     get_finance_setting_service,
     get_finance_transfer_service,
+    require_min_role,
 )
 from app.core.exceptions import NotFoundError
 from app.core.pagination import PaginatedResponse, PaginationParams
@@ -76,6 +77,7 @@ async def create_account(
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("admin"))],
 ):
     account = await account_service.create_account(workspace_id, account_in)
     return AccountResponse.model_validate(account)
@@ -88,6 +90,7 @@ async def update_account(
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("admin"))],
 ):
     account = await account_service.update_account(workspace_id, account_id, account_in)
     return AccountResponse.model_validate(account)
@@ -100,6 +103,7 @@ async def delete_account(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("admin"))],
 ):
     await account_service.delete_account(
         workspace_id=workspace_id,
@@ -132,6 +136,7 @@ async def update_workspace_finance_settings(
     setting_service: Annotated[FinanceSettingService, Depends(get_finance_setting_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("admin"))],
 ):
     row = await setting_service.update_workspace_settings(
         workspace_id,
@@ -216,6 +221,7 @@ async def create_transfer(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     transfer = await transfer_service.create_transfer(
         workspace_id=workspace_id,

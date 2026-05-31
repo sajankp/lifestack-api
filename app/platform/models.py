@@ -45,6 +45,12 @@ class WorkspaceMembership(SQLModel, table=True):
         sa_type=sa.DateTime(timezone=True),
     )
 
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "workspace_id", "user_id", name="uq_workspace_membership_workspace_user"
+        ),
+    )
+
 
 # Note: For Enum support in SQLModel/SQLAlchemy with Postgres, it's safer to use sa_type=sa.String() or sa.Enum()
 # Since I'm using SQLModel, I'll refine the Membership model to be safer with sa_type.

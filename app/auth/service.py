@@ -3,11 +3,13 @@ from datetime import UTC, datetime, timedelta
 from app.auth.models import AuthSession, User
 from app.auth.repository import AuthSessionRepository, UserRepository
 from app.auth.schemas import UserCreate
-from app.core.auth import verify_password
+from app.core.auth import hash_password, verify_password
 from app.core.exceptions import ConflictError, UnauthorizedError
 
 
 class AuthService:
+    DUMMY_PASSWORD_HASH = "$argon2id$v=19$m=65536,t=3,p=4$GOmQ3l1jgCgnsSr1XaQO4A$cuP2ZOCQDzD6pisbkLxr1toLEOhywb1hu1xaLVP4v2U"
+
     def __init__(self, user_repo: UserRepository, session_repo: AuthSessionRepository):
         self.user_repo = user_repo
         self.session_repo = session_repo
@@ -31,10 +33,13 @@ class AuthService:
         if not user:
             # Maybe try email
             user = await self.user_repo.get_by_email(username_or_email)
-            if not user:
-                return None
+
+        if not user:
+            verify_password(password, self.DUMMY_PASSWORD_HASH)
+            return None
 
         if not user.is_active:
+            verify_password(password, user.hashed_password)
             return None
 
         is_valid, _ = verify_password(password, user.hashed_password)
@@ -63,3 +68,18 @@ class AuthService:
 
     async def revoke_session(self, sid: str) -> bool:
         return await self.session_repo.revoke_by_sid(sid)
+
+    async def change_password(self, user_id: int, current_password: str, new_password: str) -> None:
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            raise UnauthorizedError(detail="User not found")
+        is_valid, _ = verify_password(current_password, user.hashed_password)
+        if not is_valid:
+            raise UnauthorizedError(detail="Incorrect current password")
+
+        user.hashed_password = hash_password(new_password)
+        self.user_repo.session.add(user)
+        await self.user_repo.session.flush()
+
+    async def revoke_all_sessions(self, user_id: int) -> int:
+        return await self.session_repo.revoke_all_by_user_id(user_id)

@@ -10,7 +10,7 @@ from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.auth import get_user_info_from_token
 from app.core.database.postgres import get_db_session
-from app.core.exceptions import CSRFFailedError, UnauthorizedError
+from app.core.exceptions import CSRFFailedError, ForbiddenError, UnauthorizedError
 from app.exports.repository import ExportRepository
 from app.exports.service import ExportService
 from app.finance.repository import (
@@ -49,6 +49,7 @@ from app.investing.service import (
 )
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
+from app.platform.models import WorkspaceRole
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
 from app.spending.repository import (
@@ -518,6 +519,7 @@ async def get_weekly_summary_service(
 
 
 async def get_current_workspace_id(
+    request: Request,
     current_user: dict = Depends(get_current_user),
     workspace_service: WorkspaceService = Depends(get_workspace_service),
     membership_repo: MembershipRepository = Depends(get_membership_repo),
@@ -534,21 +536,79 @@ async def get_current_workspace_id(
     atomically during registration, so this fallback path should never execute.
     It exists as a safety net, not as the primary provisioning mechanism.
     """
+    membership = None
+    workspace_id = None
+
     if current_user.get("default_workspace_id") is not None:
         claimed_workspace_id = int(current_user["default_workspace_id"])
         membership = await membership_repo.get_membership(claimed_workspace_id, current_user["id"])
         if membership:
-            return claimed_workspace_id
+            workspace_id = claimed_workspace_id
 
-    workspaces = await workspace_service.get_user_workspaces(current_user["id"])
-    if not workspaces:
-        workspace = await workspace_service.ensure_default_workspace(
-            current_user["id"], current_user["username"]
+    if workspace_id is None:
+        workspaces = await workspace_service.get_user_workspaces(current_user["id"])
+        if not workspaces:
+            workspace = await workspace_service.ensure_default_workspace(
+                current_user["id"], current_user["username"]
+            )
+            await category_service.provision_default_categories(workspace.id)
+            workspace_id = workspace.id
+        else:
+            workspace_id = workspaces[0].id
+
+        if membership is None or membership.workspace_id != workspace_id:
+            membership = await membership_repo.get_membership(workspace_id, current_user["id"])
+
+    # Store resolved workspace_id, membership, and role on request state for downstream checks
+    request.state.workspace_id = workspace_id
+    if membership:
+        request.state.membership = membership
+        request.state.role = membership.role
+    else:
+        request.state.role = WorkspaceRole.OWNER
+
+    return workspace_id
+
+
+async def get_current_membership(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+    workspace_id: int = Depends(get_current_workspace_id),
+    membership_repo: MembershipRepository = Depends(get_membership_repo),
+):
+    if hasattr(request.state, "membership") and request.state.membership:
+        return request.state.membership
+
+    membership = await membership_repo.get_membership(workspace_id, current_user["id"])
+    if not membership:
+        raise ForbiddenError(detail="Not a member of this workspace")
+    request.state.membership = membership
+    request.state.role = membership.role
+    return membership
+
+
+ROLE_RANK = {
+    "owner": 4,
+    "admin": 3,
+    "member": 2,
+    "viewer": 1,
+}
+
+
+def require_min_role(min_role: str):
+    async def dependency(
+        membership=Depends(get_current_membership),
+    ):
+        user_role = (
+            membership.role.value if hasattr(membership.role, "value") else str(membership.role)
         )
-        await category_service.provision_default_categories(workspace.id)
-        return workspace.id
+        target_role = min_role.value if hasattr(min_role, "value") else str(min_role)
 
-    return workspaces[0].id
+        if ROLE_RANK.get(user_role, 0) < ROLE_RANK.get(target_role, 0):
+            raise ForbiddenError(detail="Insufficient workspace permissions")
+        return membership
+
+    return dependency
 
 
 # ---------------------------------------------------------------------------

@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     COOKIE_SAMESITE: str = "lax"
     COOKIE_DOMAIN: str | None = None
 
+    # Trusted Proxies (Spec 025)
+    TRUSTED_PROXIES: list[str] = ["127.0.0.1", "::1", "testclient"]
+
     # CSP Configuration
     CSP_IMG_SRC: str = (
         ""  # Extra img-src sources (e.g. CDN URLs); 'self' and data: are always included
@@ -158,29 +161,47 @@ class Settings(BaseSettings):
                 sanitized.append(normalized)
         return sanitized
 
+    @model_validator(mode="before")
+    @classmethod
+    def _parse_trusted_proxies(cls, data: dict) -> dict:
+        trusted_proxies = data.get("TRUSTED_PROXIES")
+        if isinstance(trusted_proxies, str):
+            data["TRUSTED_PROXIES"] = [
+                ip.strip() for ip in trusted_proxies.split(",") if ip.strip()
+            ]
+        return data
+
     @model_validator(mode="after")
     def _check_production_defaults(self) -> "Settings":
-        """Fail fast when insecure defaults are used against a remote database."""
-        parsed_db = urlparse(self.DATABASE_URL)
-        is_local_db = parsed_db.hostname in ("localhost", "127.0.0.1", "postgres")
-
-        if not is_local_db:
+        """Fail fast when insecure defaults are used in production."""
+        if self.ENV == "production":
             if self.SECRET_KEY == "super-secret-key-change-in-production":
-                raise ValueError(
-                    "SECRET_KEY must be changed from its default value "
-                    "when DATABASE_URL points to a remote host."
-                )
+                raise ValueError("SECRET_KEY must be changed from its default value in production.")
             if self.METRICS_TOKEN.startswith("dev-"):
                 raise ValueError(
-                    "METRICS_TOKEN must be changed from its default value "
-                    "when DATABASE_URL points to a remote host."
+                    "METRICS_TOKEN must be changed from its default value in production."
                 )
             if not self.COOKIE_SECURE:
-                _logger.warning(
-                    "cookie_secure_disabled",
-                    msg="COOKIE_SECURE is False with a remote database — "
-                    "cookies will not require HTTPS.",
+                raise ValueError("COOKIE_SECURE must be enabled (True) in production.")
+            if self.RATE_LIMIT_STORAGE_URI == "memory://":
+                raise ValueError(
+                    "RATE_LIMIT_STORAGE_URI must be configured (non-memory) in production."
                 )
+        else:
+            # Fallback warning for non-local database when ENV is not production
+            parsed_db = urlparse(self.DATABASE_URL)
+            is_local_db = parsed_db.hostname in ("localhost", "127.0.0.1", "postgres")
+            if not is_local_db:
+                if self.SECRET_KEY == "super-secret-key-change-in-production":
+                    raise ValueError(
+                        "SECRET_KEY must be changed from its default value "
+                        "when DATABASE_URL points to a remote host."
+                    )
+                if self.METRICS_TOKEN.startswith("dev-"):
+                    raise ValueError(
+                        "METRICS_TOKEN must be changed from its default value "
+                        "when DATABASE_URL points to a remote host."
+                    )
         return self
 
 

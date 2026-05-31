@@ -16,6 +16,7 @@ from app.core.dependencies import (
     get_investing_instrument_service,
     get_investing_performance_service,
     get_investing_summary_service,
+    require_min_role,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.investing.schemas import (
@@ -73,6 +74,7 @@ async def create_holding(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     holding = await holding_service.create_holding(
         user["id"], workspace_id, holding_in, audit_logger=audit_logger
@@ -88,6 +90,7 @@ async def update_holding(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     holding = await holding_service.update_holding(
         workspace_id,
@@ -106,6 +109,7 @@ async def delete_holding(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await holding_service.delete_holding(
         workspace_id, holding_id, actor_id=user["id"], audit_logger=audit_logger
@@ -139,6 +143,7 @@ async def create_cash_balance(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     cash = await cash_service.create_cash_balance(
         user["id"], workspace_id, cash_in, audit_logger=audit_logger
@@ -154,6 +159,7 @@ async def update_cash_balance(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     cash = await cash_service.update_cash_balance(
         workspace_id,
@@ -172,6 +178,7 @@ async def delete_cash_balance(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await cash_service.delete_cash_balance(
         workspace_id, cash_balance_id, actor_id=user["id"], audit_logger=audit_logger
@@ -203,6 +210,7 @@ async def create_instrument(
     instrument_service: Annotated[InstrumentService, Depends(get_investing_instrument_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     instrument = await instrument_service.create_instrument(workspace_id, payload)
     return InstrumentResponse.model_validate(instrument)
@@ -234,6 +242,7 @@ async def upsert_instrument_constituents(
     constituent_service: Annotated[ConstituentService, Depends(get_investing_constituent_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await constituent_service.upsert_constituents(workspace_id, instrument_id, payload)
     return await constituent_service.get_constituents(
@@ -273,6 +282,7 @@ async def submit_prices(
     performance_service: Annotated[PerformanceService, Depends(get_investing_performance_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await performance_service.submit_prices(workspace_id, payload)
     return {"ok": True}

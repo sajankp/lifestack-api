@@ -106,6 +106,15 @@ class SecurityHeadersMiddleware:
 
                     csp_policy = f"default-src 'self'; {csp_img}{csp_style}{csp_script}{csp_font}{csp_connect}"
                     headers["content-security-policy"] = csp_policy.strip()
+                else:
+                    # Fallback CSP for FastAPI docs / Swagger UI
+                    headers["content-security-policy"] = (
+                        "default-src 'self'; "
+                        "img-src 'self' data: https://fastapi.tiangolo.com; "
+                        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                        "connect-src 'self';"
+                    )
 
                 # Protocol-aware HSTS
                 headers_dict = dict(scope.get("headers", []))
@@ -118,11 +127,15 @@ class SecurityHeadersMiddleware:
                     .lower()
                 )
 
-                if (
-                    settings.COOKIE_SECURE
-                    or scope.get("scheme") == "https"
-                    or x_forwarded_proto == "https"
-                ):
+                client = scope.get("client")
+                client_ip = client[0] if client else None
+                is_trusted_proxy = client_ip in settings.TRUSTED_PROXIES if client_ip else False
+
+                has_https_forwarded = False
+                if is_trusted_proxy and x_forwarded_proto == "https":
+                    has_https_forwarded = True
+
+                if settings.COOKIE_SECURE or scope.get("scheme") == "https" or has_https_forwarded:
                     headers["strict-transport-security"] = "max-age=31536000; includeSubDomains"
 
                 headers["x-content-type-options"] = "nosniff"

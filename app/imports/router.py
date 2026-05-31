@@ -10,6 +10,7 @@ from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
     get_import_service,
+    require_min_role,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.imports.models import ImportModule
@@ -22,7 +23,11 @@ from app.imports.schemas import (
 )
 from app.imports.service import ImportService
 
-router = APIRouter(prefix="/imports", tags=["imports"])
+router = APIRouter(
+    prefix="/imports",
+    tags=["imports"],
+    dependencies=[Depends(require_min_role("member"))],
+)
 
 
 def _build_error_summary(

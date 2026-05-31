@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.application.workflows import UserRegistrationWorkflow
-from app.auth.schemas import TokenResponse, UserCreate, UserResponse
+from app.auth.schemas import PasswordChange, TokenResponse, UserCreate, UserResponse
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.auth import create_token, get_user_info_from_token
@@ -151,8 +151,8 @@ async def refresh_token(
 
     await auth_service.touch_session(sid=sid, user_id=int(user_id))
     user = await auth_service.get_user_by_id(int(user_id))
-    if not user:
-        raise UnauthorizedError(detail="User account is no longer active")
+    if not user or not user.is_active:
+        raise UnauthorizedError(detail="User account is inactive or no longer exists")
     if default_workspace_id is None:
         default_workspace = await workspace_service.ensure_default_workspace(user.id, user.username)
         default_workspace_id = default_workspace.id
@@ -207,3 +207,40 @@ async def logout(
             secure=settings.COOKIE_SECURE,
         )
     return {"message": "Logged out successfully"}
+
+
+@router.post("/change-password")
+async def change_password(
+    data: PasswordChange,
+    current_user: dict = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service),
+):
+    await auth_service.change_password(
+        user_id=current_user["id"],
+        current_password=data.current_password,
+        new_password=data.new_password,
+    )
+    await auth_service.revoke_all_sessions(current_user["id"])
+    return {"message": "Password changed successfully"}
+
+
+@router.post("/logout-all")
+async def logout_all(
+    response: Response,
+    current_user: dict = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service),
+):
+    await auth_service.revoke_all_sessions(current_user["id"])
+    for key in ("access_token", "refresh_token", "sid"):
+        response.set_cookie(
+            key=key,
+            value="",
+            httponly=True,
+            max_age=0,
+            expires=0,
+            path="/",
+            samesite=settings.COOKIE_SAMESITE,
+            domain=settings.COOKIE_DOMAIN,
+            secure=settings.COOKIE_SECURE,
+        )
+    return {"message": "Logged out from all devices"}

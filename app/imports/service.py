@@ -185,7 +185,7 @@ class ImportService:
             user_id=user_id,
             module=module,
             status=ImportStatus.uploaded,
-            filename=upload.filename,
+            filename=Path(upload.filename).name,
             content_type=upload.content_type,
             file_size_bytes=file_size,
             file_sha256=file_hash,
