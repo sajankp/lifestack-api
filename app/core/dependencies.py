@@ -49,7 +49,6 @@ from app.investing.service import (
 )
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
-from app.platform.models import WorkspaceRole
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
 from app.spending.repository import (
@@ -565,7 +564,7 @@ async def get_current_workspace_id(
         request.state.membership = membership
         request.state.role = membership.role
     else:
-        request.state.role = WorkspaceRole.OWNER
+        raise ForbiddenError(detail="Not a member of this workspace")
 
     return workspace_id
 

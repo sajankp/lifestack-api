@@ -479,9 +479,9 @@ class CapitalTransferService:
         fx_rate = float(transfer_in.fx_rate_used) if transfer_in.fx_rate_used is not None else 1.0
         converted_gross = gross * fx_rate
         total_fees = (
-            float(transfer_in.fx_fee_amount)
-            + float(transfer_in.platform_fee_amount)
-            + float(transfer_in.tax_amount)
+            float(transfer_in.fx_fee_amount or 0)
+            + float(transfer_in.platform_fee_amount or 0)
+            + float(transfer_in.tax_amount or 0)
         )
         net = float(transfer_in.net_amount_received)
         if abs(converted_gross - total_fees - net) > 0.01:
