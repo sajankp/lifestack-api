@@ -554,6 +554,12 @@ class ConstituentService:
         if instrument.instrument_type == InstrumentType.stock.value:
             raise ValidationError(detail="Stock instruments cannot have constituent snapshots")
 
+        total_weight = sum(item.weight for item in payload.constituents)
+        if not (Decimal("0.99") <= total_weight <= Decimal("1.01")):
+            raise ValidationError(
+                detail=f"Constituent weights must sum to approximately 1.0 (got {total_weight})"
+            )
+
         await self.constituent_repo.delete_snapshot(
             instrument.id, payload.as_of_date, payload.source
         )  # type: ignore[arg-type]

@@ -1,6 +1,6 @@
 """add_workspace_membership_uniqueness
 
-Revision ID: 0019_add_workspace_membership_uniqueness
+Revision ID: 0019_workspace_unique
 Revises: 0018_user_finance_settings
 Create Date: 2026-05-31 22:12:03.546704
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "0019_add_workspace_membership_uniqueness"
+revision = "0019_workspace_unique"
 down_revision = "0018_user_finance_settings"
 branch_labels = None
 depends_on = None

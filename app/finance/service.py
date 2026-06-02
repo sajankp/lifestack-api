@@ -306,6 +306,12 @@ class FxRateService:
             currency = await self.currency_repository.get_by_code(code)
             if not currency or not currency.is_active:
                 raise ValidationError(detail=f"Unsupported currency code '{code}'")
+        # Same-currency transfers must use a rate of exactly 1.0
+        if (
+            payload.base_currency_code.upper() == payload.quote_currency_code.upper()
+            and abs(float(payload.rate) - 1.0) > 1e-9
+        ):
+            raise ValidationError(detail="FX rate for same-currency pair must be 1.0")
         return await self.repository.upsert_rate(
             base_currency_code=payload.base_currency_code,
             quote_currency_code=payload.quote_currency_code,
@@ -467,6 +473,25 @@ class CapitalTransferService:
             occurred_at=transfer_in.occurred_at,
             notes=transfer_in.notes,
         )
+
+        # Validate arithmetic consistency: gross * fx_rate - total_fees == net (within 1 cent)
+        gross = float(transfer_in.gross_amount)
+        fx_rate = float(transfer_in.fx_rate_used) if transfer_in.fx_rate_used is not None else 1.0
+        converted_gross = gross * fx_rate
+        total_fees = (
+            float(transfer_in.fx_fee_amount)
+            + float(transfer_in.platform_fee_amount)
+            + float(transfer_in.tax_amount)
+        )
+        net = float(transfer_in.net_amount_received)
+        if abs(converted_gross - total_fees - net) > 0.01:
+            raise ValidationError(
+                detail=(
+                    f"Transfer arithmetic inconsistent: "
+                    f"gross ({gross:.2f}) * rate ({fx_rate:.4f}) - fees ({total_fees:.2f}) ≠ net ({net:.2f}). "
+                    f"Difference: {abs(converted_gross - total_fees - net):.4f}"
+                )
+            )
         transfer = await self.transfer_repository.create(transfer)
 
         if audit_logger:

@@ -1,3 +1,5 @@
+import html as html_mod
+
 from app.core.exceptions import NotFoundError
 from app.notifications.repository import NotificationRepository
 
@@ -21,13 +23,16 @@ class NotificationService:
         pref = await self.repository.get_preference(workspace_id, user_id, category)
         if pref and pref.is_muted:
             return None
+        # Sanitize free-text fields to prevent stored XSS
+        safe_title = html_mod.escape(title)
+        safe_body = html_mod.escape(body) if body is not None else None
         return await self.repository.create_notification({
             "workspace_id": workspace_id,
             "user_id": user_id,
             "category": category,
             "severity": severity,
-            "title": title,
-            "body": body,
+            "title": safe_title,
+            "body": safe_body,
             "module": module,
             "entity_type": entity_type,
             "entity_public_id": entity_public_id,

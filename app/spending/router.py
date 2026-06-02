@@ -216,7 +216,7 @@ async def list_transactions(
         items=[
             _transaction_response(
                 tx,
-                cat_cache[tx.category_id],
+                cat_cache.get(tx.category_id),
                 account_cache.get(tx.account_id) if tx.account_id is not None else None,
             )
             for tx in txs
@@ -263,7 +263,7 @@ async def get_transaction_summary(
         expense_total = sum(raw_totals.values())
         cat_cache = await _build_category_cache(category_service, workspace_id)
         category_totals = [
-            CategorySpendTotal(category_id=cat_cache[cat_id], total=total)
+            CategorySpendTotal(category_id=cat_cache.get(cat_id), total=total)
             for cat_id, total in raw_totals.items()
         ]
 
@@ -323,7 +323,7 @@ async def get_transaction(
     account_cache = await _build_account_cache(account_service, workspace_id)
     return _transaction_response(
         tx,
-        cat_cache[tx.category_id],
+        cat_cache.get(tx.category_id),
         account_cache.get(tx.account_id) if tx.account_id is not None else None,
     )
 
@@ -351,7 +351,7 @@ async def update_transaction(
     account_cache = await _build_account_cache(account_service, workspace_id)
     return _transaction_response(
         tx,
-        cat_cache[tx.category_id],
+        cat_cache.get(tx.category_id),
         account_cache.get(tx.account_id) if tx.account_id is not None else None,
     )
 
@@ -389,7 +389,7 @@ async def list_budgets(
     )
     cat_cache = await _build_category_cache(category_service, workspace_id)
     return PaginatedResponse(
-        items=[_budget_response(b, cat_cache[b.category_id]) for b in budgets],
+        items=[_budget_response(b, cat_cache.get(b.category_id)) for b in budgets],
         total=total,
         limit=pagination.limit,
         offset=pagination.offset,
@@ -432,7 +432,7 @@ async def update_budget(
         audit_logger=audit_logger,
     )
     cat_cache = await _build_category_cache(category_service, workspace_id)
-    return _budget_response(budget, cat_cache[budget.category_id])
+    return _budget_response(budget, cat_cache.get(budget.category_id))
 
 
 @router.get("/recurring", response_model=PaginatedResponse[RecurringTransactionResponse])
@@ -451,7 +451,7 @@ async def list_recurring(
     )
     cat_cache = await _build_category_cache(category_service, workspace_id)
     return PaginatedResponse(
-        items=[_recurring_response(item, cat_cache[item.category_id]) for item in items],
+        items=[_recurring_response(item, cat_cache.get(item.category_id)) for item in items],
         total=total,
         limit=pagination.limit,
         offset=pagination.offset,
@@ -502,7 +502,7 @@ async def get_recurring(
 ):
     item = await recurring_service.get_recurring(workspace_id, recurring_id)
     cat_cache = await _build_category_cache(category_service, workspace_id)
-    return _recurring_response(item, cat_cache[item.category_id])
+    return _recurring_response(item, cat_cache.get(item.category_id))
 
 
 @router.patch("/recurring/{recurring_id}", response_model=RecurringTransactionResponse)
@@ -519,7 +519,7 @@ async def patch_recurring(
 ):
     item = await recurring_service.update_recurring(workspace_id, recurring_id, payload)
     cat_cache = await _build_category_cache(category_service, workspace_id)
-    return _recurring_response(item, cat_cache[item.category_id])
+    return _recurring_response(item, cat_cache.get(item.category_id))
 
 
 @router.delete("/recurring/{recurring_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -2,6 +2,10 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.exc import DBAPIError
+
+from app.core.database import postgres
+from app.finance.models import FxRate
 
 
 async def _register_and_login(
@@ -333,3 +337,91 @@ async def test_finance_settings_fx_and_transfers_flow(client: AsyncClient):
     assert get_body["net_amount_received"] == "792.00"
     assert get_body["from_account_public_id"] == from_account.json()["public_id"]
     assert get_body["to_account_public_id"] == to_account.json()["public_id"]
+
+
+@pytest.mark.asyncio
+async def test_fx_rate_same_currency_check_constraint(override_database_url):
+    # 1. Insert matching currency with rate != 1.0: should fail due to DB constraint
+    async with postgres.async_session_maker() as session:
+        bad_rate = FxRate(
+            base_currency_code="USD",
+            quote_currency_code="USD",
+            rate=1.05,
+            as_of=datetime.now(UTC),
+            fetched_at=datetime.now(UTC),
+            source="test-violator",
+        )
+        session.add(bad_rate)
+        with pytest.raises(DBAPIError) as exc:
+            await session.commit()
+        assert "ck_fx_rates_same_currency_rate" in str(exc.value)
+        await session.rollback()
+
+    # 2. Insert matching currency with rate == 1.0: should succeed
+    async with postgres.async_session_maker() as session:
+        good_rate = FxRate(
+            base_currency_code="USD",
+            quote_currency_code="USD",
+            rate=1.0,
+            as_of=datetime.now(UTC),
+            fetched_at=datetime.now(UTC),
+            source="test-good",
+        )
+        session.add(good_rate)
+        await session.commit()
+
+        # Clean up
+        await session.delete(good_rate)
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_transfer_arithmetic_validation_failure(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="finance-transfer-err@example.com",
+        username="finance-transfer-err",
+        password="password123",
+    )
+
+    from_account = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Budget Bank",
+            "account_type": "bank",
+            "default_currency_code": "USD",
+        },
+    )
+    assert from_account.status_code == 201
+    to_account = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Global Brokerage",
+            "account_type": "brokerage",
+            "default_currency_code": "GBP",
+        },
+    )
+    assert to_account.status_code == 201
+
+    # Inconsistent arithmetic: gross=1000, rate=0.8 (converted=800), fees=8.0, but net=700 (should be 792)
+    transfer_res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "investing",
+            "from_account_id": from_account.json()["public_id"],
+            "to_account_id": to_account.json()["public_id"],
+            "from_currency_code": "USD",
+            "to_currency_code": "GBP",
+            "gross_amount": "1000.00",
+            "fx_rate_used": "0.8000000000",
+            "fx_fee_amount": "5.00",
+            "platform_fee_amount": "2.00",
+            "tax_amount": "1.00",
+            "net_amount_received": "700.00",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "notes": "Invalid transfer",
+        },
+    )
+    assert transfer_res.status_code == 422
+    assert "Transfer arithmetic inconsistent" in transfer_res.json()["detail"]

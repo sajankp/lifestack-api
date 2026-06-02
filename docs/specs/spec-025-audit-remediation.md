@@ -56,10 +56,11 @@ This specification details the technical designs for addressing the Critical and
    - Implement `require_min_role(min_role: WorkspaceRole)`:
      ```python
      def require_min_role(min_role: WorkspaceRole):
-         async def dependency(membership = Depends(get_current_membership)):
+         async def dependency(membership=Depends(get_current_membership)):
              if ROLE_RANK[membership.role] < ROLE_RANK[min_role]:
                  raise ForbiddenError(detail="Insufficient workspace permissions")
              return membership
+
          return dependency
      ```
 2. **Timing Attack**:
