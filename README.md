@@ -6,6 +6,8 @@ Lifestack is an open-source personal operating system for one user or one househ
 
 The core idea is simple: tasks, spending, investing, health, documents, and personal knowledge should not live in separate silos. They should share one data model, one auth system, one dashboard, and eventually one AI interface.
 
+The long-term wedge is a calm daily briefing: what needs attention today, what changed across money and health, which documents or reports need follow-up, and what the personal coach recommends with visible source context.
+
 ---
 
 ## Product Principles
@@ -103,6 +105,8 @@ These are planned interface layers, not the foundation of the product. The core 
 
 These tracks are planned after completing Gate 0: Product Foundation Stabilization to ensure the system can protect personal data, run reliably, and support mobile-first capture.
 
+The roadmap uses human-readable eras: Foundation, Capture, Mobile Companion, Health Memory, Source-Backed Second Brain, and Personal Coach.
+
 ### Mobile Companion and Sync
 - Mobile app for quick capture, notifications, camera upload, and background sync.
 - Health-app sync through the mobile app for sleep, weight, workouts, and other supported metrics.
@@ -125,6 +129,13 @@ These tracks are planned after completing Gate 0: Product Foundation Stabilizati
 - Clear permission boundaries, audit trails, and exportability before broader AI automation.
 
 The product strategy and roadmap for this future track lives in [Product Strategy and Roadmap](docs/product/PRODUCT_STRATEGY_AND_ROADMAP.md).
+
+### Trust Model
+- Consent controls what data domains sync, retrieval, and coach features may use.
+- Every imported, synced, extracted, or assistant-used record keeps source metadata.
+- Sensitive health and financial changes require user confirmation.
+- Document-backed and health-backed answers should cite source records.
+- Export and deletion remain core product requirements.
 
 ### Future Cross-Module Examples
 - a medication dose can create a reminder and adherence entry

@@ -10,6 +10,25 @@ Lifestack should evolve from a personal productivity and finance system into a p
 
 The product should not become a generic chatbot with loose files attached. The durable differentiator is a shared data model where actions, money, health, documents, and memory can be captured, reviewed, exported, and reasoned over with clear source trails.
 
+### Why Now
+
+People already produce enough personal data to make better daily decisions: tasks, transactions, investments, sleep, weight, workouts, medication schedules, reports, receipts, notes, and documents. The problem is fragmentation. Most of that data lives in disconnected apps, inboxes, files, and health platforms.
+
+Lifestack's opportunity is to become the private system that turns this fragmented data into useful personal context without making the user surrender ownership or accept a black-box assistant.
+
+### Flagship Future Workflow
+
+The long-term product should make this kind of morning review possible:
+
+- today's tasks and overdue follow-ups
+- medication reminders and adherence check-ins
+- sleep, weight, and workout context
+- spending pressure and investment watch items
+- important document or health-report follow-ups
+- a coach summary that cites the source data behind each recommendation
+
+That workflow should feel like a calm operating briefing, not a chat transcript or a pile of dashboards.
+
 ## 2) Current Position
 
 The current product already has a strong foundation:
@@ -38,7 +57,24 @@ Recommended direction: keep the long-term product track, but gate implementation
 - Document RAG without source discipline can create false confidence.
 - Broad coaching before reliable data ingestion would feel impressive but fragile.
 
+### Trust and Safety Boundaries
+
+Lifestack can support reflection, reminders, planning, summaries, and source-backed recommendations. It should not diagnose medical conditions, prescribe medication, provide professional financial advice, or take sensitive health/financial actions autonomously.
+
+The coach should default to user-confirmed actions: create a reminder, open a review task, summarize a trend, or ask the user to verify source data before anything important changes.
+
 ## 4) Recommended Sequence
+
+The roadmap can use stage numbers for planning, but user-facing product eras should have memorable names:
+
+| Era | Product Name | Purpose |
+|---|---|---|
+| Gate 0 | Foundation | Make the current product secure, reliable, demoable, and honest in docs. |
+| Track 1 | Capture | Make logging and review fast across web and mobile. |
+| Track 2 | Mobile Companion | Move reminders, capture, camera upload, and health sync to the device people carry. |
+| Track 3 | Health Memory | Add health metrics, medications, workouts, and source-aware longitudinal records. |
+| Track 4 | Source-Backed Second Brain | Connect documents, notes, records, and activity through cited retrieval. |
+| Track 5 | Personal Coach | Turn structured personal context into planning support and review workflows. |
 
 ### Gate 0: Product Foundation Stabilization
 
@@ -156,7 +192,18 @@ Non-goals:
 - Autonomous financial or health actions.
 - Chat-first product design that bypasses structured workflows.
 
-## 5) PO Risks
+## 5) Personal Data Trust Model
+
+Trust is a product feature, not only an implementation detail.
+
+- **Consent:** users choose which domains the assistant, sync jobs, and retrieval layer may use.
+- **Source tracking:** every imported, synced, extracted, or assistant-used record keeps visible source metadata.
+- **Review before high-impact writes:** sensitive health and financial data should require human confirmation before normalized records are created or changed.
+- **Deletion and export:** health, document, memory, and coach-derived data must remain portable and removable.
+- **Audit trails:** assistant actions and automated workflows should leave enough history for the user to understand what happened and why.
+- **Cited responses:** document-backed and health-backed answers should cite source records instead of presenting unsupported conclusions.
+
+## 6) PO Risks
 
 | Risk | Why It Matters | Mitigation |
 |---|---|---|
@@ -166,7 +213,7 @@ Non-goals:
 | Scope explosion | Health, documents, and coach features can each become a full product. | Sequence tracks and use non-goals aggressively. |
 | Coach safety | Recommendations can be mistaken for professional advice. | Keep coach as planning support with disclaimers, audit trails, and user-confirmed actions. |
 
-## 6) README Update Requirements
+## 7) README Update Requirements
 
 The README should:
 
@@ -175,8 +222,10 @@ The README should:
 - Avoid claiming health/documents/memory are implemented today.
 - Name the stabilization gate before new high-trust modules.
 - Describe AI as an interface over structured services, not the foundation.
+- Explain the trust model and coach boundaries at a high level.
+- Name the flagship morning-review workflow so the roadmap feels like a product journey, not a list of modules.
 
-## 7) PO Verdict
+## 8) PO Verdict
 
 Proceed with the product track, but do not make it the immediate feature implementation branch.
 
