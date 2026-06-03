@@ -474,22 +474,23 @@ class CapitalTransferService:
             notes=transfer_in.notes,
         )
 
-        # Validate arithmetic consistency: gross * fx_rate - total_fees == net (within 1 cent)
-        gross = float(transfer_in.gross_amount)
-        fx_rate = float(transfer_in.fx_rate_used) if transfer_in.fx_rate_used is not None else 1.0
+        # Validate arithmetic consistency with Decimal precision before persistence.
+        gross = transfer_in.gross_amount
+        fx_rate = transfer_in.fx_rate_used if transfer_in.fx_rate_used is not None else Decimal("1")
         converted_gross = gross * fx_rate
         total_fees = (
-            float(transfer_in.fx_fee_amount or 0)
-            + float(transfer_in.platform_fee_amount or 0)
-            + float(transfer_in.tax_amount or 0)
+            (transfer_in.fx_fee_amount or Decimal("0"))
+            + (transfer_in.platform_fee_amount or Decimal("0"))
+            + (transfer_in.tax_amount or Decimal("0"))
         )
-        net = float(transfer_in.net_amount_received)
-        if abs(converted_gross - total_fees - net) > 0.01:
+        net = transfer_in.net_amount_received
+        difference = abs(converted_gross - total_fees - net)
+        if difference > Decimal("0.01"):
             raise ValidationError(
                 detail=(
                     f"Transfer arithmetic inconsistent: "
                     f"gross ({gross:.2f}) * rate ({fx_rate:.4f}) - fees ({total_fees:.2f}) ≠ net ({net:.2f}). "
-                    f"Difference: {abs(converted_gross - total_fees - net):.4f}"
+                    f"Difference: {difference:.4f}"
                 )
             )
         transfer = await self.transfer_repository.create(transfer)

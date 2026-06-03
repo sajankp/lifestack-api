@@ -217,7 +217,7 @@ The core rule is: business logic lives in services, cross-module orchestration l
 Based on architectural reviews and implementation, the following items are tracked:
 
 1. **Scheduler: Rolling Deploy Window:** Advisory locks still do not provide strict exactly-once delivery semantics. As a hard guardrail, non-idempotent scheduler jobs are now blocked unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly set.
-2. **Cross-repo full-stack E2E test harness:** FE and BE are separate repos; true UI+API+DB end-to-end tests should be hosted in a dedicated integration repo (planned scope item).
+2. **Cross-repo full-stack E2E test harness:** FE and BE are separate repos, and the dedicated `lifestack-e2e` repo now hosts the real UI+API+DB suite. The remaining debt is around smoother orchestration and reducing the current manual setup/migration steps.
 
 ---
 
