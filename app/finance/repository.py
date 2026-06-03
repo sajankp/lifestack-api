@@ -201,8 +201,8 @@ class FinanceSettingRepository:
         self,
         workspace_id: int,
         *,
-        reporting_currency_code: str | None = None,
-        currency_display_preference: CurrencyDisplayPreference | None = None,
+        reporting_currency_code: str | None,
+        currency_display_preference: CurrencyDisplayPreference | None,
     ) -> WorkspaceFinanceSetting:
         existing = await self.get_by_workspace(workspace_id)
         now = datetime.now(UTC)

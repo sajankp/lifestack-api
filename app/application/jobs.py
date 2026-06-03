@@ -24,7 +24,7 @@ from app.application.workflows import (
 from app.core.database import postgres
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
-from app.platform.models import Workspace, WorkspaceMembership
+from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.summaries.repository import WeeklySummaryRepository
 from app.summaries.service import WeeklySummaryService
 
@@ -223,6 +223,13 @@ async def recurring_transactions_job() -> None:
 
 WEEKLY_SUMMARY_LOCK_KEY = 1003
 
+WEEKLY_SUMMARY_ROLE_ORDER = {
+    WorkspaceRole.OWNER: 0,
+    WorkspaceRole.ADMIN: 1,
+    WorkspaceRole.MEMBER: 2,
+    WorkspaceRole.VIEWER: 3,
+}
+
 
 async def weekly_summary_job() -> None:
     """
@@ -259,9 +266,15 @@ async def weekly_summary_job() -> None:
                         )
                     )
                     for membership in memberships_res.scalars().all():
-                        memberships_by_workspace.setdefault(
-                            membership.workspace_id, []
-                        ).append(membership)
+                        memberships_by_workspace.setdefault(membership.workspace_id, []).append(
+                            membership
+                        )
+                    for memberships in memberships_by_workspace.values():
+                        memberships.sort(
+                            key=lambda membership: WEEKLY_SUMMARY_ROLE_ORDER.get(
+                                membership.role, 99
+                            )
+                        )
 
             # Calculate week_start as the Monday of the previous week
             today = start_time.date()
@@ -283,7 +296,9 @@ async def weekly_summary_job() -> None:
                         summary_repo = WeeklySummaryRepository(ws_session)
                         notification_repo = NotificationRepository(ws_session)
                         notification_service = NotificationService(notification_repo)
-                        service = WeeklySummaryService(summary_repo, ws_session, notification_service)
+                        service = WeeklySummaryService(
+                            summary_repo, ws_session, notification_service
+                        )
 
                         primary_user_id = memberships[0].user_id
                         await asyncio.wait_for(

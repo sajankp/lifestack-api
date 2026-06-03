@@ -16,6 +16,7 @@ from app.core.dependencies import (
     get_spending_transaction_service,
     require_min_role,
 )
+from app.core.exceptions import NotFoundError
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.finance.service import AccountService
 from app.spending.models import (
@@ -212,11 +213,14 @@ async def list_transactions(
     # Build category cache once before the loop
     cat_cache = await _build_category_cache(category_service, workspace_id)
     account_cache = await _build_account_cache(account_service, workspace_id)
+    missing_category_ids = {tx.category_id for tx in txs if tx.category_id not in cat_cache}
+    if missing_category_ids:
+        raise NotFoundError(detail="One or more transaction categories were not found")
     return PaginatedResponse(
         items=[
             _transaction_response(
                 tx,
-                cat_cache.get(tx.category_id),
+                cat_cache[tx.category_id],
                 account_cache.get(tx.account_id) if tx.account_id is not None else None,
             )
             for tx in txs

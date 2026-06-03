@@ -309,7 +309,7 @@ class FxRateService:
         # Same-currency transfers must use a rate of exactly 1.0
         if (
             payload.base_currency_code.upper() == payload.quote_currency_code.upper()
-            and abs(float(payload.rate) - 1.0) > 1e-9
+            and payload.rate != Decimal("1.0")
         ):
             raise ValidationError(detail="FX rate for same-currency pair must be 1.0")
         return await self.repository.upsert_rate(
