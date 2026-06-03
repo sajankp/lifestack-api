@@ -1,13 +1,12 @@
 from contextlib import suppress
 
 import structlog
-from fastapi import APIRouter, Depends, WebSocket
+from fastapi import APIRouter, WebSocket
 
 from app.auth.repository import AuthSessionRepository
 from app.capture.agent import run_agent_session
 from app.core.auth import get_user_info_from_token
 from app.core.database import postgres
-from app.core.dependencies import require_min_role
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
@@ -19,7 +18,6 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(
     prefix="/capture",
     tags=["capture"],
-    dependencies=[Depends(require_min_role("member"))],
 )
 
 
@@ -61,7 +59,7 @@ async def authenticate_ws(websocket: WebSocket) -> tuple[int, int]:
                 workspace_id = workspace.id
                 await session.commit()
 
-        # Enforce that the user has at least "member" role in the workspace
+        # Enforce that the user has at least "member" role in the workspace.
         final_membership = await membership_repo.get_membership(workspace_id, user_id)
         if not final_membership:
             raise ForbiddenError(detail="Not a member of this workspace")
