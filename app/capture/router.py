@@ -65,9 +65,9 @@ async def authenticate_ws(websocket: WebSocket) -> tuple[int, int]:
             raise ForbiddenError(detail="Not a member of this workspace")
 
         user_role = (
-            final_membership.role.value
+            str(final_membership.role.value).lower()
             if hasattr(final_membership.role, "value")
-            else str(final_membership.role)
+            else str(final_membership.role).split(".")[-1].lower()
         )
         role_rank = {
             "owner": 4,

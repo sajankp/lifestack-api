@@ -130,7 +130,9 @@ class AccountRepository:
     async def list_by_ids(self, workspace_id: int, account_ids: Sequence[int]) -> Sequence[Account]:
         if not account_ids:
             return []
-        unique_ids = sorted(set(account_ids))
+        unique_ids = list({account_id for account_id in account_ids if account_id is not None})
+        if not unique_ids:
+            return []
         result = await self.session.execute(
             select(Account).where(
                 Account.workspace_id == workspace_id,

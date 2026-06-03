@@ -594,14 +594,18 @@ ROLE_RANK = {
 }
 
 
+def _role_key(role) -> str:
+    if hasattr(role, "value"):
+        return str(role.value).lower()
+    return str(role).split(".")[-1].lower()
+
+
 def require_min_role(min_role: str):
     async def dependency(
         membership=Depends(get_current_membership),
     ):
-        user_role = (
-            membership.role.value if hasattr(membership.role, "value") else str(membership.role)
-        )
-        target_role = min_role.value if hasattr(min_role, "value") else str(min_role)
+        user_role = _role_key(membership.role)
+        target_role = _role_key(min_role)
 
         if ROLE_RANK.get(user_role, 0) < ROLE_RANK.get(target_role, 0):
             raise ForbiddenError(detail="Insufficient workspace permissions")

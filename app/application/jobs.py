@@ -251,9 +251,7 @@ async def weekly_summary_job() -> None:
 
         try:
             async with postgres.async_session_maker() as session:
-                workspaces_res = await session.execute(
-                    select(Workspace).where(Workspace.is_active == True)  # noqa: E712
-                )
+                workspaces_res = await session.execute(select(Workspace).where(Workspace.is_active))
                 workspaces = list(workspaces_res.scalars().all())
                 workspace_ids = [
                     workspace.id for workspace in workspaces if workspace.id is not None
