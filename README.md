@@ -101,7 +101,7 @@ These are planned interface layers, not the foundation of the product. The core 
 
 ## Future Product Tracks
 
-These tracks are planned after the current foundation is stable enough to protect personal data, run reliably, and support mobile-first capture.
+These tracks are planned after completing Gate 0: Product Foundation Stabilization to ensure the system can protect personal data, run reliably, and support mobile-first capture.
 
 ### Mobile Companion and Sync
 - Mobile app for quick capture, notifications, camera upload, and background sync.
@@ -124,7 +124,7 @@ These tracks are planned after the current foundation is stable enough to protec
 - Planning and recommendations grounded in todos, finance state, health metrics, medication adherence, workouts, documents, and journal/memory context.
 - Clear permission boundaries, audit trails, and exportability before broader AI automation.
 
-The product strategy and roadmap for this future track lives in [docs/product/PRODUCT_STRATEGY_AND_ROADMAP.md](docs/product/PRODUCT_STRATEGY_AND_ROADMAP.md).
+The product strategy and roadmap for this future track lives in [Product Strategy and Roadmap](docs/product/PRODUCT_STRATEGY_AND_ROADMAP.md).
 
 ### Future Cross-Module Examples
 - a medication dose can create a reminder and adherence entry
