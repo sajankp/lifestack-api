@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.finance.models import AccountType, TransferModule
+from app.finance.models import AccountType, CurrencyDisplayPreference, TransferModule
 
 
 class CurrencyResponse(BaseModel):
@@ -56,6 +56,7 @@ class AccountResponse(BaseModel):
 
 class WorkspaceFinanceSettingUpdate(BaseModel):
     reporting_currency_code: str | None = Field(default=None, min_length=1, max_length=10)
+    currency_display_preference: CurrencyDisplayPreference | None = None
 
     @field_validator("reporting_currency_code")
     @classmethod
@@ -67,9 +68,32 @@ class WorkspaceFinanceSettingUpdate(BaseModel):
 
 class WorkspaceFinanceSettingResponse(BaseModel):
     reporting_currency_code: str | None
+    currency_display_preference: CurrencyDisplayPreference
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserFinanceSettingUpdate(BaseModel):
+    reporting_currency_override_code: str | None = Field(default=None, min_length=1, max_length=10)
+    currency_display_preference_override: CurrencyDisplayPreference | None = None
+
+    @field_validator("reporting_currency_override_code")
+    @classmethod
+    def normalize_override_currency(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip().upper()
+
+
+class UserFinanceSettingResponse(BaseModel):
+    reporting_currency_override_code: str | None
+    currency_display_preference_override: CurrencyDisplayPreference | None
+    workspace_reporting_currency_code: str | None
+    workspace_currency_display_preference: CurrencyDisplayPreference
+    effective_reporting_currency_code: str | None
+    effective_currency_display_preference: CurrencyDisplayPreference
+    updated_at: datetime
 
 
 class FxRateUpsert(BaseModel):
@@ -125,6 +149,12 @@ class CapitalTransferResponse(BaseModel):
     to_module: TransferModule
     from_account_id: int
     to_account_id: int
+    from_account_public_id: uuid.UUID | None = None
+    to_account_public_id: uuid.UUID | None = None
+    from_account_name: str | None = None
+    to_account_name: str | None = None
+    from_account_type: AccountType | None = None
+    to_account_type: AccountType | None = None
     from_currency_code: str
     to_currency_code: str
     gross_amount: Decimal

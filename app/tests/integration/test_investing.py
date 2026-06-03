@@ -447,3 +447,41 @@ async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
     assert overlap["analysis_status"] == "complete"
     assert len(overlap["overlaps"]) >= 2
     assert overlap["overlaps"][0]["company_ticker"] in {"AAPL", "MSFT"}
+
+
+@pytest.mark.asyncio
+async def test_investing_constituent_weights_validation(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="constituent-weights@example.com",
+        username="const-weights",
+        password="password123",
+    )
+
+    instrument_res = await client.post(
+        "/v1/investing/instruments",
+        json={
+            "symbol": "VTI",
+            "name": "Vanguard Total Market ETF",
+            "instrument_type": "etf",
+        },
+    )
+    assert instrument_res.status_code == 201
+    instrument_id = instrument_res.json()["public_id"]
+
+    today = datetime.now(UTC).date().isoformat()
+    # sum of weights is 0.5 (invalid, should fail)
+    res = await client.post(
+        f"/v1/investing/instruments/{instrument_id}/constituents",
+        json={
+            "as_of_date": today,
+            "source": "test-seed",
+            "fetched_at": datetime.now(UTC).isoformat(),
+            "constituents": [
+                {"company_name": "Apple Inc", "company_ticker": "AAPL", "weight": "0.3"},
+                {"company_name": "Microsoft Corp", "company_ticker": "MSFT", "weight": "0.2"},
+            ],
+        },
+    )
+    assert res.status_code == 422
+    assert "Constituent weights must sum to approximately 1.0" in res.json()["detail"]

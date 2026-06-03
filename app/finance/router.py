@@ -14,9 +14,11 @@ from app.core.dependencies import (
     get_finance_fx_rate_service,
     get_finance_setting_service,
     get_finance_transfer_service,
+    require_min_role,
 )
 from app.core.exceptions import NotFoundError
 from app.core.pagination import PaginatedResponse, PaginationParams
+from app.finance.models import CurrencyDisplayPreference
 from app.finance.schemas import (
     AccountCreate,
     AccountResponse,
@@ -25,6 +27,8 @@ from app.finance.schemas import (
     CapitalTransferResponse,
     CurrencyResponse,
     FxRateResponse,
+    UserFinanceSettingResponse,
+    UserFinanceSettingUpdate,
     WorkspaceFinanceSettingResponse,
     WorkspaceFinanceSettingUpdate,
 )
@@ -73,6 +77,7 @@ async def create_account(
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("admin"))],
 ):
     account = await account_service.create_account(workspace_id, account_in)
     return AccountResponse.model_validate(account)
@@ -85,6 +90,7 @@ async def update_account(
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("admin"))],
 ):
     account = await account_service.update_account(workspace_id, account_id, account_in)
     return AccountResponse.model_validate(account)
@@ -97,6 +103,7 @@ async def delete_account(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("admin"))],
 ):
     await account_service.delete_account(
         workspace_id=workspace_id,
@@ -116,7 +123,9 @@ async def get_workspace_finance_settings(
     if row is None:
         # Keep response stable while settings row may not exist yet.
         return WorkspaceFinanceSettingResponse(
-            reporting_currency_code=None, updated_at=datetime.now(UTC)
+            reporting_currency_code=None,
+            currency_display_preference=CurrencyDisplayPreference.symbol,
+            updated_at=datetime.now(UTC),
         )
     return WorkspaceFinanceSettingResponse.model_validate(row)
 
@@ -127,11 +136,38 @@ async def update_workspace_finance_settings(
     setting_service: Annotated[FinanceSettingService, Depends(get_finance_setting_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("admin"))],
 ):
-    row = await setting_service.set_reporting_currency(
-        workspace_id, setting_in.reporting_currency_code
+    row = await setting_service.update_workspace_settings(
+        workspace_id,
+        setting_in.model_dump(exclude_unset=True),
     )
     return WorkspaceFinanceSettingResponse.model_validate(row)
+
+
+@router.get("/settings/user", response_model=UserFinanceSettingResponse)
+async def get_user_finance_settings(
+    setting_service: Annotated[FinanceSettingService, Depends(get_finance_setting_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+):
+    setting = await setting_service.get_user_settings(workspace_id, user["id"])
+    return UserFinanceSettingResponse.model_validate(setting)
+
+
+@router.patch("/settings/user", response_model=UserFinanceSettingResponse)
+async def update_user_finance_settings(
+    setting_in: UserFinanceSettingUpdate,
+    setting_service: Annotated[FinanceSettingService, Depends(get_finance_setting_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+):
+    setting = await setting_service.update_user_settings(
+        workspace_id,
+        user["id"],
+        setting_in.model_dump(exclude_unset=True),
+    )
+    return UserFinanceSettingResponse.model_validate(setting)
 
 
 @router.get("/fx-rates", response_model=FxRateResponse)
@@ -185,6 +221,7 @@ async def create_transfer(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     transfer = await transfer_service.create_transfer(
         workspace_id=workspace_id,

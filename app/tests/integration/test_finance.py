@@ -2,6 +2,10 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.exc import DBAPIError
+
+from app.core.database import postgres
+from app.finance.models import FxRate
 
 
 async def _register_and_login(
@@ -140,6 +144,23 @@ async def test_finance_account_validation_and_workspace_isolation(client: AsyncC
 
 
 @pytest.mark.asyncio
+async def test_finance_user_override_currency_validation(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="finance-user-override-validation@example.com",
+        username="finance-user-override-validation",
+        password="password123",
+    )
+
+    update_user_setting = await client.patch(
+        "/v1/finance/settings/user",
+        json={"reporting_currency_override_code": "EUR"},
+    )
+    assert update_user_setting.status_code == 422
+    assert update_user_setting.json()["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
 async def test_finance_account_delete_rejected_when_in_use(client: AsyncClient):
     await _register_and_login(
         client,
@@ -211,10 +232,52 @@ async def test_finance_settings_fx_and_transfers_flow(client: AsyncClient):
 
     setting_res = await client.patch(
         "/v1/finance/settings",
-        json={"reporting_currency_code": "USD"},
+        json={
+            "reporting_currency_code": "USD",
+            "currency_display_preference": "code",
+        },
     )
     assert setting_res.status_code == 200
     assert setting_res.json()["reporting_currency_code"] == "USD"
+    assert setting_res.json()["currency_display_preference"] == "code"
+
+    user_setting_res = await client.get("/v1/finance/settings/user")
+    assert user_setting_res.status_code == 200
+    user_setting_body = user_setting_res.json()
+    assert user_setting_body["workspace_reporting_currency_code"] == "USD"
+    assert user_setting_body["workspace_currency_display_preference"] == "code"
+    assert user_setting_body["effective_reporting_currency_code"] == "USD"
+    assert user_setting_body["effective_currency_display_preference"] == "code"
+    assert user_setting_body["reporting_currency_override_code"] is None
+    assert user_setting_body["currency_display_preference_override"] is None
+
+    update_user_setting = await client.patch(
+        "/v1/finance/settings/user",
+        json={
+            "reporting_currency_override_code": "INR",
+            "currency_display_preference_override": "symbol",
+        },
+    )
+    assert update_user_setting.status_code == 200
+    updated_user_setting_body = update_user_setting.json()
+    assert updated_user_setting_body["reporting_currency_override_code"] == "INR"
+    assert updated_user_setting_body["effective_reporting_currency_code"] == "INR"
+    assert updated_user_setting_body["currency_display_preference_override"] == "symbol"
+    assert updated_user_setting_body["effective_currency_display_preference"] == "symbol"
+
+    clear_user_override = await client.patch(
+        "/v1/finance/settings/user",
+        json={
+            "reporting_currency_override_code": None,
+            "currency_display_preference_override": None,
+        },
+    )
+    assert clear_user_override.status_code == 200
+    cleared_body = clear_user_override.json()
+    assert cleared_body["reporting_currency_override_code"] is None
+    assert cleared_body["currency_display_preference_override"] is None
+    assert cleared_body["effective_reporting_currency_code"] == "USD"
+    assert cleared_body["effective_currency_display_preference"] == "code"
 
     fx_upsert = await client.post(
         "/v1/finance/fx-rates",
@@ -252,12 +315,113 @@ async def test_finance_settings_fx_and_transfers_flow(client: AsyncClient):
         },
     )
     assert transfer_res.status_code == 201
-    transfer_id = transfer_res.json()["public_id"]
+    transfer_body = transfer_res.json()
+    transfer_id = transfer_body["public_id"]
+    assert transfer_body["from_account_public_id"] == from_account.json()["public_id"]
+    assert transfer_body["to_account_public_id"] == to_account.json()["public_id"]
+    assert transfer_body["from_account_name"] == "Budget Bank"
+    assert transfer_body["to_account_name"] == "Global Brokerage"
+    assert transfer_body["from_account_type"] == "bank"
+    assert transfer_body["to_account_type"] == "brokerage"
 
     list_transfers = await client.get("/v1/finance/transfers")
     assert list_transfers.status_code == 200
-    assert list_transfers.json()["total"] == 1
+    list_body = list_transfers.json()
+    assert list_body["total"] == 1
+    assert list_body["items"][0]["from_account_name"] == "Budget Bank"
+    assert list_body["items"][0]["to_account_name"] == "Global Brokerage"
 
     get_transfer = await client.get(f"/v1/finance/transfers/{transfer_id}")
     assert get_transfer.status_code == 200
-    assert get_transfer.json()["net_amount_received"] == "792.00"
+    get_body = get_transfer.json()
+    assert get_body["net_amount_received"] == "792.00"
+    assert get_body["from_account_public_id"] == from_account.json()["public_id"]
+    assert get_body["to_account_public_id"] == to_account.json()["public_id"]
+
+
+@pytest.mark.asyncio
+async def test_fx_rate_same_currency_check_constraint(override_database_url):
+    # 1. Insert matching currency with rate != 1.0: should fail due to DB constraint
+    async with postgres.async_session_maker() as session:
+        bad_rate = FxRate(
+            base_currency_code="USD",
+            quote_currency_code="USD",
+            rate=1.05,
+            as_of=datetime.now(UTC),
+            fetched_at=datetime.now(UTC),
+            source="test-violator",
+        )
+        session.add(bad_rate)
+        with pytest.raises(DBAPIError) as exc:
+            await session.commit()
+        assert "ck_fx_rates_same_currency_rate" in str(exc.value)
+        await session.rollback()
+
+    # 2. Insert matching currency with rate == 1.0: should succeed
+    async with postgres.async_session_maker() as session:
+        good_rate = FxRate(
+            base_currency_code="USD",
+            quote_currency_code="USD",
+            rate=1.0,
+            as_of=datetime.now(UTC),
+            fetched_at=datetime.now(UTC),
+            source="test-good",
+        )
+        session.add(good_rate)
+        await session.commit()
+
+        # Clean up
+        await session.delete(good_rate)
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_transfer_arithmetic_validation_failure(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="finance-transfer-err@example.com",
+        username="finance-transfer-err",
+        password="password123",
+    )
+
+    from_account = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Budget Bank",
+            "account_type": "bank",
+            "default_currency_code": "USD",
+        },
+    )
+    assert from_account.status_code == 201
+    to_account = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Global Brokerage",
+            "account_type": "brokerage",
+            "default_currency_code": "GBP",
+        },
+    )
+    assert to_account.status_code == 201
+
+    # Inconsistent arithmetic: gross=1000, rate=0.8 (converted=800), fees=8.0, but net=700 (should be 792)
+    transfer_res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "investing",
+            "from_account_id": from_account.json()["public_id"],
+            "to_account_id": to_account.json()["public_id"],
+            "from_currency_code": "USD",
+            "to_currency_code": "GBP",
+            "gross_amount": "1000.00",
+            "fx_rate_used": "0.8000000000",
+            "fx_fee_amount": "5.00",
+            "platform_fee_amount": "2.00",
+            "tax_amount": "1.00",
+            "net_amount_received": "700.00",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "notes": "Invalid transfer",
+        },
+    )
+    assert transfer_res.status_code == 422
+    assert "Transfer arithmetic inconsistent" in transfer_res.json()["detail"]

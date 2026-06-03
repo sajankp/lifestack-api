@@ -28,7 +28,7 @@ engine = get_engine()
 async_session_maker = get_session_maker(engine)
 
 
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_db_session() -> AsyncGenerator[AsyncSession]:
     """Dependency for injecting database sessions.
 
     **Session Lifecycle (Request-Scoped)**

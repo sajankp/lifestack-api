@@ -6,8 +6,8 @@ from fastapi import APIRouter, WebSocket
 from app.auth.repository import AuthSessionRepository
 from app.capture.agent import run_agent_session
 from app.core.auth import get_user_info_from_token
-from app.core.database.postgres import async_session_maker
-from app.core.exceptions import UnauthorizedError
+from app.core.database import postgres
+from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
 from app.spending.repository import CategoryRepository
@@ -15,18 +15,19 @@ from app.spending.service import CategoryService
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter(prefix="/capture", tags=["capture"])
+router = APIRouter(
+    prefix="/capture",
+    tags=["capture"],
+)
 
 
 async def authenticate_ws(websocket: WebSocket) -> tuple[int, int]:
     token = websocket.cookies.get("access_token")
-    if not token:
-        token = websocket.query_params.get("token")
 
     if not token:
         raise UnauthorizedError(detail="Missing authorization token")
 
-    async with async_session_maker() as session:
+    async with postgres.async_session_maker() as session:
         auth_session_repo = AuthSessionRepository(session)
         username, user_id_str, sid, default_workspace_id = get_user_info_from_token(token)
         user_id = int(user_id_str)
@@ -57,6 +58,25 @@ async def authenticate_ws(websocket: WebSocket) -> tuple[int, int]:
                 await category_service.provision_default_categories(workspace.id)
                 workspace_id = workspace.id
                 await session.commit()
+
+        # Enforce that the user has at least "member" role in the workspace.
+        final_membership = await membership_repo.get_membership(workspace_id, user_id)
+        if not final_membership:
+            raise ForbiddenError(detail="Not a member of this workspace")
+
+        user_role = (
+            str(final_membership.role.value).lower()
+            if hasattr(final_membership.role, "value")
+            else str(final_membership.role).split(".")[-1].lower()
+        )
+        role_rank = {
+            "owner": 4,
+            "admin": 3,
+            "member": 2,
+            "viewer": 1,
+        }
+        if role_rank.get(user_role, 0) < role_rank.get("member", 0):
+            raise ForbiddenError(detail="Insufficient workspace permissions")
 
         return user_id, workspace_id
 

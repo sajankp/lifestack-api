@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class NotificationResponse(BaseModel):
@@ -17,6 +17,8 @@ class NotificationResponse(BaseModel):
     read_at: datetime | None
     created_at: datetime
 
+    model_config = ConfigDict(from_attributes=True)
+
 
 class NotificationPreferenceResponse(BaseModel):
     category: str
@@ -24,6 +26,8 @@ class NotificationPreferenceResponse(BaseModel):
     channel_email: bool
     channel_push: bool
     is_muted: bool
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class NotificationPreferenceUpdate(BaseModel):

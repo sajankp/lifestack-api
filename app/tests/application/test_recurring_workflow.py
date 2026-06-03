@@ -176,7 +176,6 @@ async def test_recurring_catchup_multiple_periods(override_database_url):
     workspace_id = 802
     user_id = 82
     today = datetime.now(UTC).date()
-    three_months_ago = today.replace(day=1) - timedelta(days=90)
 
     async with postgres.async_session_maker() as session:
         await _seed_workspace(
@@ -193,9 +192,9 @@ async def test_recurring_catchup_multiple_periods(override_database_url):
             workspace_id,
             user_id,
             cat.id,
-            frequency="monthly",
+            frequency="weekly",
             interval=1,
-            next_due_date=three_months_ago,
+            next_due_date=today - timedelta(days=20),
             amount=Decimal("15.99"),
         )
         await session.commit()

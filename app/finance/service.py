@@ -2,11 +2,12 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
-from app.finance.models import Account, CapitalTransfer
+from app.finance.models import Account, CapitalTransfer, CurrencyDisplayPreference
 from app.finance.repository import (
     AccountRepository,
     CapitalTransferRepository,
@@ -180,27 +181,115 @@ class FinanceSettingService:
     async def get_setting(self, workspace_id: int):
         return await self.setting_repository.get_by_workspace(workspace_id)
 
-    async def set_reporting_currency(self, workspace_id: int, reporting_currency_code: str | None):
-        if reporting_currency_code is not None:
-            currency = await self.currency_repository.get_by_code(reporting_currency_code)
-            if not currency or not currency.is_active:
-                raise ValidationError(
-                    detail=f"Unsupported reporting currency '{reporting_currency_code}'"
-                )
-            await self.currency_repository.ensure_workspace_defaults(workspace_id)
-            enabled = await self.currency_repository.is_enabled_for_workspace(
-                workspace_id, reporting_currency_code
-            )
-            if not enabled:
-                raise ValidationError(
-                    detail=(
-                        f"Reporting currency '{reporting_currency_code}' is not enabled "
-                        "for this workspace"
-                    )
-                )
-        return await self.setting_repository.upsert_reporting_currency(
-            workspace_id, reporting_currency_code
+    async def _validate_workspace_currency(
+        self, workspace_id: int, currency_code: str, *, label: str
+    ) -> None:
+        currency = await self.currency_repository.get_by_code(currency_code)
+        if not currency or not currency.is_active:
+            raise ValidationError(detail=f"Unsupported {label} '{currency_code}'")
+        await self.currency_repository.ensure_workspace_defaults(workspace_id)
+        enabled = await self.currency_repository.is_enabled_for_workspace(
+            workspace_id, currency_code
         )
+        if not enabled:
+            raise ValidationError(
+                detail=f"{label.title()} '{currency_code}' is not enabled for this workspace"
+            )
+
+    async def update_workspace_settings(self, workspace_id: int, updates: dict):
+        existing = await self.setting_repository.get_by_workspace(workspace_id)
+        reporting_currency_code = existing.reporting_currency_code if existing else None
+        currency_display_preference = (
+            existing.currency_display_preference if existing else CurrencyDisplayPreference.symbol
+        )
+
+        if "reporting_currency_code" in updates:
+            reporting_currency_code = updates["reporting_currency_code"]
+            if reporting_currency_code is not None:
+                await self._validate_workspace_currency(
+                    workspace_id,
+                    reporting_currency_code,
+                    label="reporting currency",
+                )
+
+        if "currency_display_preference" in updates:
+            currency_display_preference = (
+                updates["currency_display_preference"] or CurrencyDisplayPreference.symbol
+            )
+
+        return await self.setting_repository.upsert_workspace_settings(
+            workspace_id,
+            reporting_currency_code=reporting_currency_code,
+            currency_display_preference=currency_display_preference,
+        )
+
+    async def get_user_settings(self, workspace_id: int, user_id: int) -> dict:
+        workspace = await self.setting_repository.get_by_workspace(workspace_id)
+        user_setting = await self.setting_repository.get_user_setting(workspace_id, user_id)
+
+        workspace_reporting_currency_code = workspace.reporting_currency_code if workspace else None
+        workspace_currency_display_preference = (
+            workspace.currency_display_preference if workspace else CurrencyDisplayPreference.symbol
+        )
+        reporting_currency_override_code = (
+            user_setting.reporting_currency_override_code if user_setting else None
+        )
+        currency_display_preference_override = (
+            user_setting.currency_display_preference_override if user_setting else None
+        )
+        effective_reporting_currency_code = (
+            reporting_currency_override_code or workspace_reporting_currency_code
+        )
+        effective_currency_display_preference = (
+            currency_display_preference_override or workspace_currency_display_preference
+        )
+
+        updated_at = (
+            user_setting.updated_at
+            if user_setting
+            else workspace.updated_at
+            if workspace
+            else datetime.now(UTC)
+        )
+
+        return {
+            "reporting_currency_override_code": reporting_currency_override_code,
+            "currency_display_preference_override": currency_display_preference_override,
+            "workspace_reporting_currency_code": workspace_reporting_currency_code,
+            "workspace_currency_display_preference": workspace_currency_display_preference,
+            "effective_reporting_currency_code": effective_reporting_currency_code,
+            "effective_currency_display_preference": effective_currency_display_preference,
+            "updated_at": updated_at,
+        }
+
+    async def update_user_settings(self, workspace_id: int, user_id: int, updates: dict):
+        existing = await self.setting_repository.get_user_setting(workspace_id, user_id)
+        reporting_currency_override_code = (
+            existing.reporting_currency_override_code if existing else None
+        )
+        currency_display_preference_override = (
+            existing.currency_display_preference_override if existing else None
+        )
+
+        if "reporting_currency_override_code" in updates:
+            reporting_currency_override_code = updates["reporting_currency_override_code"]
+            if reporting_currency_override_code is not None:
+                await self._validate_workspace_currency(
+                    workspace_id,
+                    reporting_currency_override_code,
+                    label="override currency",
+                )
+
+        if "currency_display_preference_override" in updates:
+            currency_display_preference_override = updates["currency_display_preference_override"]
+
+        await self.setting_repository.upsert_user_settings(
+            workspace_id,
+            user_id,
+            reporting_currency_override_code=reporting_currency_override_code,
+            currency_display_preference_override=currency_display_preference_override,
+        )
+        return await self.get_user_settings(workspace_id, user_id)
 
 
 class FxRateService:
@@ -217,6 +306,12 @@ class FxRateService:
             currency = await self.currency_repository.get_by_code(code)
             if not currency or not currency.is_active:
                 raise ValidationError(detail=f"Unsupported currency code '{code}'")
+        # Same-currency transfers must use a rate of exactly 1.0
+        if (
+            payload.base_currency_code.upper() == payload.quote_currency_code.upper()
+            and payload.rate != Decimal("1.0")
+        ):
+            raise ValidationError(detail="FX rate for same-currency pair must be 1.0")
         return await self.repository.upsert_rate(
             base_currency_code=payload.base_currency_code,
             quote_currency_code=payload.quote_currency_code,
@@ -268,16 +363,70 @@ class CapitalTransferService:
         self.account_repository = account_repository
         self.currency_repository = currency_repository
 
+    def _serialize_transfer(
+        self,
+        transfer: CapitalTransfer,
+        from_account: Account | None,
+        to_account: Account | None,
+    ) -> dict[str, Any]:
+        return {
+            "public_id": transfer.public_id,
+            "from_module": transfer.from_module,
+            "to_module": transfer.to_module,
+            "from_account_id": transfer.from_account_id,
+            "to_account_id": transfer.to_account_id,
+            "from_account_public_id": from_account.public_id if from_account else None,
+            "to_account_public_id": to_account.public_id if to_account else None,
+            "from_account_name": from_account.name if from_account else None,
+            "to_account_name": to_account.name if to_account else None,
+            "from_account_type": from_account.account_type if from_account else None,
+            "to_account_type": to_account.account_type if to_account else None,
+            "from_currency_code": transfer.from_currency_code,
+            "to_currency_code": transfer.to_currency_code,
+            "gross_amount": transfer.gross_amount,
+            "fx_rate_used": transfer.fx_rate_used,
+            "fx_fee_amount": transfer.fx_fee_amount,
+            "platform_fee_amount": transfer.platform_fee_amount,
+            "tax_amount": transfer.tax_amount,
+            "net_amount_received": transfer.net_amount_received,
+            "occurred_at": transfer.occurred_at,
+            "notes": transfer.notes,
+            "created_at": transfer.created_at,
+            "updated_at": transfer.updated_at,
+        }
+
     async def list_transfers(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
-    ) -> tuple[Sequence[CapitalTransfer], int]:
-        return await self.transfer_repository.list_workspace_transfers(workspace_id, limit, offset)
+    ) -> tuple[Sequence[dict[str, Any]], int]:
+        transfers, total = await self.transfer_repository.list_workspace_transfers(
+            workspace_id, limit, offset
+        )
+        account_ids = [
+            *[transfer.from_account_id for transfer in transfers],
+            *[transfer.to_account_id for transfer in transfers],
+        ]
+        accounts = await self.account_repository.list_by_ids(workspace_id, account_ids)
+        account_by_id = {account.id: account for account in accounts}
 
-    async def get_transfer(self, workspace_id: int, public_id: uuid.UUID) -> CapitalTransfer:
+        items = [
+            self._serialize_transfer(
+                transfer,
+                account_by_id.get(transfer.from_account_id),
+                account_by_id.get(transfer.to_account_id),
+            )
+            for transfer in transfers
+        ]
+        return items, total
+
+    async def get_transfer(self, workspace_id: int, public_id: uuid.UUID) -> dict[str, Any]:
         transfer = await self.transfer_repository.get_by_public_id(workspace_id, public_id)
         if not transfer:
             raise NotFoundError(detail=f"Transfer with id {public_id} not found in this workspace")
-        return transfer
+        from_account = await self.account_repository.get_by_id(
+            workspace_id, transfer.from_account_id
+        )
+        to_account = await self.account_repository.get_by_id(workspace_id, transfer.to_account_id)
+        return self._serialize_transfer(transfer, from_account, to_account)
 
     async def create_transfer(
         self,
@@ -285,7 +434,7 @@ class CapitalTransferService:
         actor_id: int,
         transfer_in: CapitalTransferCreate,
         audit_logger: AuditLogger | None = None,
-    ) -> CapitalTransfer:
+    ) -> dict[str, Any]:
         from_account = await self.account_repository.get_by_public_id(
             workspace_id, transfer_in.from_account_id
         )
@@ -324,6 +473,26 @@ class CapitalTransferService:
             occurred_at=transfer_in.occurred_at,
             notes=transfer_in.notes,
         )
+
+        # Validate arithmetic consistency with Decimal precision before persistence.
+        gross = transfer_in.gross_amount
+        fx_rate = transfer_in.fx_rate_used if transfer_in.fx_rate_used is not None else Decimal("1")
+        converted_gross = gross * fx_rate
+        total_fees = (
+            (transfer_in.fx_fee_amount or Decimal("0"))
+            + (transfer_in.platform_fee_amount or Decimal("0"))
+            + (transfer_in.tax_amount or Decimal("0"))
+        )
+        net = transfer_in.net_amount_received
+        difference = abs(converted_gross - total_fees - net)
+        if difference > Decimal("0.01"):
+            raise ValidationError(
+                detail=(
+                    f"Transfer arithmetic inconsistent: "
+                    f"gross ({gross:.2f}) * rate ({fx_rate:.4f}) - fees ({total_fees:.2f}) ≠ net ({net:.2f}). "
+                    f"Difference: {difference:.4f}"
+                )
+            )
         transfer = await self.transfer_repository.create(transfer)
 
         if audit_logger:
@@ -371,4 +540,4 @@ class CapitalTransferService:
                 },
             )
 
-        return transfer
+        return self._serialize_transfer(transfer, from_account, to_account)

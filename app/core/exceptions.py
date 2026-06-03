@@ -21,11 +21,32 @@ _STATUS_TYPE_MAP: dict[int, str] = {
     429: "rate-limit-exceeded",
 }
 
+_STATUS_HINT_MAP: dict[int, str] = {
+    400: "Review request parameters and try again.",
+    401: "Authenticate and retry the request.",
+    403: "Verify workspace access and security constraints.",
+    404: "Confirm the resource exists in the current workspace.",
+    405: "Use a supported HTTP method for this endpoint.",
+    409: "Resolve conflicting state and retry.",
+    422: "Fix invalid fields and retry the request.",
+    429: "Wait and retry after the rate limit window.",
+    500: "Retry later or contact support if the problem persists.",
+}
+
 
 def _type_uri_for_status(status_code: int) -> str:
     """Map an HTTP status code to its canonical RFC 7807 type URI."""
     slug = _STATUS_TYPE_MAP.get(status_code, "api-error")
     return f"{ERROR_BASE_URI}/{slug}"
+
+
+def _code_from_type_uri(type_uri: str) -> str:
+    slug = type_uri.rsplit("/", maxsplit=1)[-1] if "/" in type_uri else type_uri
+    return slug.replace("-", "_")
+
+
+def _hint_for_status(status_code: int) -> str:
+    return _STATUS_HINT_MAP.get(status_code, "Review the request and try again.")
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +156,11 @@ async def api_exception_handler(request: Request, exc: APIError) -> JSONResponse
     )
     body: dict[str, object] = {
         "type": exc.type_uri,
+        "code": _code_from_type_uri(exc.type_uri),
         "title": exc.title,
         "status": exc.status_code,
         "detail": exc.detail,
+        "hint": _hint_for_status(exc.status_code),
         "instance": str(request.url.path),
     }
     if exc.extra_fields:
@@ -154,13 +177,16 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     logger.warning(
         "http_exception", status=exc.status_code, detail=exc.detail, url=str(request.url)
     )
+    type_uri = _type_uri_for_status(exc.status_code)
     return JSONResponse(
         status_code=exc.status_code,
         content={
-            "type": _type_uri_for_status(exc.status_code),
+            "type": type_uri,
+            "code": _code_from_type_uri(type_uri),
             "title": exc.detail if isinstance(exc.detail, str) else "API Error",
             "status": exc.status_code,
             "detail": str(exc.detail),
+            "hint": _hint_for_status(exc.status_code),
             "instance": str(request.url.path),
         },
         media_type=PROBLEM_JSON,
@@ -175,9 +201,11 @@ async def request_validation_exception_handler(
         status_code=422,
         content={
             "type": f"{ERROR_BASE_URI}/validation-error",
+            "code": "validation_error",
             "title": "Request Validation Error",
             "status": 422,
             "detail": "The request payload or parameters are invalid.",
+            "hint": _hint_for_status(422),
             "instance": str(request.url.path),
             "errors": exc.errors(),
         },
@@ -191,9 +219,11 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         status_code=500,
         content={
             "type": f"{ERROR_BASE_URI}/internal-server-error",
+            "code": "internal_server_error",
             "title": "Internal Server Error",
             "status": 500,
             "detail": "An unexpected error occurred processing your request.",
+            "hint": _hint_for_status(500),
             "instance": str(request.url.path),
         },
         media_type=PROBLEM_JSON,
@@ -206,9 +236,11 @@ async def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded)
         status_code=429,
         content={
             "type": f"{ERROR_BASE_URI}/rate-limit-exceeded",
+            "code": "rate_limit_exceeded",
             "title": "Rate Limit Exceeded",
             "status": 429,
             "detail": f"Rate limit exceeded: {exc.detail}",
+            "hint": _hint_for_status(429),
             "instance": str(request.url.path),
         },
         media_type=PROBLEM_JSON,

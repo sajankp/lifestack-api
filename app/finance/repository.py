@@ -10,7 +10,9 @@ from app.finance.models import (
     Account,
     CapitalTransfer,
     Currency,
+    CurrencyDisplayPreference,
     FxRate,
+    UserFinanceSetting,
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
 )
@@ -125,6 +127,20 @@ class AccountRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_by_ids(self, workspace_id: int, account_ids: Sequence[int]) -> Sequence[Account]:
+        if not account_ids:
+            return []
+        unique_ids = list({account_id for account_id in account_ids if account_id is not None})
+        if not unique_ids:
+            return []
+        result = await self.session.execute(
+            select(Account).where(
+                Account.workspace_id == workspace_id,
+                Account.id.in_(unique_ids),
+            )
+        )
+        return result.scalars().all()
+
     async def create(self, account: Account) -> Account:
         self.session.add(account)
         await self.session.flush()
@@ -183,13 +199,19 @@ class FinanceSettingRepository:
         )
         return result.scalar_one_or_none()
 
-    async def upsert_reporting_currency(
-        self, workspace_id: int, reporting_currency_code: str | None
+    async def upsert_workspace_settings(
+        self,
+        workspace_id: int,
+        *,
+        reporting_currency_code: str | None,
+        currency_display_preference: CurrencyDisplayPreference | None,
     ) -> WorkspaceFinanceSetting:
         existing = await self.get_by_workspace(workspace_id)
         now = datetime.now(UTC)
         if existing:
             existing.reporting_currency_code = reporting_currency_code
+            if currency_display_preference is not None:
+                existing.currency_display_preference = currency_display_preference
             existing.updated_at = now
             self.session.add(existing)
             await self.session.flush()
@@ -199,6 +221,48 @@ class FinanceSettingRepository:
         row = WorkspaceFinanceSetting(
             workspace_id=workspace_id,
             reporting_currency_code=reporting_currency_code,
+            currency_display_preference=(
+                currency_display_preference or CurrencyDisplayPreference.symbol
+            ),
+        )
+        self.session.add(row)
+        await self.session.flush()
+        await self.session.refresh(row)
+        return row
+
+    async def get_user_setting(self, workspace_id: int, user_id: int) -> UserFinanceSetting | None:
+        result = await self.session.execute(
+            select(UserFinanceSetting).where(
+                UserFinanceSetting.workspace_id == workspace_id,
+                UserFinanceSetting.user_id == user_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert_user_settings(
+        self,
+        workspace_id: int,
+        user_id: int,
+        *,
+        reporting_currency_override_code: str | None,
+        currency_display_preference_override: CurrencyDisplayPreference | None,
+    ) -> UserFinanceSetting:
+        existing = await self.get_user_setting(workspace_id, user_id)
+        now = datetime.now(UTC)
+        if existing:
+            existing.reporting_currency_override_code = reporting_currency_override_code
+            existing.currency_display_preference_override = currency_display_preference_override
+            existing.updated_at = now
+            self.session.add(existing)
+            await self.session.flush()
+            await self.session.refresh(existing)
+            return existing
+
+        row = UserFinanceSetting(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            reporting_currency_override_code=reporting_currency_override_code,
+            currency_display_preference_override=currency_display_preference_override,
         )
         self.session.add(row)
         await self.session.flush()

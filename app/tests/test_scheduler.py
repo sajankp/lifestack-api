@@ -128,12 +128,12 @@ async def test_scheduler_gating_and_registration():
         derived from BUDGET_GUARDRAILS_INTERVAL_HOURS.
     """
     # The global scheduler must be idle because SCHEDULER_ENABLED=False
-    assert (
-        settings.SCHEDULER_ENABLED is False
-    ), "SCHEDULER_ENABLED must be False in the test environment"
-    assert (
-        not scheduler.running
-    ), "Global scheduler must not be running when SCHEDULER_ENABLED=False"
+    assert settings.SCHEDULER_ENABLED is False, (
+        "SCHEDULER_ENABLED must be False in the test environment"
+    )
+    assert not scheduler.running, (
+        "Global scheduler must not be running when SCHEDULER_ENABLED=False"
+    )
 
     # Verify the job can be registered with the configured interval
     # (we use a local throwaway scheduler so we don't mutate global state)
@@ -542,7 +542,7 @@ async def test_budget_guardrails_per_workspace_failure_isolation(override_databa
         b_todos = (
             (await session.execute(select(Todo).where(Todo.workspace_id == 502))).scalars().all()
         )
-        assert (
-            len(b_todos) == 1
-        ), "Workspace 502 must still get its guardrail todo despite workspace 501 failing"
+        assert len(b_todos) == 1, (
+            "Workspace 502 must still get its guardrail todo despite workspace 501 failing"
+        )
         assert "[Budget] Warning" in b_todos[0].title

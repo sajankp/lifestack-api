@@ -100,22 +100,22 @@ async def test_registration_rollback_on_category_failure(client: AsyncClient):
     # After the rollback, none of the registration artifacts should exist
     async with postgres.async_session_maker() as session:
         user_result = await session.execute(select(User).where(User.username == username))
-        assert (
-            user_result.scalar_one_or_none() is None
-        ), "User row must not persist after a failed registration workflow"
+        assert user_result.scalar_one_or_none() is None, (
+            "User row must not persist after a failed registration workflow"
+        )
 
         workspace_result = await session.execute(
             select(Workspace).where(Workspace.name == f"{username}'s Workspace")
         )
-        assert (
-            workspace_result.scalar_one_or_none() is None
-        ), "Workspace row must not persist after a failed registration workflow"
+        assert workspace_result.scalar_one_or_none() is None, (
+            "Workspace row must not persist after a failed registration workflow"
+        )
 
         membership_result = await session.execute(
             select(WorkspaceMembership)
             .join(User, WorkspaceMembership.user_id == User.id)
             .where(User.email == email)
         )
-        assert (
-            membership_result.scalar_one_or_none() is None
-        ), "Membership row must not persist after a failed registration workflow"
+        assert membership_result.scalar_one_or_none() is None, (
+            "Membership row must not persist after a failed registration workflow"
+        )
