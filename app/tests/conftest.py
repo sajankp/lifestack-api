@@ -14,6 +14,8 @@ from app.core.database import postgres
 from app.core.dependencies import limiter
 from app.main import app
 
+_cached_tables: str | None = None
+
 
 @pytest.fixture(scope="session")
 def postgres_container():
@@ -50,7 +52,7 @@ def migrated_database_url(postgres_container):
     settings.DATABASE_URL = url
 
     config = Config("alembic.ini")
-    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+    config.set_main_option("sqlalchemy.url", settings.sync_database_url)
     command.upgrade(config, "head")
 
     return url
@@ -60,7 +62,7 @@ def migrated_database_url(postgres_container):
 async def test_database_engine(migrated_database_url):
     """Share one migrated test database engine across DB-backed tests."""
     engine = create_async_engine(
-        settings.DATABASE_URL,
+        migrated_database_url,
         echo=settings.LOG_LEVEL == "DEBUG",
         future=True,
         poolclass=NullPool,
@@ -70,21 +72,26 @@ async def test_database_engine(migrated_database_url):
 
 
 async def _reset_database(engine) -> None:
-    async with engine.begin() as conn:
-        result = await conn.execute(
-            text(
-                """
-                SELECT string_agg(format('%I.%I', table_schema, table_name), ', ')
-                FROM information_schema.tables
-                WHERE table_schema = 'public'
-                  AND table_type = 'BASE TABLE'
-                  AND table_name NOT IN ('alembic_version', 'currencies')
-                """
+    global _cached_tables
+
+    if _cached_tables is None:
+        async with engine.begin() as conn:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT string_agg(format('%I.%I', table_schema, table_name), ', ')
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                      AND table_type = 'BASE TABLE'
+                      AND table_name NOT IN ('alembic_version', 'currencies')
+                    """
+                )
             )
-        )
-        tables = result.scalar_one()
-        if tables:
-            await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+            _cached_tables = result.scalar_one() or ""
+
+    if _cached_tables:
+        async with engine.begin() as conn:
+            await conn.execute(text(f"TRUNCATE {_cached_tables} RESTART IDENTITY CASCADE"))
 
 
 @pytest.fixture
