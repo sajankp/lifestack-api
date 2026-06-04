@@ -61,6 +61,14 @@ Prove member vs admin vs viewer differences:
 
 The middleware already enforces `TRUSTED_PROXIES`. Test verifies behavior. No code change needed — add explicit test for spoofed header from untrusted client.
 
+### 2.7 Tenant-Safe Account References
+
+Finance accounts are workspace-scoped shared references. Add database-level ownership checks so direct writes cannot link a record in one workspace to an account from another workspace:
+- `accounts` exposes a composite `(id, workspace_id)` uniqueness target.
+- `spending_transactions(account_id, workspace_id)` references `accounts(id, workspace_id)`.
+- `capital_transfers(from_account_id, workspace_id)` and `capital_transfers(to_account_id, workspace_id)` reference `accounts(id, workspace_id)`.
+- Integration tests prove direct cross-workspace inserts fail even when bypassing service-layer validation.
+
 ---
 
 ## 3. Wave 2: Reliability and Test Confidence

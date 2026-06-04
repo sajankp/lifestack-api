@@ -54,7 +54,7 @@ class SpendingTransaction(SQLModel, table=True):
     workspace_id: int = Field(foreign_key="workspaces.id", index=True)
     user_id: int = Field(foreign_key="users.id", index=True)
     category_id: int = Field(foreign_key="spending_categories.id", index=True)
-    account_id: int | None = Field(default=None, foreign_key="accounts.id", index=True)
+    account_id: int | None = Field(default=None, index=True)
     recurring_transaction_id: int | None = Field(
         default=None, foreign_key="recurring_transactions.id", index=True
     )
@@ -83,6 +83,11 @@ class SpendingTransaction(SQLModel, table=True):
             ["category_id", "workspace_id"],
             ["spending_categories.id", "spending_categories.workspace_id"],
             name="fk_spending_transactions_category_workspace",
+        ),
+        sa.ForeignKeyConstraint(
+            ["account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_spending_transactions_account_workspace",
         ),
     )
 

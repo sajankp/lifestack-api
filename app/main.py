@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from app.application.jobs import (
     budget_guardrails_job,
+    export_cleanup_job,
     fx_rate_ingestion_job,
     recurring_transactions_job,
     weekly_summary_job,
@@ -92,6 +93,11 @@ async def lifespan(_app: FastAPI):
             fx_rate_ingestion_job,
             job_id="fx_rate_ingestion",
             hour_utc=2,
+        )
+        register_daily_job(
+            export_cleanup_job,
+            job_id="export_cleanup",
+            hour_utc=3,
         )
         scheduler.add_job(
             weekly_summary_job,

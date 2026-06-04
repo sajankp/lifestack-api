@@ -1,4 +1,3 @@
-import anyio
 import pytest
 from httpx import ASGITransport, AsyncClient
 from limits.storage import storage_from_string
@@ -14,6 +13,8 @@ from app.config import settings
 from app.core.database import postgres
 from app.core.dependencies import limiter
 from app.main import app
+
+_cached_tables: str | None = None
 
 
 @pytest.fixture(scope="session")
@@ -42,32 +43,67 @@ def override_redis_url(redis_container):
     yield url
 
 
-@pytest.fixture
-async def override_database_url(postgres_container):
-    """Point the app database settings at the testcontainer for one test run."""
+@pytest.fixture(scope="session")
+def migrated_database_url(postgres_container):
+    """Create the migrated test database once for the test session."""
     url = postgres_container.get_connection_url().replace(
         "postgresql+psycopg2://", "postgresql+asyncpg://"
     )
     settings.DATABASE_URL = url
 
     config = Config("alembic.ini")
-    config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
-    await anyio.to_thread.run_sync(command.upgrade, config, "head")
+    config.set_main_option("sqlalchemy.url", settings.sync_database_url)
+    command.upgrade(config, "head")
 
-    postgres.engine = create_async_engine(
-        settings.DATABASE_URL,
+    return url
+
+
+@pytest.fixture(scope="session")
+async def test_database_engine(migrated_database_url):
+    """Share one migrated test database engine across DB-backed tests."""
+    engine = create_async_engine(
+        migrated_database_url,
         echo=settings.LOG_LEVEL == "DEBUG",
         future=True,
         poolclass=NullPool,
     )
+    yield engine
+    await engine.dispose()
+
+
+async def _reset_database(engine) -> None:
+    global _cached_tables
+
+    if _cached_tables is None:
+        async with engine.begin() as conn:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT string_agg(format('%I.%I', table_schema, table_name), ', ')
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                      AND table_type = 'BASE TABLE'
+                      AND table_name NOT IN ('alembic_version', 'currencies')
+                    """
+                )
+            )
+            _cached_tables = result.scalar_one() or ""
+
+    if _cached_tables:
+        async with engine.begin() as conn:
+            await conn.execute(text(f"TRUNCATE {_cached_tables} RESTART IDENTITY CASCADE"))
+
+
+@pytest.fixture
+async def override_database_url(migrated_database_url, test_database_engine):
+    """Point the app at a clean migrated test database for one test run."""
+    settings.DATABASE_URL = migrated_database_url
+    postgres.engine = test_database_engine
     postgres.async_session_maker = postgres.get_session_maker(postgres.engine)
 
-    yield url
+    await _reset_database(postgres.engine)
 
-    async with postgres.engine.begin() as conn:
-        await conn.execute(text("DROP SCHEMA public CASCADE"))
-        await conn.execute(text("CREATE SCHEMA public"))
-    await postgres.engine.dispose()
+    yield migrated_database_url
 
 
 @pytest.fixture

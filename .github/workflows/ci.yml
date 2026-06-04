@@ -45,7 +45,7 @@ jobs:
           echo "ACCESS_TOKEN_EXPIRE_SECONDS=1800" >> .env
           echo "REFRESH_TOKEN_EXPIRE_SECONDS=3600" >> .env
 
-          uv run pytest --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=${{ env.COVERAGE_THRESHOLD }}
+          uv run pytest --durations=25 --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=${{ env.COVERAGE_THRESHOLD }}
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

@@ -101,6 +101,46 @@ class Settings(BaseSettings):
     IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3
     IMPORT_LOCAL_PATH: str = "/var/lib/lifestack/imports"
 
+    # Export storage hardening (Spec 006)
+    EXPORT_STORAGE_BACKEND: str = "db"  # db|local|s3
+    EXPORT_LOCAL_PATH: str = "/var/lib/lifestack/exports"
+    EXPORT_TTL_DAYS: int = 365
+    EXPORT_CLEANUP_ENABLED: bool = True
+    EXPORT_CLEANUP_DELETE_FILES: bool = True
+    EXPORT_CLEANUP_DELETE_RECORDS: bool = False
+
+    EXPORT_S3_ENDPOINT: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "EXPORT_S3_ENDPOINT", "IMPORT_S3_ENDPOINT", "CLOUDFLARE_R2_ENDPOINT"
+        ),
+    )
+    EXPORT_S3_BUCKET: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "EXPORT_S3_BUCKET", "IMPORT_S3_BUCKET", "CLOUDFLARE_R2_BUCKET"
+        ),
+    )
+    EXPORT_S3_REGION: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "EXPORT_S3_REGION", "IMPORT_S3_REGION", "CLOUDFLARE_R2_REGION"
+        ),
+    )
+    EXPORT_S3_ACCESS_KEY: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "EXPORT_S3_ACCESS_KEY", "IMPORT_S3_ACCESS_KEY", "CLOUDFLARE_R2_ACCESS_KEY"
+        ),
+    )
+    EXPORT_S3_SECRET_KEY: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "EXPORT_S3_SECRET_KEY", "IMPORT_S3_SECRET_KEY", "CLOUDFLARE_R2_SECRET_KEY"
+        ),
+    )
+    EXPORT_S3_FORCE_PATH_STYLE: bool = False
+
     # AI Voice Agent (Spec 021)
     GEMINI_API_KEY: str | None = None
     EXCHANGERATE_API_KEY: str | None = None
