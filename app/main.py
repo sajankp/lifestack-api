@@ -44,6 +44,7 @@ from app.finance.router import router as finance_router
 from app.imports.router import router as imports_router
 from app.investing.router import router as investing_router
 from app.notifications.router import router as notifications_router
+from app.platform.router import router as platform_router
 from app.spending.router import router as spending_router
 from app.summaries.router import router as summaries_router
 from app.todo.router import router as todo_router
@@ -168,6 +169,7 @@ def create_app() -> FastAPI:
     _app.include_router(summaries_router, prefix=settings.API_V1_STR)
     _app.include_router(capture_router, prefix=settings.API_V1_STR)
     _app.include_router(imports_router, prefix=settings.API_V1_STR)
+    _app.include_router(platform_router, prefix=settings.API_V1_STR)
 
     _app.include_router(health_router)
 
