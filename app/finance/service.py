@@ -293,6 +293,14 @@ class FinanceSettingService:
 
 
 class FxRateService:
+    """
+    Service managing FX rate lookup and updates.
+
+    FX rates are globally scoped system reference data (market data) rather than
+    workspace-scoped entities. Mutation capability (via `upsert`) is reserved
+    exclusively for background tasks/cron ingestion jobs.
+    """
+
     def __init__(
         self,
         repository: FxRateRepository,
@@ -302,6 +310,12 @@ class FxRateService:
         self.currency_repository = currency_repository
 
     async def upsert(self, payload: FxRateUpsert):
+        """
+        Upsert a globally scoped FX rate.
+
+        This method is system-restricted and should only be invoked by internal scheduled
+        jobs/workflows. It enforces validation on active currencies and same-currency constraints.
+        """
         for code in [payload.base_currency_code, payload.quote_currency_code]:
             currency = await self.currency_repository.get_by_code(code)
             if not currency or not currency.is_active:

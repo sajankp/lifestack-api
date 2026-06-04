@@ -177,6 +177,13 @@ async def get_fx_rate(
     fx_service: Annotated[FxRateService, Depends(get_finance_fx_rate_service)],
     _user: Annotated[dict, Depends(get_current_user)],
 ):
+    """
+    Retrieve the latest FX rate for a given base and quote currency.
+
+    FX rates are globally scoped system reference data (market data). This endpoint is read-only.
+    Updates or rate ingestion are managed exclusively by the system daily cron jobs;
+    direct user mutations are not permitted.
+    """
     rate_row = await fx_service.get_latest_pair(base, quote)
     if rate_row is None:
         raise NotFoundError(detail=f"FX rate not found for pair {base.upper()}/{quote.upper()}")

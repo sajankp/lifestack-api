@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import httpx
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,9 @@ from app.dashboard.schemas import (
     SystemSummary,
     TodosSummary,
 )
+from app.finance.repository import CurrencyRepository, FxRateRepository
+from app.finance.schemas import FxRateUpsert
+from app.finance.service import FxRateService
 from app.investing.service import InvestingSummaryService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.platform.service import WorkspaceService
@@ -629,3 +633,77 @@ async def process_workspace_recurring_todos(session: AsyncSession, workspace: Wo
 
     await session.flush()
     return generated
+
+
+async def ingest_fx_rates(session: AsyncSession) -> None:
+    """
+    Ingest daily FX rates from ExchangeRate-API (https://www.exchangerate-api.com).
+    Uses USD as the base currency.
+    If the API key is not configured or the call fails, raises an exception cleanly.
+    """
+    if not settings.EXCHANGERATE_API_KEY:
+        raise ValueError("EXCHANGERATE_API_KEY environment variable is not configured.")
+
+    logger.info("ingesting_fx_rates_start", base_currency="USD")
+
+    url = f"https://v6.exchangerate-api.com/v6/{settings.EXCHANGERATE_API_KEY}/latest/USD"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+
+    if data.get("result") != "success":
+        error_type = data.get("error-type", "unknown")
+        raise ValueError(f"ExchangeRate-API request failed: {error_type}")
+
+    conversion_rates = data.get("conversion_rates", {})
+    for code in ["USD", "GBP", "INR"]:
+        if code not in conversion_rates:
+            raise KeyError(
+                f"Expected currency code '{code}' missing from ExchangeRate-API conversion rates."
+            )
+
+    # Base rates relative to USD
+    usd_to_gbp = Decimal(str(conversion_rates["GBP"]))
+    usd_to_inr = Decimal(str(conversion_rates["INR"]))
+
+    # Derived rates
+    raw_rates = [
+        # USD -> GBP
+        ("USD", "GBP", usd_to_gbp),
+        # GBP -> USD
+        ("GBP", "USD", Decimal("1.0") / usd_to_gbp),
+        # USD -> INR
+        ("USD", "INR", usd_to_inr),
+        # INR -> USD
+        ("INR", "USD", Decimal("1.0") / usd_to_inr),
+        # GBP -> INR
+        ("GBP", "INR", usd_to_inr / usd_to_gbp),
+        # INR -> GBP
+        ("INR", "GBP", usd_to_gbp / usd_to_inr),
+    ]
+
+    rates_to_upsert = [
+        (base, quote, rate.quantize(Decimal("1.0000000000"))) for base, quote, rate in raw_rates
+    ]
+
+    currency_repo = CurrencyRepository(session)
+    fx_repo = FxRateRepository(session)
+    fx_service = FxRateService(fx_repo, currency_repo)
+
+    now = datetime.now(UTC)
+    as_of_unix = data.get("time_last_update_unix")
+    as_of = datetime.fromtimestamp(as_of_unix, UTC) if as_of_unix else now
+
+    for base, quote, rate in rates_to_upsert:
+        payload = FxRateUpsert(
+            base_currency_code=base,
+            quote_currency_code=quote,
+            rate=rate,
+            as_of=as_of,
+            fetched_at=now,
+            source="exchangerate-api",
+        )
+        await fx_service.upsert(payload)
+
+    logger.info("ingesting_fx_rates_success", count=len(rates_to_upsert))
