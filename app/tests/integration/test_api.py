@@ -27,6 +27,13 @@ async def test_auth_registration_and_login(client: AsyncClient):
     assert login_response.status_code == 200
     assert "access_token" in login_response.cookies
     assert "refresh_token" in login_response.cookies
+    assert "csrf_token" in login_response.cookies
+    csrf_cookie = next(
+        value
+        for key, value in login_response.headers.multi_items()
+        if key.lower() == "set-cookie" and value.startswith("csrf_token=")
+    )
+    assert "HttpOnly" not in csrf_cookie
 
 
 @pytest.mark.asyncio
@@ -109,6 +116,74 @@ async def test_cookie_authenticated_mutation_rejects_untrusted_origin(client: As
     body = response.json()
     assert body["type"] == "https://lifestack.app/errors/csrf-check-failed"
     assert body["title"] == "CSRF Check Failed"
+
+
+@pytest.mark.asyncio
+async def test_cookie_authenticated_mutation_rejects_missing_csrf_token(client: AsyncClient):
+    await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "csrf-missing@example.com",
+            "username": "csrfmissing",
+            "password": "TestPass123!",
+        },
+    )
+    login_response = await client.post(
+        "/v1/auth/login", data={"username": "csrfmissing", "password": "TestPass123!"}
+    )
+    assert login_response.status_code == 200
+    cookies = {key: value for key, value in login_response.cookies.items() if key != "csrf_token"}
+
+    client.cookies.clear()
+    response = await client.post("/v1/auth/logout", cookies=cookies)
+
+    assert response.status_code == 403
+    body = response.json()
+    assert body["type"] == "https://lifestack.app/errors/csrf-check-failed"
+    assert body["detail"] == "CSRF token cookie and X-CSRF-Token header are required"
+
+
+@pytest.mark.asyncio
+async def test_cookie_authenticated_mutation_rejects_mismatched_csrf_token(client: AsyncClient):
+    await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "csrf-mismatch@example.com",
+            "username": "csrfmismatch",
+            "password": "TestPass123!",
+        },
+    )
+    login_response = await client.post(
+        "/v1/auth/login", data={"username": "csrfmismatch", "password": "TestPass123!"}
+    )
+    assert login_response.status_code == 200
+
+    response = await client.post("/v1/auth/logout", headers={"X-CSRF-Token": "wrong-token"})
+
+    assert response.status_code == 403
+    body = response.json()
+    assert body["type"] == "https://lifestack.app/errors/csrf-check-failed"
+    assert body["detail"] == "CSRF token mismatch"
+
+
+@pytest.mark.asyncio
+async def test_cookie_authenticated_mutation_accepts_matching_csrf_token(client: AsyncClient):
+    await client.post(
+        "/v1/auth/register",
+        json={
+            "email": "csrf-match@example.com",
+            "username": "csrfmatch",
+            "password": "TestPass123!",
+        },
+    )
+    login_response = await client.post(
+        "/v1/auth/login", data={"username": "csrfmatch", "password": "TestPass123!"}
+    )
+    assert login_response.status_code == 200
+
+    response = await client.post("/v1/auth/logout")
+
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,7 @@ from sqlmodel import select
 from app.auth.models import User
 from app.config import settings
 from app.core.auth import create_token
+from app.core.csrf import issue_csrf_token
 from app.core.dependencies import (
     get_current_user,
     get_db_session,
@@ -184,3 +185,4 @@ async def select_workspace(
         domain=settings.COOKIE_DOMAIN,
         secure=settings.COOKIE_SECURE,
     )
+    issue_csrf_token(response, max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS)
