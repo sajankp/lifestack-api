@@ -212,12 +212,22 @@ class OverlapAnalyticsResponse(BaseModel):
 
 class HoldingPriceItem(BaseModel):
     holding_public_id: uuid.UUID
-    unit_price: Decimal = Field(..., gt=0)
+    unit_price: Decimal = Field(..., gt=0, le=Decimal("1000000"))
 
 
 class HoldingPriceBulkCreate(BaseModel):
     price_date: date
-    prices: list[HoldingPriceItem] = Field(default_factory=list, min_length=1)
+    prices: list[HoldingPriceItem] = Field(default_factory=list, min_length=1, max_length=500)
+
+    @field_validator("prices")
+    @classmethod
+    def validate_unique_holdings(cls, value: list[HoldingPriceItem]) -> list[HoldingPriceItem]:
+        seen: set[uuid.UUID] = set()
+        for item in value:
+            if item.holding_public_id in seen:
+                raise ValueError(f"Duplicate holding_public_id found: {item.holding_public_id}")
+            seen.add(item.holding_public_id)
+        return value
 
 
 class PerformanceSummaryResponse(BaseModel):
