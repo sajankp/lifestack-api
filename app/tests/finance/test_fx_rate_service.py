@@ -127,6 +127,27 @@ async def test_upsert_validation_success(service, mock_currency_repo, mock_repo)
 
 
 @pytest.mark.asyncio
+async def test_upsert_reuses_currency_validation_cache(service, mock_currency_repo):
+    mock_currency_repo.get_by_code.side_effect = lambda code: Currency(code=code, is_active=True)
+    as_of = datetime.now(UTC)
+    fetched_at = datetime.now(UTC)
+
+    for _ in range(2):
+        await service.upsert(
+            FxRateUpsert(
+                base_currency_code="GBP",
+                quote_currency_code="USD",
+                rate=Decimal("1.25"),
+                as_of=as_of,
+                fetched_at=fetched_at,
+                source="test-provider",
+            )
+        )
+
+    assert mock_currency_repo.get_by_code.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_upsert_validation_failure_inactive_currency(service, mock_currency_repo):
     mock_currency_repo.get_by_code.side_effect = lambda code: Currency(
         code=code, is_active=(code == "GBP")
