@@ -12,6 +12,13 @@ class TransactionType(StrEnum):
     expense = "expense"
 
 
+class TransactionSourceType(StrEnum):
+    manual = "manual"
+    imported = "imported"
+    synced = "synced"
+    assistant = "assistant"
+
+
 class SpendingCategory(SQLModel, table=True):
     __tablename__ = "spending_categories"
 
@@ -58,6 +65,11 @@ class SpendingTransaction(SQLModel, table=True):
     description: str | None = Field(default=None, max_length=500)
     wallet_name: str | None = Field(default=None, max_length=120)
     labels: str | None = Field(default=None, max_length=500)
+    source_type: TransactionSourceType = Field(
+        default=TransactionSourceType.manual, sa_type=sa.String(length=32), index=True
+    )
+    source_ref: str | None = Field(default=None, max_length=255)
+    source_import_id: int | None = Field(default=None, foreign_key="import_batches.id", index=True)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

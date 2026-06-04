@@ -21,6 +21,7 @@ from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
     SpendingTransaction,
+    TransactionSourceType,
     TransactionType,
 )
 from app.spending.repository import (
@@ -80,6 +81,8 @@ def _snapshot_transaction(transaction: SpendingTransaction) -> dict:
         "description": transaction.description,
         "wallet_name": transaction.wallet_name,
         "labels": transaction.labels,
+        "source_type": transaction.source_type,
+        "source_ref": transaction.source_ref,
     }
 
 
@@ -363,6 +366,7 @@ class TransactionService:
             description=tx_in.description,
             wallet_name=tx_in.wallet_name,
             labels=tx_in.labels,
+            source_type=TransactionSourceType.manual,
         )
         transaction = await self.transaction_repo.create(transaction)
 
