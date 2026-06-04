@@ -22,6 +22,12 @@ from app.application.workflows import (
     process_workspace_recurring_todos,
     process_workspace_recurring_transactions,
 )
+from app.core.constants import (
+    ADVISORY_LOCK_BUDGET_GUARDRAILS,
+    ADVISORY_LOCK_EXPORT_CLEANUP,
+    ADVISORY_LOCK_RECURRING_TRANSACTIONS,
+    ADVISORY_LOCK_WEEKLY_SUMMARY,
+)
 from app.core.database import postgres
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
@@ -32,9 +38,8 @@ from app.summaries.service import WeeklySummaryService
 logger = structlog.get_logger(__name__)
 # ... (rest unchanged)
 
-# Postgres advisory lock key — prevents two running instances from executing
-# the same job concurrently during rolling deployments.
-BUDGET_GUARDRAILS_LOCK_KEY = 1001
+# Advisory lock key — see app.core.constants for the full registry
+BUDGET_GUARDRAILS_LOCK_KEY = ADVISORY_LOCK_BUDGET_GUARDRAILS
 
 # Maximum seconds allowed for a single workspace evaluation before it is
 # abandoned. Prevents a stuck workspace from blocking scheduler shutdown.
@@ -124,8 +129,8 @@ async def budget_guardrails_job() -> None:
         )
 
 
-# Postgres advisory lock key — separate from budget_guardrails (1001) to allow concurrent runs
-RECURRING_TRANSACTIONS_LOCK_KEY = 1002
+# Advisory lock key — separate from budget_guardrails to allow concurrent runs
+RECURRING_TRANSACTIONS_LOCK_KEY = ADVISORY_LOCK_RECURRING_TRANSACTIONS
 
 
 async def recurring_transactions_job() -> None:
@@ -222,7 +227,7 @@ async def recurring_transactions_job() -> None:
         )
 
 
-WEEKLY_SUMMARY_LOCK_KEY = 1003
+WEEKLY_SUMMARY_LOCK_KEY = ADVISORY_LOCK_WEEKLY_SUMMARY
 
 WEEKLY_SUMMARY_ROLE_ORDER = {
     WorkspaceRole.OWNER: 0,
@@ -356,7 +361,7 @@ async def weekly_summary_job() -> None:
             await conn.execute(select(func.pg_advisory_unlock(WEEKLY_SUMMARY_LOCK_KEY)))
 
 
-EXPORT_CLEANUP_LOCK_KEY = 1005
+EXPORT_CLEANUP_LOCK_KEY = ADVISORY_LOCK_EXPORT_CLEANUP
 
 
 async def export_cleanup_job() -> None:
@@ -366,8 +371,10 @@ async def export_cleanup_job() -> None:
     start_time = datetime.now(UTC)
     logger.info("export_cleanup_job_start", job_name="export_cleanup_job")
 
-    async with postgres.engine.connect() as conn:
-        lock_res = await conn.execute(select(func.pg_try_advisory_lock(EXPORT_CLEANUP_LOCK_KEY)))
+    async with postgres.async_session_maker() as session, session.begin():
+        lock_res = await session.execute(
+            select(func.pg_try_advisory_xact_lock(EXPORT_CLEANUP_LOCK_KEY))
+        )
         has_lock = lock_res.scalar()
         if not has_lock:
             logger.info(
@@ -377,8 +384,7 @@ async def export_cleanup_job() -> None:
             return
 
         try:
-            async with postgres.async_session_maker() as session, session.begin():
-                cleaned_count = await cleanup_expired_exports(session)
+            cleaned_count = await cleanup_expired_exports(session)
 
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.info(
@@ -396,5 +402,4 @@ async def export_cleanup_job() -> None:
                 status="failed",
                 exc_info=True,
             )
-        finally:
-            await conn.execute(select(func.pg_advisory_unlock(EXPORT_CLEANUP_LOCK_KEY)))
+            raise

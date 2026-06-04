@@ -671,8 +671,8 @@ async def cleanup_expired_exports(session: AsyncSession) -> int:
                     if storage_key.startswith("local://"):
                         filepath = Path(storage_key[8:])
                         try:
-                            if filepath.exists():
-                                filepath.unlink()
+                            if await asyncio.to_thread(filepath.exists):
+                                await asyncio.to_thread(filepath.unlink)
                         except Exception as e:
                             logger.warning(
                                 "failed_to_delete_local_file_cleanup",
@@ -697,8 +697,8 @@ async def cleanup_expired_exports(session: AsyncSession) -> int:
                     elif not storage_key.startswith("db://"):
                         filepath = Path(storage_key)
                         try:
-                            if filepath.is_absolute() and filepath.exists():
-                                filepath.unlink()
+                            if filepath.is_absolute() and await asyncio.to_thread(filepath.exists):
+                                await asyncio.to_thread(filepath.unlink)
                         except Exception as e:
                             logger.warning(
                                 "failed_to_delete_local_file_cleanup",

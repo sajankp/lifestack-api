@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from io import BytesIO
 
@@ -78,8 +79,12 @@ async def download_export(
         )
     elif backend == "s3":
 
-        def iter_s3_chunks():
-            yield from data.iter_chunks(chunk_size=1024 * 1024)
+        async def iter_s3_chunks():
+            while True:
+                chunk = await asyncio.to_thread(data.read, 1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
 
         return StreamingResponse(
             iter_s3_chunks(),

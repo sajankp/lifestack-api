@@ -359,14 +359,15 @@ class ExportService:
             # 2. Upload/transfer to configured storage backend
             backend = settings.EXPORT_STORAGE_BACKEND.lower()
             if backend == "db":
-                with open(temp_filepath, "rb") as f:
-                    export_record.artifact_blob = f.read()
+                export_record.artifact_blob = await asyncio.to_thread(
+                    Path(temp_filepath).read_bytes
+                )
                 export_record.storage_key = f"db://exports/{export_record.public_id}"
             elif backend == "local":
                 key = f"exports/{workspace_id}/{export_record.public_id}/{filename}"
                 base = Path(settings.EXPORT_LOCAL_PATH)
                 dest_path = base / key
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(dest_path.parent.mkdir, parents=True, exist_ok=True)
                 await asyncio.to_thread(shutil.copy2, temp_filepath, dest_path)
                 export_record.storage_key = f"local://{dest_path.absolute()}"
             elif backend == "s3":
@@ -419,7 +420,7 @@ class ExportService:
                 status_code=500,
             ) from exc
         finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
 
         return export_record
 
@@ -459,7 +460,7 @@ class ExportService:
 
         elif storage_key.startswith("local://"):
             filepath = Path(storage_key[8:])
-            if not filepath.exists():
+            if not await asyncio.to_thread(filepath.exists):
                 raise NotFoundError(detail="Export file not found on local storage")
             return "local", mime_type, filename, str(filepath)
 
@@ -479,7 +480,7 @@ class ExportService:
         else:
             # Try parsing as raw path if no scheme
             filepath = Path(storage_key)
-            if filepath.exists() and filepath.is_absolute():
+            if filepath.is_absolute() and await asyncio.to_thread(filepath.exists):
                 return "local", mime_type, filename, str(filepath)
             raise ValidationError(detail=f"Unsupported storage key scheme: {storage_key}")
 
@@ -503,8 +504,8 @@ class ExportService:
             if storage_key.startswith("local://"):
                 filepath = Path(storage_key[8:])
                 try:
-                    if filepath.exists():
-                        filepath.unlink()
+                    if await asyncio.to_thread(filepath.exists):
+                        await asyncio.to_thread(filepath.unlink)
                 except Exception as e:
                     logger.warning(
                         "failed_to_delete_local_file", error=str(e), storage_key=storage_key
@@ -524,8 +525,8 @@ class ExportService:
                 # Try raw local path deletion
                 filepath = Path(storage_key)
                 try:
-                    if filepath.is_absolute() and filepath.exists():
-                        filepath.unlink()
+                    if filepath.is_absolute() and await asyncio.to_thread(filepath.exists):
+                        await asyncio.to_thread(filepath.unlink)
                 except Exception as e:
                     logger.warning(
                         "failed_to_delete_local_file", error=str(e), storage_key=storage_key
