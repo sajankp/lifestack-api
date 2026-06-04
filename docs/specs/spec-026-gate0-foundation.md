@@ -95,10 +95,16 @@ Add `pip-audit` to CI/pre-commit via a safety check in `.pre-commit-config.yaml`
 
 ### 5.1 Import Rollback / Delete
 
-Add `DELETE /v1/imports/{batch_id}` endpoint that:
+`DELETE /v1/imports/{batch_id}` now supports:
+- Deleting failed, validated, or otherwise non-committing import batches
+- Rolling back completed `spending-transactions` imports by deleting records where `source_import_id` matches
+- Tenant-scoped rollback by both workspace and import batch
+
+Remaining hardening:
 - Marks the import batch as deleted
-- Cascades soft-delete to imported transaction records where `source_import_id` matches
+- Cascades soft-delete instead of hard-delete for imported records
 - Returns count of deleted records
+- Extends rollback support to budgets and holdings after committed rows carry source metadata
 
 ### 5.2 Export TTL / Delete
 

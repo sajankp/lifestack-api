@@ -656,20 +656,27 @@ class ImportService:
     async def delete_batch(self, workspace_id: int, public_id: uuid.UUID) -> None:
         """Delete an import batch and its associated data.
 
-        Completed imports cannot be rolled back via this endpoint.
-        Use this to discard failed or validated-but-not-committed imports.
+        Completed spending-transaction imports are rolled back before deletion.
+        Other completed modules are blocked until their committed rows have source metadata.
         """
         batch = await self.repository.get_by_public_id(workspace_id, public_id)
         if not batch:
             raise NotFoundError(detail=f"Import batch with id {public_id} not found")
 
-        non_deletable = {ImportStatus.committing, ImportStatus.completed}
-        if batch.status in non_deletable:
+        if batch.status == ImportStatus.committing:
             raise ValidationError(
                 detail=(
                     f"Import batch with status '{batch.status}' cannot be deleted. "
-                    "Completed imports are permanent; delete the individual records instead."
+                    "Wait for the import commit to finish before deleting it."
                 )
             )
+        if batch.status == ImportStatus.completed:
+            if batch.module != ImportModule.spending_transactions:
+                raise ValidationError(
+                    detail=(
+                        f"Completed imports for module '{batch.module}' cannot be rolled back yet."
+                    )
+                )
+            await self.repository.delete_spending_transactions_for_batch(workspace_id, batch.id)
 
         await self.repository.delete_batch(batch)

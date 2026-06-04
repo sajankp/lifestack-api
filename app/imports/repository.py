@@ -5,6 +5,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow, ImportStatus
+from app.spending.models import SpendingTransaction
 
 
 class ImportRepository:
@@ -100,6 +101,17 @@ class ImportRepository:
         await self.session.execute(
             delete(ImportPreviewRow).where(ImportPreviewRow.import_batch_id == import_batch_id)
         )
+
+    async def delete_spending_transactions_for_batch(
+        self, workspace_id: int, import_batch_id: int
+    ) -> int:
+        result = await self.session.execute(
+            delete(SpendingTransaction).where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.source_import_id == import_batch_id,
+            )
+        )
+        return result.rowcount or 0
 
     async def begin_commit_transition(self, batch_id: int) -> bool:
         stmt = (
