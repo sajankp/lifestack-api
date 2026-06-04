@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.spending.models import TransactionType
+from app.spending.models import TransactionSourceType, TransactionType
 
 # ---------------------------------------------------------------------------
 # Category schemas
@@ -88,6 +88,8 @@ class TransactionResponse(BaseModel):
     description: str | None
     wallet_name: str | None
     labels: str | None
+    source_type: TransactionSourceType
+    source_ref: str | None
     created_at: datetime
     updated_at: datetime
 

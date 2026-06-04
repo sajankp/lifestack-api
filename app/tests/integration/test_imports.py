@@ -4,6 +4,11 @@ from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
+from sqlmodel import select
+
+from app.core.database import postgres
+from app.imports.models import ImportBatch
+from app.spending.models import SpendingTransaction
 
 
 async def _register_and_login(client: AsyncClient, suffix: str):
@@ -166,6 +171,23 @@ async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
     assert row["amount"] == "3700.00"
     assert row["wallet_name"] == "Main Wallet"
     assert row["labels"] == "family"
+    assert row["source_type"] == "imported"
+
+    async with postgres.async_session_maker() as session:
+        batch = (
+            await session.execute(select(ImportBatch).where(ImportBatch.public_id == import_id))
+        ).scalar_one()
+        tx = (
+            await session.execute(
+                select(SpendingTransaction).where(
+                    SpendingTransaction.public_id == uuid.UUID(row["public_id"])
+                )
+            )
+        ).scalar_one()
+
+    assert tx.source_type == "imported"
+    assert tx.source_import_id == batch.id
+    assert tx.source_ref == f"{import_id}:2"
 
 
 @pytest.mark.asyncio

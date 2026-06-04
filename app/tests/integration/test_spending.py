@@ -150,6 +150,32 @@ async def test_cross_workspace_category_rejected_for_transaction(client: AsyncCl
     assert "Cross-workspace" in body["detail"]
 
 
+@pytest.mark.asyncio
+async def test_manual_transaction_exposes_manual_source_metadata(client: AsyncClient):
+    creds = await _register_and_login(client, "manualsource")
+
+    categories = await client.get("/v1/spending/categories", cookies=creds["cookies"])
+    assert categories.status_code == 200
+    category_id = categories.json()["items"][0]["public_id"]
+
+    create = await client.post(
+        "/v1/spending/transactions",
+        json={
+            "category_id": category_id,
+            "amount": "12.50",
+            "type": "expense",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "description": "manual coffee",
+        },
+        cookies=creds["cookies"],
+    )
+
+    assert create.status_code == 201, create.text
+    body = create.json()
+    assert body["source_type"] == "manual"
+    assert body["source_ref"] is None
+
+
 # ---------------------------------------------------------------------------
 # 8.3 — Budget uniqueness constraint
 # ---------------------------------------------------------------------------

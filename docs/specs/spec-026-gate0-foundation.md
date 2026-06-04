@@ -111,6 +111,12 @@ Add `DELETE /v1/exports/{export_id}` endpoint that:
 Add `source_type` enum field to transactions: `manual`, `imported`, `synced`, `assistant`.
 Add Alembic migration.
 
+Initial implementation scope:
+- Manual spending transactions default to `source_type=manual`.
+- Imported spending transactions use `source_type=imported`, retain an internal `source_import_id`, and expose `source_type` in transaction responses.
+- `source_ref` is reserved for stable external references such as import row keys, future health/device sync IDs, document extraction references, or assistant run IDs.
+- Ordinary client-created manual transaction requests must not be allowed to spoof source metadata.
+
 ---
 
 ## 6. Wave 5: Finance Correctness

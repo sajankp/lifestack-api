@@ -29,6 +29,7 @@ from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
     SpendingTransaction,
+    TransactionSourceType,
     TransactionType,
 )
 
@@ -576,6 +577,9 @@ class ImportService:
                             description=p.get("description"),
                             wallet_name=p.get("wallet_name"),
                             labels=p.get("labels"),
+                            source_type=TransactionSourceType.imported,
+                            source_import_id=batch.id,
+                            source_ref=f"{batch.public_id}:{row.row_number}",
                         )
                         self.session.add(tx)
                         inserted += 1
