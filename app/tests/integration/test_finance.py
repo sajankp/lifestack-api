@@ -29,7 +29,7 @@ async def test_finance_currencies_bootstrap_and_account_crud(client: AsyncClient
         client,
         email="finance-e2e@example.com",
         username="finance-e2e",
-        password="password123",
+        password="TestPass123!",
     )
 
     currencies_res = await client.get("/v1/finance/currencies")
@@ -85,7 +85,7 @@ async def test_finance_account_validation_and_workspace_isolation(client: AsyncC
         client,
         email="finance-iso-a@example.com",
         username="finance-iso-a",
-        password="password123",
+        password="TestPass123!",
     )
 
     create_res = await client.post(
@@ -126,7 +126,7 @@ async def test_finance_account_validation_and_workspace_isolation(client: AsyncC
         client,
         email="finance-iso-b@example.com",
         username="finance-iso-b",
-        password="password123",
+        password="TestPass123!",
     )
 
     list_res = await client.get("/v1/finance/accounts")
@@ -149,7 +149,7 @@ async def test_finance_user_override_currency_validation(client: AsyncClient):
         client,
         email="finance-user-override-validation@example.com",
         username="finance-user-override-validation",
-        password="password123",
+        password="TestPass123!",
     )
 
     update_user_setting = await client.patch(
@@ -166,7 +166,7 @@ async def test_finance_account_delete_rejected_when_in_use(client: AsyncClient):
         client,
         email="finance-delete-guard@example.com",
         username="finance-delete-guard",
-        password="password123",
+        password="TestPass123!",
     )
 
     category_res = await client.get("/v1/spending/categories")
@@ -208,7 +208,7 @@ async def test_finance_settings_fx_and_transfers_flow(client: AsyncClient):
         client,
         email="finance-transfer@example.com",
         username="finance-transfer",
-        password="password123",
+        password="TestPass123!",
     )
 
     from_account = await client.post(
@@ -381,7 +381,7 @@ async def test_transfer_arithmetic_validation_failure(client: AsyncClient):
         client,
         email="finance-transfer-err@example.com",
         username="finance-transfer-err",
-        password="password123",
+        password="TestPass123!",
     )
 
     from_account = await client.post(

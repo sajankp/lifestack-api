@@ -15,14 +15,14 @@ async def test_auth_registration_and_login(client: AsyncClient):
     # Register
     register_response = await client.post(
         "/v1/auth/register",
-        json={"email": "test@example.com", "username": "testuser", "password": "testpassword"},
+        json={"email": "test@example.com", "username": "testuser", "password": "TestPass123!"},
     )
     assert register_response.status_code == 200
     assert register_response.json() is True
 
     # Login
     login_response = await client.post(
-        "/v1/auth/login", data={"username": "testuser", "password": "testpassword"}
+        "/v1/auth/login", data={"username": "testuser", "password": "TestPass123!"}
     )
     assert login_response.status_code == 200
     assert "access_token" in login_response.cookies
@@ -34,7 +34,7 @@ async def test_duplicate_registration_returns_problem_details(client: AsyncClien
     payload = {
         "email": "duplicate@example.com",
         "username": "duplicateuser",
-        "password": "testpassword",
+        "password": "TestPass123!",
     }
     first = await client.post("/v1/auth/register", json=payload)
     assert first.status_code == 200
@@ -55,11 +55,11 @@ async def test_logout_revokes_server_side_session(client: AsyncClient):
         json={
             "email": "session@example.com",
             "username": "sessionuser",
-            "password": "testpassword",
+            "password": "TestPass123!",
         },
     )
     login_response = await client.post(
-        "/v1/auth/login", data={"username": "sessionuser", "password": "testpassword"}
+        "/v1/auth/login", data={"username": "sessionuser", "password": "TestPass123!"}
     )
     assert login_response.status_code == 200
 
@@ -92,11 +92,11 @@ async def test_cookie_authenticated_mutation_rejects_untrusted_origin(client: As
         json={
             "email": "csrf@example.com",
             "username": "csrfuser",
-            "password": "testpassword",
+            "password": "TestPass123!",
         },
     )
     login_response = await client.post(
-        "/v1/auth/login", data={"username": "csrfuser", "password": "testpassword"}
+        "/v1/auth/login", data={"username": "csrfuser", "password": "TestPass123!"}
     )
     assert login_response.status_code == 200
 

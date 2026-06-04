@@ -34,7 +34,7 @@ def workflow(mock_auth_service, mock_workspace_service, mock_category_service):
 async def test_register_user_with_workspace(
     workflow, mock_auth_service, mock_workspace_service, mock_category_service
 ):
-    user_in = UserCreate(email="test@example.com", username="testuser", password="password123")
+    user_in = UserCreate(email="test@example.com", username="testuser", password="TestPass123!")
     mock_user = User(id=1, email="test@example.com", username="testuser", hashed_password="hashed")
     mock_workspace = Workspace(id=42, name="testuser's Workspace")
     mock_auth_service.register_user.return_value = mock_user

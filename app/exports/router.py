@@ -71,3 +71,17 @@ async def download_export(
         media_type=record.artifact_mime_type or "application/octet-stream",
         headers=headers,
     )
+
+
+@router.delete("/{export_public_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_export(
+    export_public_id: uuid.UUID,
+    service: ExportService = Depends(get_export_service),
+    workspace_id: int = Depends(get_current_workspace_id),
+    _user: dict = Depends(get_current_user),
+):
+    """Delete an export record (completed or failed exports only).
+
+    Exports that are still pending cannot be deleted.
+    """
+    await service.delete_export(workspace_id, export_public_id)

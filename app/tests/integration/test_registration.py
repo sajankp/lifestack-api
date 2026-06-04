@@ -17,7 +17,7 @@ async def test_registration_creates_required_entities(client: AsyncClient):
     username = "newuser"
     register_response = await client.post(
         "/v1/auth/register",
-        json={"email": email, "username": username, "password": "testpassword"},
+        json={"email": email, "username": username, "password": "TestPass123!"},
     )
     assert register_response.status_code == 200
     assert register_response.json() is True
@@ -56,7 +56,7 @@ async def test_registration_seeds_default_spending_categories(client: AsyncClien
     username = "catuser"
     resp = await client.post(
         "/v1/auth/register",
-        json={"email": email, "username": username, "password": "testpassword"},
+        json={"email": email, "username": username, "password": "TestPass123!"},
     )
     assert resp.status_code == 200
 
@@ -93,7 +93,7 @@ async def test_registration_rollback_on_category_failure(client: AsyncClient):
     ):
         resp = await client.post(
             "/v1/auth/register",
-            json={"email": email, "username": username, "password": "testpassword"},
+            json={"email": email, "username": username, "password": "TestPass123!"},
         )
         assert resp.status_code == 500
 

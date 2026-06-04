@@ -55,7 +55,7 @@ async def test_redact_details_sensitive_keys():
     """Verify that sensitive keys are recursively redacted case-insensitively."""
     raw_payload = {
         "user_id": 42,
-        "password": "my-super-secret-password",
+        "password": "TestPass123!",
         "api_key": "sk-123456",
         "nested": {
             "token": "bearer-token-here",

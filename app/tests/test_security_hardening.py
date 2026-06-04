@@ -53,7 +53,7 @@ async def test_inactive_user_login(client: AsyncClient):
         repo = UserRepository(session)
         user = await repo.create(
             UserCreate(
-                username="inactive_user", email="inactive@example.com", password="password123"
+                username="inactive_user", email="inactive@example.com", password="TestPass123!"
             )
         )
         user.is_active = False
@@ -61,7 +61,7 @@ async def test_inactive_user_login(client: AsyncClient):
         await session.commit()
 
     response = await client.post(
-        "/v1/auth/login", data={"username": "inactive_user", "password": "password123"}
+        "/v1/auth/login", data={"username": "inactive_user", "password": "TestPass123!"}
     )
     assert response.status_code == 401
     assert "Incorrect username or password" in response.json()["detail"]
