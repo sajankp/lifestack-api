@@ -58,9 +58,11 @@ async def list_workspaces(
     membership_repo: Annotated[MembershipRepository, Depends(get_membership_repo)],
 ):
     workspaces = await workspace_service.get_user_workspaces(current_user["id"])
+    memberships = await membership_repo.list_user_memberships(current_user["id"])
+    membership_by_workspace_id = {membership.workspace_id: membership for membership in memberships}
     items = []
     for w in workspaces:
-        membership = await membership_repo.get_membership(w.id, current_user["id"])
+        membership = membership_by_workspace_id.get(w.id)
         items.append(
             WorkspaceResponse(
                 public_id=w.public_id,
@@ -84,8 +86,8 @@ async def add_workspace_member(
 ):
     # 1. Resolve target workspace
     workspace = await workspace_repo.get_by_public_id(workspace_id)
-    if not workspace:
-        raise NotFoundError(detail="Workspace not found")
+    if not workspace or not workspace.is_active:
+        raise NotFoundError(detail="Workspace not found or is inactive")
 
     # 2. Check if current user is owner or admin of the workspace (mutations require admin/owner)
     current_membership = await membership_repo.get_membership(workspace.id, current_user["id"])
@@ -99,8 +101,8 @@ async def add_workspace_member(
     stmt = select(User).where(User.public_id == member_add.user_public_id)
     result = await session.execute(stmt)
     target_user = result.scalar_one_or_none()
-    if not target_user:
-        raise NotFoundError(detail="User not found")
+    if not target_user or not target_user.is_active:
+        raise NotFoundError(detail="User not found or is inactive")
 
     # 4. Check if membership already exists
     existing = await membership_repo.get_membership(workspace.id, target_user.id)

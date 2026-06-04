@@ -129,6 +129,52 @@ async def test_member_cannot_add_workspace_member(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_cannot_add_member_to_inactive_workspace(client: AsyncClient):
+    owner = await _register_and_login(client, "platforminactivews")
+    target = await _register_and_login(client, "platforminactivetarget")
+
+    async with postgres.async_session_maker() as session:
+        workspace = (
+            await session.execute(
+                select(Workspace).where(Workspace.public_id == owner["workspace_public_id"])
+            )
+        ).scalar_one()
+        workspace.is_active = False
+        await session.commit()
+
+    response = await client.post(
+        f"/v1/platform/workspaces/{owner['workspace_public_id']}/members",
+        json={"user_public_id": str(target["user_public_id"]), "role": WorkspaceRole.VIEWER.value},
+        cookies=owner["cookies"],
+    )
+
+    assert response.status_code == 404
+    assert "inactive" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_cannot_add_inactive_user_to_workspace(client: AsyncClient):
+    owner = await _register_and_login(client, "platforminactiveowner")
+    target = await _register_and_login(client, "platforminactiveuser")
+
+    async with postgres.async_session_maker() as session:
+        target_user = (
+            await session.execute(select(User).where(User.public_id == target["user_public_id"]))
+        ).scalar_one()
+        target_user.is_active = False
+        await session.commit()
+
+    response = await client.post(
+        f"/v1/platform/workspaces/{owner['workspace_public_id']}/members",
+        json={"user_public_id": str(target["user_public_id"]), "role": WorkspaceRole.VIEWER.value},
+        cookies=owner["cookies"],
+    )
+
+    assert response.status_code == 404
+    assert "inactive" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_select_workspace_changes_workspace_used_by_following_requests(client: AsyncClient):
     user = await _register_and_login(client, "platformselect")
 
