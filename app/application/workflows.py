@@ -652,11 +652,18 @@ async def ingest_fx_rates(session: AsyncSession) -> None:
         resp.raise_for_status()
         data = resp.json()
 
-    if data.get("result") != "success":
-        error_type = data.get("error-type", "unknown")
+    if not isinstance(data, dict) or data.get("result") != "success":
+        error_type = (
+            data.get("error-type", "unknown")
+            if isinstance(data, dict)
+            else "invalid response format"
+        )
         raise ValueError(f"ExchangeRate-API request failed: {error_type}")
 
-    conversion_rates = data.get("conversion_rates", {})
+    conversion_rates = data.get("conversion_rates")
+    if not isinstance(conversion_rates, dict):
+        raise ValueError("ExchangeRate-API response is missing conversion_rates")
+
     for code in ["USD", "GBP", "INR"]:
         if code not in conversion_rates:
             raise KeyError(
@@ -685,9 +692,14 @@ async def ingest_fx_rates(session: AsyncSession) -> None:
         ("INR", "GBP", usd_to_gbp / usd_to_inr),
     ]
 
-    rates_to_upsert = [
-        (base, quote, rate.quantize(Decimal("1.0000000000"))) for base, quote, rate in raw_rates
-    ]
+    rates_to_upsert = []
+    for base, quote, rate in raw_rates:
+        quantized_rate = rate.quantize(Decimal("1.0000000000"))
+        if quantized_rate <= 0:
+            raise ValueError(
+                f"Derived rate for {base}/{quote} quantized to non-positive value: {quantized_rate}"
+            )
+        rates_to_upsert.append((base, quote, quantized_rate))
 
     currency_repo = CurrencyRepository(session)
     fx_repo = FxRateRepository(session)
@@ -695,7 +707,10 @@ async def ingest_fx_rates(session: AsyncSession) -> None:
 
     now = datetime.now(UTC)
     as_of_unix = data.get("time_last_update_unix")
-    as_of = datetime.fromtimestamp(as_of_unix, UTC) if as_of_unix else now
+    try:
+        as_of = datetime.fromtimestamp(float(as_of_unix), UTC) if as_of_unix is not None else now
+    except (ValueError, TypeError):
+        as_of = now
 
     for base, quote, rate in rates_to_upsert:
         payload = FxRateUpsert(

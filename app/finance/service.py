@@ -311,6 +311,8 @@ class FxRateService:
         self._currency_active_cache: dict[str, bool] = {}
 
     async def _is_active_currency(self, code: str) -> bool:
+        if not code:
+            return False
         normalized_code = code.upper()
         if normalized_code not in self._currency_active_cache:
             currency: Currency | None = await self.currency_repository.get_by_code(normalized_code)
