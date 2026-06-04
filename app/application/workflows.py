@@ -1,5 +1,7 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import structlog
 from sqlalchemy import func, select
@@ -16,6 +18,9 @@ from app.dashboard.schemas import (
     SystemSummary,
     TodosSummary,
 )
+from app.exports.models import ExportRecord, ExportStatus
+from app.exports.repository import ExportRepository
+from app.exports.service import ExportService
 from app.investing.service import InvestingSummaryService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.platform.service import WorkspaceService
@@ -625,7 +630,92 @@ async def process_workspace_recurring_todos(session: AsyncSession, workspace: Wo
             rule.last_generated_at = datetime.now(UTC)
             if rule.end_date and rule.next_due_date > rule.end_date:
                 rule.is_active = False
-        session.add(rule)
+            session.add(rule)
 
     await session.flush()
     return generated
+
+
+async def cleanup_expired_exports(session: AsyncSession) -> int:
+    """Identify and clean up expired exports based on EXPORT_TTL_DAYS."""
+
+    if not settings.EXPORT_CLEANUP_ENABLED:
+        logger.info("export_cleanup_disabled")
+        return 0
+
+    cutoff = datetime.now(UTC) - timedelta(days=settings.EXPORT_TTL_DAYS)
+
+    # Query exports to clean up: completed/failed older than EXPORT_TTL_DAYS,
+    # or pending older than EXPORT_TTL_DAYS
+    query = select(ExportRecord).where(
+        (ExportRecord.completed_at < cutoff)
+        | ((ExportRecord.status == ExportStatus.pending) & (ExportRecord.created_at < cutoff))
+    )
+    result = await session.execute(query)
+    expired_records = result.scalars().all()
+
+    if not expired_records:
+        return 0
+
+    repo = ExportRepository(session)
+    service = ExportService(repo)
+
+    cleaned_count = 0
+    for record in expired_records:
+        try:
+            if settings.EXPORT_CLEANUP_DELETE_RECORDS:
+                await service.delete_export(record.workspace_id, record.public_id)
+            else:
+                if settings.EXPORT_CLEANUP_DELETE_FILES and record.storage_key:
+                    storage_key = record.storage_key
+                    if storage_key.startswith("local://"):
+                        filepath = Path(storage_key[8:])
+                        try:
+                            if filepath.exists():
+                                filepath.unlink()
+                        except Exception as e:
+                            logger.warning(
+                                "failed_to_delete_local_file_cleanup",
+                                error=str(e),
+                                storage_key=storage_key,
+                            )
+                    elif storage_key.startswith("s3://"):
+                        parts = storage_key[5:].split("/", 1)
+                        if len(parts) == 2:
+                            bucket, key = parts
+                            try:
+                                client, _ = service._get_s3_client()
+                                await asyncio.to_thread(
+                                    client.delete_object, Bucket=bucket, Key=key
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "failed_to_delete_s3_object_cleanup",
+                                    error=str(e),
+                                    storage_key=storage_key,
+                                )
+                    elif not storage_key.startswith("db://"):
+                        filepath = Path(storage_key)
+                        try:
+                            if filepath.is_absolute() and filepath.exists():
+                                filepath.unlink()
+                        except Exception as e:
+                            logger.warning(
+                                "failed_to_delete_local_file_cleanup",
+                                error=str(e),
+                                storage_key=storage_key,
+                            )
+
+                record.status = ExportStatus.expired
+                record.artifact_blob = None
+                record.storage_key = None
+                await repo.save(record, refresh=False)
+
+            cleaned_count += 1
+        except Exception as e:
+            logger.error(
+                "failed_to_clean_expired_export", export_id=record.id, error=str(e), exc_info=True
+            )
+
+    await session.flush()
+    return cleaned_count

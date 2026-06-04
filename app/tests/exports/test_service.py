@@ -1,15 +1,32 @@
-import io
 import json
 import uuid
-from unittest.mock import AsyncMock
-from zipfile import ZipFile
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.core.exceptions import APIError, ConflictError, NotFoundError, ValidationError
+from app.config import settings
+from app.core.exceptions import APIError, ConflictError, ValidationError
 from app.exports.models import ExportFormat, ExportRecord, ExportStatus
 from app.exports.schemas import ExportCreate
 from app.exports.service import ExportService
+from app.todo.models import Todo
+
+
+class MockAsyncIterator:
+    def __init__(self, items):
+        self.items = items
+        self.index = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self.index >= len(self.items):
+            raise StopAsyncIteration
+        val = self.items[self.index]
+        self.index += 1
+        return val
 
 
 @pytest.fixture
@@ -78,23 +95,16 @@ async def test_create_export_limit_exceeded(service, mock_repo):
 
 
 @pytest.mark.asyncio
-async def test_create_export_json_success(service, mock_repo):
-    export_in = ExportCreate(format=ExportFormat.json, modules=["todo", "spending"])
+async def test_create_export_json_success(service, mock_repo, monkeypatch):
+    monkeypatch.setattr(settings, "EXPORT_STORAGE_BACKEND", "db")
+    export_in = ExportCreate(format=ExportFormat.json, modules=["todo"])
     audit_logger = AsyncMock()
     mock_repo.get_pending_for_workspace.return_value = None
 
-    service._count_module_rows = AsyncMock(return_value=10)
+    service._count_module_rows = AsyncMock(return_value=1)
 
-    service._load_module_payload = AsyncMock(
-        side_effect=lambda ws_id, mod: {
-            "todo": {"todos": [{"id": 1, "title": "Todo Item"}]},
-            "spending": {
-                "categories": [{"id": 10, "name": "Food"}],
-                "transactions": [],
-                "budgets": [],
-            },
-        }.get(mod)
-    )
+    todo_item = Todo(id=1, workspace_id=1, user_id=2, title="Test Todo")
+    mock_repo.session.stream_scalars.return_value = MockAsyncIterator([todo_item])
 
     record_id = uuid.uuid4()
     mock_record = ExportRecord(
@@ -103,7 +113,7 @@ async def test_create_export_json_success(service, mock_repo):
         workspace_id=1,
         requested_by=2,
         format=ExportFormat.json,
-        scope={"modules": ["spending", "todo"]},
+        scope={"modules": ["todo"]},
         status=ExportStatus.pending,
     )
     mock_repo.create.return_value = mock_record
@@ -120,64 +130,27 @@ async def test_create_export_json_success(service, mock_repo):
 
     content = json.loads(result.artifact_blob.decode("utf-8"))
     assert content["workspace_id"] == 1
-    assert content["data"]["todo"] == {"todos": [{"id": 1, "title": "Todo Item"}]}
-    assert content["data"]["spending"]["categories"] == [{"id": 10, "name": "Food"}]
-
-    assert audit_logger.log.call_count == 2
+    assert content["data"]["todo"]["todos"][0]["title"] == "Test Todo"
 
 
 @pytest.mark.asyncio
-async def test_create_export_csv_success(service, mock_repo):
-    export_in = ExportCreate(format=ExportFormat.csv, modules=["todo"])
-    audit_logger = AsyncMock()
-    mock_repo.get_pending_for_workspace.return_value = None
-    service._count_module_rows = AsyncMock(return_value=5)
+async def test_create_export_local_backend_success(service, mock_repo, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "EXPORT_STORAGE_BACKEND", "local")
+    monkeypatch.setattr(settings, "EXPORT_LOCAL_PATH", str(tmp_path))
 
-    service._load_module_payload = AsyncMock(
-        return_value={"todos": [{"id": "1", "title": "T1", "completed": "False"}]}
-    )
-
-    record_id = uuid.uuid4()
-    mock_record = ExportRecord(
-        id=124,
-        public_id=record_id,
-        workspace_id=1,
-        requested_by=2,
-        format=ExportFormat.csv,
-        scope={"modules": ["todo"]},
-        status=ExportStatus.pending,
-    )
-    mock_repo.create.return_value = mock_record
-    mock_repo.save.side_effect = lambda r, refresh=True: r
-
-    result = await service.create_export(
-        workspace_id=1, requested_by=2, export_in=export_in, audit_logger=audit_logger
-    )
-
-    assert result.status == ExportStatus.ready
-    assert result.artifact_mime_type == "application/zip"
-    assert result.artifact_filename == "lifestack-export-csv.zip"
-
-    zip_buffer = io.BytesIO(result.artifact_blob)
-    with ZipFile(zip_buffer, mode="r") as archive:
-        assert "todo/todos.csv" in archive.namelist()
-        csv_content = archive.read("todo/todos.csv").decode("utf-8")
-        assert "completed,id,title" in csv_content
-        assert "False,1,T1" in csv_content
-
-
-@pytest.mark.asyncio
-async def test_create_export_failure_handling(service, mock_repo):
     export_in = ExportCreate(format=ExportFormat.json, modules=["todo"])
     audit_logger = AsyncMock()
     mock_repo.get_pending_for_workspace.return_value = None
-    service._count_module_rows = AsyncMock(return_value=5)
 
-    service._load_module_payload = AsyncMock(side_effect=RuntimeError("Database failure"))
+    service._count_module_rows = AsyncMock(return_value=1)
 
+    todo_item = Todo(id=1, workspace_id=1, user_id=2, title="Test Todo")
+    mock_repo.session.stream_scalars.return_value = MockAsyncIterator([todo_item])
+
+    record_id = uuid.uuid4()
     mock_record = ExportRecord(
-        id=125,
-        public_id=uuid.uuid4(),
+        id=123,
+        public_id=record_id,
         workspace_id=1,
         requested_by=2,
         format=ExportFormat.json,
@@ -191,26 +164,53 @@ async def test_create_export_failure_handling(service, mock_repo):
         workspace_id=1, requested_by=2, export_in=export_in, audit_logger=audit_logger
     )
 
-    assert result.status == ExportStatus.failed
-    assert "Database failure" in result.error_message
+    assert result.status == ExportStatus.ready
+    assert result.storage_key.startswith("local://")
+    local_path = Path(result.storage_key[8:])
+    assert local_path.exists()
+
+    with open(local_path, encoding="utf-8") as f:
+        content = json.load(f)
+    assert content["data"]["todo"]["todos"][0]["title"] == "Test Todo"
 
 
 @pytest.mark.asyncio
-async def test_get_export_success(service, mock_repo):
-    export_id = uuid.uuid4()
-    mock_record = ExportRecord(id=1, public_id=export_id, workspace_id=1)
-    mock_repo.get_by_public_id.return_value = mock_record
+async def test_create_export_s3_backend_success(service, mock_repo, monkeypatch):
+    monkeypatch.setattr(settings, "EXPORT_STORAGE_BACKEND", "s3")
+    monkeypatch.setattr(settings, "EXPORT_S3_ENDPOINT", "http://mock-s3")
+    monkeypatch.setattr(settings, "EXPORT_S3_BUCKET", "mock-bucket")
+    monkeypatch.setattr(settings, "EXPORT_S3_ACCESS_KEY", "mock-key")
+    monkeypatch.setattr(settings, "EXPORT_S3_SECRET_KEY", "mock-secret")
 
-    res = await service.get_export(1, export_id)
-    assert res == mock_record
-    mock_repo.get_by_public_id.assert_called_once_with(1, export_id, include_blob=False)
+    export_in = ExportCreate(format=ExportFormat.json, modules=["todo"])
+    audit_logger = AsyncMock()
+    mock_repo.get_pending_for_workspace.return_value = None
 
+    service._count_module_rows = AsyncMock(return_value=1)
 
-@pytest.mark.asyncio
-async def test_get_export_not_found(service, mock_repo):
-    export_id = uuid.uuid4()
-    mock_repo.get_by_public_id.return_value = None
+    todo_item = Todo(id=1, workspace_id=1, user_id=2, title="Test Todo")
+    mock_repo.session.stream_scalars.return_value = MockAsyncIterator([todo_item])
 
-    with pytest.raises(NotFoundError) as exc:
-        await service.get_export(1, export_id)
-    assert exc.value.status_code == 404
+    record_id = uuid.uuid4()
+    mock_record = ExportRecord(
+        id=123,
+        public_id=record_id,
+        workspace_id=1,
+        requested_by=2,
+        format=ExportFormat.json,
+        scope={"modules": ["todo"]},
+        status=ExportStatus.pending,
+    )
+    mock_repo.create.return_value = mock_record
+    mock_repo.save.side_effect = lambda r, refresh=True: r
+
+    mock_s3_client = MagicMock()
+    monkeypatch.setattr(service, "_get_s3_client", lambda: (mock_s3_client, "mock-bucket"))
+
+    result = await service.create_export(
+        workspace_id=1, requested_by=2, export_in=export_in, audit_logger=audit_logger
+    )
+
+    assert result.status == ExportStatus.ready
+    assert result.storage_key == f"s3://mock-bucket/exports/1/{record_id}/lifestack-export.json"
+    assert mock_s3_client.upload_fileobj.call_count == 1

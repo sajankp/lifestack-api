@@ -17,6 +17,7 @@ import structlog
 from sqlalchemy import func, select
 
 from app.application.workflows import (
+    cleanup_expired_exports,
     evaluate_workspace_budget_guardrails,
     process_workspace_recurring_todos,
     process_workspace_recurring_transactions,
@@ -353,3 +354,47 @@ async def weekly_summary_job() -> None:
             )
         finally:
             await conn.execute(select(func.pg_advisory_unlock(WEEKLY_SUMMARY_LOCK_KEY)))
+
+
+EXPORT_CLEANUP_LOCK_KEY = 1005
+
+
+async def export_cleanup_job() -> None:
+    """
+    Cron-triggered job that purges/marks expired exports (Spec 006).
+    """
+    start_time = datetime.now(UTC)
+    logger.info("export_cleanup_job_start", job_name="export_cleanup_job")
+
+    async with postgres.engine.connect() as conn:
+        lock_res = await conn.execute(select(func.pg_try_advisory_lock(EXPORT_CLEANUP_LOCK_KEY)))
+        has_lock = lock_res.scalar()
+        if not has_lock:
+            logger.info(
+                "export_cleanup_job_skipped_lock_held",
+                job_name="export_cleanup_job",
+            )
+            return
+
+        try:
+            async with postgres.async_session_maker() as session, session.begin():
+                cleaned_count = await cleanup_expired_exports(session)
+
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info(
+                "export_cleanup_job_completed",
+                job_name="export_cleanup_job",
+                duration_ms=total_ms,
+                cleaned_count=cleaned_count,
+            )
+        except Exception:
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.error(
+                "export_cleanup_job_failed",
+                job_name="export_cleanup_job",
+                duration_ms=total_ms,
+                status="failed",
+                exc_info=True,
+            )
+        finally:
+            await conn.execute(select(func.pg_advisory_unlock(EXPORT_CLEANUP_LOCK_KEY)))

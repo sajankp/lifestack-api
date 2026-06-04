@@ -3,12 +3,15 @@ Integration tests for Export creation, retrieval, download, and deletion lifecyc
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
 from sqlmodel import select
 
+from app.application.workflows import cleanup_expired_exports
 from app.auth.models import User
+from app.config import settings
 from app.core.database import postgres
 from app.exports.models import ExportFormat, ExportRecord, ExportStatus
 from app.platform.models import WorkspaceMembership
@@ -109,3 +112,97 @@ async def test_delete_pending_export_raises_conflict(client: AsyncClient):
         if record_to_del:
             await session.delete(record_to_del)
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_export_lifecycle_local_backend(client: AsyncClient, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "EXPORT_STORAGE_BACKEND", "local")
+    monkeypatch.setattr(settings, "EXPORT_LOCAL_PATH", str(tmp_path))
+
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    cookies = creds["cookies"]
+
+    # 1. Create Export
+    create_resp = await client.post(
+        "/v1/exports",
+        json={"format": "json", "modules": ["todo"]},
+        cookies=cookies,
+    )
+    assert create_resp.status_code == 201
+    export = create_resp.json()
+    assert export["status"] == ExportStatus.ready
+    export_id = export["public_id"]
+
+    # Verify physical file exists on local storage
+    local_file = (
+        tmp_path / "exports" / str(creds["workspace_id"]) / export_id / "lifestack-export.json"
+    )
+    assert local_file.exists()
+
+    # 2. Download Export
+    download_resp = await client.get(f"/v1/exports/{export_id}/download", cookies=cookies)
+    assert download_resp.status_code == 200
+    assert "todos" in download_resp.json()["data"]["todo"]
+
+    # 3. Delete Export (should clean up file)
+    delete_resp = await client.delete(f"/v1/exports/{export_id}", cookies=cookies)
+    assert delete_resp.status_code == 204
+    assert not local_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_export_cleanup_workflow(client: AsyncClient, monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "EXPORT_STORAGE_BACKEND", "local")
+    monkeypatch.setattr(settings, "EXPORT_LOCAL_PATH", str(tmp_path))
+    monkeypatch.setattr(settings, "EXPORT_TTL_DAYS", 7)
+    monkeypatch.setattr(settings, "EXPORT_CLEANUP_ENABLED", True)
+    monkeypatch.setattr(settings, "EXPORT_CLEANUP_DELETE_FILES", True)
+    monkeypatch.setattr(settings, "EXPORT_CLEANUP_DELETE_RECORDS", False)
+
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    cookies = creds["cookies"]
+
+    # Create export
+    create_resp = await client.post(
+        "/v1/exports",
+        json={"format": "json", "modules": ["todo"]},
+        cookies=cookies,
+    )
+    assert create_resp.status_code == 201
+    export = create_resp.json()
+    export_id = export["public_id"]
+
+    # Verify physical file exists
+    local_file = (
+        tmp_path / "exports" / str(creds["workspace_id"]) / export_id / "lifestack-export.json"
+    )
+    assert local_file.exists()
+
+    # Backdate the completed_at date to be 8 days ago (expired)
+    async with postgres.async_session_maker() as session:
+        result = await session.execute(
+            select(ExportRecord).where(ExportRecord.public_id == uuid.UUID(export_id))
+        )
+        record = result.scalar_one()
+        record.completed_at = datetime.now(UTC) - timedelta(days=8)
+        session.add(record)
+        await session.commit()
+
+    # Run cleanup workflow
+    async with postgres.async_session_maker() as session:
+        cleaned_count = await cleanup_expired_exports(session)
+        await session.commit()
+
+    assert cleaned_count == 1
+
+    # Verify record status is expired, file reference cleared, physical file deleted
+    async with postgres.async_session_maker() as session:
+        result = await session.execute(
+            select(ExportRecord).where(ExportRecord.public_id == uuid.UUID(export_id))
+        )
+        record = result.scalar_one()
+        assert record.status == ExportStatus.expired
+        assert record.storage_key is None
+        assert record.artifact_blob is None
+
+    assert not local_file.exists()
