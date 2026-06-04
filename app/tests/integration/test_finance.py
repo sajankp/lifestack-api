@@ -490,6 +490,7 @@ async def test_spending_transaction_account_fk_is_tenant_safe(client: AsyncClien
 
         with pytest.raises(IntegrityError):
             await session.commit()
+        await session.rollback()
 
 
 @pytest.mark.asyncio
@@ -567,3 +568,4 @@ async def test_capital_transfer_account_fks_are_tenant_safe(client: AsyncClient)
 
         with pytest.raises(IntegrityError):
             await session.commit()
+        await session.rollback()

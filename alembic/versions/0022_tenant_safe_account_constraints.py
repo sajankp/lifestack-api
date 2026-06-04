@@ -17,6 +17,49 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.execute(
+        """
+        DO $$
+        DECLARE
+            mismatch_count integer;
+        BEGIN
+            SELECT COUNT(*)
+            INTO mismatch_count
+            FROM spending_transactions st
+            JOIN accounts a ON a.id = st.account_id
+            WHERE st.account_id IS NOT NULL
+              AND st.workspace_id <> a.workspace_id;
+
+            IF mismatch_count > 0 THEN
+                RAISE EXCEPTION
+                    'Cannot add tenant-safe spending transaction account constraint: % cross-workspace account references found',
+                    mismatch_count;
+            END IF;
+        END $$;
+        """
+    )
+    op.execute(
+        """
+        DO $$
+        DECLARE
+            mismatch_count integer;
+        BEGIN
+            SELECT COUNT(*)
+            INTO mismatch_count
+            FROM capital_transfers ct
+            JOIN accounts from_account ON from_account.id = ct.from_account_id
+            JOIN accounts to_account ON to_account.id = ct.to_account_id
+            WHERE ct.workspace_id <> from_account.workspace_id
+               OR ct.workspace_id <> to_account.workspace_id;
+
+            IF mismatch_count > 0 THEN
+                RAISE EXCEPTION
+                    'Cannot add tenant-safe capital transfer account constraints: % cross-workspace account references found',
+                    mismatch_count;
+            END IF;
+        END $$;
+        """
+    )
     op.drop_constraint(
         "fk_spending_transactions_account_id",
         "spending_transactions",
