@@ -215,6 +215,11 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _check_production_defaults(self) -> "Settings":
         """Fail fast when insecure defaults are used in production."""
+        normalized_env = self.ENV.strip().lower()
+        if normalized_env not in {"local", "staging", "production", "test"}:
+            raise ValueError("ENV must be one of: local, staging, production, test.")
+        self.ENV = normalized_env
+
         if self.ENV == "production":
             if self.SECRET_KEY == "super-secret-key-change-in-production":
                 raise ValueError("SECRET_KEY must be changed from its default value in production.")
@@ -224,6 +229,8 @@ class Settings(BaseSettings):
                 )
             if not self.COOKIE_SECURE:
                 raise ValueError("COOKIE_SECURE must be enabled (True) in production.")
+            if not self.RATE_LIMIT_ENABLED:
+                raise ValueError("RATE_LIMIT_ENABLED must remain enabled in production.")
             if self.RATE_LIMIT_STORAGE_URI == "memory://":
                 raise ValueError(
                     "RATE_LIMIT_STORAGE_URI must be configured (non-memory) in production."
