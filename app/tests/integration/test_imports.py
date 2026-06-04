@@ -6,6 +6,7 @@ import pytest
 from httpx import AsyncClient
 from sqlmodel import select
 
+from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.imports.models import ImportBatch
 from app.spending.models import SpendingTransaction
@@ -252,7 +253,9 @@ async def test_import_delete_lifecycle_validated_succeeds(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_import_delete_completed_rejected(client: AsyncClient):
+async def test_import_delete_completed_spending_transactions_rolls_back_records(
+    client: AsyncClient,
+):
     creds = await _register_and_login(client, uuid.uuid4().hex[:8])
 
     csv_content = (
@@ -273,7 +276,32 @@ async def test_import_delete_completed_rejected(client: AsyncClient):
     commit_resp = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
     assert commit_resp.status_code == 200
 
-    # Try to delete completed batch -> 422 (ValidationError)
+    txs_after_commit = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
+    assert txs_after_commit.status_code == 200
+    assert txs_after_commit.json()["total"] == 1
+    assert txs_after_commit.json()["items"][0]["source_type"] == "imported"
+
+    # Deleting the completed batch should roll back imported spending records.
     del_resp = await client.delete(f"/v1/imports/{import_id}", cookies=creds["cookies"])
-    assert del_resp.status_code == 422
-    assert "cannot be deleted" in del_resp.json()["detail"].lower()
+    assert del_resp.status_code == 204
+
+    get_resp = await client.get(f"/v1/imports/{import_id}", cookies=creds["cookies"])
+    assert get_resp.status_code == 404
+
+    txs_after_delete = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
+    assert txs_after_delete.status_code == 200
+    assert txs_after_delete.json()["total"] == 0
+
+    async with postgres.async_session_maker() as session:
+        audit = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "import_rolled_back",
+                    AuditLog.entity_type == "import_batch",
+                )
+            )
+        ).scalar_one()
+
+    assert audit.details["entity_public_id"] == import_id
+    assert audit.details["before"]["status"] == "completed"
+    assert audit.details["deleted_records"] == 1

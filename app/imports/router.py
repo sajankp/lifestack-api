@@ -134,10 +134,11 @@ async def delete_import(
     import_public_id: uuid.UUID,
     service: ImportService = Depends(get_import_service),
     workspace_id: int = Depends(get_current_workspace_id),
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
-    """Delete a non-committed import batch and all its associated errors/preview rows.
+    """Delete an import batch and all its associated errors/preview rows.
 
-    Completed imports are permanent and cannot be deleted via this endpoint.
+    Completed spending-transaction imports also roll back their imported records.
     """
-    await service.delete_batch(workspace_id, import_public_id)
+    await service.delete_batch(workspace_id, user["id"], import_public_id, audit_logger)

@@ -653,23 +653,66 @@ class ImportService:
         errors = await self.repository.list_errors(batch.id, limit=200)
         return batch, errors
 
-    async def delete_batch(self, workspace_id: int, public_id: uuid.UUID) -> None:
+    async def delete_batch(
+        self,
+        workspace_id: int,
+        user_id: int,
+        public_id: uuid.UUID,
+        audit_logger: AuditLogger,
+    ) -> None:
         """Delete an import batch and its associated data.
 
-        Completed imports cannot be rolled back via this endpoint.
-        Use this to discard failed or validated-but-not-committed imports.
+        Completed spending-transaction imports are rolled back before deletion.
+        Other completed modules are blocked until their committed rows have source metadata.
         """
         batch = await self.repository.get_by_public_id(workspace_id, public_id)
         if not batch:
             raise NotFoundError(detail=f"Import batch with id {public_id} not found")
+        if batch.id is None:
+            raise ValidationError(detail="Import batch is not persisted and cannot be deleted")
 
-        non_deletable = {ImportStatus.committing, ImportStatus.completed}
-        if batch.status in non_deletable:
+        if batch.status == ImportStatus.committing:
             raise ValidationError(
                 detail=(
                     f"Import batch with status '{batch.status}' cannot be deleted. "
-                    "Completed imports are permanent; delete the individual records instead."
+                    "Wait for the import commit to finish before deleting it."
                 )
             )
+        if batch.status == ImportStatus.completed:
+            if batch.module != ImportModule.spending_transactions:
+                raise ValidationError(
+                    detail=(
+                        f"Completed imports for module '{batch.module}' cannot be rolled back yet."
+                    )
+                )
+            deleted_records = await self.repository.delete_spending_transactions_for_batch(
+                workspace_id, batch.id
+            )
+            action = "import_rolled_back"
+        else:
+            deleted_records = 0
+            action = "import_deleted"
+
+        await audit_logger.log(
+            workspace_id=workspace_id,
+            actor_id=user_id,
+            action=action,
+            module="import",
+            entity_type="import_batch",
+            entity_id=batch.id,
+            details={
+                "entity_public_id": str(batch.public_id),
+                "before": {
+                    "module": self._enum_value(batch.module),
+                    "status": self._enum_value(batch.status),
+                    "total_rows": batch.total_rows,
+                    "valid_rows": batch.valid_rows,
+                    "error_rows": batch.error_rows,
+                },
+                "after": None,
+                "changed_fields": ["status", "deleted_records"],
+                "deleted_records": deleted_records,
+            },
+        )
 
         await self.repository.delete_batch(batch)
