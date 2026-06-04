@@ -19,12 +19,14 @@ from sqlalchemy import func, select
 from app.application.workflows import (
     cleanup_expired_exports,
     evaluate_workspace_budget_guardrails,
+    ingest_fx_rates,
     process_workspace_recurring_todos,
     process_workspace_recurring_transactions,
 )
 from app.core.constants import (
     ADVISORY_LOCK_BUDGET_GUARDRAILS,
     ADVISORY_LOCK_EXPORT_CLEANUP,
+    ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_RECURRING_TRANSACTIONS,
     ADVISORY_LOCK_WEEKLY_SUMMARY,
 )
@@ -361,7 +363,54 @@ async def weekly_summary_job() -> None:
             await conn.execute(select(func.pg_advisory_unlock(WEEKLY_SUMMARY_LOCK_KEY)))
 
 
+FX_RATE_INGESTION_LOCK_KEY = ADVISORY_LOCK_FX_RATE_INGESTION
 EXPORT_CLEANUP_LOCK_KEY = ADVISORY_LOCK_EXPORT_CLEANUP
+
+
+async def fx_rate_ingestion_job() -> None:
+    """
+    Cron-triggered job that fetches and ingests the latest FX rates from ExchangeRate-API.
+
+    Execution model:
+      1. Acquire a Postgres advisory transaction lock to prevent concurrent execution
+         during rolling deploys (key ADVISORY_LOCK_FX_RATE_INGESTION).
+      2. Open a DB session and run the ingest_fx_rates workflow.
+      3. Handle, log, and propagate errors cleanly.
+    """
+    start_time = datetime.now(UTC)
+    logger.info("fx_rate_ingestion_job_start", job_name="fx_rate_ingestion_job")
+
+    async with postgres.async_session_maker() as session, session.begin():
+        lock_res = await session.execute(
+            select(func.pg_try_advisory_xact_lock(FX_RATE_INGESTION_LOCK_KEY))
+        )
+        has_lock = lock_res.scalar()
+        if not has_lock:
+            logger.info(
+                "fx_rate_ingestion_job_skipped_lock_held",
+                job_name="fx_rate_ingestion_job",
+            )
+            return
+
+        try:
+            await ingest_fx_rates(session)
+
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info(
+                "fx_rate_ingestion_job_completed",
+                job_name="fx_rate_ingestion_job",
+                duration_ms=total_ms,
+            )
+        except Exception as e:
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.error(
+                "fx_rate_ingestion_job_failed",
+                job_name="fx_rate_ingestion_job",
+                duration_ms=total_ms,
+                error=str(e),
+                exc_info=True,
+            )
+            raise e
 
 
 async def export_cleanup_job() -> None:

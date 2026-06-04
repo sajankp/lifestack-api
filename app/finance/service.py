@@ -7,7 +7,7 @@ from typing import Any
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
-from app.finance.models import Account, CapitalTransfer, CurrencyDisplayPreference
+from app.finance.models import Account, CapitalTransfer, Currency, CurrencyDisplayPreference
 from app.finance.repository import (
     AccountRepository,
     CapitalTransferRepository,
@@ -293,6 +293,14 @@ class FinanceSettingService:
 
 
 class FxRateService:
+    """
+    Service managing FX rate lookup and updates.
+
+    FX rates are globally scoped system reference data (market data) rather than
+    workspace-scoped entities. Mutation capability (via `upsert`) is reserved
+    exclusively for background tasks/cron ingestion jobs.
+    """
+
     def __init__(
         self,
         repository: FxRateRepository,
@@ -300,11 +308,26 @@ class FxRateService:
     ):
         self.repository = repository
         self.currency_repository = currency_repository
+        self._currency_active_cache: dict[str, bool] = {}
+
+    async def _is_active_currency(self, code: str) -> bool:
+        if not code:
+            return False
+        normalized_code = code.upper()
+        if normalized_code not in self._currency_active_cache:
+            currency: Currency | None = await self.currency_repository.get_by_code(normalized_code)
+            self._currency_active_cache[normalized_code] = bool(currency and currency.is_active)
+        return self._currency_active_cache[normalized_code]
 
     async def upsert(self, payload: FxRateUpsert):
-        for code in [payload.base_currency_code, payload.quote_currency_code]:
-            currency = await self.currency_repository.get_by_code(code)
-            if not currency or not currency.is_active:
+        """
+        Upsert a globally scoped FX rate.
+
+        This method is system-restricted and should only be invoked by internal scheduled
+        jobs/workflows. It enforces validation on active currencies and same-currency constraints.
+        """
+        for code in {payload.base_currency_code, payload.quote_currency_code}:
+            if not await self._is_active_currency(code):
                 raise ValidationError(detail=f"Unsupported currency code '{code}'")
         # Same-currency transfers must use a rate of exactly 1.0
         if (

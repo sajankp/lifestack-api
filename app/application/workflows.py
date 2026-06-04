@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import httpx
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,9 @@ from app.dashboard.schemas import (
 from app.exports.models import ExportRecord, ExportStatus
 from app.exports.repository import ExportRepository
 from app.exports.service import ExportService
+from app.finance.repository import CurrencyRepository, FxRateRepository
+from app.finance.schemas import FxRateUpsert
+from app.finance.service import FxRateService
 from app.investing.service import InvestingSummaryService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.platform.service import WorkspaceService
@@ -634,6 +638,97 @@ async def process_workspace_recurring_todos(session: AsyncSession, workspace: Wo
 
     await session.flush()
     return generated
+
+
+async def ingest_fx_rates(session: AsyncSession) -> None:
+    """
+    Ingest daily FX rates from ExchangeRate-API (https://www.exchangerate-api.com).
+    Uses USD as the base currency.
+    If the API key is not configured or the call fails, raises an exception cleanly.
+    """
+    if not settings.EXCHANGERATE_API_KEY:
+        raise ValueError("EXCHANGERATE_API_KEY environment variable is not configured.")
+
+    logger.info("ingesting_fx_rates_start", base_currency="USD")
+
+    url = f"https://v6.exchangerate-api.com/v6/{settings.EXCHANGERATE_API_KEY}/latest/USD"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        data = resp.json()
+
+    if not isinstance(data, dict) or data.get("result") != "success":
+        error_type = (
+            data.get("error-type", "unknown")
+            if isinstance(data, dict)
+            else "invalid response format"
+        )
+        raise ValueError(f"ExchangeRate-API request failed: {error_type}")
+
+    conversion_rates = data.get("conversion_rates")
+    if not isinstance(conversion_rates, dict):
+        raise ValueError("ExchangeRate-API response is missing conversion_rates")
+
+    for code in ["USD", "GBP", "INR"]:
+        if code not in conversion_rates:
+            raise KeyError(
+                f"Expected currency code '{code}' missing from ExchangeRate-API conversion rates."
+            )
+
+    # Base rates relative to USD
+    usd_to_gbp = Decimal(str(conversion_rates["GBP"]))
+    usd_to_inr = Decimal(str(conversion_rates["INR"]))
+    if usd_to_gbp <= 0 or usd_to_inr <= 0:
+        raise ValueError("ExchangeRate-API returned non-positive conversion rates.")
+
+    # Derived rates
+    raw_rates = [
+        # USD -> GBP
+        ("USD", "GBP", usd_to_gbp),
+        # GBP -> USD
+        ("GBP", "USD", Decimal("1.0") / usd_to_gbp),
+        # USD -> INR
+        ("USD", "INR", usd_to_inr),
+        # INR -> USD
+        ("INR", "USD", Decimal("1.0") / usd_to_inr),
+        # GBP -> INR
+        ("GBP", "INR", usd_to_inr / usd_to_gbp),
+        # INR -> GBP
+        ("INR", "GBP", usd_to_gbp / usd_to_inr),
+    ]
+
+    rates_to_upsert = []
+    for base, quote, rate in raw_rates:
+        quantized_rate = rate.quantize(Decimal("1.0000000000"))
+        if quantized_rate <= 0:
+            raise ValueError(
+                f"Derived rate for {base}/{quote} quantized to non-positive value: {quantized_rate}"
+            )
+        rates_to_upsert.append((base, quote, quantized_rate))
+
+    currency_repo = CurrencyRepository(session)
+    fx_repo = FxRateRepository(session)
+    fx_service = FxRateService(fx_repo, currency_repo)
+
+    now = datetime.now(UTC)
+    as_of_unix = data.get("time_last_update_unix")
+    try:
+        as_of = datetime.fromtimestamp(float(as_of_unix), UTC) if as_of_unix is not None else now
+    except (ValueError, TypeError):
+        as_of = now
+
+    for base, quote, rate in rates_to_upsert:
+        payload = FxRateUpsert(
+            base_currency_code=base,
+            quote_currency_code=quote,
+            rate=rate,
+            as_of=as_of,
+            fetched_at=now,
+            source="exchangerate-api",
+        )
+        await fx_service.upsert(payload)
+
+    logger.info("ingesting_fx_rates_success", count=len(rates_to_upsert))
 
 
 async def cleanup_expired_exports(session: AsyncSession) -> int:

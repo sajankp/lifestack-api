@@ -273,7 +273,7 @@ Based on architectural reviews and implementation, the following items are track
 
 1. **Scheduler: Rolling Deploy Window:** Advisory locks still do not provide strict exactly-once delivery semantics. As a hard guardrail, non-idempotent scheduler jobs are now blocked unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly set.
 2. **Cross-repo full-stack E2E test harness:** FE and BE are separate repos, and the dedicated `lifestack-e2e` repo now hosts the real UI+API+DB suite with stack orchestration scripts. The remaining debt is deterministic demo/reset data and making the same quality bar visible in every repo's CI.
-3. **Gate 0 remaining work:** Database tenant integrity, FX scope/permissions, broader Decimal consistency, dependency/security gates, finance correctness, and richer import/export cleanup remain open before health, documents, MCP, or personal-coach work should begin. Source metadata now covers manual and imported spending transactions, including completed spending-import rollback.
+3. **Gate 0 remaining work:** Database tenant integrity, broader Decimal consistency, dependency/security gates, remaining finance correctness, and richer import/export cleanup remain open before health, documents, MCP, or personal-coach work should begin. Source metadata now covers manual and imported spending transactions, including completed spending-import rollback. FX rates are now documented as globally scoped read-only market data, with writes owned by the daily scheduler ingestion job.
 
 ---
 

@@ -12,11 +12,12 @@
 #   1001 – budget_guardrails_job
 #   1002 – recurring_transactions_job
 #   1003 – weekly_summary_job
-#   1004 – (reserved)
+#   1004 – fx_rate_ingestion_job
 #   1005 – export_cleanup_job
 # ---------------------------------------------------------------------------
 
 ADVISORY_LOCK_BUDGET_GUARDRAILS: int = 1001
 ADVISORY_LOCK_RECURRING_TRANSACTIONS: int = 1002
 ADVISORY_LOCK_WEEKLY_SUMMARY: int = 1003
+ADVISORY_LOCK_FX_RATE_INGESTION: int = 1004
 ADVISORY_LOCK_EXPORT_CLEANUP: int = 1005

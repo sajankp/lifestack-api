@@ -143,6 +143,7 @@ class Settings(BaseSettings):
 
     # AI Voice Agent (Spec 021)
     GEMINI_API_KEY: str | None = None
+    EXCHANGERATE_API_KEY: str | None = None
     IMPORT_S3_ENDPOINT: str | None = Field(
         default=None,
         validation_alias=AliasChoices("IMPORT_S3_ENDPOINT", "CLOUDFLARE_R2_ENDPOINT"),

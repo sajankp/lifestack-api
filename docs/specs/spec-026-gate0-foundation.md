@@ -149,6 +149,12 @@ In `HoldingService.submit_prices` (or equivalent), validate:
 - Each price is `> 0` and `<= 1_000_000` per unit
 - Reject batches over 500 items
 
+### 6.3 FX Rate Ingestion and Global Scoping
+
+- **Scope & Permissions**: FX rates are globally scoped system reference data (market data). Standard users have read-only access via `GET /v1/finance/fx-rates`. Writes are restricted to background/cron jobs (invoked via `FxRateService.upsert`).
+- **ExchangeRate-API Integration**: A daily cron job `fx_rate_ingestion_job` runs at `02:00 UTC` using `EXCHANGERATE_API_KEY`. It fetches USD-based rates from `https://v6.exchangerate-api.com/v6/{api_key}/latest/USD`, extracts GBP/INR, and derives/upserts all cross pairs (USD/GBP, USD/INR, GBP/INR and their reciprocals) quantized to 10 decimal places.
+- **Fail-closed Ingestion**: If the key is not set, or the API call fails, the job fails cleanly, raising a configuration/HTTP error without silent fallback to default values.
+
 ---
 
 ## 7. Test Strategy
