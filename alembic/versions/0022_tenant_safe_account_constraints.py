@@ -17,6 +17,21 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.drop_constraint(
+        "fk_spending_transactions_account_id",
+        "spending_transactions",
+        type_="foreignkey",
+    )
+    op.drop_constraint(
+        "capital_transfers_from_account_id_fkey",
+        "capital_transfers",
+        type_="foreignkey",
+    )
+    op.drop_constraint(
+        "capital_transfers_to_account_id_fkey",
+        "capital_transfers",
+        type_="foreignkey",
+    )
     op.create_unique_constraint(
         "uq_accounts_id_workspace",
         "accounts",
@@ -62,3 +77,24 @@ def downgrade() -> None:
         type_="foreignkey",
     )
     op.drop_constraint("uq_accounts_id_workspace", "accounts", type_="unique")
+    op.create_foreign_key(
+        "capital_transfers_to_account_id_fkey",
+        "capital_transfers",
+        "accounts",
+        ["to_account_id"],
+        ["id"],
+    )
+    op.create_foreign_key(
+        "capital_transfers_from_account_id_fkey",
+        "capital_transfers",
+        "accounts",
+        ["from_account_id"],
+        ["id"],
+    )
+    op.create_foreign_key(
+        "fk_spending_transactions_account_id",
+        "spending_transactions",
+        "accounts",
+        ["account_id"],
+        ["id"],
+    )

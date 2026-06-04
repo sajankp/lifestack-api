@@ -176,8 +176,8 @@ class CapitalTransfer(SQLModel, table=True):
     from_module: TransferModule = Field(sa_type=sa.String(), default=TransferModule.spending)
     to_module: TransferModule = Field(sa_type=sa.String(), default=TransferModule.investing)
 
-    from_account_id: int = Field(foreign_key="accounts.id", index=True)
-    to_account_id: int = Field(foreign_key="accounts.id", index=True)
+    from_account_id: int = Field(index=True)
+    to_account_id: int = Field(index=True)
     from_currency_code: str = Field(foreign_key="currencies.code", max_length=10, index=True)
     to_currency_code: str = Field(foreign_key="currencies.code", max_length=10, index=True)
 
