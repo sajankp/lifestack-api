@@ -645,10 +645,13 @@ async def cleanup_expired_exports(session: AsyncSession) -> int:
 
     cutoff = datetime.now(UTC) - timedelta(days=settings.EXPORT_TTL_DAYS)
 
-    # Query exports to clean up: ready exports older than EXPORT_TTL_DAYS,
+    # Query exports to clean up: ready/failed exports older than EXPORT_TTL_DAYS,
     # or pending exports older than EXPORT_TTL_DAYS
     query = select(ExportRecord).where(
-        ((ExportRecord.status == ExportStatus.ready) & (ExportRecord.completed_at < cutoff))
+        (
+            ExportRecord.status.in_([ExportStatus.ready, ExportStatus.failed])
+            & (ExportRecord.completed_at < cutoff)
+        )
         | ((ExportRecord.status == ExportStatus.pending) & (ExportRecord.created_at < cutoff))
     )
     result = await session.execute(query)

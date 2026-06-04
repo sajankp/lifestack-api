@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     # Export storage hardening (Spec 006)
     EXPORT_STORAGE_BACKEND: str = "db"  # db|local|s3
     EXPORT_LOCAL_PATH: str = "/var/lib/lifestack/exports"
-    EXPORT_TTL_DAYS: int = 7
+    EXPORT_TTL_DAYS: int = 365
     EXPORT_CLEANUP_ENABLED: bool = True
     EXPORT_CLEANUP_DELETE_FILES: bool = True
     EXPORT_CLEANUP_DELETE_RECORDS: bool = False

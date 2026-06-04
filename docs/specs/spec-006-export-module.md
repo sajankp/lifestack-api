@@ -70,9 +70,9 @@ Create `exports` table:
 - Export endpoints available under `/v1`.
 - JSON/CSV generation is progressive and doesn't materialize all rows in RAM.
 - Configuration parameters defined for:
-  - `EXPORT_STORAGE_BACKEND` (choices: `db`, `local`, `s3`)
-  - `EXPORT_LOCAL_PATH`
-  - `EXPORT_TTL_DAYS`
+  - `EXPORT_STORAGE_BACKEND` (choices: `db`, `local`, `s3`, defaults to `"db"`)
+  - `EXPORT_LOCAL_PATH` (defaults to `/var/lib/lifestack/exports`)
+  - `EXPORT_TTL_DAYS` (defaults to `365`)
 - Concurrency and fail-closed storage validation are implemented.
 - Daily TTL cleanup job runs under advisory lock `EXPORT_CLEANUP_LOCK_KEY = 1005` to identify exports older than `EXPORT_TTL_DAYS` and mark them `expired`. Physical files are deleted if `EXPORT_CLEANUP_DELETE_FILES` is enabled.
 
