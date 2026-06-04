@@ -7,7 +7,7 @@ from httpx import AsyncClient
 @pytest.mark.asyncio
 async def test_dashboard_summary_empty_workspace(client: AsyncClient):
     # Register and login user
-    user = {"email": "dash1@example.com", "username": "dash1", "password": "password123"}
+    user = {"email": "dash1@example.com", "username": "dash1", "password": "TestPass123!"}
     register_res = await client.post("/v1/auth/register", json=user)
     assert register_res.status_code == 200
     login_res = await client.post(
@@ -37,7 +37,7 @@ async def test_dashboard_summary_empty_workspace(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_dashboard_summary_with_data(client: AsyncClient):
     # Register and login user
-    user = {"email": "dash2@example.com", "username": "dash2", "password": "password123"}
+    user = {"email": "dash2@example.com", "username": "dash2", "password": "TestPass123!"}
     register_res = await client.post("/v1/auth/register", json=user)
     assert register_res.status_code == 200
     login_res = await client.post(
@@ -92,7 +92,7 @@ async def test_dashboard_summary_with_data(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_dashboard_workspace_isolation(client: AsyncClient):
     # User 1 creates data
-    user1 = {"email": "dash_iso1@example.com", "username": "dash_iso1", "password": "password"}
+    user1 = {"email": "dash_iso1@example.com", "username": "dash_iso1", "password": "TestPass123!"}
     await client.post("/v1/auth/register", json=user1)
     await client.post(
         "/v1/auth/login", data={"username": user1["username"], "password": user1["password"]}
@@ -102,7 +102,7 @@ async def test_dashboard_workspace_isolation(client: AsyncClient):
 
     # User 2 logs in
     await client.post("/v1/auth/logout")
-    user2 = {"email": "dash_iso2@example.com", "username": "dash_iso2", "password": "password"}
+    user2 = {"email": "dash_iso2@example.com", "username": "dash_iso2", "password": "TestPass123!"}
     await client.post("/v1/auth/register", json=user2)
     await client.post(
         "/v1/auth/login", data={"username": user2["username"], "password": user2["password"]}

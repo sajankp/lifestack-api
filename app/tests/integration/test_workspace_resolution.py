@@ -17,11 +17,11 @@ async def test_workspace_resolution_logic(client: AsyncClient):
     email = f"{username}@example.com"
     await client.post(
         "/v1/auth/register",
-        json={"email": email, "username": username, "password": "password123"},
+        json={"email": email, "username": username, "password": "TestPass123!"},
     )
 
     # Login as User A to set cookies
-    await client.post("/v1/auth/login", data={"username": username, "password": "password123"})
+    await client.post("/v1/auth/login", data={"username": username, "password": "TestPass123!"})
 
     # 2. Get User A's default workspace ID from DB
     async with postgres.async_session_maker() as session:

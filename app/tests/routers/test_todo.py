@@ -7,7 +7,7 @@ async def test_todo_crud_flow_is_workspace_scoped(client: AsyncClient):
     user_one = {
         "email": "todo@example.com",
         "username": "todouser",
-        "password": "todopassword",
+        "password": "TestPass123!",
     }
     register_res = await client.post("/v1/auth/register", json=user_one)
     assert register_res.status_code == 200
@@ -53,7 +53,7 @@ async def test_todo_crud_flow_is_workspace_scoped(client: AsyncClient):
     user_two = {
         "email": "other@example.com",
         "username": "otheruser",
-        "password": "otherpassword",
+        "password": "TestPass123!",
     }
     register_res = await client.post("/v1/auth/register", json=user_two)
     assert register_res.status_code == 200
@@ -123,7 +123,7 @@ async def test_recurring_todo_rule_crud(client: AsyncClient):
     user = {
         "email": "recurringtodo@example.com",
         "username": "recurringtodo",
-        "password": "todopassword",
+        "password": "TestPass123!",
     }
     register_res = await client.post("/v1/auth/register", json=user)
     assert register_res.status_code == 200

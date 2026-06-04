@@ -113,3 +113,15 @@ class ImportRepository:
         )
         result = await self.session.execute(stmt)
         return (result.rowcount or 0) == 1
+
+    async def delete_batch(self, batch: ImportBatch) -> None:
+        """Delete all child rows then the batch itself."""
+        batch_id = batch.id
+        await self.session.execute(
+            delete(ImportError).where(ImportError.import_batch_id == batch_id)
+        )
+        await self.session.execute(
+            delete(ImportPreviewRow).where(ImportPreviewRow.import_batch_id == batch_id)
+        )
+        await self.session.delete(batch)
+        await self.session.flush()

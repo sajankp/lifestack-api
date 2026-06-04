@@ -1,6 +1,29 @@
+import re
 import uuid
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+# Compiled pattern for password complexity check
+_UPPERCASE_RE = re.compile(r"[A-Z]")
+_LOWERCASE_RE = re.compile(r"[a-z]")
+_DIGIT_RE = re.compile(r"\d")
+_SPECIAL_RE = re.compile(r"[!@#$%^&*()\-_=+\[\]{}|;:,.<>?/~`]")
+
+
+def _validate_password_complexity(v: str) -> str:
+    """Enforce password complexity: upper, lower, digit, and special character."""
+    errors = []
+    if not _UPPERCASE_RE.search(v):
+        errors.append("at least one uppercase letter")
+    if not _LOWERCASE_RE.search(v):
+        errors.append("at least one lowercase letter")
+    if not _DIGIT_RE.search(v):
+        errors.append("at least one digit")
+    if not _SPECIAL_RE.search(v):
+        errors.append("at least one special character (!@#$%^&*()...)")
+    if errors:
+        raise ValueError(f"Password must contain {', '.join(errors)}.")
+    return v
 
 
 class UserCreate(BaseModel):
@@ -16,8 +39,16 @@ class UserCreate(BaseModel):
         ...,
         min_length=8,
         max_length=128,
-        description="Password must be at least 8 characters long.",
+        description=(
+            "Password must be 8-128 chars and contain uppercase, lowercase, "
+            "digit, and special character."
+        ),
     )
+
+    @field_validator("password")
+    @classmethod
+    def password_complexity(cls, v: str) -> str:
+        return _validate_password_complexity(v)
 
 
 class UserResponse(BaseModel):
@@ -40,5 +71,13 @@ class PasswordChange(BaseModel):
         ...,
         min_length=8,
         max_length=128,
-        description="New password must be at least 8 characters long.",
+        description=(
+            "New password must be 8-128 chars and contain uppercase, lowercase, "
+            "digit, and special character."
+        ),
     )
+
+    @field_validator("new_password")
+    @classmethod
+    def new_password_complexity(cls, v: str) -> str:
+        return _validate_password_complexity(v)

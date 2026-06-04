@@ -275,3 +275,17 @@ class ExportService:
         if record is None:
             raise NotFoundError(detail=f"Export with id {export_public_id} not found")
         return record
+
+    async def delete_export(self, workspace_id: int, export_public_id: uuid.UUID) -> None:
+        """Delete an export record.
+
+        Exports that are still pending (being generated) cannot be deleted.
+        """
+        record = await self.repository.get_by_public_id(workspace_id, export_public_id)
+        if record is None:
+            raise NotFoundError(detail=f"Export with id {export_public_id} not found")
+        if record.status == ExportStatus.pending:
+            raise ConflictError(
+                detail="Export is still being generated. Wait for it to complete before deleting."
+            )
+        await self.repository.delete(record)

@@ -25,7 +25,7 @@ async def test_todo_audit_logging_e2e(client: AsyncClient):
     user_data = {
         "email": "todo_audit_e2e@example.com",
         "username": "todo_audit_e2e",
-        "password": "todo_audit_password",
+        "password": "TestPass123!",
     }
     reg_res = await client.post("/v1/auth/register", json=user_data)
     assert reg_res.status_code == 200

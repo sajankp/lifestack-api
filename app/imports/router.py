@@ -1,7 +1,7 @@
 import uuid
 from collections import Counter
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile, status
 from fastapi.responses import PlainTextResponse, Response
 
 from app.core.audit import AuditLogger
@@ -127,3 +127,17 @@ async def get_import_detail(
         errors=response_errors,
         error_summary=_build_error_summary(batch.error_rows, response_errors),
     )
+
+
+@router.delete("/{import_public_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_import(
+    import_public_id: uuid.UUID,
+    service: ImportService = Depends(get_import_service),
+    workspace_id: int = Depends(get_current_workspace_id),
+    _user: dict = Depends(get_current_user),
+):
+    """Delete a non-committed import batch and all its associated errors/preview rows.
+
+    Completed imports are permanent and cannot be deleted via this endpoint.
+    """
+    await service.delete_batch(workspace_id, import_public_id)

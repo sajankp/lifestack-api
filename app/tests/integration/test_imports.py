@@ -200,3 +200,58 @@ async def test_import_commit_reports_auto_created_categories(client: AsyncClient
     categories = await client.get("/v1/spending/categories", cookies=creds["cookies"])
     assert categories.status_code == 200
     assert any(c["name"] == "Road Trips" for c in categories.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_import_delete_lifecycle_validated_succeeds(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    csv_content = (
+        "occurred_at,type,amount,category,description\n"
+        f"{datetime.now(UTC).isoformat()},expense,15.00,Other,some description\n"
+    )
+    files = {"file": ("tx.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "spending-transactions"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    import_id = validate.json()["import_batch"]["public_id"]
+
+    # Delete validated batch
+    del_resp = await client.delete(f"/v1/imports/{import_id}", cookies=creds["cookies"])
+    assert del_resp.status_code == 204
+
+    # GET after delete -> 404
+    get_resp = await client.get(f"/v1/imports/{import_id}", cookies=creds["cookies"])
+    assert get_resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_import_delete_completed_rejected(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    csv_content = (
+        "occurred_at,type,amount,category,description\n"
+        f"{datetime.now(UTC).isoformat()},expense,15.00,Other,description\n"
+    )
+    files = {"file": ("tx.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "spending-transactions"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    import_id = validate.json()["import_batch"]["public_id"]
+
+    # Commit batch to complete it
+    commit_resp = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit_resp.status_code == 200
+
+    # Try to delete completed batch -> 422 (ValidationError)
+    del_resp = await client.delete(f"/v1/imports/{import_id}", cookies=creds["cookies"])
+    assert del_resp.status_code == 422
+    assert "cannot be deleted" in del_resp.json()["detail"].lower()

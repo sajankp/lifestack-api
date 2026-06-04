@@ -648,3 +648,24 @@ class ImportService:
             raise NotFoundError(detail=f"Import batch with id {public_id} not found")
         errors = await self.repository.list_errors(batch.id, limit=200)
         return batch, errors
+
+    async def delete_batch(self, workspace_id: int, public_id: uuid.UUID) -> None:
+        """Delete an import batch and its associated data.
+
+        Completed imports cannot be rolled back via this endpoint.
+        Use this to discard failed or validated-but-not-committed imports.
+        """
+        batch = await self.repository.get_by_public_id(workspace_id, public_id)
+        if not batch:
+            raise NotFoundError(detail=f"Import batch with id {public_id} not found")
+
+        non_deletable = {ImportStatus.committing, ImportStatus.completed}
+        if batch.status in non_deletable:
+            raise ValidationError(
+                detail=(
+                    f"Import batch with status '{batch.status}' cannot be deleted. "
+                    "Completed imports are permanent; delete the individual records instead."
+                )
+            )
+
+        await self.repository.delete_batch(batch)

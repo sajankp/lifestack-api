@@ -207,7 +207,7 @@ async def request_validation_exception_handler(
             "detail": "The request payload or parameters are invalid.",
             "hint": _hint_for_status(422),
             "instance": str(request.url.path),
-            "errors": exc.errors(),
+            "errors": jsonable_encoder(exc.errors()),
         },
         media_type=PROBLEM_JSON,
     )

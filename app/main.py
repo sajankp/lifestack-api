@@ -110,6 +110,12 @@ def create_app() -> FastAPI:
         docs_url="/docs",
         redoc_url=None,
         lifespan=lifespan,
+        openapi_tags=[
+            {
+                "name": "capture",
+                "description": "Voice-agent capture operations",
+            }
+        ],
     )
 
     # CORS

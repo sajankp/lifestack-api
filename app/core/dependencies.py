@@ -521,6 +521,7 @@ async def get_current_workspace_id(
     request: Request,
     current_user: dict = Depends(get_current_user),
     workspace_service: WorkspaceService = Depends(get_workspace_service),
+    workspace_repo: WorkspaceRepository = Depends(get_workspace_repo),
     membership_repo: MembershipRepository = Depends(get_membership_repo),
     category_service: CategoryService = Depends(get_spending_category_service),
 ) -> int:
@@ -557,6 +558,11 @@ async def get_current_workspace_id(
 
         if membership is None or membership.workspace_id != workspace_id:
             membership = await membership_repo.get_membership(workspace_id, current_user["id"])
+
+    # Enforce that the resolved workspace is active
+    resolved_workspace = await workspace_repo.get_by_id(workspace_id)
+    if not resolved_workspace or not resolved_workspace.is_active:
+        raise ForbiddenError(detail="Workspace is inactive or does not exist")
 
     # Store resolved workspace_id, membership, and role on request state for downstream checks
     request.state.workspace_id = workspace_id

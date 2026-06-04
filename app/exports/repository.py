@@ -56,3 +56,7 @@ class ExportRepository:
             .limit(limit)
         )
         return result.scalars().all()
+
+    async def delete(self, record: ExportRecord) -> None:
+        await self.session.delete(record)
+        await self.session.flush()

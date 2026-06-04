@@ -29,14 +29,14 @@ async def test_spending_audit_logging_e2e(client: AsyncClient):
     user_data = {
         "email": "spending_audit_e2e@example.com",
         "username": "spend_audit",
-        "password": "spend_password",
+        "password": "TestPass123!",
     }
     reg_res = await client.post("/v1/auth/register", json=user_data)
     assert reg_res.status_code == 200
 
     login_res = await client.post(
         "/v1/auth/login",
-        data={"username": user_data["username"], "password": user_data["password"]},
+        data={"username": user_data["username"], "password": "TestPass123!"},
     )
     assert login_res.status_code == 200
     cookies = dict(login_res.cookies)

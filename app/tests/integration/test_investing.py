@@ -48,7 +48,7 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
         client,
         email="investing-e2e@example.com",
         username="investing-e2e",
-        password="password123",
+        password="TestPass123!",
     )
 
     # Create holding
@@ -153,7 +153,7 @@ async def test_investing_duplicate_holding_conflict(client: AsyncClient):
         client,
         email="investing-conflict@example.com",
         username="investing-conflict",
-        password="password123",
+        password="TestPass123!",
     )
 
     payload = {
@@ -180,7 +180,7 @@ async def test_investing_workspace_isolation(client: AsyncClient):
         client,
         email="investing-iso-a@example.com",
         username="investing-iso-a",
-        password="password123",
+        password="TestPass123!",
     )
     create_res = await client.post(
         "/v1/investing/holdings",
@@ -201,7 +201,7 @@ async def test_investing_workspace_isolation(client: AsyncClient):
         client,
         email="investing-iso-b@example.com",
         username="investing-iso-b",
-        password="password123",
+        password="TestPass123!",
     )
 
     list_res = await client.get("/v1/investing/holdings")
@@ -224,7 +224,7 @@ async def test_investing_cash_balance_update_and_delete(client: AsyncClient):
         client,
         email="investing-cash@example.com",
         username="investing-cash",
-        password="password123",
+        password="TestPass123!",
     )
 
     create_cash = {
@@ -304,7 +304,7 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
         client,
         email="investing-multi-curr@example.com",
         username="investing-multi-curr",
-        password="password123",
+        password="TestPass123!",
     )
 
     # 1. Create USD asset (Holding)
@@ -371,7 +371,7 @@ async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
         client,
         email="investing-lookthrough@example.com",
         username="investing-lookthrough",
-        password="password123",
+        password="TestPass123!",
     )
 
     instrument_res = await client.post(
@@ -455,7 +455,7 @@ async def test_investing_constituent_weights_validation(client: AsyncClient):
         client,
         email="constituent-weights@example.com",
         username="const-weights",
-        password="password123",
+        password="TestPass123!",
     )
 
     instrument_res = await client.post(
