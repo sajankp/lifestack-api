@@ -236,7 +236,8 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Feature | Status |
 |---|---|
 | Todo CRUD with priorities and workspace scoping | ✅ Done |
-| JWT auth (HttpOnly cookies, session tracking, CSRF) | ✅ Done |
+| JWT auth (HttpOnly cookies, session tracking, CSRF, password policy, password change, logout-all) | ✅ Done |
+| Workspace RBAC and workspace selection APIs | ✅ Gate 0 foundation |
 | Spending tracker (categories, transactions, budgets) | ✅ Done |
 | Unified dashboard | ✅ Done |
 | Audit logging — in-transaction, append-only, PII-redacted | ✅ Done |
@@ -251,7 +252,7 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Weekly summaries API + dashboard integration (Spec 016) | ✅ Done |
 | Spending analytics endpoints (Spec 017) | ✅ Done |
 | Quick capture API routing (Spec 018) | ✅ Done |
-| Data export (CSV / JSON) | ✅ Done |
+| Data import/export lifecycle controls | ✅ Gate 0 foundation |
 | Voice-first capture for todos and spending | Stage 2 / partial |
 | AI assistant over existing modules | Stage 3 / planned |
 | Mobile companion app | Stage 4 / planned |
@@ -271,7 +272,8 @@ The core rule is: business logic lives in services, cross-module orchestration l
 Based on architectural reviews and implementation, the following items are tracked:
 
 1. **Scheduler: Rolling Deploy Window:** Advisory locks still do not provide strict exactly-once delivery semantics. As a hard guardrail, non-idempotent scheduler jobs are now blocked unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly set.
-2. **Cross-repo full-stack E2E test harness:** FE and BE are separate repos, and the dedicated `lifestack-e2e` repo now hosts the real UI+API+DB suite. The remaining debt is around smoother orchestration and reducing the current manual setup/migration steps.
+2. **Cross-repo full-stack E2E test harness:** FE and BE are separate repos, and the dedicated `lifestack-e2e` repo now hosts the real UI+API+DB suite with stack orchestration scripts. The remaining debt is deterministic demo/reset data and making the same quality bar visible in every repo's CI.
+3. **Gate 0 remaining work:** Database tenant integrity, source metadata conventions, FX scope/permissions, broader Decimal consistency, dependency/security gates, and finance correctness remain open before health, documents, MCP, or personal-coach work should begin.
 
 ---
 
@@ -333,6 +335,7 @@ The goal is to build a real personal system in public, show the architecture dec
 |---|---|
 | [lifestack-api](https://github.com/sajankp/lifestack-api) | FastAPI backend for auth, todo, spending, investing, dashboard, and future AI adapters |
 | [lifestack-web](https://github.com/sajankp/lifestack-web) | React frontend for the personal OS experience |
+| [lifestack-e2e](https://github.com/sajankp/lifestack-e2e) | Standalone full-stack Playwright suite for API, Web, Postgres, and Redis |
 
 ---
 
