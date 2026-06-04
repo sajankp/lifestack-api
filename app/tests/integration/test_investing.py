@@ -211,14 +211,50 @@ async def test_investing_price_submission_rejects_large_batches(client: AsyncCli
         json={
             "price_date": datetime.now(UTC).date().isoformat(),
             "prices": [
-                {"holding_public_id": holding_res.json()["public_id"], "unit_price": "120.00"}
-                for _ in range(501)
+                {"holding_public_id": str(uuid.uuid4()), "unit_price": "120.00"} for _ in range(501)
             ],
         },
     )
 
     assert price_res.status_code == 422
     assert "at most 500" in price_res.text
+
+
+@pytest.mark.asyncio
+async def test_investing_price_submission_rejects_duplicate_holdings(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="investing-price-duplicate@example.com",
+        username="investing-price-duplicate",
+        password="TestPass123!",
+    )
+
+    holding_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "GOOGL",
+            "account_name": "brokerage",
+            "quantity": "1.00000000",
+            "avg_cost": "100.00",
+            "currency": "USD",
+        },
+    )
+    assert holding_res.status_code == 201
+    holding_id = holding_res.json()["public_id"]
+
+    price_res = await client.post(
+        "/v1/investing/prices",
+        json={
+            "price_date": datetime.now(UTC).date().isoformat(),
+            "prices": [
+                {"holding_public_id": holding_id, "unit_price": "120.00"},
+                {"holding_public_id": holding_id, "unit_price": "121.00"},
+            ],
+        },
+    )
+
+    assert price_res.status_code == 422
+    assert "Duplicate holding_public_id" in price_res.text
 
 
 @pytest.mark.asyncio
