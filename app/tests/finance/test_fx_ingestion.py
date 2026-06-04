@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from sqlalchemy import delete
 from sqlmodel import select
 
 from app.application.jobs import fx_rate_ingestion_job
@@ -17,13 +18,7 @@ from app.finance.models import FxRate
 async def clean_fx_rates(override_database_url):
     """Ensure a clean slate for FX rates before each test."""
     async with postgres.async_session_maker() as session, session.begin():
-        # Delete existing rates to avoid unique constraint violations across test runs
-        await session.execute(select(FxRate).execution_options(synchronize_session="fetch"))
-        # Just flush and commit
-        # Let's delete them:
-        res = await session.execute(select(FxRate))
-        for rate in res.scalars().all():
-            await session.delete(rate)
+        await session.execute(delete(FxRate))
 
 
 @pytest.mark.asyncio
@@ -164,6 +159,41 @@ async def test_ingest_fx_rates_missing_conversion_rates(client, monkeypatch):
 
     async with postgres.async_session_maker() as session:
         with pytest.raises(KeyError, match="Expected currency code 'INR' missing"):
+            await ingest_fx_rates(session)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("gbp_rate", "inr_rate"),
+    [
+        (0, 83.0),
+        (0.8, -83.0),
+    ],
+)
+async def test_ingest_fx_rates_rejects_non_positive_rates(client, monkeypatch, gbp_rate, inr_rate):
+    monkeypatch.setattr(settings, "EXCHANGERATE_API_KEY", "test-api-key")
+
+    mock_data = {
+        "result": "success",
+        "conversion_rates": {
+            "USD": 1.0,
+            "GBP": gbp_rate,
+            "INR": inr_rate,
+        },
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = mock_data
+    mock_resp.raise_for_status = MagicMock()
+
+    async def mock_get(*args, **kwargs):
+        return mock_resp
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    async with postgres.async_session_maker() as session:
+        with pytest.raises(ValueError, match="non-positive conversion rates"):
             await ingest_fx_rates(session)
 
 

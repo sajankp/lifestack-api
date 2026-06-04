@@ -666,6 +666,8 @@ async def ingest_fx_rates(session: AsyncSession) -> None:
     # Base rates relative to USD
     usd_to_gbp = Decimal(str(conversion_rates["GBP"]))
     usd_to_inr = Decimal(str(conversion_rates["INR"]))
+    if usd_to_gbp <= 0 or usd_to_inr <= 0:
+        raise ValueError("ExchangeRate-API returned non-positive conversion rates.")
 
     # Derived rates
     raw_rates = [
