@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import StrEnum
 
 import sqlalchemy as sa
@@ -142,7 +143,7 @@ class FxRate(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     base_currency_code: str = Field(foreign_key="currencies.code", max_length=10, index=True)
     quote_currency_code: str = Field(foreign_key="currencies.code", max_length=10, index=True)
-    rate: float = Field(sa_type=sa.Numeric(precision=20, scale=10))
+    rate: Decimal = Field(sa_type=sa.Numeric(precision=20, scale=10))
     as_of: datetime = Field(sa_type=sa.DateTime(timezone=True), index=True)
     fetched_at: datetime = Field(sa_type=sa.DateTime(timezone=True), index=True)
     source: str = Field(max_length=64, index=True)
@@ -181,12 +182,14 @@ class CapitalTransfer(SQLModel, table=True):
     from_currency_code: str = Field(foreign_key="currencies.code", max_length=10, index=True)
     to_currency_code: str = Field(foreign_key="currencies.code", max_length=10, index=True)
 
-    gross_amount: float = Field(sa_type=sa.Numeric(precision=14, scale=2))
-    fx_rate_used: float | None = Field(default=None, sa_type=sa.Numeric(precision=20, scale=10))
-    fx_fee_amount: float = Field(default=0, sa_type=sa.Numeric(precision=14, scale=2))
-    platform_fee_amount: float = Field(default=0, sa_type=sa.Numeric(precision=14, scale=2))
-    tax_amount: float = Field(default=0, sa_type=sa.Numeric(precision=14, scale=2))
-    net_amount_received: float = Field(sa_type=sa.Numeric(precision=14, scale=2))
+    gross_amount: Decimal = Field(sa_type=sa.Numeric(precision=14, scale=2))
+    fx_rate_used: Decimal | None = Field(default=None, sa_type=sa.Numeric(precision=20, scale=10))
+    fx_fee_amount: Decimal = Field(default=Decimal("0"), sa_type=sa.Numeric(precision=14, scale=2))
+    platform_fee_amount: Decimal = Field(
+        default=Decimal("0"), sa_type=sa.Numeric(precision=14, scale=2)
+    )
+    tax_amount: Decimal = Field(default=Decimal("0"), sa_type=sa.Numeric(precision=14, scale=2))
+    net_amount_received: Decimal = Field(sa_type=sa.Numeric(precision=14, scale=2))
     occurred_at: datetime = Field(sa_type=sa.DateTime(timezone=True), index=True)
     notes: str | None = Field(default=None, max_length=500)
 
