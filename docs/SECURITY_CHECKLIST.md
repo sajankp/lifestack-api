@@ -31,6 +31,16 @@ This checklist is for release-hardening and regression review on `main`.
 - [ ] Secrets are loaded from env (no committed credentials).
 - [ ] Rate limiting is enabled for auth endpoints in non-test environments.
 - [ ] Security headers middleware active in app startup path.
+- [x] CI runs `pip-audit` against installed Python dependencies.
+- [x] CI runs Bandit static analysis against `app/`.
+- [x] CI runs TruffleHog secret scanning for verified live secrets.
+- [x] Local pre-commit checks reject committed private keys.
+
+## Verification Log (2026-06-04)
+- Gate 0 security-gate milestone:
+  - `uv run --with pip-audit pip-audit --progress-spinner off`
+  - `uv run pre-commit run --all-files`
+  - CI workflow now includes dependency audit, Bandit, and verified-secret scanning.
 
 ## Verification Log (2026-05-28)
 - Targeted isolation/authz sweep passed:
