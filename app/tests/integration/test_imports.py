@@ -6,6 +6,7 @@ import pytest
 from httpx import AsyncClient
 from sqlmodel import select
 
+from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.imports.models import ImportBatch
@@ -23,6 +24,24 @@ async def _register_and_login(client: AsyncClient, suffix: str):
     login = await client.post("/v1/auth/login", data={"username": username, "password": password})
     assert login.status_code == 200
     return {"cookies": dict(login.cookies)}
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_oversized_multipart_before_parsing(client: AsyncClient):
+    oversized_file = io.BytesIO(b"x" * (settings.MAX_MULTIPART_BODY_BYTES + 1))
+    files = {"file": ("too-large.csv", oversized_file, "text/csv")}
+
+    response = await client.post(
+        "/v1/imports",
+        data={"module": "spending-transactions"},
+        files=files,
+    )
+
+    assert response.status_code == 413
+    assert response.headers["content-type"].startswith("application/problem+json")
+    body = response.json()
+    assert body["type"] == "https://lifestack.app/errors/request-too-large"
+    assert body["title"] == "Request Too Large"
 
 
 @pytest.mark.asyncio
