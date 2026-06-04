@@ -148,6 +148,80 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_investing_price_submission_rejects_unrealistic_price(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="investing-price-bound@example.com",
+        username="investing-price-bound",
+        password="TestPass123!",
+    )
+
+    holding_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "AAPL",
+            "account_name": "brokerage",
+            "quantity": "1.00000000",
+            "avg_cost": "100.00",
+            "currency": "USD",
+        },
+    )
+    assert holding_res.status_code == 201
+
+    price_res = await client.post(
+        "/v1/investing/prices",
+        json={
+            "price_date": datetime.now(UTC).date().isoformat(),
+            "prices": [
+                {
+                    "holding_public_id": holding_res.json()["public_id"],
+                    "unit_price": "1000000.01",
+                }
+            ],
+        },
+    )
+
+    assert price_res.status_code == 422
+    assert "less than or equal to 1000000" in price_res.text
+
+
+@pytest.mark.asyncio
+async def test_investing_price_submission_rejects_large_batches(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="investing-price-batch@example.com",
+        username="investing-price-batch",
+        password="TestPass123!",
+    )
+
+    holding_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "MSFT",
+            "account_name": "brokerage",
+            "quantity": "1.00000000",
+            "avg_cost": "100.00",
+            "currency": "USD",
+        },
+    )
+    assert holding_res.status_code == 201
+
+    price_res = await client.post(
+        "/v1/investing/prices",
+        json={
+            "price_date": datetime.now(UTC).date().isoformat(),
+            "prices": [
+                {"holding_public_id": holding_res.json()["public_id"], "unit_price": "120.00"}
+                for _ in range(501)
+            ],
+        },
+    )
+
+    assert price_res.status_code == 422
+    assert "at most 500" in price_res.text
+
+
+@pytest.mark.asyncio
 async def test_investing_duplicate_holding_conflict(client: AsyncClient):
     await _register_and_login(
         client,

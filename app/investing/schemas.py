@@ -212,12 +212,12 @@ class OverlapAnalyticsResponse(BaseModel):
 
 class HoldingPriceItem(BaseModel):
     holding_public_id: uuid.UUID
-    unit_price: Decimal = Field(..., gt=0)
+    unit_price: Decimal = Field(..., gt=0, le=Decimal("1000000"))
 
 
 class HoldingPriceBulkCreate(BaseModel):
     price_date: date
-    prices: list[HoldingPriceItem] = Field(default_factory=list, min_length=1)
+    prices: list[HoldingPriceItem] = Field(default_factory=list, min_length=1, max_length=500)
 
 
 class PerformanceSummaryResponse(BaseModel):
