@@ -83,7 +83,7 @@ class ImportService:
             return
 
         await upload.seek(0)
-        key = f"imports/{batch.workspace_id}/{batch.public_id}/{batch.filename}"
+        key = f"imports/{batch.workspace_id}/{batch.public_id}/source.csv"
         if backend == "local":
             base = Path(settings.IMPORT_LOCAL_PATH)
             path = base / key
