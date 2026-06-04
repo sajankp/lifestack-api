@@ -1,11 +1,16 @@
+import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from app.auth.models import User
 from app.core.database import postgres
-from app.finance.models import FxRate
+from app.finance.models import Account, CapitalTransfer, FxRate, TransferModule
+from app.spending.models import SpendingCategory, SpendingTransaction, TransactionType
 
 
 async def _register_and_login(
@@ -425,3 +430,140 @@ async def test_transfer_arithmetic_validation_failure(client: AsyncClient):
     )
     assert transfer_res.status_code == 422
     assert "Transfer arithmetic inconsistent" in transfer_res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_spending_transaction_account_fk_is_tenant_safe(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="finance-db-safe-a@example.com",
+        username="finance-db-safe-a",
+        password="TestPass123!",
+    )
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "A Wallet",
+            "account_type": "wallet",
+            "default_currency_code": "USD",
+        },
+    )
+    assert account_res.status_code == 201
+    account_public_id = uuid.UUID(account_res.json()["public_id"])
+
+    await client.post("/v1/auth/logout")
+    await _register_and_login(
+        client,
+        email="finance-db-safe-b@example.com",
+        username="finance-db-safe-b",
+        password="TestPass123!",
+    )
+    categories_res = await client.get("/v1/spending/categories")
+    assert categories_res.status_code == 200
+    b_category_public_id = uuid.UUID(categories_res.json()["items"][0]["public_id"])
+
+    async with postgres.async_session_maker() as session:
+        a_account = (
+            await session.execute(select(Account).where(Account.public_id == account_public_id))
+        ).scalar_one()
+        b_category = (
+            await session.execute(
+                select(SpendingCategory).where(SpendingCategory.public_id == b_category_public_id)
+            )
+        ).scalar_one()
+        b_user = (
+            await session.execute(select(User).where(User.username == "finance-db-safe-b"))
+        ).scalar_one()
+
+        session.add(
+            SpendingTransaction(
+                workspace_id=b_category.workspace_id,
+                user_id=b_user.id,
+                category_id=b_category.id,
+                account_id=a_account.id,
+                amount=Decimal("12.00"),
+                type=TransactionType.expense,
+                occurred_at=datetime.now(UTC),
+                description="direct cross-workspace account link",
+            )
+        )
+
+        with pytest.raises(IntegrityError):
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_capital_transfer_account_fks_are_tenant_safe(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="finance-transfer-db-safe-a@example.com",
+        username="finance-transfer-db-safe-a",
+        password="TestPass123!",
+    )
+    a_from_account_res = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "A Bank",
+            "account_type": "bank",
+            "default_currency_code": "USD",
+        },
+    )
+    assert a_from_account_res.status_code == 201
+    a_from_account_public_id = uuid.UUID(a_from_account_res.json()["public_id"])
+
+    await client.post("/v1/auth/logout")
+    await _register_and_login(
+        client,
+        email="finance-transfer-db-safe-b@example.com",
+        username="finance-transfer-db-safe-b",
+        password="TestPass123!",
+    )
+    b_to_account_res = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "B Brokerage",
+            "account_type": "brokerage",
+            "default_currency_code": "GBP",
+        },
+    )
+    assert b_to_account_res.status_code == 201
+    b_to_account_public_id = uuid.UUID(b_to_account_res.json()["public_id"])
+
+    async with postgres.async_session_maker() as session:
+        a_from_account = (
+            await session.execute(
+                select(Account).where(Account.public_id == a_from_account_public_id)
+            )
+        ).scalar_one()
+        b_to_account = (
+            await session.execute(
+                select(Account).where(Account.public_id == b_to_account_public_id)
+            )
+        ).scalar_one()
+        a_actor = (
+            await session.execute(select(User).where(User.username == "finance-transfer-db-safe-a"))
+        ).scalar_one()
+
+        session.add(
+            CapitalTransfer(
+                workspace_id=a_from_account.workspace_id,
+                actor_id=a_actor.id,
+                from_module=TransferModule.spending,
+                to_module=TransferModule.investing,
+                from_account_id=a_from_account.id,
+                to_account_id=b_to_account.id,
+                from_currency_code="USD",
+                to_currency_code="GBP",
+                gross_amount=Decimal("1000.00"),
+                fx_rate_used=Decimal("0.8000000000"),
+                fx_fee_amount=Decimal("5.00"),
+                platform_fee_amount=Decimal("2.00"),
+                tax_amount=Decimal("1.00"),
+                net_amount_received=Decimal("792.00"),
+                occurred_at=datetime.now(UTC),
+                notes="direct cross-workspace account link",
+            )
+        )
+
+        with pytest.raises(IntegrityError):
+            await session.commit()

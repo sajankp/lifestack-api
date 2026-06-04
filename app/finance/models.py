@@ -80,6 +80,7 @@ class Account(SQLModel, table=True):
     )
 
     __table_args__ = (
+        sa.UniqueConstraint("id", "workspace_id", name="uq_accounts_id_workspace"),
         sa.UniqueConstraint("workspace_id", "name", name="uq_account_workspace_name"),
     )
 
@@ -194,4 +195,17 @@ class CapitalTransfer(SQLModel, table=True):
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["from_account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_capital_transfers_from_account_workspace",
+        ),
+        sa.ForeignKeyConstraint(
+            ["to_account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_capital_transfers_to_account_workspace",
+        ),
     )

@@ -84,6 +84,11 @@ class SpendingTransaction(SQLModel, table=True):
             ["spending_categories.id", "spending_categories.workspace_id"],
             name="fk_spending_transactions_category_workspace",
         ),
+        sa.ForeignKeyConstraint(
+            ["account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_spending_transactions_account_workspace",
+        ),
     )
 
 
