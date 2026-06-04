@@ -15,6 +15,7 @@ class ExportStatus(StrEnum):
     pending = "pending"
     ready = "ready"
     failed = "failed"
+    expired = "expired"
 
 
 class ExportRecord(SQLModel, table=True):

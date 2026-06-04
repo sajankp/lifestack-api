@@ -1,8 +1,9 @@
+import asyncio
 import uuid
 from io import BytesIO
 
 from fastapi import APIRouter, Depends, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.core.audit import AuditLogger
 from app.core.dependencies import (
@@ -13,7 +14,6 @@ from app.core.dependencies import (
     require_min_role,
 )
 from app.core.exceptions import NotFoundError
-from app.exports.models import ExportStatus
 from app.exports.schemas import ExportCreate, ExportResponse
 from app.exports.service import ExportService
 
@@ -59,18 +59,43 @@ async def download_export(
     workspace_id: int = Depends(get_current_workspace_id),
     _user: dict = Depends(get_current_user),
 ):
-    record = await service.get_export(workspace_id, export_public_id, include_blob=True)
-    if record.artifact_blob is None or record.status != ExportStatus.ready:
-        raise NotFoundError(detail="Export artifact is not available")
-
-    headers = {
-        "Content-Disposition": f'attachment; filename="{record.artifact_filename or "export.bin"}"'
-    }
-    return StreamingResponse(
-        BytesIO(record.artifact_blob),
-        media_type=record.artifact_mime_type or "application/octet-stream",
-        headers=headers,
+    backend, mime_type, filename, data = await service.get_export_download(
+        workspace_id, export_public_id
     )
+
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+    if backend == "db":
+        return StreamingResponse(
+            BytesIO(data),
+            media_type=mime_type,
+            headers=headers,
+        )
+    elif backend == "local":
+        return FileResponse(
+            data,
+            media_type=mime_type,
+            filename=filename,
+        )
+    elif backend == "s3":
+
+        async def iter_s3_chunks():
+            try:
+                while True:
+                    chunk = await asyncio.to_thread(data.read, 1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                await asyncio.to_thread(data.close)
+
+        return StreamingResponse(
+            iter_s3_chunks(),
+            media_type=mime_type,
+            headers=headers,
+        )
+    else:
+        raise NotFoundError(detail="Unsupported storage backend")
 
 
 @router.delete("/{export_public_id}", status_code=status.HTTP_204_NO_CONTENT)
