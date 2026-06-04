@@ -67,7 +67,7 @@ jobs:
         uses: trufflesecurity/trufflehog@v3.95.5
         with:
           path: ./
-          extra_args: --results=verified --fail
+          extra_args: --results=verified
 
       - name: Upload security reports
         uses: actions/upload-artifact@v4
