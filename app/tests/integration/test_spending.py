@@ -174,6 +174,16 @@ async def test_manual_transaction_exposes_manual_source_metadata(client: AsyncCl
     body = create.json()
     assert body["source_type"] == "manual"
     assert body["source_ref"] is None
+    assert body["source_metadata"] == {
+        "source_type": "manual",
+        "source_ref": None,
+        "origin": "manual_entry",
+        "label": "Manual entry",
+        "import_public_id": None,
+        "import_module": None,
+        "import_row_number": None,
+        "rollback_supported": False,
+    }
 
 
 # ---------------------------------------------------------------------------

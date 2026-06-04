@@ -173,6 +173,16 @@ async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
     assert row["wallet_name"] == "Main Wallet"
     assert row["labels"] == "family"
     assert row["source_type"] == "imported"
+    assert row["source_metadata"] == {
+        "source_type": "imported",
+        "source_ref": f"{import_id}:2",
+        "origin": "bulk_import",
+        "label": "Bulk import",
+        "import_public_id": import_id,
+        "import_module": "spending-transactions",
+        "import_row_number": 2,
+        "rollback_supported": True,
+    }
 
     async with postgres.async_session_maker() as session:
         batch = (
