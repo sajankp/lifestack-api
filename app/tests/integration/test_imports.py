@@ -6,6 +6,7 @@ import pytest
 from httpx import AsyncClient
 from sqlmodel import select
 
+from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.imports.models import ImportBatch
 from app.spending.models import SpendingTransaction
@@ -290,3 +291,17 @@ async def test_import_delete_completed_spending_transactions_rolls_back_records(
     txs_after_delete = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
     assert txs_after_delete.status_code == 200
     assert txs_after_delete.json()["total"] == 0
+
+    async with postgres.async_session_maker() as session:
+        audit = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "import_rolled_back",
+                    AuditLog.entity_type == "import_batch",
+                )
+            )
+        ).scalar_one()
+
+    assert audit.details["entity_public_id"] == import_id
+    assert audit.details["before"]["status"] == "completed"
+    assert audit.details["deleted_records"] == 1

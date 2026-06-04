@@ -103,8 +103,10 @@ class ImportRepository:
         )
 
     async def delete_spending_transactions_for_batch(
-        self, workspace_id: int, import_batch_id: int
+        self, workspace_id: int, import_batch_id: int | None
     ) -> int:
+        if import_batch_id is None:
+            raise ValueError("import_batch_id is required for spending import rollback")
         result = await self.session.execute(
             delete(SpendingTransaction).where(
                 SpendingTransaction.workspace_id == workspace_id,
