@@ -80,11 +80,14 @@ async def download_export(
     elif backend == "s3":
 
         async def iter_s3_chunks():
-            while True:
-                chunk = await asyncio.to_thread(data.read, 1024 * 1024)
-                if not chunk:
-                    break
-                yield chunk
+            try:
+                while True:
+                    chunk = await asyncio.to_thread(data.read, 1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                await asyncio.to_thread(data.close)
 
         return StreamingResponse(
             iter_s3_chunks(),

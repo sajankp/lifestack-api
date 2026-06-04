@@ -56,6 +56,7 @@ class ExportService:
     def __init__(self, repository: ExportRepository):
         self.repository = repository
         self.session = repository.session
+        self._s3_client = None
 
     async def _count_module_rows(self, workspace_id: int, module: str) -> int:
         if module == "todo":
@@ -94,6 +95,9 @@ class ExportService:
         return holding_count + cash_count
 
     def _get_s3_client(self):
+        if self._s3_client is not None:
+            return self._s3_client, settings.EXPORT_S3_BUCKET
+
         endpoint = settings.EXPORT_S3_ENDPOINT
         bucket = settings.EXPORT_S3_BUCKET
         region = settings.EXPORT_S3_REGION
@@ -118,6 +122,7 @@ class ExportService:
                 s3={"addressing_style": "path" if force_path_style else "auto"}
             ),
         )
+        self._s3_client = client
         return client, bucket
 
     async def _write_json_export(
