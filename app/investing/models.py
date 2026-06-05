@@ -185,4 +185,9 @@ class PortfolioSnapshot(SQLModel, table=True):
     )
     __table_args__ = (
         sa.UniqueConstraint("workspace_id", "snapshot_date", name="uq_snapshot_workspace_date"),
+        sa.Index(
+            "ix_portfolio_snapshots_workspace_snapshot_date_desc",
+            "workspace_id",
+            sa.text("snapshot_date DESC"),
+        ),
     )
