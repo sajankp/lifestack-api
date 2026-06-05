@@ -8,12 +8,13 @@ from sqlalchemy import select
 
 from app.core.audit import AuditLog
 from app.core.database import postgres
+from app.finance.models import Account
 from app.investing.models import CashBalance, Holding
 
 
 async def _register_and_login(
     client: AsyncClient, *, email: str, username: str, password: str
-) -> None:
+) -> dict[str, str]:
     register_res = await client.post(
         "/v1/auth/register",
         json={"email": email, "username": username, "password": password},
@@ -24,6 +25,8 @@ async def _register_and_login(
         data={"username": username, "password": password},
     )
     assert login_res.status_code == 200
+
+    account_map = {}
     for account_name in [
         "brokerage",
         "wallet",
@@ -32,7 +35,7 @@ async def _register_and_login(
         "eur-wallet",
         "primary",
     ]:
-        await client.post(
+        res = await client.post(
             "/v1/finance/accounts",
             json={
                 "name": account_name,
@@ -40,11 +43,14 @@ async def _register_and_login(
                 "default_currency_code": "USD",
             },
         )
+        assert res.status_code == 201
+        account_map[account_name] = res.json()["public_id"]
+    return account_map
 
 
 @pytest.mark.asyncio
 async def test_investing_crud_summary_and_audit(client: AsyncClient):
-    await _register_and_login(
+    account_map = await _register_and_login(
         client,
         email="investing-e2e@example.com",
         username="investing-e2e",
@@ -54,7 +60,7 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     # Create holding
     create_holding = {
         "symbol": "AAPL",
-        "account_name": "brokerage",
+        "account_id": account_map["brokerage"],
         "quantity": "10.50000000",
         "avg_cost": "150.25",
         "currency": "usd",
@@ -67,6 +73,7 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     assert holding["quantity"] == "10.50000000"
     assert holding["avg_cost"] == "150.25"
     assert holding["currency"] == "USD"
+    assert holding["account_id"] == account_map["brokerage"]
 
     # Update holding
     update_res = await client.patch(
@@ -80,7 +87,7 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
 
     # Create cash balance
     create_cash = {
-        "account_name": "brokerage",
+        "account_id": account_map["brokerage"],
         "balance": "1000.00",
         "currency": "usd",
         "as_of": datetime.now(UTC).isoformat(),
@@ -90,6 +97,7 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     cash = cash_res.json()
     assert cash["balance"] == "1000.00"
     assert cash["currency"] == "USD"
+    assert cash["account_id"] == account_map["brokerage"]
 
     # Verify summary
     summary_res = await client.get("/v1/investing/summary")
@@ -125,6 +133,15 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
         assert db_holding.quantity == Decimal("12.00000000")
         assert db_cash.balance == Decimal("1000.00")
 
+        # Verify account matches by DB ID
+        linked_account = (
+            await session.execute(
+                select(Account).where(Account.public_id == uuid.UUID(account_map["brokerage"]))
+            )
+        ).scalar_one()
+        assert db_holding.account_id == linked_account.id
+        assert db_cash.account_id == linked_account.id
+
         audits = (
             (
                 await session.execute(
@@ -149,7 +166,7 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_investing_price_submission_rejects_unrealistic_price(client: AsyncClient):
-    await _register_and_login(
+    account_map = await _register_and_login(
         client,
         email="investing-price-bound@example.com",
         username="investing-price-bound",
@@ -160,7 +177,7 @@ async def test_investing_price_submission_rejects_unrealistic_price(client: Asyn
         "/v1/investing/holdings",
         json={
             "symbol": "AAPL",
-            "account_name": "brokerage",
+            "account_id": account_map["brokerage"],
             "quantity": "1.00000000",
             "avg_cost": "100.00",
             "currency": "USD",
@@ -187,7 +204,7 @@ async def test_investing_price_submission_rejects_unrealistic_price(client: Asyn
 
 @pytest.mark.asyncio
 async def test_investing_price_submission_rejects_large_batches(client: AsyncClient):
-    await _register_and_login(
+    account_map = await _register_and_login(
         client,
         email="investing-price-batch@example.com",
         username="investing-price-batch",
@@ -198,7 +215,7 @@ async def test_investing_price_submission_rejects_large_batches(client: AsyncCli
         "/v1/investing/holdings",
         json={
             "symbol": "MSFT",
-            "account_name": "brokerage",
+            "account_id": account_map["brokerage"],
             "quantity": "1.00000000",
             "avg_cost": "100.00",
             "currency": "USD",
@@ -222,7 +239,7 @@ async def test_investing_price_submission_rejects_large_batches(client: AsyncCli
 
 @pytest.mark.asyncio
 async def test_investing_price_submission_rejects_duplicate_holdings(client: AsyncClient):
-    await _register_and_login(
+    account_map = await _register_and_login(
         client,
         email="investing-price-duplicate@example.com",
         username="investing-price-duplicate",
@@ -233,7 +250,7 @@ async def test_investing_price_submission_rejects_duplicate_holdings(client: Asy
         "/v1/investing/holdings",
         json={
             "symbol": "GOOGL",
-            "account_name": "brokerage",
+            "account_id": account_map["brokerage"],
             "quantity": "1.00000000",
             "avg_cost": "100.00",
             "currency": "USD",
@@ -259,7 +276,7 @@ async def test_investing_price_submission_rejects_duplicate_holdings(client: Asy
 
 @pytest.mark.asyncio
 async def test_investing_duplicate_holding_conflict(client: AsyncClient):
-    await _register_and_login(
+    account_map = await _register_and_login(
         client,
         email="investing-conflict@example.com",
         username="investing-conflict",
@@ -268,7 +285,7 @@ async def test_investing_duplicate_holding_conflict(client: AsyncClient):
 
     payload = {
         "symbol": "AAPL",
-        "account_name": "brokerage",
+        "account_id": account_map["brokerage"],
         "quantity": "1.00000000",
         "avg_cost": "100.00",
         "currency": "USD",
@@ -286,7 +303,7 @@ async def test_investing_duplicate_holding_conflict(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_investing_workspace_isolation(client: AsyncClient):
     # User A creates investing data
-    await _register_and_login(
+    account_map_a = await _register_and_login(
         client,
         email="investing-iso-a@example.com",
         username="investing-iso-a",
@@ -296,7 +313,7 @@ async def test_investing_workspace_isolation(client: AsyncClient):
         "/v1/investing/holdings",
         json={
             "symbol": "MSFT",
-            "account_name": "brokerage",
+            "account_id": account_map_a["brokerage"],
             "quantity": "3.00000000",
             "avg_cost": "250.00",
             "currency": "USD",
@@ -318,6 +335,7 @@ async def test_investing_workspace_isolation(client: AsyncClient):
     assert list_res.status_code == 200
     assert list_res.json()["items"] == []
 
+    # Attempt cross-workspace update (expect 404/ValidationError since account belongs to A's workspace)
     patch_res = await client.patch(
         f"/v1/investing/holdings/{holding_id}",
         json={"quantity": "4.00000000"},
@@ -327,10 +345,24 @@ async def test_investing_workspace_isolation(client: AsyncClient):
     delete_res = await client.delete(f"/v1/investing/holdings/{holding_id}")
     assert delete_res.status_code == 404
 
+    # Attempt to create holding in B's workspace using A's account (expect 422 ValidationError due to cross-workspace account)
+    cross_create_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "MSFT",
+            "account_id": account_map_a["brokerage"],
+            "quantity": "3.00000000",
+            "avg_cost": "250.00",
+            "currency": "USD",
+        },
+    )
+    assert cross_create_res.status_code == 422
+    assert "not found in this workspace" in cross_create_res.json()["detail"]
+
 
 @pytest.mark.asyncio
 async def test_investing_cash_balance_update_and_delete(client: AsyncClient):
-    await _register_and_login(
+    account_map = await _register_and_login(
         client,
         email="investing-cash@example.com",
         username="investing-cash",
@@ -338,7 +370,7 @@ async def test_investing_cash_balance_update_and_delete(client: AsyncClient):
     )
 
     create_cash = {
-        "account_name": "wallet",
+        "account_id": account_map["wallet"],
         "balance": "123.45",
         "currency": "usd",
         "as_of": datetime.now(UTC).isoformat(),
@@ -369,6 +401,7 @@ async def test_investing_cash_balance_update_and_delete(client: AsyncClient):
     updated = update_res.json()
     assert updated["balance"] == "200.00"
     assert updated["currency"] == "USD"
+    assert updated["account_id"] == account_map["wallet"]
 
     delete_res = await client.delete(f"/v1/investing/cash-balances/{cash_id}")
     assert delete_res.status_code == 204
@@ -410,7 +443,7 @@ async def test_investing_cash_balance_update_and_delete(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_investing_multi_currency_summary(client: AsyncClient):
-    await _register_and_login(
+    account_map = await _register_and_login(
         client,
         email="investing-multi-curr@example.com",
         username="investing-multi-curr",
@@ -422,7 +455,7 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
         "/v1/investing/holdings",
         json={
             "symbol": "AAPL",
-            "account_name": "brokerage",
+            "account_id": account_map["brokerage"],
             "quantity": "10.00000000",
             "avg_cost": "150.00",
             "currency": "usd",
@@ -433,7 +466,7 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
         "/v1/investing/holdings",
         json={
             "symbol": "SAP",
-            "account_name": "brokerage",
+            "account_id": account_map["brokerage"],
             "quantity": "5.00000000",
             "avg_cost": "100.00",
             "currency": "gbp",
@@ -443,7 +476,7 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
     await client.post(
         "/v1/investing/cash-balances",
         json={
-            "account_name": "usd-wallet",
+            "account_id": account_map["usd-wallet"],
             "balance": "1000.00",
             "currency": "usd",
             "as_of": datetime.now(UTC).isoformat(),
@@ -453,7 +486,7 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
     await client.post(
         "/v1/investing/cash-balances",
         json={
-            "account_name": "gbp-wallet",
+            "account_id": account_map["gbp-wallet"],
             "balance": "500.00",
             "currency": "gbp",
             "as_of": datetime.now(UTC).isoformat(),
@@ -477,7 +510,7 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
-    await _register_and_login(
+    account_map = await _register_and_login(
         client,
         email="investing-lookthrough@example.com",
         username="investing-lookthrough",
@@ -519,7 +552,7 @@ async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
         "/v1/investing/holdings",
         json={
             "symbol": "VTI",
-            "account_name": "brokerage",
+            "account_id": account_map["brokerage"],
             "quantity": "10.00000000",
             "avg_cost": "100.00",
             "currency": "USD",
@@ -531,7 +564,7 @@ async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
         "/v1/investing/holdings",
         json={
             "symbol": "AAPL",
-            "account_name": "wallet",
+            "account_id": account_map["wallet"],
             "quantity": "2.00000000",
             "avg_cost": "150.00",
             "currency": "USD",

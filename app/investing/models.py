@@ -114,7 +114,7 @@ class Holding(SQLModel, table=True):
     )
 
     symbol: str = Field(max_length=20)
-    account_name: str = Field(default="primary", max_length=100)
+    account_id: int = Field(index=True)
     quantity: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=8))
     avg_cost: Decimal = Field(sa_type=sa.Numeric(precision=12, scale=2))
     currency: str = Field(max_length=10)
@@ -128,7 +128,12 @@ class Holding(SQLModel, table=True):
 
     __table_args__ = (
         sa.UniqueConstraint(
-            "workspace_id", "symbol", "account_name", name="uq_holding_workspace_symbol_account"
+            "workspace_id", "symbol", "account_id", name="uq_holding_workspace_symbol_account"
+        ),
+        sa.ForeignKeyConstraint(
+            ["account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_investing_holdings_account_workspace",
         ),
     )
 
@@ -141,7 +146,7 @@ class CashBalance(SQLModel, table=True):
     workspace_id: int = Field(foreign_key="workspaces.id", index=True)
     user_id: int = Field(foreign_key="users.id", index=True)
 
-    account_name: str = Field(max_length=100)
+    account_id: int = Field(index=True)
     balance: Decimal = Field(sa_type=sa.Numeric(precision=12, scale=2))
     currency: str = Field(max_length=10)
     as_of: datetime = Field(sa_type=sa.DateTime(timezone=True))
@@ -151,6 +156,14 @@ class CashBalance(SQLModel, table=True):
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_investing_cash_balances_account_workspace",
+        ),
     )
 
 

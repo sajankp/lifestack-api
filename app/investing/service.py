@@ -6,6 +6,7 @@ from decimal import Decimal
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
+from app.finance.models import Account
 from app.finance.repository import (
     AccountRepository,
     CurrencyRepository,
@@ -51,7 +52,7 @@ from app.investing.schemas import (
 def _snapshot_holding(holding: Holding) -> dict:
     return {
         "symbol": holding.symbol,
-        "account_name": holding.account_name,
+        "account_id": holding.account_id,
         "quantity": str(holding.quantity),
         "avg_cost": str(holding.avg_cost),
         "currency": holding.currency,
@@ -60,7 +61,7 @@ def _snapshot_holding(holding: Holding) -> dict:
 
 def _snapshot_cash_balance(cash: CashBalance) -> dict:
     return {
-        "account_name": cash.account_name,
+        "account_id": cash.account_id,
         "balance": str(cash.balance),
         "currency": cash.currency,
         "as_of": cash.as_of.isoformat() if hasattr(cash.as_of, "isoformat") else str(cash.as_of),
@@ -110,12 +111,15 @@ class HoldingService:
         )
         return instrument
 
-    async def _validate_refs(self, workspace_id: int, account_name: str, currency: str) -> None:
+    async def _validate_refs(
+        self, workspace_id: int, account_id: uuid.UUID, currency: str
+    ) -> Account:
+        account = None
         if self.account_repo is not None:
-            account = await self.account_repo.get_by_name(workspace_id, account_name)
+            account = await self.account_repo.get_by_public_id(workspace_id, account_id)
             if not account or not account.is_active:
                 raise ValidationError(
-                    detail=f"Account '{account_name}' is not found in this workspace"
+                    detail=f"Account with ID {account_id} is not found in this workspace"
                 )
         if self.currency_repo is not None:
             code = currency.upper()
@@ -126,6 +130,7 @@ class HoldingService:
             enabled = await self.currency_repo.is_enabled_for_workspace(workspace_id, code)
             if not enabled:
                 raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
+        return account
 
     async def list_holdings(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
@@ -145,20 +150,22 @@ class HoldingService:
         holding_in: HoldingCreate,
         audit_logger: AuditLogger | None = None,
     ) -> Holding:
+        account = await self._validate_refs(
+            workspace_id, holding_in.account_id, holding_in.currency
+        )
         existing = await self.repository.get_by_unique_key(
-            workspace_id, holding_in.symbol, holding_in.account_name
+            workspace_id, holding_in.symbol, account.id
         )
         if existing:
             raise ConflictError(
                 detail=("A holding already exists for this symbol/account in this workspace")
             )
-        await self._validate_refs(workspace_id, holding_in.account_name, holding_in.currency)
 
         holding = Holding(
             workspace_id=workspace_id,
             user_id=user_id,
             symbol=holding_in.symbol,
-            account_name=holding_in.account_name,
+            account_id=account.id,
             quantity=holding_in.quantity,
             avg_cost=holding_in.avg_cost,
             currency=holding_in.currency,
@@ -202,11 +209,23 @@ class HoldingService:
         if not update_data:
             return holding
 
-        next_account_name = holding.account_name
         next_currency = holding.currency
         if "currency" in update_data and update_data["currency"] is not None:
             next_currency = update_data["currency"]
-        await self._validate_refs(workspace_id, next_account_name, next_currency)
+
+        # Validate that the associated account is still active and valid
+        if self.account_repo is not None:
+            account = await self.account_repo.get_by_id(workspace_id, holding.account_id)
+            if not account or not account.is_active:
+                raise ValidationError(detail="Associated account is inactive or not found")
+        if self.currency_repo is not None:
+            code = next_currency.upper()
+            currency_row = await self.currency_repo.get_by_code(code)
+            if not currency_row or not currency_row.is_active:
+                raise ValidationError(detail=f"Unsupported currency code '{code}'")
+            enabled = await self.currency_repo.is_enabled_for_workspace(workspace_id, code)
+            if not enabled:
+                raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
 
         for key, value in update_data.items():
             setattr(holding, key, value)
@@ -271,12 +290,15 @@ class CashBalanceService:
         self.account_repo = account_repo
         self.currency_repo = currency_repo
 
-    async def _validate_refs(self, workspace_id: int, account_name: str, currency: str) -> None:
+    async def _validate_refs(
+        self, workspace_id: int, account_id: uuid.UUID, currency: str
+    ) -> Account:
+        account = None
         if self.account_repo is not None:
-            account = await self.account_repo.get_by_name(workspace_id, account_name)
+            account = await self.account_repo.get_by_public_id(workspace_id, account_id)
             if not account or not account.is_active:
                 raise ValidationError(
-                    detail=f"Account '{account_name}' is not found in this workspace"
+                    detail=f"Account with ID {account_id} is not found in this workspace"
                 )
         if self.currency_repo is not None:
             code = currency.upper()
@@ -287,6 +309,7 @@ class CashBalanceService:
             enabled = await self.currency_repo.is_enabled_for_workspace(workspace_id, code)
             if not enabled:
                 raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
+        return account
 
     async def list_cash_balances(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
@@ -308,11 +331,11 @@ class CashBalanceService:
         cash_in: CashBalanceCreate,
         audit_logger: AuditLogger | None = None,
     ) -> CashBalance:
-        await self._validate_refs(workspace_id, cash_in.account_name, cash_in.currency)
+        account = await self._validate_refs(workspace_id, cash_in.account_id, cash_in.currency)
         cash = CashBalance(
             workspace_id=workspace_id,
             user_id=user_id,
-            account_name=cash_in.account_name,
+            account_id=account.id,
             balance=cash_in.balance,
             currency=cash_in.currency,
             as_of=cash_in.as_of,
@@ -352,11 +375,23 @@ class CashBalanceService:
         if not update_data:
             return cash
 
-        next_account_name = cash.account_name
         next_currency = cash.currency
         if "currency" in update_data and update_data["currency"] is not None:
             next_currency = update_data["currency"]
-        await self._validate_refs(workspace_id, next_account_name, next_currency)
+
+        # Validate that the associated account is still active and valid
+        if self.account_repo is not None:
+            account = await self.account_repo.get_by_id(workspace_id, cash.account_id)
+            if not account or not account.is_active:
+                raise ValidationError(detail="Associated account is inactive or not found")
+        if self.currency_repo is not None:
+            code = next_currency.upper()
+            currency_row = await self.currency_repo.get_by_code(code)
+            if not currency_row or not currency_row.is_active:
+                raise ValidationError(detail=f"Unsupported currency code '{code}'")
+            enabled = await self.currency_repo.is_enabled_for_workspace(workspace_id, code)
+            if not enabled:
+                raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
 
         for key, value in update_data.items():
             setattr(cash, key, value)

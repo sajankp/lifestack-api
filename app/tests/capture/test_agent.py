@@ -164,13 +164,21 @@ async def test_execute_agent_tool_log_cash_balance(seed_agent_test_data):
 
     # Query DB to verify
     async with postgres.async_session_maker() as session:
+        account = (
+            await session.execute(
+                select(Account)
+                .where(Account.workspace_id == 20)
+                .where(Account.name == "Chase Brokerage")
+            )
+        ).scalar_one()
+
         balances = (
             (await session.execute(select(CashBalance).where(CashBalance.workspace_id == 20)))
             .scalars()
             .all()
         )
         assert len(balances) == 1
-        assert balances[0].account_name == "Chase Brokerage"
+        assert balances[0].account_id == account.id
         assert balances[0].balance == 10500.25
         assert balances[0].currency == "USD"
 

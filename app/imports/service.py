@@ -595,13 +595,20 @@ class ImportService:
                         self.session.add(budget)
                         inserted += 1
                 else:
+                    account_map = await self._account_map(workspace_id)
                     for row in rows:
                         p = row.payload_json
+                        account_name_raw = self._norm(p.get("account_name"))
+                        account_id = account_map.get(account_name_raw.lower())
+                        if account_id is None:
+                            raise ValidationError(
+                                detail=f"Account '{account_name_raw}' not found in workspace"
+                            )
                         holding = Holding(
                             workspace_id=workspace_id,
                             user_id=user_id,
                             symbol=p["symbol"],
-                            account_name=p["account_name"],
+                            account_id=account_id,
                             quantity=Decimal(p["quantity"]),
                             avg_cost=Decimal(p["avg_cost"]),
                             currency=p["currency"],

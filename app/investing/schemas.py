@@ -9,7 +9,7 @@ from app.investing.models import InstrumentType
 
 class HoldingCreate(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
-    account_name: str = Field(default="primary", min_length=1, max_length=100)
+    account_id: uuid.UUID
     quantity: Decimal = Field(..., gt=0, decimal_places=8)
     avg_cost: Decimal = Field(..., ge=0, decimal_places=2)
     currency: str = Field(..., min_length=1, max_length=10)
@@ -41,6 +41,7 @@ class HoldingUpdate(BaseModel):
 class HoldingResponse(BaseModel):
     public_id: uuid.UUID
     symbol: str
+    account_id: uuid.UUID
     account_name: str
     quantity: Decimal
     avg_cost: Decimal
@@ -52,7 +53,7 @@ class HoldingResponse(BaseModel):
 
 
 class CashBalanceCreate(BaseModel):
-    account_name: str = Field(..., min_length=1, max_length=100)
+    account_id: uuid.UUID
     balance: Decimal = Field(..., decimal_places=2)
     currency: str = Field(..., min_length=1, max_length=10)
     as_of: datetime
@@ -78,6 +79,7 @@ class CashBalanceUpdate(BaseModel):
 
 class CashBalanceResponse(BaseModel):
     public_id: uuid.UUID
+    account_id: uuid.UUID
     account_name: str
     balance: Decimal
     currency: str
