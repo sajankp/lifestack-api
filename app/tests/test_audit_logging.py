@@ -207,3 +207,53 @@ async def test_audit_log_transactional_rollback(postgres_container, override_dat
         result = await session.execute(select(AuditLog).where(AuditLog.workspace_id == 904))
         logs = result.scalars().all()
         assert len(logs) == 0
+
+
+@pytest.mark.asyncio
+async def test_audit_log_immutability(postgres_container, override_database_url):
+    """Verify that update or delete operations on audit_logs raise an exception due to trigger enforcement."""
+    async with postgres.async_session_maker() as session:
+        logger = AuditLogger(session)
+        entity_uuid = str(uuid.uuid4())
+
+        await logger.log(
+            workspace_id=903,
+            actor_id=1,
+            action="create",
+            module="todo",
+            entity_type="todo",
+            entity_id=1,
+            details={
+                "entity_public_id": entity_uuid,
+                "before": None,
+                "after": {"title": "Immutable Test Todo"},
+                "changed_fields": ["title"],
+                "request_id": None,
+            },
+        )
+        await session.commit()
+
+    async with postgres.async_session_maker() as session:
+        # Try to update
+        result = await session.execute(select(AuditLog).where(AuditLog.workspace_id == 903))
+        log = result.scalars().first()
+        assert log is not None
+
+        log.action = "tampered"
+        session.add(log)
+        with pytest.raises(Exception) as exc:
+            await session.commit()
+        assert "Audit logs are immutable and cannot be updated or deleted" in str(exc.value)
+        await session.rollback()
+
+    async with postgres.async_session_maker() as session:
+        # Try to delete
+        result = await session.execute(select(AuditLog).where(AuditLog.workspace_id == 903))
+        log = result.scalars().first()
+        assert log is not None
+
+        await session.delete(log)
+        with pytest.raises(Exception) as exc:
+            await session.commit()
+        assert "Audit logs are immutable and cannot be updated or deleted" in str(exc.value)
+        await session.rollback()
