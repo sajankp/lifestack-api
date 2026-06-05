@@ -290,14 +290,14 @@ async def reset_demo_data(
     wallet_acct = Account(
         workspace_id=w_id,
         name="wallet",
-        account_type="cash",
+        account_type="wallet",
         default_currency_code="USD",
         is_active=True,
     )
     gbp_wallet_acct = Account(
         workspace_id=w_id,
         name="gbp-wallet",
-        account_type="cash",
+        account_type="wallet",
         default_currency_code="GBP",
         is_active=True,
     )

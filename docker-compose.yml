@@ -10,6 +10,7 @@ services:
       - RATE_LIMIT_STORAGE_URI=redis://redis:6379/1
     volumes:
       - .:/app
+      - /app/.venv
 
   postgres:
     image: postgres:18

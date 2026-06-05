@@ -5,6 +5,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 
+from app.config import settings
+
 logger = structlog.get_logger()
 
 PROBLEM_JSON = "application/problem+json"
@@ -145,6 +147,29 @@ class CategoryInUseError(ConflictError):
 # ---------------------------------------------------------------------------
 
 
+def _add_cors_headers(request: Request, response: JSONResponse) -> JSONResponse:
+    origin = request.headers.get("origin")
+    if origin and settings.cors_allowed_origins:
+        try:
+            normalized_origin = settings._normalize_origin(origin)
+        except ValueError:
+            normalized_origin = None
+
+        if (
+            "*" in settings.cors_allowed_origins
+            or normalized_origin in settings.cors_allowed_origins
+        ):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Methods"] = (
+                "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            )
+            response.headers["Access-Control-Allow-Headers"] = (
+                "Content-Type, Authorization, X-Requested-With, X-Request-ID, X-CSRF-Token, Origin, Accept"
+            )
+    return response
+
+
 async def api_exception_handler(request: Request, exc: APIError) -> JSONResponse:
     """Handle all APIError subclasses with RFC 7807 problem details."""
     logger.warning(
@@ -165,10 +190,13 @@ async def api_exception_handler(request: Request, exc: APIError) -> JSONResponse
     }
     if exc.extra_fields:
         body.update(exc.extra_fields)
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=body,
-        media_type=PROBLEM_JSON,
+    return _add_cors_headers(
+        request,
+        JSONResponse(
+            status_code=exc.status_code,
+            content=body,
+            media_type=PROBLEM_JSON,
+        ),
     )
 
 
@@ -178,18 +206,21 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
         "http_exception", status=exc.status_code, detail=exc.detail, url=str(request.url)
     )
     type_uri = _type_uri_for_status(exc.status_code)
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "type": type_uri,
-            "code": _code_from_type_uri(type_uri),
-            "title": exc.detail if isinstance(exc.detail, str) else "API Error",
-            "status": exc.status_code,
-            "detail": str(exc.detail),
-            "hint": _hint_for_status(exc.status_code),
-            "instance": str(request.url.path),
-        },
-        media_type=PROBLEM_JSON,
+    return _add_cors_headers(
+        request,
+        JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "type": type_uri,
+                "code": _code_from_type_uri(type_uri),
+                "title": exc.detail if isinstance(exc.detail, str) else "API Error",
+                "status": exc.status_code,
+                "detail": str(exc.detail),
+                "hint": _hint_for_status(exc.status_code),
+                "instance": str(request.url.path),
+            },
+            media_type=PROBLEM_JSON,
+        ),
     )
 
 
@@ -197,36 +228,42 @@ async def request_validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
     logger.warning("validation_error", errors=jsonable_encoder(exc.errors()), url=str(request.url))
-    return JSONResponse(
-        status_code=422,
-        content={
-            "type": f"{ERROR_BASE_URI}/validation-error",
-            "code": "validation_error",
-            "title": "Request Validation Error",
-            "status": 422,
-            "detail": "The request payload or parameters are invalid.",
-            "hint": _hint_for_status(422),
-            "instance": str(request.url.path),
-            "errors": jsonable_encoder(exc.errors()),
-        },
-        media_type=PROBLEM_JSON,
+    return _add_cors_headers(
+        request,
+        JSONResponse(
+            status_code=422,
+            content={
+                "type": f"{ERROR_BASE_URI}/validation-error",
+                "code": "validation_error",
+                "title": "Request Validation Error",
+                "status": 422,
+                "detail": "The request payload or parameters are invalid.",
+                "hint": _hint_for_status(422),
+                "instance": str(request.url.path),
+                "errors": jsonable_encoder(exc.errors()),
+            },
+            media_type=PROBLEM_JSON,
+        ),
     )
 
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("unhandled_exception", error=str(exc), url=str(request.url))
-    return JSONResponse(
-        status_code=500,
-        content={
-            "type": f"{ERROR_BASE_URI}/internal-server-error",
-            "code": "internal_server_error",
-            "title": "Internal Server Error",
-            "status": 500,
-            "detail": "An unexpected error occurred processing your request.",
-            "hint": _hint_for_status(500),
-            "instance": str(request.url.path),
-        },
-        media_type=PROBLEM_JSON,
+    return _add_cors_headers(
+        request,
+        JSONResponse(
+            status_code=500,
+            content={
+                "type": f"{ERROR_BASE_URI}/internal-server-error",
+                "code": "internal_server_error",
+                "title": "Internal Server Error",
+                "status": 500,
+                "detail": "An unexpected error occurred processing your request.",
+                "hint": _hint_for_status(500),
+                "instance": str(request.url.path),
+            },
+            media_type=PROBLEM_JSON,
+        ),
     )
 
 
@@ -249,4 +286,4 @@ async def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded)
         response = request.app.state.limiter._inject_headers(
             response, request.state.view_rate_limit
         )
-    return response
+    return _add_cors_headers(request, response)
