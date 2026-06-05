@@ -236,7 +236,7 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Feature | Status |
 |---|---|
 | Todo CRUD with priorities and workspace scoping | ✅ Done |
-| JWT auth (HttpOnly cookies, session tracking, CSRF, password policy, password change, logout-all) | ✅ Done |
+| JWT auth (HttpOnly cookies, session tracking, Origin/Referer CSRF checks, double-submit CSRF token, password policy, password change, logout-all) | ✅ Done |
 | Workspace RBAC and workspace selection APIs | ✅ Gate 0 foundation |
 | Spending tracker (categories, transactions, budgets) | ✅ Done |
 | Unified dashboard | ✅ Done |

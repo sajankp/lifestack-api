@@ -1,3 +1,5 @@
+from http.cookies import SimpleCookie
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from limits.storage import storage_from_string
@@ -118,10 +120,27 @@ async def client(override_database_url):
     if "http://test" not in current_trusted:
         settings.CSRF_TRUSTED_ORIGINS = ["http://test"]
 
+    async def add_csrf_header(request):
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return
+        if "x-csrf-token" in request.headers:
+            return
+
+        cookie_header = request.headers.get("cookie")
+        if not cookie_header:
+            return
+
+        cookie = SimpleCookie()
+        cookie.load(cookie_header)
+        csrf_token = cookie.get("csrf_token")
+        if csrf_token:
+            request.headers["X-CSRF-Token"] = csrf_token.value
+
     async with AsyncClient(
         transport=ASGITransport(app=app, client=("127.0.0.1", 123), raise_app_exceptions=False),
         base_url="http://test",
         headers={"Origin": "http://test"},
+        event_hooks={"request": [add_csrf_header]},
     ) as ac:
         yield ac
     limiter.enabled = True

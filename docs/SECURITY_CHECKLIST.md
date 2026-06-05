@@ -5,7 +5,8 @@ This checklist is for release-hardening and regression review on `main`.
 ## Auth and Session
 - [ ] JWT cookie auth flows (`/auth/login`, `/auth/refresh`, `/auth/logout`) validated.
 - [ ] Session revocation tested (revoked session cannot call protected endpoints).
-- [ ] CSRF origin checks enforced on cookie-authenticated mutations.
+- [x] CSRF origin checks enforced on cookie-authenticated mutations.
+- [x] Double-submit CSRF token required for cookie-authenticated mutations.
 
 ## Authorization and Tenant Isolation
 - [ ] Cross-workspace access attempts return non-disclosing errors (`404` where applicable).
@@ -48,6 +49,12 @@ This checklist is for release-hardening and regression review on `main`.
 - Gate 0 production-config milestone:
   - `uv run pytest app/tests/test_config.py`
   - `ENV=production` fails closed for invalid/default/insecure runtime settings.
+
+## Verification Log (2026-06-04)
+- Gate 0 CSRF checks passed:
+  - `uv run ruff check app/core/csrf.py app/core/dependencies.py app/auth/router.py app/platform/router.py app/tests/conftest.py app/tests/integration/test_api.py`
+  - `uv run pytest app/tests/integration/test_api.py`
+  - `uv run pytest app/tests/test_auth_rbac_security.py app/tests/integration/test_platform.py app/tests/integration/test_imports.py app/tests/integration/test_exports.py`
 
 ## Verification Log (2026-05-28)
 - Targeted isolation/authz sweep passed:
