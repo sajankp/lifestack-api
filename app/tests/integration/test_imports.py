@@ -28,6 +28,26 @@ async def _register_and_login(client: AsyncClient, suffix: str):
 
 
 @pytest.mark.asyncio
+async def test_import_rejects_oversized_multipart_before_parsing(client: AsyncClient):
+    oversized_file = io.BytesIO(b"x" * (settings.MAX_MULTIPART_BODY_BYTES + 1))
+    files = {"file": ("too-large.csv", oversized_file, "text/csv")}
+
+    response = await client.post(
+        "/v1/imports",
+        data={"module": "spending-transactions"},
+        files=files,
+    )
+
+    assert response.status_code == 413
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    body = response.json()
+    assert body["type"] == "https://lifestack.app/errors/request-too-large"
+    assert body["title"] == "Request Too Large"
+
+
+@pytest.mark.asyncio
 async def test_import_spending_transactions_fail_all_on_single_error(client: AsyncClient):
     creds = await _register_and_login(client, uuid.uuid4().hex[:8])
 

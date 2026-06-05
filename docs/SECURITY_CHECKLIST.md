@@ -17,6 +17,7 @@ This checklist is for release-hardening and regression review on `main`.
 - [ ] Request validation returns RFC 7807 problem responses.
 - [ ] Invalid frequency/interval/date inputs are rejected with `4xx`, not `5xx`.
 - [ ] Scheduler/workflow loops have non-advancing-date safety guards.
+- [x] Multipart imports are rejected at request ingress when they exceed `MAX_MULTIPART_BODY_BYTES`.
 
 ## Audit and Traceability
 - [ ] Mutation paths emit audit logs with before/after snapshots.
@@ -55,6 +56,12 @@ This checklist is for release-hardening and regression review on `main`.
   - `uv run ruff check app/core/csrf.py app/core/dependencies.py app/auth/router.py app/platform/router.py app/tests/conftest.py app/tests/integration/test_api.py`
   - `uv run pytest app/tests/integration/test_api.py`
   - `uv run pytest app/tests/test_auth_rbac_security.py app/tests/integration/test_platform.py app/tests/integration/test_imports.py app/tests/integration/test_exports.py`
+
+## Verification Log (2026-06-04)
+- Gate 0 multipart ingress checks passed:
+  - `uv run ruff check app/config.py app/core/middleware.py app/main.py app/tests/integration/test_imports.py`
+  - `uv run pytest app/tests/integration/test_imports.py::test_import_rejects_oversized_multipart_before_parsing`
+  - `uv run pytest app/tests/integration/test_imports.py`
 
 ## Verification Log (2026-05-28)
 - Targeted isolation/authz sweep passed:

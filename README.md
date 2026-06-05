@@ -312,6 +312,7 @@ Spec 020 bulk CSV imports support configurable file persistence:
 
 - `IMPORT_STORAGE_BACKEND=none|local|s3`
 - `IMPORT_LOCAL_PATH=/tmp/lifestack-imports` (when backend is `local`)
+- `MAX_MULTIPART_BODY_BYTES=10485760` rejects oversized multipart requests before upload parsing.
 - `IMPORT_S3_*` for S3-compatible providers (AWS S3, MinIO, Cloudflare R2)
 
 Cloudflare R2 can be configured either with `IMPORT_S3_*` or the alias envs:

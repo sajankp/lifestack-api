@@ -105,6 +105,7 @@ class Settings(BaseSettings):
     RECURRING_TODO_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up todo generation
 
     # Bulk import storage (Spec 020)
+    MAX_MULTIPART_BODY_BYTES: int = 10 * 1024 * 1024
     IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3
     IMPORT_LOCAL_PATH: str = "/var/lib/lifestack/imports"
 
