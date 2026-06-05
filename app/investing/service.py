@@ -979,7 +979,7 @@ class InvestingSummaryService:
                 converted_cash += converted_value
 
             fx_rates_used = {
-                base: rate
+                base: rate.rate
                 for (base, quote), rate in fx_lookup.items()
                 if quote == reporting_currency
             }
