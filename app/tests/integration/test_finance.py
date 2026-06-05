@@ -655,3 +655,41 @@ async def test_transfer_same_currency_fx_rate_enforced(client: AsyncClient):
         },
     )
     assert res_ok.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_finance_account_delete_rejected_when_in_use_by_investing_cash(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="finance-delete-investing@example.com",
+        username="finance-delete-investing",
+        password="TestPass123!",
+    )
+
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Wallet Cash Use",
+            "account_type": "wallet",
+            "default_currency_code": "USD",
+        },
+    )
+    assert account_res.status_code == 201
+    account_id = account_res.json()["public_id"]
+
+    # Create a cash balance referencing the account
+    cash_res = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_id,
+            "balance": "250.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert cash_res.status_code == 201
+
+    # Attempt to delete the account
+    delete_res = await client.delete(f"/v1/finance/accounts/{account_id}")
+    assert delete_res.status_code == 409
+    assert "cannot be deleted" in delete_res.json()["detail"]

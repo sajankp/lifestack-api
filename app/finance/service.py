@@ -139,10 +139,7 @@ class AccountService:
         account_id = account.id
         if await self.account_repository.has_usage(workspace_id, account_id):
             raise ConflictError(
-                detail=(
-                    "Account is in use by transactions or transfers and cannot be deleted. "
-                    "Mark it inactive instead."
-                )
+                detail=("Account is in use and cannot be deleted. Mark it inactive instead.")
             )
         before_snap = {
             "public_id": str(account.public_id),
