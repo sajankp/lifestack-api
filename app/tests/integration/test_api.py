@@ -51,7 +51,8 @@ async def test_duplicate_registration_returns_problem_details(client: AsyncClien
     assert second.headers["content-type"].startswith("application/problem+json")
     body = second.json()
     assert body["type"] == "https://lifestack.app/errors/conflict"
-    assert body["title"] == "Email Already Registered"
+    assert body["title"] == "Registration Failed"
+    assert body["detail"] == "Registration failed. Invalid or taken username/email."
     assert body["status"] == 409
 
 
