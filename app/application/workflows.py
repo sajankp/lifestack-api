@@ -5,9 +5,10 @@ from pathlib import Path
 
 import httpx
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.repository import AuthSessionRepository
 from app.auth.schemas import UserCreate
 from app.auth.service import AuthService
 from app.config import settings
@@ -25,6 +26,7 @@ from app.exports.service import ExportService
 from app.finance.repository import CurrencyRepository, FxRateRepository
 from app.finance.schemas import FxRateUpsert
 from app.finance.service import FxRateService
+from app.imports.models import ImportBatch, ImportPreviewRow
 from app.investing.service import InvestingSummaryService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.platform.service import WorkspaceService
@@ -817,3 +819,18 @@ async def cleanup_expired_exports(session: AsyncSession) -> int:
 
     await session.flush()
     return cleaned_count
+
+
+async def cleanup_expired_sessions(session: AsyncSession) -> int:
+    """Purge expired and revoked auth sessions."""
+    repo = AuthSessionRepository(session)
+    return await repo.delete_expired_and_revoked_sessions()
+
+
+async def cleanup_import_previews(session: AsyncSession) -> int:
+    """Delete import preview rows older than IMPORT_PREVIEW_TTL_HOURS."""
+    cutoff = datetime.now(UTC) - timedelta(hours=settings.IMPORT_PREVIEW_TTL_HOURS)
+    subquery = select(ImportBatch.id).where(ImportBatch.created_at < cutoff)
+    statement = delete(ImportPreviewRow).where(ImportPreviewRow.import_batch_id.in_(subquery))
+    result = await session.execute(statement)
+    return result.rowcount or 0

@@ -4,12 +4,13 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account
-from app.investing.models import CashBalance, Holding
+from app.investing.models import CashBalance, Holding, PortfolioSnapshot
 
 
 async def _register_and_login(
@@ -628,3 +629,97 @@ async def test_investing_constituent_weights_validation(client: AsyncClient):
     )
     assert res.status_code == 422
     assert "Constituent weights must sum to approximately 1.0" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_investing_constituent_workspace_isolation(client: AsyncClient):
+    """Verify that constituents and instrument updates are workspace isolated."""
+    # Register and login User A
+    await _register_and_login(
+        client,
+        email="const-iso-a@example.com",
+        username="const-iso-a",
+        password="TestPass123!",
+    )
+    etf_res = await client.post(
+        "/v1/investing/instruments",
+        json={
+            "symbol": "IVV",
+            "name": "iShares Core S&P 500 ETF",
+            "instrument_type": "etf",
+        },
+    )
+    assert etf_res.status_code == 201
+    etf_a_id = etf_res.json()["public_id"]
+
+    # Register and login User B
+    await client.post("/v1/auth/logout")
+    await _register_and_login(
+        client,
+        email="const-iso-b@example.com",
+        username="const-iso-b",
+        password="TestPass123!",
+    )
+
+    # User B tries to fetch User A's ETF constituents
+    today = datetime.now(UTC).date().isoformat()
+    get_res = await client.get(
+        f"/v1/investing/instruments/{etf_a_id}/constituents",
+        params={"as_of": today},
+    )
+    assert get_res.status_code == 404
+
+    # User B tries to upsert constituents on User A's ETF
+    upsert_res = await client.post(
+        f"/v1/investing/instruments/{etf_a_id}/constituents",
+        json={
+            "as_of_date": today,
+            "source": "malicious",
+            "fetched_at": datetime.now(UTC).isoformat(),
+            "constituents": [
+                {"company_name": "Apple Inc", "company_ticker": "AAPL", "weight": "1.0"},
+            ],
+        },
+    )
+    assert upsert_res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_portfolio_snapshot_fx_rates_validation():
+    """Verify that fx_rates_used in PortfolioSnapshot enforces correct format."""
+    # Valid snapshot creation
+    snapshot = PortfolioSnapshot(
+        workspace_id=1,
+        snapshot_date=datetime.now(UTC).date(),
+        total_value=Decimal("100.00"),
+        total_cost=Decimal("90.00"),
+        holdings_value=Decimal("80.00"),
+        cash_value=Decimal("20.00"),
+        currency_code="USD",
+        fx_rates_used={"EUR": "1.085", "GBP": 1.25},
+    )
+    assert snapshot.fx_rates_used["EUR"] == "1.085"
+
+    # Invalid cases
+    invalid_cases = [
+        "not-a-dict",
+        {"EUR": "invalid-rate"},
+        {"eur": "1.085"},  # lowercase code
+        {"US": "1.085"},  # wrong length code
+        {"USDT": "1.085"},  # wrong length code
+        {"EUR": -1.0},  # negative rate
+        {"EUR": 0},  # zero rate
+    ]
+
+    for invalid_fx in invalid_cases:
+        with pytest.raises(ValidationError):
+            PortfolioSnapshot(
+                workspace_id=1,
+                snapshot_date=datetime.now(UTC).date(),
+                total_value=Decimal("100.00"),
+                total_cost=Decimal("90.00"),
+                holdings_value=Decimal("80.00"),
+                cash_value=Decimal("20.00"),
+                currency_code="USD",
+                fx_rates_used=invalid_fx,
+            )

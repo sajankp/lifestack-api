@@ -77,12 +77,13 @@ async def test_investing_performance_summary_endpoint(client: AsyncClient):
         cookies=creds["cookies"],
     )
     assert create_account.status_code in (201, 409)
+    account_id = create_account.json()["public_id"]
 
     hold = await client.post(
         "/v1/investing/holdings",
         json={
             "symbol": "AAPL",
-            "account_name": "brokerage",
+            "account_id": account_id,
             "quantity": "2.00000000",
             "avg_cost": "100.00",
             "currency": "USD",

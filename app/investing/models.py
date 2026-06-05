@@ -4,6 +4,7 @@ from decimal import Decimal
 from enum import StrEnum
 
 import sqlalchemy as sa
+from pydantic import field_validator
 from sqlmodel import Field, SQLModel
 
 
@@ -196,6 +197,28 @@ class PortfolioSnapshot(SQLModel, table=True):
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
+
+    model_config = {
+        "validate_default": True,
+        "validate_assignment": True,
+    }
+
+    @field_validator("fx_rates_used")
+    @classmethod
+    def validate_fx_rates(cls, v: dict) -> dict:
+        if not isinstance(v, dict):
+            raise ValueError("fx_rates_used must be a dictionary")
+        for key, val in v.items():
+            if not isinstance(key, str) or not key.isupper() or len(key) != 3:
+                raise ValueError(f"Invalid currency code key: {key}")
+            try:
+                numeric_val = Decimal(str(val))
+                if numeric_val <= 0:
+                    raise ValueError("FX rate must be positive")
+            except Exception as e:
+                raise ValueError(f"Invalid FX rate value for {key}: {val}") from e
+        return v
+
     __table_args__ = (
         sa.UniqueConstraint("workspace_id", "snapshot_date", name="uq_snapshot_workspace_date"),
         sa.Index(

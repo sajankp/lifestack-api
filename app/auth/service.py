@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from app.auth.models import AuthSession, User
 from app.auth.repository import AuthSessionRepository, UserRepository
 from app.auth.schemas import UserCreate
+from app.config import settings
 from app.core.auth import hash_password, verify_password
 from app.core.exceptions import ConflictError, UnauthorizedError
 
@@ -49,6 +50,16 @@ class AuthService:
         return user
 
     async def create_session(self, user_id: int, sid: str, expires_in: timedelta) -> AuthSession:
+        # Enforce max active sessions
+        active_sessions = await self.session_repo.get_active_sessions_by_user_id(user_id)
+        if len(active_sessions) >= settings.MAX_ACTIVE_SESSIONS_PER_USER:
+            num_to_revoke = len(active_sessions) - settings.MAX_ACTIVE_SESSIONS_PER_USER + 1
+            for i in range(num_to_revoke):
+                sess = active_sessions[i]
+                sess.revoked_at = datetime.now(UTC)
+                self.session_repo.session.add(sess)
+            await self.session_repo.session.flush()
+
         auth_session = AuthSession(
             user_id=user_id,
             sid=sid,
