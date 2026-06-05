@@ -31,6 +31,15 @@ This checklist is for release-hardening and regression review on `main`.
 - [ ] Secrets are loaded from env (no committed credentials).
 - [ ] Rate limiting is enabled for auth endpoints in non-test environments.
 - [ ] Security headers middleware active in app startup path.
+- [x] Production container runs without Uvicorn reload mode.
+- [x] Production container runs as non-root `appuser`.
+- [x] Production container exposes a `/health` Docker `HEALTHCHECK`.
+
+## Verification Log (2026-06-05)
+- Container runtime hardening reconciled against `Dockerfile`:
+  - `CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]`
+  - `USER appuser`
+  - `HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3`
 
 ## Verification Log (2026-05-28)
 - Targeted isolation/authz sweep passed:
