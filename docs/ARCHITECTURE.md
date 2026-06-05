@@ -817,10 +817,10 @@ This balances developer velocity (fast push feedback) with release confidence (f
 | RFC 7807 error responses | ✅ Done |
 | Workspace-scoped data model with isolation tests | ✅ Done |
 | Integration tests with real Postgres + Redis testcontainers | ✅ Done |
-| Investing module | ⏳ Next |
-| Export (CSV / JSON) | ⏳ Planned |
-| Recurring transactions scheduler workflow | ⏳ Planned |
-| E2E tests (Playwright, full Docker Compose) | ⏳ Planned |
+| Investing module | ✅ Done |
+| Export (CSV / JSON) | ✅ Done |
+| Recurring transactions scheduler workflow | ✅ Done |
+| E2E tests (Playwright, full Docker Compose) | ✅ Done |
 
 ### Phase 2 - AI and Integrations
 - design AI adapter architecture (provider-agnostic)
