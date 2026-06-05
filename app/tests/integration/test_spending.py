@@ -18,6 +18,9 @@ from datetime import UTC, datetime
 import pytest
 from httpx import AsyncClient
 
+from app.core.exceptions import NotFoundError
+from app.spending.router import _category_public_id_or_404
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -56,6 +59,12 @@ async def _login(client: AsyncClient, username: str, password: str) -> dict:
 # ---------------------------------------------------------------------------
 # 8.4 — Default-category provisioning on registration
 # ---------------------------------------------------------------------------
+
+
+def test_category_public_id_or_404_rejects_missing_transaction_category():
+    with pytest.raises(NotFoundError) as exc_info:
+        _category_public_id_or_404({}, 999)
+    assert exc_info.value.detail == "Transaction category was not found"
 
 
 @pytest.mark.asyncio
@@ -174,6 +183,16 @@ async def test_manual_transaction_exposes_manual_source_metadata(client: AsyncCl
     body = create.json()
     assert body["source_type"] == "manual"
     assert body["source_ref"] is None
+    assert body["source_metadata"] == {
+        "source_type": "manual",
+        "source_ref": None,
+        "origin": "manual_entry",
+        "label": "Manual entry",
+        "import_public_id": None,
+        "import_module": None,
+        "import_row_number": None,
+        "rollback_supported": False,
+    }
 
 
 # ---------------------------------------------------------------------------

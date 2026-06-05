@@ -41,6 +41,17 @@ class ImportRepository:
         )
         return res.scalar_one_or_none()
 
+    async def get_by_ids(self, workspace_id: int, ids: set[int]) -> dict[int, ImportBatch]:
+        if not ids:
+            return {}
+        res = await self.session.execute(
+            select(ImportBatch).where(
+                ImportBatch.workspace_id == workspace_id,
+                ImportBatch.id.in_(ids),
+            )
+        )
+        return {batch.id: batch for batch in res.scalars().all() if batch.id is not None}
+
     async def list_batches(
         self, workspace_id: int, limit: int, offset: int
     ) -> tuple[Sequence[ImportBatch], int]:

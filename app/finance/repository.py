@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import func, or_, select
@@ -278,7 +279,7 @@ class FxRateRepository:
         self,
         base_currency_code: str,
         quote_currency_code: str,
-        rate: float,
+        rate: Decimal,
         as_of: datetime,
         fetched_at: datetime,
         source: str,

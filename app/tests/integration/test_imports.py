@@ -1,11 +1,13 @@
 import io
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
 from sqlmodel import select
 
+from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.imports.models import ImportBatch
@@ -134,6 +136,43 @@ async def test_import_accepts_utf8_bom_csv(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_import_local_storage_key_uses_generated_object_name(
+    client: AsyncClient, monkeypatch, tmp_path
+):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    monkeypatch.setattr(settings, "IMPORT_STORAGE_BACKEND", "local")
+    monkeypatch.setattr(settings, "IMPORT_LOCAL_PATH", str(tmp_path / "imports"))
+
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
+    food = next(c for c in cats if c["name"] == "Food & Dining")
+
+    csv_content = (
+        "occurred_at,type,amount,category,description\n"
+        f"{datetime.now(UTC).isoformat()},expense,10.00,{food['public_id']},valid row\n"
+    )
+    files = {
+        "file": ("../../bank-statement.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")
+    }
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "spending-transactions"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+
+    assert validate.status_code == 200, validate.text
+    batch = validate.json()["import_batch"]
+    assert batch["filename"] == "bank-statement.csv"
+    assert batch["storage_backend"] == "local"
+    stored_path = Path(batch["storage_key"])
+    assert stored_path.name == "source.csv"
+    assert stored_path.parent.name == batch["public_id"]
+    assert "bank-statement.csv" not in batch["storage_key"]
+    assert stored_path.is_file()
+
+
+@pytest.mark.asyncio
 async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
     creds = await _register_and_login(client, uuid.uuid4().hex[:8])
 
@@ -173,6 +212,16 @@ async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
     assert row["wallet_name"] == "Main Wallet"
     assert row["labels"] == "family"
     assert row["source_type"] == "imported"
+    assert row["source_metadata"] == {
+        "source_type": "imported",
+        "source_ref": f"{import_id}:2",
+        "origin": "bulk_import",
+        "label": "Bulk import",
+        "import_public_id": import_id,
+        "import_module": "spending-transactions",
+        "import_row_number": 2,
+        "rollback_supported": True,
+    }
 
     async with postgres.async_session_maker() as session:
         batch = (

@@ -16,6 +16,7 @@ repos:
       - id: check-merge-conflict
       - id: check-json
       - id: check-toml
+      - id: detect-private-key
       - id: mixed-line-ending
 
   # Python code quality with Ruff

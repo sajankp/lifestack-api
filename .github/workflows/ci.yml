@@ -36,6 +36,10 @@ jobs:
         run: |
           uv run pre-commit run --all-files
 
+      - name: Dependency audit
+        run: |
+          uv run --with pip-audit pip-audit --progress-spinner off
+
       - name: Run tests with coverage
         run: |
           echo "TESTING=true" > .env
@@ -58,6 +62,12 @@ jobs:
       - name: Security scanning
         run: |
           uv run --with bandit bandit -r app/ -ll --format json --output bandit-report.json
+
+      - name: Secret scanning
+        uses: trufflesecurity/trufflehog@v3.95.5
+        with:
+          path: ./
+          extra_args: --results=verified
 
       - name: Upload security reports
         uses: actions/upload-artifact@v4

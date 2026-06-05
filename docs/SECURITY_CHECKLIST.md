@@ -29,8 +29,25 @@ This checklist is for release-hardening and regression review on `main`.
 
 ## Operational Security
 - [ ] Secrets are loaded from env (no committed credentials).
+- [x] Production startup rejects default `SECRET_KEY` and default dev metrics token.
+- [x] Production startup requires secure cookies.
+- [x] Production startup requires rate limiting to remain enabled.
+- [x] Production startup rejects in-memory rate-limit storage.
 - [ ] Rate limiting is enabled for auth endpoints in non-test environments.
 - [ ] Security headers middleware active in app startup path.
+- [x] CI runs `pip-audit` against installed Python dependencies.
+- [x] CI runs Bandit static analysis against `app/`.
+- [x] CI runs TruffleHog secret scanning for verified live secrets.
+- [x] Local pre-commit checks reject committed private keys.
+
+## Verification Log (2026-06-04)
+- Gate 0 security-gate milestone:
+  - `uv run --with pip-audit pip-audit --progress-spinner off`
+  - `uv run pre-commit run --all-files`
+  - CI workflow now includes dependency audit, Bandit, and verified-secret scanning.
+- Gate 0 production-config milestone:
+  - `uv run pytest app/tests/test_config.py`
+  - `ENV=production` fails closed for invalid/default/insecure runtime settings.
 
 ## Verification Log (2026-05-28)
 - Targeted isolation/authz sweep passed:
