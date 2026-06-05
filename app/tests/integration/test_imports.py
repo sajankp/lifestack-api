@@ -39,6 +39,8 @@ async def test_import_rejects_oversized_multipart_before_parsing(client: AsyncCl
 
     assert response.status_code == 413
     assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
     body = response.json()
     assert body["type"] == "https://lifestack.app/errors/request-too-large"
     assert body["title"] == "Request Too Large"

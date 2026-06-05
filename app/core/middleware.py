@@ -35,9 +35,11 @@ class MultipartBodySizeLimitMiddleware:
 
         received = 0
         rejected = False
+        rejection_sent = False
+        response_started = False
 
         async def limited_receive():
-            nonlocal received, rejected
+            nonlocal received, rejected, rejection_sent
             if rejected:
                 return {"type": "http.disconnect"}
 
@@ -46,12 +48,17 @@ class MultipartBodySizeLimitMiddleware:
                 received += len(message.get("body", b""))
                 if received > self.max_body_bytes:
                     rejected = True
-                    await self._send_too_large(send)
+                    if not response_started:
+                        rejection_sent = True
+                        await self._send_too_large(send)
                     return {"type": "http.disconnect"}
             return message
 
         async def send_wrapper(message):
-            if rejected:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            if rejected and rejection_sent:
                 return
             await send(message)
 

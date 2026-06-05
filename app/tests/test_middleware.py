@@ -38,3 +38,38 @@ async def test_multipart_limiter_suppresses_downstream_disconnect_after_rejectio
 
     assert sent_messages[0]["type"] == "http.response.start"
     assert sent_messages[0]["status"] == 413
+
+
+@pytest.mark.asyncio
+async def test_multipart_limiter_does_not_send_413_after_response_started():
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        message = await receive()
+        assert message["type"] == "http.disconnect"
+        await send({"type": "http.response.body", "body": b"accepted"})
+
+    middleware = MultipartBodySizeLimitMiddleware(app, max_body_bytes=4)
+    sent_messages = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"too large", "more_body": False}
+
+    async def send(message):
+        sent_messages.append(message)
+
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/imports",
+            "headers": [(b"content-type", b"multipart/form-data; boundary=x")],
+        },
+        receive,
+        send,
+    )
+
+    assert [message["type"] for message in sent_messages] == [
+        "http.response.start",
+        "http.response.body",
+    ]
+    assert sent_messages[0]["status"] == 200
