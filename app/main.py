@@ -32,7 +32,11 @@ from app.core.exceptions import (
 )
 from app.core.health import router as health_router
 from app.core.logging import setup_logging
-from app.core.middleware import SecurityHeadersMiddleware, StructlogMiddleware
+from app.core.middleware import (
+    MultipartBodySizeLimitMiddleware,
+    SecurityHeadersMiddleware,
+    StructlogMiddleware,
+)
 from app.core.scheduler import (
     register_daily_job,
     register_interval_job,
@@ -152,6 +156,10 @@ def create_app() -> FastAPI:
     # Core middlewares
     _app.state.limiter = limiter
     _app.add_middleware(SlowAPIMiddleware)
+    _app.add_middleware(
+        MultipartBodySizeLimitMiddleware,
+        max_body_bytes=settings.MAX_MULTIPART_BODY_BYTES,
+    )
     _app.add_middleware(SecurityHeadersMiddleware)
     _app.add_middleware(StructlogMiddleware)
 

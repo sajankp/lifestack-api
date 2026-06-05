@@ -9,6 +9,7 @@ from app.auth.service import AuthService
 from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.auth import get_user_info_from_token
+from app.core.csrf import MUTATING_METHODS, validate_cookie_csrf_token
 from app.core.database.postgres import get_db_session
 from app.core.exceptions import CSRFFailedError, ForbiddenError, UnauthorizedError
 from app.exports.repository import ExportRepository
@@ -127,7 +128,7 @@ async def get_current_user(
     except (ValueError, TypeError):
         uid = user_id
 
-    if token_from_cookie and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+    if token_from_cookie and request.method in MUTATING_METHODS:
         origin = request.headers.get("Origin")
         referer = request.headers.get("Referer")
 
@@ -153,6 +154,7 @@ async def get_current_user(
             raise CSRFFailedError(
                 detail=f"{source_name} is not allowed for cookie-authenticated requests"
             )
+        validate_cookie_csrf_token(request)
 
     auth_session = await auth_session_repo.get_active_by_sid(sid, uid)
     if not auth_session:

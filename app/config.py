@@ -2,7 +2,14 @@ import secrets
 from urllib.parse import urlparse
 
 import structlog
-from pydantic import AliasChoices, AnyHttpUrl, Field, computed_field, model_validator
+from pydantic import (
+    AliasChoices,
+    AnyHttpUrl,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _logger = structlog.get_logger(__name__)
@@ -98,6 +105,7 @@ class Settings(BaseSettings):
     RECURRING_TODO_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up todo generation
 
     # Bulk import storage (Spec 020)
+    MAX_MULTIPART_BODY_BYTES: int = 10 * 1024 * 1024
     IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3
     IMPORT_LOCAL_PATH: str = "/var/lib/lifestack/imports"
 
@@ -212,6 +220,14 @@ class Settings(BaseSettings):
             ]
         return data
 
+    @field_validator("ENV")
+    @classmethod
+    def _normalize_env(cls, value: str) -> str:
+        normalized_env = value.strip().lower()
+        if normalized_env not in {"local", "staging", "production", "test"}:
+            raise ValueError("ENV must be one of: local, staging, production, test.")
+        return normalized_env
+
     @model_validator(mode="after")
     def _check_production_defaults(self) -> "Settings":
         """Fail fast when insecure defaults are used in production."""
@@ -224,6 +240,8 @@ class Settings(BaseSettings):
                 )
             if not self.COOKIE_SECURE:
                 raise ValueError("COOKIE_SECURE must be enabled (True) in production.")
+            if not self.RATE_LIMIT_ENABLED:
+                raise ValueError("RATE_LIMIT_ENABLED must remain enabled in production.")
             if self.RATE_LIMIT_STORAGE_URI == "memory://":
                 raise ValueError(
                     "RATE_LIMIT_STORAGE_URI must be configured (non-memory) in production."

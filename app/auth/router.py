@@ -10,6 +10,7 @@ from app.auth.schemas import PasswordChange, TokenResponse, UserCreate, UserResp
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.auth import create_token, get_user_info_from_token
+from app.core.csrf import clear_csrf_token, issue_csrf_token
 from app.core.dependencies import (
     get_auth_service,
     get_current_user,
@@ -124,6 +125,10 @@ async def login_for_access_token(
         domain=settings.COOKIE_DOMAIN,
         secure=settings.COOKIE_SECURE,
     )
+    issue_csrf_token(
+        response,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS if remember_me else None,
+    )
 
     # Return empty tokens in body, as they are now in HttpOnly cookies
     return TokenResponse(access_token="", token_type="bearer")
@@ -179,6 +184,7 @@ async def refresh_token(
         domain=settings.COOKIE_DOMAIN,
         secure=settings.COOKIE_SECURE,
     )
+    issue_csrf_token(response, max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS)
 
     return TokenResponse(access_token="", token_type="bearer")
 
@@ -206,6 +212,7 @@ async def logout(
             domain=settings.COOKIE_DOMAIN,
             secure=settings.COOKIE_SECURE,
         )
+    clear_csrf_token(response)
     return {"message": "Logged out successfully"}
 
 
@@ -243,4 +250,5 @@ async def logout_all(
             domain=settings.COOKIE_DOMAIN,
             secure=settings.COOKIE_SECURE,
         )
+    clear_csrf_token(response)
     return {"message": "Logged out from all devices"}

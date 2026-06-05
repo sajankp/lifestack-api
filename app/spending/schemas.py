@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.imports.models import ImportModule
 from app.spending.models import TransactionSourceType, TransactionType
 
 # ---------------------------------------------------------------------------
@@ -78,6 +79,25 @@ class TransactionUpdate(BaseModel):
         return v
 
 
+class SourceMetadataResponse(BaseModel):
+    source_type: TransactionSourceType
+    source_ref: str | None = None
+    origin: Literal[
+        "manual_entry",
+        "bulk_import",
+        "external_sync",
+        "assistant_action",
+        "document_extraction",
+    ]
+    label: str
+    import_public_id: uuid.UUID | None = None
+    import_module: ImportModule | None = None
+    import_row_number: int | None = None
+    rollback_supported: bool = False
+
+    model_config = ConfigDict(use_enum_values=True)
+
+
 class TransactionResponse(BaseModel):
     public_id: uuid.UUID
     category_id: uuid.UUID  # exposed as public_id
@@ -90,6 +110,7 @@ class TransactionResponse(BaseModel):
     labels: str | None
     source_type: TransactionSourceType
     source_ref: str | None
+    source_metadata: SourceMetadataResponse
     created_at: datetime
     updated_at: datetime
 

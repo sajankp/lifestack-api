@@ -1,3 +1,4 @@
+import json
 import time
 import uuid
 
@@ -7,6 +8,96 @@ from starlette.datastructures import MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
+
+
+class MultipartBodySizeLimitMiddleware:
+    def __init__(self, app, max_body_bytes: int):
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        headers = dict(scope.get("headers", []))
+        content_type = headers.get(b"content-type", b"").decode("latin1").lower()
+        if not content_type.startswith("multipart/form-data"):
+            return await self.app(scope, receive, send)
+
+        content_length = headers.get(b"content-length")
+        if content_length is not None:
+            try:
+                length = int(content_length.decode("latin1"))
+            except ValueError:
+                length = 0
+            if length > self.max_body_bytes:
+                return await self._send_too_large(send)
+
+        received = 0
+        rejected = False
+        rejection_sent = False
+        response_started = False
+
+        async def limited_receive():
+            nonlocal received, rejected, rejection_sent
+            if rejected:
+                return {"type": "http.disconnect"}
+
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_body_bytes:
+                    rejected = True
+                    if not response_started:
+                        rejection_sent = True
+                        await self._send_too_large(send)
+                    return {"type": "http.disconnect"}
+            return message
+
+        async def send_wrapper(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            if rejected and rejection_sent:
+                return
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, send_wrapper)
+        except Exception:
+            if rejected:
+                return
+            raise
+
+    async def _send_too_large(self, send):
+        body = json.dumps({
+            "type": "https://lifestack.app/errors/request-too-large",
+            "title": "Request Too Large",
+            "status": 413,
+            "detail": (
+                "Multipart request exceeds the maximum allowed limit of "
+                f"{_format_size_limit(self.max_body_bytes)}."
+            ),
+        }).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/problem+json"),
+                (b"content-length", str(len(body)).encode("latin1")),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+
+def _format_size_limit(size_bytes: int) -> str:
+    if size_bytes >= 1024 * 1024:
+        value = size_bytes / (1024 * 1024)
+        return f"{value:g}MB"
+    if size_bytes >= 1024:
+        value = size_bytes / 1024
+        return f"{value:g}KB"
+    return f"{size_bytes}B"
 
 
 class StructlogMiddleware(BaseHTTPMiddleware):

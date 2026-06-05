@@ -338,7 +338,7 @@ class FxRateService:
         return await self.repository.upsert_rate(
             base_currency_code=payload.base_currency_code,
             quote_currency_code=payload.quote_currency_code,
-            rate=float(payload.rate),
+            rate=payload.rate,
             as_of=payload.as_of,
             fetched_at=payload.fetched_at,
             source=payload.source,
@@ -487,12 +487,12 @@ class CapitalTransferService:
             to_account_id=to_account.id,  # type: ignore[arg-type]
             from_currency_code=transfer_in.from_currency_code,
             to_currency_code=transfer_in.to_currency_code,
-            gross_amount=float(transfer_in.gross_amount),
-            fx_rate_used=float(transfer_in.fx_rate_used) if transfer_in.fx_rate_used else None,
-            fx_fee_amount=float(transfer_in.fx_fee_amount),
-            platform_fee_amount=float(transfer_in.platform_fee_amount),
-            tax_amount=float(transfer_in.tax_amount),
-            net_amount_received=float(transfer_in.net_amount_received),
+            gross_amount=transfer_in.gross_amount,
+            fx_rate_used=transfer_in.fx_rate_used,
+            fx_fee_amount=transfer_in.fx_fee_amount,
+            platform_fee_amount=transfer_in.platform_fee_amount,
+            tax_amount=transfer_in.tax_amount,
+            net_amount_received=transfer_in.net_amount_received,
             occurred_at=transfer_in.occurred_at,
             notes=transfer_in.notes,
         )

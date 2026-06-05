@@ -343,6 +343,19 @@ async def test_finance_settings_fx_and_transfers_flow(client: AsyncClient):
     assert get_body["from_account_public_id"] == from_account.json()["public_id"]
     assert get_body["to_account_public_id"] == to_account.json()["public_id"]
 
+    async with postgres.async_session_maker() as session:
+        stored_transfer = (
+            await session.execute(
+                select(CapitalTransfer).where(CapitalTransfer.public_id == uuid.UUID(transfer_id))
+            )
+        ).scalar_one()
+        assert isinstance(stored_transfer.gross_amount, Decimal)
+        assert stored_transfer.gross_amount == Decimal("1000.00")
+        assert isinstance(stored_transfer.fx_rate_used, Decimal)
+        assert stored_transfer.fx_rate_used == Decimal("0.8000000000")
+        assert isinstance(stored_transfer.net_amount_received, Decimal)
+        assert stored_transfer.net_amount_received == Decimal("792.00")
+
 
 @pytest.mark.asyncio
 async def test_fx_rate_same_currency_check_constraint(override_database_url):

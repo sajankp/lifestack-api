@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Annotated
 
@@ -10,6 +11,7 @@ from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
     get_finance_account_service,
+    get_import_repo,
     get_spending_budget_service,
     get_spending_category_service,
     get_spending_recurring_service,
@@ -19,10 +21,13 @@ from app.core.dependencies import (
 from app.core.exceptions import NotFoundError
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.finance.service import AccountService
+from app.imports.models import ImportBatch, ImportModule
+from app.imports.repository import ImportRepository
 from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
     SpendingTransaction,
+    TransactionSourceType,
     TransactionType,
 )
 from app.spending.schemas import (
@@ -36,6 +41,7 @@ from app.spending.schemas import (
     RecurringTransactionCreate,
     RecurringTransactionResponse,
     RecurringTransactionUpdate,
+    SourceMetadataResponse,
     SpendingTrendResponse,
     TransactionCreate,
     TransactionResponse,
@@ -66,11 +72,63 @@ def _transaction_response(
     tx: SpendingTransaction,
     category_public_id: uuid.UUID,
     account_public_id: uuid.UUID | None = None,
+    import_batch: ImportBatch | None = None,
 ) -> TransactionResponse:
     data = tx.model_dump()
     data["category_id"] = category_public_id
     data["account_id"] = account_public_id
+    data["source_metadata"] = _source_metadata_response(tx, import_batch)
     return TransactionResponse.model_validate(data)
+
+
+def _parse_import_row_number(source_ref: str | None) -> int | None:
+    if not source_ref or ":" not in source_ref:
+        return None
+    row_value = source_ref.rsplit(":", 1)[-1]
+    try:
+        return int(row_value)
+    except ValueError:
+        return None
+
+
+def _source_metadata_response(
+    tx: SpendingTransaction,
+    import_batch: ImportBatch | None = None,
+) -> SourceMetadataResponse:
+    if tx.source_type == TransactionSourceType.imported:
+        rollback_supported = import_batch is not None and (
+            import_batch.module == ImportModule.spending_transactions
+        )
+        return SourceMetadataResponse(
+            source_type=tx.source_type,
+            source_ref=tx.source_ref,
+            origin="bulk_import",
+            label="Bulk import",
+            import_public_id=import_batch.public_id if import_batch else None,
+            import_module=import_batch.module if import_batch else None,
+            import_row_number=_parse_import_row_number(tx.source_ref),
+            rollback_supported=rollback_supported,
+        )
+    if tx.source_type == TransactionSourceType.synced:
+        return SourceMetadataResponse(
+            source_type=tx.source_type,
+            source_ref=tx.source_ref,
+            origin="external_sync",
+            label="External sync",
+        )
+    if tx.source_type == TransactionSourceType.assistant:
+        return SourceMetadataResponse(
+            source_type=tx.source_type,
+            source_ref=tx.source_ref,
+            origin="assistant_action",
+            label="Assistant action",
+        )
+    return SourceMetadataResponse(
+        source_type=tx.source_type,
+        source_ref=tx.source_ref,
+        origin="manual_entry",
+        label="Manual entry",
+    )
 
 
 def _budget_response(budget: SpendingBudget, category_public_id: uuid.UUID) -> BudgetResponse:
@@ -93,11 +151,29 @@ async def _build_category_cache(
     return {c.id: c.public_id for c in cats}  # type: ignore[union-attr]
 
 
+def _category_public_id_or_404(cat_cache: dict[int, uuid.UUID], category_id: int) -> uuid.UUID:
+    category_public_id = cat_cache.get(category_id)
+    if category_public_id is None:
+        raise NotFoundError(detail="Transaction category was not found")
+    return category_public_id
+
+
 async def _build_account_cache(
     account_service: AccountService, workspace_id: int
 ) -> dict[int, uuid.UUID]:
     accounts, _ = await account_service.list_accounts(workspace_id, limit=10000, offset=0)
     return {a.id: a.public_id for a in accounts}  # type: ignore[union-attr]
+
+
+async def _build_import_batch_cache(
+    import_repo: ImportRepository,
+    workspace_id: int,
+    transactions: Sequence[SpendingTransaction],
+) -> dict[int, ImportBatch]:
+    import_batch_ids = {
+        tx.source_import_id for tx in transactions if tx.source_import_id is not None
+    }
+    return await import_repo.get_by_ids(workspace_id, import_batch_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +269,7 @@ async def list_transactions(
     transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    import_repo: Annotated[ImportRepository, Depends(get_import_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     pagination: Annotated[PaginationParams, Depends()],
@@ -213,6 +290,7 @@ async def list_transactions(
     # Build category cache once before the loop
     cat_cache = await _build_category_cache(category_service, workspace_id)
     account_cache = await _build_account_cache(account_service, workspace_id)
+    import_cache = await _build_import_batch_cache(import_repo, workspace_id, txs)
     missing_category_ids = {tx.category_id for tx in txs if tx.category_id not in cat_cache}
     if missing_category_ids:
         raise NotFoundError(detail="One or more transaction categories were not found")
@@ -222,6 +300,7 @@ async def list_transactions(
                 tx,
                 cat_cache[tx.category_id],
                 account_cache.get(tx.account_id) if tx.account_id is not None else None,
+                import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None,
             )
             for tx in txs
         ],
@@ -319,16 +398,19 @@ async def get_transaction(
     transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    import_repo: Annotated[ImportRepository, Depends(get_import_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
 ):
     tx = await transaction_service.get_transaction(workspace_id, transaction_id)
     cat_cache = await _build_category_cache(category_service, workspace_id)
     account_cache = await _build_account_cache(account_service, workspace_id)
+    import_cache = await _build_import_batch_cache(import_repo, workspace_id, [tx])
     return _transaction_response(
         tx,
-        cat_cache.get(tx.category_id),
+        _category_public_id_or_404(cat_cache, tx.category_id),
         account_cache.get(tx.account_id) if tx.account_id is not None else None,
+        import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None,
     )
 
 
@@ -339,6 +421,7 @@ async def update_transaction(
     transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    import_repo: Annotated[ImportRepository, Depends(get_import_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -353,10 +436,12 @@ async def update_transaction(
     )
     cat_cache = await _build_category_cache(category_service, workspace_id)
     account_cache = await _build_account_cache(account_service, workspace_id)
+    import_cache = await _build_import_batch_cache(import_repo, workspace_id, [tx])
     return _transaction_response(
         tx,
-        cat_cache.get(tx.category_id),
+        _category_public_id_or_404(cat_cache, tx.category_id),
         account_cache.get(tx.account_id) if tx.account_id is not None else None,
+        import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None,
     )
 
 
