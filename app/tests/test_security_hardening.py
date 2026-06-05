@@ -6,7 +6,9 @@ from httpx import AsyncClient
 
 from app.auth.repository import AuthSessionRepository, UserRepository
 from app.auth.schemas import UserCreate
+from app.config import settings
 from app.core.database import postgres
+from app.core.dependencies import get_client_ip
 
 
 @pytest.mark.asyncio
@@ -180,3 +182,41 @@ async def test_refresh_token_rotation_and_reuse_detection(client: AsyncClient):
         repo = AuthSessionRepository(session)
         auth_sess_check = await repo.get_active_by_sid(sid_1)
         assert auth_sess_check is None
+
+
+@pytest.mark.asyncio
+async def test_get_client_ip_proxy_validation():
+    """Verify that get_client_ip correctly validates X-Forwarded-For based on TRUSTED_PROXIES."""
+
+    # Helper mock connection info
+    class MockClient:
+        def __init__(self, host: str):
+            self.host = host
+
+    class MockRequest:
+        def __init__(self, client_host: str | None, headers: dict):
+            self.client = MockClient(client_host) if client_host else None
+            self.headers = headers
+
+    # Make sure settings has expected TRUSTED_PROXIES
+    settings.TRUSTED_PROXIES = ["127.0.0.1", "1.2.3.4"]
+
+    # CASE 1: Untrusted client IP with X-Forwarded-For -> must ignore header and return client IP
+    req_untrusted = MockRequest(
+        client_host="5.5.5.5", headers={"x-forwarded-for": "9.9.9.9, 8.8.8.8"}
+    )
+    assert get_client_ip(req_untrusted) == "5.5.5.5"
+
+    # CASE 2: Trusted client IP with X-Forwarded-For -> must trust header and return leftmost IP
+    req_trusted = MockRequest(
+        client_host="127.0.0.1", headers={"x-forwarded-for": "9.9.9.9, 8.8.8.8"}
+    )
+    assert get_client_ip(req_trusted) == "9.9.9.9"
+
+    # CASE 3: Trusted client IP with no X-Forwarded-For -> must return client IP
+    req_trusted_no_header = MockRequest(client_host="127.0.0.1", headers={})
+    assert get_client_ip(req_trusted_no_header) == "127.0.0.1"
+
+    # CASE 4: No client connection info -> must return "unknown"
+    req_no_client = MockRequest(client_host=None, headers={"x-forwarded-for": "9.9.9.9"})
+    assert get_client_ip(req_no_client) == "unknown"

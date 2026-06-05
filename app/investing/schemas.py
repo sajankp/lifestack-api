@@ -224,6 +224,16 @@ class HoldingPriceBulkCreate(BaseModel):
     price_date: date
     prices: list[HoldingPriceItem] = Field(default_factory=list, min_length=1, max_length=500)
 
+    @field_validator("price_date")
+    @classmethod
+    def validate_price_date(cls, value: date) -> date:
+        today = date.today()
+        if value > today:
+            raise ValueError("Price date cannot be in the future")
+        if value < date(1900, 1, 1):
+            raise ValueError("Price date cannot be before year 1900")
+        return value
+
     @field_validator("prices")
     @classmethod
     def validate_unique_holdings(cls, value: list[HoldingPriceItem]) -> list[HoldingPriceItem]:

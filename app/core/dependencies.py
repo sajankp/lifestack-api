@@ -1,6 +1,5 @@
 from fastapi import Depends, Request
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.workflows import DashboardSummaryWorkflow, UserRegistrationWorkflow
@@ -70,11 +69,26 @@ from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
 
 
+def get_client_ip(request: Request) -> str:
+    """Resolve the real client IP address checking TRUSTED_PROXIES."""
+    client_host = request.client.host if request.client else None
+    if not client_host:
+        return "unknown"
+
+    if client_host in settings.TRUSTED_PROXIES:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            ips = [ip.strip() for ip in xff.split(",")]
+            if ips:
+                return ips[0]
+    return client_host
+
+
 def _rate_limit_key_func(request: Request) -> str:
     """Use authenticated user ID when available, fall back to IP."""
     if hasattr(request.state, "user_id") and request.state.user_id:
         return f"user:{request.state.user_id}"
-    return get_remote_address(request)
+    return get_client_ip(request)
 
 
 limiter = Limiter(

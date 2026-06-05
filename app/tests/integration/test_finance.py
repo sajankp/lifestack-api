@@ -582,3 +582,76 @@ async def test_capital_transfer_account_fks_are_tenant_safe(client: AsyncClient)
         with pytest.raises(IntegrityError):
             await session.commit()
         await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_transfer_same_currency_fx_rate_enforced(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="same-curr-transfer@example.com",
+        username="samecurrtransfer",
+        password="TestPass123!",
+    )
+    from_account = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "USD Wallet 1",
+            "account_type": "wallet",
+            "default_currency_code": "USD",
+        },
+    )
+    assert from_account.status_code == 201
+    to_account = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "USD Wallet 2",
+            "account_type": "wallet",
+            "default_currency_code": "USD",
+        },
+    )
+    assert to_account.status_code == 201
+
+    # Same currency USD -> USD, but fx_rate_used = 1.05: should fail validation
+    res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "spending",
+            "from_account_id": from_account.json()["public_id"],
+            "to_account_id": to_account.json()["public_id"],
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
+            "gross_amount": "100.00",
+            "fx_rate_used": "1.0500000000",
+            "fx_fee_amount": "0.00",
+            "platform_fee_amount": "0.00",
+            "tax_amount": "0.00",
+            "net_amount_received": "105.00",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "notes": "Same currency transfer invalid rate",
+        },
+    )
+    assert res.status_code == 422
+    assert "FX rate must be 1.0 when transferring between the same currency" in res.json()["detail"]
+
+    # Same currency USD -> USD, fx_rate_used = 1.0: should succeed
+    res_ok = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "spending",
+            "from_account_id": from_account.json()["public_id"],
+            "to_account_id": to_account.json()["public_id"],
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
+            "gross_amount": "100.00",
+            "fx_rate_used": "1.0000000000",
+            "fx_fee_amount": "0.00",
+            "platform_fee_amount": "0.00",
+            "tax_amount": "0.00",
+            "net_amount_received": "100.00",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "notes": "Same currency transfer valid rate",
+        },
+    )
+    assert res_ok.status_code == 201

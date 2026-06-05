@@ -498,6 +498,15 @@ class CapitalTransferService:
         )
 
         # Validate arithmetic consistency with Decimal precision before persistence.
+        if (
+            transfer_in.from_currency_code == transfer_in.to_currency_code
+            and transfer_in.fx_rate_used is not None
+            and transfer_in.fx_rate_used != Decimal("1")
+        ):
+            raise ValidationError(
+                detail="FX rate must be 1.0 when transferring between the same currency"
+            )
+
         gross = transfer_in.gross_amount
         fx_rate = transfer_in.fx_rate_used if transfer_in.fx_rate_used is not None else Decimal("1")
         converted_gross = gross * fx_rate
