@@ -39,7 +39,7 @@ This checklist is for release-hardening and regression review on `main`.
 - Container runtime hardening reconciled against `Dockerfile`:
   - `CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]`
   - `USER appuser`
-  - `HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3`
+  - `HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 CMD curl -f http://localhost:8000/health || exit 1`
 
 ## Verification Log (2026-05-28)
 - Targeted isolation/authz sweep passed:
