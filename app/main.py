@@ -157,11 +157,11 @@ def create_app() -> FastAPI:
     _app.state.limiter = limiter
     _app.add_middleware(SlowAPIMiddleware)
     _app.add_middleware(SecurityHeadersMiddleware)
-    _app.add_middleware(StructlogMiddleware)
     _app.add_middleware(
         MultipartBodySizeLimitMiddleware,
         max_body_bytes=settings.MAX_MULTIPART_BODY_BYTES,
     )
+    _app.add_middleware(StructlogMiddleware)
 
     # Exception Handlers
     _app.add_exception_handler(APIError, api_exception_handler)

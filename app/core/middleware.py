@@ -10,10 +10,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings
 
 
-class RequestBodyTooLargeError(Exception):
-    pass
-
-
 class MultipartBodySizeLimitMiddleware:
     def __init__(self, app, max_body_bytes: int):
         self.app = app
@@ -38,36 +34,38 @@ class MultipartBodySizeLimitMiddleware:
                 return await self._send_too_large(send)
 
         received = 0
-        response_started = False
+        rejected = False
 
         async def limited_receive():
-            nonlocal received
+            nonlocal received, rejected
+            if rejected:
+                return {"type": "http.disconnect"}
+
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
                 if received > self.max_body_bytes:
-                    raise RequestBodyTooLargeError
+                    rejected = True
+                    await self._send_too_large(send)
+                    return {"type": "http.disconnect"}
             return message
 
         async def send_wrapper(message):
-            nonlocal response_started
-            if message["type"] == "http.response.start":
-                response_started = True
+            if rejected:
+                return
             await send(message)
 
-        try:
-            await self.app(scope, limited_receive, send_wrapper)
-        except RequestBodyTooLargeError:
-            if response_started:
-                raise
-            await self._send_too_large(send)
+        await self.app(scope, limited_receive, send_wrapper)
 
     async def _send_too_large(self, send):
         body = json.dumps({
             "type": "https://lifestack.app/errors/request-too-large",
             "title": "Request Too Large",
             "status": 413,
-            "detail": f"Multipart request exceeds the maximum allowed limit of {self.max_body_bytes // (1024 * 1024)}MB.",
+            "detail": (
+                "Multipart request exceeds the maximum allowed limit of "
+                f"{_format_size_limit(self.max_body_bytes)}."
+            ),
         }).encode("utf-8")
         await send({
             "type": "http.response.start",
@@ -78,6 +76,16 @@ class MultipartBodySizeLimitMiddleware:
             ],
         })
         await send({"type": "http.response.body", "body": body})
+
+
+def _format_size_limit(size_bytes: int) -> str:
+    if size_bytes >= 1024 * 1024:
+        value = size_bytes / (1024 * 1024)
+        return f"{value:g}MB"
+    if size_bytes >= 1024:
+        value = size_bytes / 1024
+        return f"{value:g}KB"
+    return f"{size_bytes}B"
 
 
 class StructlogMiddleware(BaseHTTPMiddleware):
