@@ -2,7 +2,14 @@ import secrets
 from urllib.parse import urlparse
 
 import structlog
-from pydantic import AliasChoices, AnyHttpUrl, Field, computed_field, model_validator
+from pydantic import (
+    AliasChoices,
+    AnyHttpUrl,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _logger = structlog.get_logger(__name__)
@@ -212,14 +219,17 @@ class Settings(BaseSettings):
             ]
         return data
 
+    @field_validator("ENV")
+    @classmethod
+    def _normalize_env(cls, value: str) -> str:
+        normalized_env = value.strip().lower()
+        if normalized_env not in {"local", "staging", "production", "test"}:
+            raise ValueError("ENV must be one of: local, staging, production, test.")
+        return normalized_env
+
     @model_validator(mode="after")
     def _check_production_defaults(self) -> "Settings":
         """Fail fast when insecure defaults are used in production."""
-        normalized_env = self.ENV.strip().lower()
-        if normalized_env not in {"local", "staging", "production", "test"}:
-            raise ValueError("ENV must be one of: local, staging, production, test.")
-        self.ENV = normalized_env
-
         if self.ENV == "production":
             if self.SECRET_KEY == "super-secret-key-change-in-production":
                 raise ValueError("SECRET_KEY must be changed from its default value in production.")

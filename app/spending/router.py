@@ -151,6 +151,13 @@ async def _build_category_cache(
     return {c.id: c.public_id for c in cats}  # type: ignore[union-attr]
 
 
+def _category_public_id_or_404(cat_cache: dict[int, uuid.UUID], category_id: int) -> uuid.UUID:
+    category_public_id = cat_cache.get(category_id)
+    if category_public_id is None:
+        raise NotFoundError(detail="Transaction category was not found")
+    return category_public_id
+
+
 async def _build_account_cache(
     account_service: AccountService, workspace_id: int
 ) -> dict[int, uuid.UUID]:
@@ -401,7 +408,7 @@ async def get_transaction(
     import_cache = await _build_import_batch_cache(import_repo, workspace_id, [tx])
     return _transaction_response(
         tx,
-        cat_cache.get(tx.category_id),
+        _category_public_id_or_404(cat_cache, tx.category_id),
         account_cache.get(tx.account_id) if tx.account_id is not None else None,
         import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None,
     )
@@ -432,7 +439,7 @@ async def update_transaction(
     import_cache = await _build_import_batch_cache(import_repo, workspace_id, [tx])
     return _transaction_response(
         tx,
-        cat_cache.get(tx.category_id),
+        _category_public_id_or_404(cat_cache, tx.category_id),
         account_cache.get(tx.account_id) if tx.account_id is not None else None,
         import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None,
     )
