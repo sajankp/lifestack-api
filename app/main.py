@@ -161,6 +161,7 @@ def create_app() -> FastAPI:
                 "Authorization",
                 "X-Requested-With",
                 "X-Request-ID",
+                "X-CSRF-Token",
                 "Origin",
                 "Accept",
             ],
