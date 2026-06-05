@@ -4,8 +4,13 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*
 
+# Install uv for deterministic dependency resolution from uv.lock
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 COPY . .
-RUN pip install --no-cache-dir .
+RUN uv export --frozen --no-dev -o requirements.txt && \
+    uv pip install --system --no-cache -r requirements.txt && \
+    uv pip install --system --no-cache --no-deps .
 
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
