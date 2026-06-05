@@ -55,7 +55,12 @@ class MultipartBodySizeLimitMiddleware:
                 return
             await send(message)
 
-        await self.app(scope, limited_receive, send_wrapper)
+        try:
+            await self.app(scope, limited_receive, send_wrapper)
+        except Exception:
+            if rejected:
+                return
+            raise
 
     async def _send_too_large(self, send):
         body = json.dumps({
