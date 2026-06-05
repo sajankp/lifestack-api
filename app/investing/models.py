@@ -119,6 +119,9 @@ class Holding(SQLModel, table=True):
     quantity: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=8))
     avg_cost: Decimal = Field(sa_type=sa.Numeric(precision=12, scale=2))
     currency: str = Field(max_length=10)
+    source_type: str = Field(default="manual", sa_type=sa.String(length=32), index=True)
+    source_ref: str | None = Field(default=None, max_length=255)
+    source_import_id: int | None = Field(default=None, foreign_key="import_batches.id", index=True)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
@@ -151,6 +154,9 @@ class CashBalance(SQLModel, table=True):
     balance: Decimal = Field(sa_type=sa.Numeric(precision=12, scale=2))
     currency: str = Field(max_length=10)
     as_of: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    source_type: str = Field(default="manual", sa_type=sa.String(length=32), index=True)
+    source_ref: str | None = Field(default=None, max_length=255)
+    source_import_id: int | None = Field(default=None, foreign_key="import_batches.id", index=True)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

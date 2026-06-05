@@ -227,3 +227,29 @@ async def test_select_workspace_rejects_non_member(client: AsyncClient):
     )
 
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_workspace_demo_reset(client: AsyncClient):
+    owner = await _register_and_login(client, "platformreset")
+
+    create_response = await client.post(
+        "/v1/todo/",
+        json={"title": "Should be deleted"},
+        cookies=owner["cookies"],
+    )
+    assert create_response.status_code == 201
+
+    reset_resp = await client.post(
+        f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo",
+        cookies=owner["cookies"],
+    )
+    assert reset_resp.status_code == 200
+    assert reset_resp.json() == {"status": "reset_success"}
+
+    todos_resp = await client.get("/v1/todo/", cookies=owner["cookies"])
+    assert todos_resp.status_code == 200
+    todo_items = todos_resp.json()["items"]
+    assert len(todo_items) == 2
+    assert "Should be deleted" not in [t["title"] for t in todo_items]
+    assert "buy groceries tomorrow" in [t["title"] for t in todo_items]

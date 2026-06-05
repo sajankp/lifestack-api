@@ -5,6 +5,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.investing.models import InstrumentType
+from app.spending.schemas import SourceMetadataResponse
 
 
 class HoldingCreate(BaseModel):
@@ -46,6 +47,7 @@ class HoldingResponse(BaseModel):
     quantity: Decimal
     avg_cost: Decimal
     currency: str
+    source_metadata: SourceMetadataResponse | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -99,6 +101,7 @@ class InvestingSummaryResponse(BaseModel):
     reporting_currency: str | None = None
     valuation_status: str = "unavailable"
     fx_as_of: datetime | None = None
+    fx_rates_used: dict[str, Decimal] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 

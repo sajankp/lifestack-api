@@ -978,6 +978,11 @@ class InvestingSummaryService:
                     )
                 converted_cash += converted_value
 
+            fx_rates_used = {
+                base: rate
+                for (base, quote), rate in fx_lookup.items()
+                if quote == reporting_currency
+            }
             return InvestingSummaryResponse(
                 portfolio_value=converted_portfolio,
                 holdings_count=len(holdings),
@@ -987,6 +992,7 @@ class InvestingSummaryService:
                 reporting_currency=reporting_currency,
                 valuation_status="converted_available",
                 fx_as_of=valuation_as_of,
+                fx_rates_used=fx_rates_used,
             )
 
         portfolio_value = Decimal("0")

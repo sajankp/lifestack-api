@@ -591,6 +591,9 @@ class ImportService:
                             category_id=int(p["category_id"]),
                             amount=Decimal(p["amount"]),
                             month_start=datetime.fromisoformat(p["month_start"]).date(),
+                            source_type="imported",
+                            source_import_id=batch.id,
+                            source_ref=f"{batch.public_id}:{row.row_number}",
                         )
                         self.session.add(budget)
                         inserted += 1
@@ -612,6 +615,9 @@ class ImportService:
                             quantity=Decimal(p["quantity"]),
                             avg_cost=Decimal(p["avg_cost"]),
                             currency=p["currency"],
+                            source_type="imported",
+                            source_import_id=batch.id,
+                            source_ref=f"{batch.public_id}:{row.row_number}",
                         )
                         self.session.add(holding)
                         inserted += 1
@@ -686,15 +692,20 @@ class ImportService:
                 )
             )
         if batch.status == ImportStatus.completed:
-            if batch.module != ImportModule.spending_transactions:
-                raise ValidationError(
-                    detail=(
-                        f"Completed imports for module '{batch.module}' cannot be rolled back yet."
-                    )
+            if batch.module == ImportModule.spending_transactions:
+                deleted_records = await self.repository.delete_spending_transactions_for_batch(
+                    workspace_id, batch.id
                 )
-            deleted_records = await self.repository.delete_spending_transactions_for_batch(
-                workspace_id, batch.id
-            )
+            elif batch.module == ImportModule.spending_budgets:
+                deleted_records = await self.repository.delete_spending_budgets_for_batch(
+                    workspace_id, batch.id
+                )
+            elif batch.module == ImportModule.investing_holdings:
+                deleted_records = await self.repository.delete_investing_holdings_for_batch(
+                    workspace_id, batch.id
+                )
+            else:
+                deleted_records = 0
             action = "import_rolled_back"
         else:
             deleted_records = 0

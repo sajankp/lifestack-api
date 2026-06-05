@@ -374,3 +374,79 @@ async def test_import_delete_completed_spending_transactions_rolls_back_records(
     assert audit.details["entity_public_id"] == import_id
     assert audit.details["before"]["status"] == "completed"
     assert audit.details["deleted_records"] == 1
+
+
+@pytest.mark.asyncio
+async def test_import_delete_completed_spending_budgets_rolls_back_records(
+    client: AsyncClient,
+):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
+    food = next(c for c in cats if c["name"] == "Food & Dining")
+
+    csv_content = f"month_start,category,amount\n2026-06-01,{food['public_id']},500.00\n"
+    files = {"file": ("budgets.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "spending-budgets"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    import_id = validate.json()["import_batch"]["public_id"]
+
+    commit_resp = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit_resp.status_code == 200
+
+    budgets_after_commit = await client.get("/v1/spending/budgets", cookies=creds["cookies"])
+    assert budgets_after_commit.status_code == 200
+    assert budgets_after_commit.json()["total"] == 1
+
+    del_resp = await client.delete(f"/v1/imports/{import_id}", cookies=creds["cookies"])
+    assert del_resp.status_code == 204
+
+    budgets_after_delete = await client.get("/v1/spending/budgets", cookies=creds["cookies"])
+    assert budgets_after_delete.status_code == 200
+    assert budgets_after_delete.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_import_delete_completed_investing_holdings_rolls_back_records(
+    client: AsyncClient,
+):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "brokerage", "account_type": "brokerage", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+
+    csv_content = (
+        "symbol,account_name,quantity,avg_cost,currency\nAAPL,brokerage,10.00,150.00,USD\n"
+    )
+    files = {"file": ("holdings.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-holdings"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    import_id = validate.json()["import_batch"]["public_id"]
+
+    commit_resp = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit_resp.status_code == 200
+
+    holdings_after_commit = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
+    assert holdings_after_commit.status_code == 200
+    assert len(holdings_after_commit.json()["items"]) == 1
+
+    del_resp = await client.delete(f"/v1/imports/{import_id}", cookies=creds["cookies"])
+    assert del_resp.status_code == 204
+
+    holdings_after_delete = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
+    assert holdings_after_delete.status_code == 200
+    assert len(holdings_after_delete.json()["items"]) == 0

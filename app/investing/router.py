@@ -10,6 +10,7 @@ from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
     get_finance_account_service,
+    get_import_repo,
     get_investing_analytics_service,
     get_investing_cash_balance_service,
     get_investing_constituent_service,
@@ -21,6 +22,7 @@ from app.core.dependencies import (
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.finance.service import AccountService
+from app.imports.repository import ImportRepository
 from app.investing.schemas import (
     CashBalanceCreate,
     CashBalanceResponse,
@@ -47,6 +49,7 @@ from app.investing.service import (
     InvestingSummaryService,
     PerformanceService,
 )
+from app.spending.router import _build_import_batch_cache, _source_metadata_response
 
 router = APIRouter(prefix="/investing", tags=["investing"])
 
@@ -62,6 +65,7 @@ async def _build_account_cache(
 async def list_holdings(
     holding_service: Annotated[HoldingService, Depends(get_investing_holding_service)],
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    import_repo: Annotated[ImportRepository, Depends(get_import_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     pagination: Annotated[PaginationParams, Depends()],
@@ -70,12 +74,16 @@ async def list_holdings(
         workspace_id, pagination.limit, pagination.offset
     )
     account_cache = await _build_account_cache(account_service, workspace_id)
+    import_cache = await _build_import_batch_cache(import_repo, workspace_id, holdings)
     items = []
     for h in holdings:
         pub_id, name = account_cache.get(h.account_id, (None, "Unknown"))
         data = h.model_dump()
         data["account_id"] = pub_id
         data["account_name"] = name
+        data["source_metadata"] = _source_metadata_response(
+            h.source_type, h.source_ref, import_cache.get(h.source_import_id)
+        )
         items.append(HoldingResponse.model_validate(data))
     return PaginatedResponse(
         items=items,
@@ -102,6 +110,9 @@ async def create_holding(
     data = holding.model_dump()
     data["account_id"] = account.public_id if account else None
     data["account_name"] = account.name if account else "Unknown"
+    data["source_metadata"] = _source_metadata_response(
+        holding.source_type, holding.source_ref, None
+    )
     return HoldingResponse.model_validate(data)
 
 
@@ -127,6 +138,9 @@ async def update_holding(
     data = holding.model_dump()
     data["account_id"] = account.public_id if account else None
     data["account_name"] = account.name if account else "Unknown"
+    data["source_metadata"] = _source_metadata_response(
+        holding.source_type, holding.source_ref, None
+    )
     return HoldingResponse.model_validate(data)
 
 

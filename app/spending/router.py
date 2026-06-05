@@ -21,13 +21,12 @@ from app.core.dependencies import (
 from app.core.exceptions import NotFoundError
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.finance.service import AccountService
-from app.imports.models import ImportBatch, ImportModule
+from app.imports.models import ImportBatch
 from app.imports.repository import ImportRepository
 from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
     SpendingTransaction,
-    TransactionSourceType,
     TransactionType,
 )
 from app.spending.schemas import (
@@ -77,7 +76,7 @@ def _transaction_response(
     data = tx.model_dump()
     data["category_id"] = category_public_id
     data["account_id"] = account_public_id
-    data["source_metadata"] = _source_metadata_response(tx, import_batch)
+    data["source_metadata"] = _source_metadata_response(tx.source_type, tx.source_ref, import_batch)
     return TransactionResponse.model_validate(data)
 
 
@@ -92,48 +91,58 @@ def _parse_import_row_number(source_ref: str | None) -> int | None:
 
 
 def _source_metadata_response(
-    tx: SpendingTransaction,
+    source_type: str,
+    source_ref: str | None,
     import_batch: ImportBatch | None = None,
 ) -> SourceMetadataResponse:
-    if tx.source_type == TransactionSourceType.imported:
-        rollback_supported = import_batch is not None and (
-            import_batch.module == ImportModule.spending_transactions
+    if source_type == "imported":
+        rollback_supported = import_batch is not None and import_batch.module in (
+            "spending-transactions",
+            "spending-budgets",
+            "investing-holdings",
         )
         return SourceMetadataResponse(
-            source_type=tx.source_type,
-            source_ref=tx.source_ref,
+            source_type=source_type,
+            source_ref=source_ref,
             origin="bulk_import",
             label="Bulk import",
             import_public_id=import_batch.public_id if import_batch else None,
             import_module=import_batch.module if import_batch else None,
-            import_row_number=_parse_import_row_number(tx.source_ref),
+            import_row_number=_parse_import_row_number(source_ref),
             rollback_supported=rollback_supported,
         )
-    if tx.source_type == TransactionSourceType.synced:
+    if source_type == "synced":
         return SourceMetadataResponse(
-            source_type=tx.source_type,
-            source_ref=tx.source_ref,
+            source_type=source_type,
+            source_ref=source_ref,
             origin="external_sync",
             label="External sync",
         )
-    if tx.source_type == TransactionSourceType.assistant:
+    if source_type == "assistant":
         return SourceMetadataResponse(
-            source_type=tx.source_type,
-            source_ref=tx.source_ref,
+            source_type=source_type,
+            source_ref=source_ref,
             origin="assistant_action",
             label="Assistant action",
         )
     return SourceMetadataResponse(
-        source_type=tx.source_type,
-        source_ref=tx.source_ref,
+        source_type=source_type,
+        source_ref=source_ref,
         origin="manual_entry",
         label="Manual entry",
     )
 
 
-def _budget_response(budget: SpendingBudget, category_public_id: uuid.UUID) -> BudgetResponse:
+def _budget_response(
+    budget: SpendingBudget,
+    category_public_id: uuid.UUID,
+    import_batch: ImportBatch | None = None,
+) -> BudgetResponse:
     data = budget.model_dump()
     data["category_id"] = category_public_id
+    data["source_metadata"] = _source_metadata_response(
+        budget.source_type, budget.source_ref, import_batch
+    )
     return BudgetResponse.model_validate(data)
 
 
@@ -468,6 +477,7 @@ async def delete_transaction(
 async def list_budgets(
     budget_service: Annotated[BudgetService, Depends(get_spending_budget_service)],
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    import_repo: Annotated[ImportRepository, Depends(get_import_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     pagination: Annotated[PaginationParams, Depends()],
@@ -477,8 +487,12 @@ async def list_budgets(
         workspace_id, pagination.limit, pagination.offset, month_start=month_start
     )
     cat_cache = await _build_category_cache(category_service, workspace_id)
+    import_cache = await _build_import_batch_cache(import_repo, workspace_id, budgets)
     return PaginatedResponse(
-        items=[_budget_response(b, cat_cache.get(b.category_id)) for b in budgets],
+        items=[
+            _budget_response(b, cat_cache.get(b.category_id), import_cache.get(b.source_import_id))
+            for b in budgets
+        ],
         total=total,
         limit=pagination.limit,
         offset=pagination.offset,
