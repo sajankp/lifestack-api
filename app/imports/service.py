@@ -601,11 +601,14 @@ class ImportService:
                     account_map = await self._account_map(workspace_id)
                     for row in rows:
                         p = row.payload_json
-                        account_name_raw = self._norm(p.get("account_name"))
-                        account_id = account_map.get(account_name_raw.lower())
+                        account_name_val = p.get("account_name")
+                        account_name_raw = self._norm(account_name_val) if account_name_val else ""
+                        account_id = (
+                            account_map.get(account_name_raw.lower()) if account_name_raw else None
+                        )
                         if account_id is None:
                             raise ValidationError(
-                                detail=f"Account '{account_name_raw}' not found in workspace"
+                                detail=f"Account '{account_name_raw or 'Unknown'}' not found in workspace"
                             )
                         holding = Holding(
                             workspace_id=workspace_id,

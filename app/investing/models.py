@@ -211,7 +211,9 @@ class PortfolioSnapshot(SQLModel, table=True):
 
     @field_validator("fx_rates_used")
     @classmethod
-    def validate_fx_rates(cls, v: dict) -> dict:
+    def validate_fx_rates(cls, v: dict | None) -> dict | None:
+        if v is None:
+            return v
         if not isinstance(v, dict):
             raise ValueError("fx_rates_used must be a dictionary")
         for key, val in v.items():

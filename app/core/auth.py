@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from jose import JWTError, jwt
@@ -28,6 +29,7 @@ def create_token(
     token_type: str | None = None,
 ) -> str:
     to_encode = data.copy()
+    to_encode.update({"jti": str(uuid.uuid4())})
     if expires_delta:
         expire = datetime.now(UTC) + expires_delta
     else:

@@ -85,10 +85,11 @@ def upgrade() -> None:
 
             # Insert account
             account_uuid = str(uuid.uuid4())
-            connection.execute(
+            result = connection.execute(
                 sa.text(
                     "INSERT INTO accounts (public_id, workspace_id, name, account_type, default_currency_code, is_active, created_at, updated_at) "
-                    "VALUES (:public_id, :workspace_id, :name, :account_type, :default_currency_code, :is_active, :created_at, :updated_at)"
+                    "VALUES (:public_id, :workspace_id, :name, :account_type, :default_currency_code, :is_active, :created_at, :updated_at) "
+                    "RETURNING id"
                 ),
                 {
                     "public_id": account_uuid,
@@ -101,15 +102,7 @@ def upgrade() -> None:
                     "updated_at": datetime.now(UTC),
                 },
             )
-
-            # Fetch the generated ID
-            created_account = connection.execute(
-                sa.text(
-                    "SELECT id FROM accounts WHERE workspace_id = :workspace_id AND name = :name"
-                ),
-                {"workspace_id": workspace_id, "name": account_name},
-            ).fetchone()
-            account_id = created_account[0]
+            account_id = result.fetchone()[0]
 
         # Update holdings with the resolved/created account_id
         connection.execute(

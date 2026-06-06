@@ -1,4 +1,3 @@
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -135,7 +134,6 @@ async def test_refresh_token_rotation_and_reuse_detection(client: AsyncClient):
     assert sid_1 is not None
 
     # 3. First refresh (valid rotation)
-    await asyncio.sleep(1.1)
     refresh_resp = await client.post("/v1/auth/refresh", cookies=cookies_1)
     assert refresh_resp.status_code == 200
 

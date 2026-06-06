@@ -21,7 +21,7 @@ from app.core.dependencies import (
 from app.core.exceptions import NotFoundError
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.finance.service import AccountService
-from app.imports.models import ImportBatch
+from app.imports.models import ImportBatch, ImportModule
 from app.imports.repository import ImportRepository
 from app.spending.models import (
     SpendingBudget,
@@ -97,9 +97,9 @@ def _source_metadata_response(
 ) -> SourceMetadataResponse:
     if source_type == "imported":
         rollback_supported = import_batch is not None and import_batch.module in (
-            "spending-transactions",
-            "spending-budgets",
-            "investing-holdings",
+            ImportModule.spending_transactions,
+            ImportModule.spending_budgets,
+            ImportModule.investing_holdings,
         )
         return SourceMetadataResponse(
             source_type=source_type,

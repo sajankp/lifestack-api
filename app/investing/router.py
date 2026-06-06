@@ -73,6 +73,14 @@ async def list_holdings(
     holdings, total = await holding_service.list_holdings(
         workspace_id, pagination.limit, pagination.offset
     )
+    if not holdings:
+        return PaginatedResponse(
+            items=[],
+            total=total,
+            limit=pagination.limit,
+            offset=pagination.offset,
+        )
+
     account_cache = await _build_account_cache(account_service, workspace_id)
     import_cache = await _build_import_batch_cache(import_repo, workspace_id, holdings)
     items = []
@@ -169,6 +177,14 @@ async def list_cash_balances(
     balances, total = await cash_service.list_cash_balances(
         workspace_id, pagination.limit, pagination.offset
     )
+    if not balances:
+        return PaginatedResponse(
+            items=[],
+            total=total,
+            limit=pagination.limit,
+            offset=pagination.offset,
+        )
+
     account_cache = await _build_account_cache(account_service, workspace_id)
     items = []
     for c in balances:
