@@ -1,8 +1,9 @@
 # Product Strategy and Roadmap
 
 Date: 2026-06-03
+Last updated: 2026-06-06
 
-Scope: product strategy and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
+Scope: current product positioning, demo readiness, and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
 
 ## 1) Product Thesis
 
@@ -40,6 +41,47 @@ The current product already has a strong foundation:
 - A service-layer architecture that gives future AI/mobile/document adapters a stable place to call into existing product capabilities.
 
 The main risk is sequencing. Health, documents, and memory are high-trust domains. They should be planned now but implemented only after the product has stronger reliability, security, mobile ergonomics, and E2E coverage.
+
+### Current Product Definition
+
+Lifestack today should be positioned as a **finance-led personal operations command center**.
+
+The strongest current product story is not "everything tracker" and not "AI assistant." The product is most coherent when it helps a user answer:
+
+- What is happening with my money?
+- What spending pressure or budget risk needs attention?
+- What is my portfolio worth across accounts and currencies?
+- What recurring life-admin work is coming up?
+- What imported or captured data needs review?
+- What should I act on next?
+
+This gives the current application a clear center of gravity while still leaving room for health, documents, memory, and coaching later.
+
+### Current Product Surface Priority
+
+| Surface | Product Role | Priority |
+|---|---|---|
+| Dashboard | Operating briefing across money, tasks, summaries, and alerts. | Primary |
+| Spending | Core finance workflow for transactions, budgets, recurring rules, and guardrails. | Primary |
+| Investing | Portfolio context, FX-aware valuation, holdings, cash, and performance. | Primary |
+| Imports and exports | Trust, portability, and realistic data movement. | Secondary |
+| Todos and notifications | Action layer for reminders, follow-ups, and system-generated work. | Secondary |
+| Workspaces and RBAC | Trust boundary and demo credibility layer. | Supporting |
+| Master config | Admin/settings surface, not a main destination. | Supporting |
+| Voice/capture | Experimental input layer over structured services. | Experimental |
+
+### Reviewer Demo Journey
+
+The first five minutes of a public portfolio demo should be intentionally guided:
+
+1. Open the dashboard and show the operating briefing: financial health, upcoming tasks, latest summary, and portfolio snapshot.
+2. Open spending and show budget guardrails plus recurring transactions.
+3. Open imports and show review-before-commit behavior for realistic data ingestion.
+4. Open investing and show account-backed holdings, cash, FX conversion, and performance context.
+5. Open workspace/admin briefly to show RBAC, active workspace context, and safe demo reset.
+6. Point to E2E, docs, and security posture as evidence that the product is engineered, not just assembled.
+
+The demo should make insight more visible than data entry. Reviewers should leave with the impression that Lifestack helps the user notice, decide, and act.
 
 ## 3) Product Track Decision
 
@@ -92,12 +134,18 @@ The roadmap can use stage numbers for planning, but user-facing product eras sho
 
 Goal: make the existing product credible, secure, and demoable before adding new life domains.
 
+Active execution roadmap: [`spec-029-current-product-demo-readiness-roadmap.md`](../specs/spec-029-current-product-demo-readiness-roadmap.md).
+
 Acceptance criteria:
 
 - Role-based authorization is enforced where roles already exist.
 - Password policy, session controls, and security findings are addressed.
 - One-command full-stack E2E path works from a clean checkout.
-- Demo seed/reset flow exists.
+- Demo seed/reset flow exists, is explicitly demo-mode gated, and is restricted to owner/admin roles.
+- Workspace selection keeps session refresh-token rotation consistent.
+- The frontend has an explicit active-workspace model and destructive actions target that workspace only.
+- Multi-currency investing summaries and performance snapshots use clear reporting-currency semantics.
+- Specs, ERD, README, and roadmap documents distinguish implemented behavior from planned or partially implemented behavior.
 - Mobile shell/navigation is responsive enough for quick capture.
 - READMEs separate current features from planned roadmap scope.
 
@@ -265,6 +313,8 @@ Mental health and energy should probably rank above food/nutrition for the perso
 
 The README should:
 
+- Describe the current product as a finance-led personal operations command center before introducing future health, document, and coach tracks.
+- Include a short reviewer/demo journey for the first five minutes of product evaluation.
 - Keep current implemented features separate from planned roadmap tracks.
 - Capture health metrics, sleep, weight, medication reminders, workouts, health-app sync, documents/RAG, second brain, and personal coach as planned future tracks.
 - Avoid claiming health/documents/memory are implemented today.
@@ -279,4 +329,6 @@ The README should:
 
 Proceed with the product track, but do not make it the immediate feature implementation branch.
 
-The correct next move is to document the vision, stabilize the current foundation, then introduce mobile and health in slices that reuse existing scheduler, notification, dashboard, export, and service-layer patterns. The personal coach should be the eventual interface over trustworthy structured data, not the reason to skip the product fundamentals.
+The current product should be presented as a finance-led personal operations command center with investing, tasks, imports, exports, and workspace controls as supporting proof points. The correct next move is to stabilize that foundation, make the demo path safe and crisp, then introduce mobile and health in slices that reuse existing scheduler, notification, dashboard, export, and service-layer patterns.
+
+The personal coach should be the eventual interface over trustworthy structured data, not the reason to skip the product fundamentals.
