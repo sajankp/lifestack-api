@@ -67,11 +67,33 @@ class CategoryRepository:
         await self.session.delete(category)
         await self.session.flush()
 
-    async def has_transactions(self, category_id: int) -> bool:
-        result = await self.session.execute(
-            select(SpendingTransaction).where(SpendingTransaction.category_id == category_id)
-        )
-        return result.scalar_one_or_none() is not None
+    async def has_usage(self, category_id: int) -> bool:
+        tx_exists = (
+            await self.session.execute(
+                select(SpendingTransaction.id)
+                .where(SpendingTransaction.category_id == category_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if tx_exists is not None:
+            return True
+
+        budget_exists = (
+            await self.session.execute(
+                select(SpendingBudget.id).where(SpendingBudget.category_id == category_id).limit(1)
+            )
+        ).scalar_one_or_none()
+        if budget_exists is not None:
+            return True
+
+        recurring_exists = (
+            await self.session.execute(
+                select(RecurringTransaction.id)
+                .where(RecurringTransaction.category_id == category_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return recurring_exists is not None
 
     async def create_many(self, categories: list[SpendingCategory]) -> None:
         """Bulk insert categories (used during workspace provisioning)."""
