@@ -153,6 +153,7 @@ erDiagram
         int workspace_id FK
         int user_id FK
         int category_id FK
+        int account_id FK
         decimal amount
         string type
         datetime occurred_at
@@ -168,6 +169,29 @@ erDiagram
         int category_id FK
         decimal amount
         date month_start
+        string source_type
+        string source_ref
+        int source_import_id FK
+        datetime created_at
+        datetime updated_at
+    }
+
+    RECURRING_TRANSACTIONS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        int category_id FK
+        decimal amount
+        string type
+        string description
+        string frequency
+        int interval
+        date anchor_date
+        date next_due_date
+        date end_date
+        boolean is_active
+        datetime last_generated_at
         datetime created_at
         datetime updated_at
     }
@@ -178,6 +202,9 @@ erDiagram
     SPENDING_CATEGORIES ||--o{ SPENDING_TRANSACTIONS : categorizes
     WORKSPACES ||--o{ SPENDING_BUDGETS : scopes
     SPENDING_CATEGORIES ||--o{ SPENDING_BUDGETS : budgets
+    WORKSPACES ||--o{ RECURRING_TRANSACTIONS : scopes
+    USERS ||--o{ RECURRING_TRANSACTIONS : configures
+    SPENDING_CATEGORIES ||--o{ RECURRING_TRANSACTIONS : categorizes
 ```
 
 ## Finance
@@ -265,6 +292,9 @@ erDiagram
         decimal net_amount_received
         datetime occurred_at
         string notes
+        string source_type
+        string source_ref
+        int source_import_id FK
         datetime created_at
         datetime updated_at
     }
@@ -349,10 +379,13 @@ erDiagram
         int user_id FK
         int instrument_id FK
         string symbol
-        string account_name
+        int account_id FK
         decimal quantity
         decimal avg_cost
         string currency
+        string source_type
+        string source_ref
+        int source_import_id FK
         datetime created_at
         datetime updated_at
     }
@@ -362,10 +395,13 @@ erDiagram
         uuid public_id UK
         int workspace_id FK
         int user_id FK
-        string account_name
+        int account_id FK
         decimal balance
         string currency
         datetime as_of
+        string source_type
+        string source_ref
+        int source_import_id FK
         datetime created_at
         datetime updated_at
     }
@@ -380,6 +416,91 @@ erDiagram
     INVESTING_INSTRUMENTS ||--o{ INVESTING_HOLDINGS : linked_instrument
     WORKSPACES ||--o{ INVESTING_CASH_BALANCES : scopes
     USERS ||--o{ INVESTING_CASH_BALANCES : owns
+    ACCOUNTS ||--o{ INVESTING_HOLDINGS : holds
+    ACCOUNTS ||--o{ INVESTING_CASH_BALANCES : holds
+```
+
+## Imports & Exports
+
+```mermaid
+erDiagram
+    USERS {
+        int id PK
+        uuid public_id UK
+        string email UK
+        string username UK
+    }
+
+    WORKSPACES {
+        int id PK
+        uuid public_id UK
+        string name
+    }
+
+    IMPORT_BATCHES {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        string module
+        string status
+        string filename
+        string content_type
+        int file_size_bytes
+        string file_sha256
+        string storage_backend
+        string storage_key
+        int total_rows
+        int valid_rows
+        int error_rows
+        datetime started_at
+        datetime validated_at
+        datetime committed_at
+        datetime created_at
+        datetime updated_at
+    }
+
+    IMPORT_ERRORS {
+        int id PK
+        int import_batch_id FK
+        int row_number
+        string field_name
+        string error_code
+        string message
+        string raw_value
+    }
+
+    IMPORT_PREVIEW_ROWS {
+        int id PK
+        int import_batch_id FK
+        int row_number
+        json payload_json
+    }
+
+    EXPORT_RECORDS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int requested_by FK
+        string format
+        int schema_version
+        json scope
+        string status
+        string storage_key
+        bytes artifact_blob
+        string artifact_mime_type
+        string artifact_filename
+        string error_message
+        datetime created_at
+        datetime completed_at
+    }
+
+    WORKSPACES ||--o{ IMPORT_BATCHES : scopes
+    USERS ||--o{ IMPORT_BATCHES : uploads
+    IMPORT_BATCHES ||--o{ IMPORT_ERRORS : has_errors
+    IMPORT_BATCHES ||--o{ IMPORT_PREVIEW_ROWS : previews
+    WORKSPACES ||--o{ EXPORT_RECORDS : scopes
+    USERS ||--o{ EXPORT_RECORDS : requests
 ```
 
 ## Notes
@@ -391,3 +512,6 @@ erDiagram
 - `workspace_currencies` is the workspace-level allow-list for currencies.
 - `fx_rates` stores currency pairs with both a base and quote currency reference.
 - `capital_transfers` connects the spending and investing modules through accounts and currencies.
+- `investing_holdings` and `investing_cash_balances` enforce tenant-safe `account_id` relationships to the `accounts` table.
+- `import_batches` tracks the life of bulk data uploads for transaction and holdings modules.
+- `exports` handles the user-driven data exports lifecycle.

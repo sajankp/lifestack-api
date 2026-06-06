@@ -18,6 +18,8 @@ from sqlalchemy import func, select
 
 from app.application.workflows import (
     cleanup_expired_exports,
+    cleanup_expired_sessions,
+    cleanup_import_previews,
     evaluate_workspace_budget_guardrails,
     ingest_fx_rates,
     process_workspace_recurring_todos,
@@ -27,7 +29,9 @@ from app.core.constants import (
     ADVISORY_LOCK_BUDGET_GUARDRAILS,
     ADVISORY_LOCK_EXPORT_CLEANUP,
     ADVISORY_LOCK_FX_RATE_INGESTION,
+    ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
     ADVISORY_LOCK_RECURRING_TRANSACTIONS,
+    ADVISORY_LOCK_SESSION_CLEANUP,
     ADVISORY_LOCK_WEEKLY_SUMMARY,
 )
 from app.core.database import postgres
@@ -447,6 +451,92 @@ async def export_cleanup_job() -> None:
             logger.error(
                 "export_cleanup_job_failed",
                 job_name="export_cleanup_job",
+                duration_ms=total_ms,
+                status="failed",
+                exc_info=True,
+            )
+            raise
+
+
+SESSION_CLEANUP_LOCK_KEY = ADVISORY_LOCK_SESSION_CLEANUP
+IMPORT_PREVIEW_CLEANUP_LOCK_KEY = ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP
+
+
+async def session_cleanup_job() -> None:
+    """
+    Cron-triggered job that purges expired and revoked authentication sessions (Spec 003).
+    """
+    start_time = datetime.now(UTC)
+    logger.info("session_cleanup_job_start", job_name="session_cleanup_job")
+
+    async with postgres.async_session_maker() as session, session.begin():
+        lock_res = await session.execute(
+            select(func.pg_try_advisory_xact_lock(SESSION_CLEANUP_LOCK_KEY))
+        )
+        has_lock = lock_res.scalar()
+        if not has_lock:
+            logger.info(
+                "session_cleanup_job_skipped_lock_held",
+                job_name="session_cleanup_job",
+            )
+            return
+
+        try:
+            cleaned_count = await cleanup_expired_sessions(session)
+
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info(
+                "session_cleanup_job_completed",
+                job_name="session_cleanup_job",
+                duration_ms=total_ms,
+                cleaned_count=cleaned_count,
+            )
+        except Exception:
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.error(
+                "session_cleanup_job_failed",
+                job_name="session_cleanup_job",
+                duration_ms=total_ms,
+                status="failed",
+                exc_info=True,
+            )
+            raise
+
+
+async def import_preview_cleanup_job() -> None:
+    """
+    Cron-triggered job that purges stale import preview rows (Spec 020).
+    """
+    start_time = datetime.now(UTC)
+    logger.info("import_preview_cleanup_job_start", job_name="import_preview_cleanup_job")
+
+    async with postgres.async_session_maker() as session, session.begin():
+        lock_res = await session.execute(
+            select(func.pg_try_advisory_xact_lock(IMPORT_PREVIEW_CLEANUP_LOCK_KEY))
+        )
+        has_lock = lock_res.scalar()
+        if not has_lock:
+            logger.info(
+                "import_preview_cleanup_job_skipped_lock_held",
+                job_name="import_preview_cleanup_job",
+            )
+            return
+
+        try:
+            cleaned_count = await cleanup_import_previews(session)
+
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info(
+                "import_preview_cleanup_job_completed",
+                job_name="import_preview_cleanup_job",
+                duration_ms=total_ms,
+                cleaned_count=cleaned_count,
+            )
+        except Exception:
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.error(
+                "import_preview_cleanup_job_failed",
+                job_name="import_preview_cleanup_job",
                 duration_ms=total_ms,
                 status="failed",
                 exc_info=True,

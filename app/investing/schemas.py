@@ -1,15 +1,16 @@
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.investing.models import InstrumentType
+from app.spending.schemas import SourceMetadataResponse
 
 
 class HoldingCreate(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
-    account_name: str = Field(default="primary", min_length=1, max_length=100)
+    account_id: uuid.UUID
     quantity: Decimal = Field(..., gt=0, decimal_places=8)
     avg_cost: Decimal = Field(..., ge=0, decimal_places=2)
     currency: str = Field(..., min_length=1, max_length=10)
@@ -41,10 +42,12 @@ class HoldingUpdate(BaseModel):
 class HoldingResponse(BaseModel):
     public_id: uuid.UUID
     symbol: str
+    account_id: uuid.UUID
     account_name: str
     quantity: Decimal
     avg_cost: Decimal
     currency: str
+    source_metadata: SourceMetadataResponse | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -52,7 +55,7 @@ class HoldingResponse(BaseModel):
 
 
 class CashBalanceCreate(BaseModel):
-    account_name: str = Field(..., min_length=1, max_length=100)
+    account_id: uuid.UUID
     balance: Decimal = Field(..., decimal_places=2)
     currency: str = Field(..., min_length=1, max_length=10)
     as_of: datetime
@@ -78,6 +81,7 @@ class CashBalanceUpdate(BaseModel):
 
 class CashBalanceResponse(BaseModel):
     public_id: uuid.UUID
+    account_id: uuid.UUID
     account_name: str
     balance: Decimal
     currency: str
@@ -97,6 +101,7 @@ class InvestingSummaryResponse(BaseModel):
     reporting_currency: str | None = None
     valuation_status: str = "unavailable"
     fx_as_of: datetime | None = None
+    fx_rates_used: dict[str, Decimal] = Field(default_factory=dict)
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 
@@ -218,6 +223,16 @@ class HoldingPriceItem(BaseModel):
 class HoldingPriceBulkCreate(BaseModel):
     price_date: date
     prices: list[HoldingPriceItem] = Field(default_factory=list, min_length=1, max_length=500)
+
+    @field_validator("price_date")
+    @classmethod
+    def validate_price_date(cls, value: date) -> date:
+        today = datetime.now(UTC).date()
+        if value > today:
+            raise ValueError("Price date cannot be in the future")
+        if value < date(1900, 1, 1):
+            raise ValueError("Price date cannot be before year 1900")
+        return value
 
     @field_validator("prices")
     @classmethod

@@ -43,13 +43,13 @@ class HoldingRepository:
         return result.scalar_one_or_none()
 
     async def get_by_unique_key(
-        self, workspace_id: int, symbol: str, account_name: str
+        self, workspace_id: int, symbol: str, account_id: int
     ) -> Holding | None:
         result = await self.session.execute(
             select(Holding).where(
                 Holding.workspace_id == workspace_id,
                 Holding.symbol == symbol,
-                Holding.account_name == account_name,
+                Holding.account_id == account_id,
             )
         )
         return result.scalar_one_or_none()

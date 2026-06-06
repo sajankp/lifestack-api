@@ -1,6 +1,7 @@
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import AuthSession, User
@@ -88,3 +89,25 @@ class AuthSessionRepository:
         )
         await self.session.flush()
         return result.rowcount
+
+    async def get_active_sessions_by_user_id(self, user_id: int) -> Sequence[AuthSession]:
+        statement = (
+            select(AuthSession)
+            .where(
+                AuthSession.user_id == user_id,
+                AuthSession.revoked_at.is_(None),
+                AuthSession.expires_at > datetime.now(UTC),
+            )
+            .order_by(AuthSession.last_seen_at.asc())
+        )
+        result = await self.session.execute(statement)
+        return result.scalars().all()
+
+    async def delete_expired_and_revoked_sessions(self) -> int:
+        now = datetime.now(UTC)
+        statement = delete(AuthSession).where(
+            (AuthSession.expires_at < now) | AuthSession.revoked_at.is_not(None)
+        )
+        result = await self.session.execute(statement)
+        await self.session.flush()
+        return result.rowcount or 0

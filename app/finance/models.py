@@ -192,6 +192,9 @@ class CapitalTransfer(SQLModel, table=True):
     net_amount_received: Decimal = Field(sa_type=sa.Numeric(precision=14, scale=2))
     occurred_at: datetime = Field(sa_type=sa.DateTime(timezone=True), index=True)
     notes: str | None = Field(default=None, max_length=500)
+    source_type: str = Field(default="manual", sa_type=sa.String(length=32), index=True)
+    source_ref: str | None = Field(default=None, max_length=255)
+    source_import_id: int | None = Field(default=None, foreign_key="import_batches.id", index=True)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

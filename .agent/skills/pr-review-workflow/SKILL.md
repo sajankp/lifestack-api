@@ -17,6 +17,7 @@ Use this agent when you need to process open pull requests end-to-end.
 ```bash
 gh pr list --state open
 gh pr view <number> --json reviews,comments,statusCheckRollup,mergeStateStatus,url
+bash .agent/scripts/fetch-review-comments.sh
 bash .agent/scripts/resolve-review-threads.sh --mode outdated --dry-run
 bash .agent/scripts/resolve-review-threads.sh --mode outdated
 ```
@@ -39,11 +40,14 @@ bash .agent/scripts/resolve-review-threads.sh --mode outdated
 
 ## Core Rules
 
-- Never commit, merge, or close a PR without explicit user approval.
+- Avoid stopping for approvals before committing; verify tests locally and commit directly once verified.
+- Ask the user what changes/remediations are required before starting a task.
+- Never merge or close a PR without explicit user approval.
 - Run local tests before push.
 - Validate review suggestions against approved spec and project patterns.
 - Do not run `--mode all` until dry-run + manual validation confirms non-outdated threads are addressed.
 - Request `/gemini review` only after tests pass.
+
 
 ## Review Triage Matrix
 
@@ -55,7 +59,7 @@ bash .agent/scripts/resolve-review-threads.sh --mode outdated
 
 1. List PRs: `gh pr list --state open`
 2. Verify AI review exists (Gemini or required reviewer)
-3. Fetch comments/reviews and classify: accept, reject, or discuss
+3. Fetch comments/reviews: `bash .agent/scripts/fetch-review-comments.sh`
 4. Apply fixes and run tests
 5. Reply to each thread with what changed
 6. Resolve threads (prefer outdated first)

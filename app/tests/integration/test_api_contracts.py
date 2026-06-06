@@ -147,11 +147,13 @@ async def test_investing_account_currency_selector_contracts(client: AsyncClient
     )
     assert account_body["default_currency_code"] == "USD"
 
+    account_id = account_body["public_id"]
+
     create_holding = await client.post(
         "/v1/investing/holdings",
         json={
             "symbol": "AAPL",
-            "account_name": account_body["name"],
+            "account_id": account_id,
             "quantity": "2.50000000",
             "avg_cost": "180.00",
             "currency": "usd",
@@ -165,7 +167,7 @@ async def test_investing_account_currency_selector_contracts(client: AsyncClient
     create_cash = await client.post(
         "/v1/investing/cash-balances",
         json={
-            "account_name": account_body["name"],
+            "account_id": account_id,
             "balance": "1500.00",
             "currency": "USD",
             "as_of": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),

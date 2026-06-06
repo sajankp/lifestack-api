@@ -32,6 +32,9 @@ class AuthSession(SQLModel, table=True):
     sid: str = Field(index=True, unique=True, max_length=64)
     expires_at: datetime = Field(sa_type=sa.DateTime(timezone=True), index=True)
     revoked_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    current_token_hash: str | None = Field(default=None, max_length=64)
+    previous_token_hash: str | None = Field(default=None, max_length=64)
+    rotated_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
     last_seen_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )

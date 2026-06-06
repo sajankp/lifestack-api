@@ -1,8 +1,10 @@
+import hashlib
 from datetime import UTC, datetime, timedelta
 
 from app.auth.models import AuthSession, User
 from app.auth.repository import AuthSessionRepository, UserRepository
 from app.auth.schemas import UserCreate
+from app.config import settings
 from app.core.auth import hash_password, verify_password
 from app.core.exceptions import ConflictError, UnauthorizedError
 
@@ -16,11 +18,12 @@ class AuthService:
 
     async def register_user(self, user_create: UserCreate) -> User:
         existing_user = await self.user_repo.get_by_email(user_create.email)
-        if existing_user:
-            raise ConflictError(detail="Email already registered", title="Email Already Registered")
         existing_user_name = await self.user_repo.get_by_username(user_create.username)
-        if existing_user_name:
-            raise ConflictError(detail="Username already taken", title="Username Taken")
+        if existing_user or existing_user_name:
+            raise ConflictError(
+                detail="Registration failed. Invalid or taken username/email.",
+                title="Registration Failed",
+            )
 
         new_user = await self.user_repo.create(user_create)
         return new_user
@@ -48,11 +51,29 @@ class AuthService:
 
         return user
 
-    async def create_session(self, user_id: int, sid: str, expires_in: timedelta) -> AuthSession:
+    async def create_session(
+        self, user_id: int, sid: str, expires_in: timedelta, initial_token: str | None = None
+    ) -> AuthSession:
+        # Enforce max active sessions
+        active_sessions = await self.session_repo.get_active_sessions_by_user_id(user_id)
+        if len(active_sessions) >= settings.MAX_ACTIVE_SESSIONS_PER_USER:
+            num_to_revoke = len(active_sessions) - settings.MAX_ACTIVE_SESSIONS_PER_USER + 1
+            for i in range(num_to_revoke):
+                sess = active_sessions[i]
+                sess.revoked_at = datetime.now(UTC)
+                self.session_repo.session.add(sess)
+            await self.session_repo.session.flush()
+
+        token_hash = (
+            hashlib.sha256(initial_token.encode("utf-8")).hexdigest() if initial_token else None
+        )
+
         auth_session = AuthSession(
             user_id=user_id,
             sid=sid,
             expires_at=datetime.now(UTC) + expires_in,
+            current_token_hash=token_hash,
+            rotated_at=datetime.now(UTC),
         )
         return await self.session_repo.create(auth_session)
 

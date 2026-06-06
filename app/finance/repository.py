@@ -17,6 +17,7 @@ from app.finance.models import (
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
 )
+from app.investing.models import CashBalance, Holding
 from app.spending.models import SpendingTransaction
 
 
@@ -181,7 +182,33 @@ class AccountRepository:
                 .limit(1)
             )
         ).scalar_one_or_none()
-        return transfer_usage_exists is not None
+        if transfer_usage_exists is not None:
+            return True
+
+        holding_usage_exists = (
+            await self.session.execute(
+                select(Holding.id)
+                .where(
+                    Holding.workspace_id == workspace_id,
+                    Holding.account_id == account_id,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if holding_usage_exists is not None:
+            return True
+
+        cash_balance_usage_exists = (
+            await self.session.execute(
+                select(CashBalance.id)
+                .where(
+                    CashBalance.workspace_id == workspace_id,
+                    CashBalance.account_id == account_id,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return cash_balance_usage_exists is not None
 
     async def delete(self, account: Account) -> None:
         await self.session.delete(account)

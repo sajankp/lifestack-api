@@ -100,6 +100,21 @@ def _format_size_limit(size_bytes: int) -> str:
     return f"{size_bytes}B"
 
 
+def get_client_ip(request: Request) -> str:
+    """Resolve the real client IP address checking TRUSTED_PROXIES."""
+    client_host = request.client.host if request.client else None
+    if not client_host:
+        return "unknown"
+
+    if client_host in settings.TRUSTED_PROXIES:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            ips = [ip.strip() for ip in xff.split(",")]
+            if ips:
+                return ips[0]
+    return client_host
+
+
 class StructlogMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         structlog.contextvars.clear_contextvars()
@@ -111,7 +126,7 @@ class StructlogMiddleware(BaseHTTPMiddleware):
             request_id=request_id,
             method=request.method,
             path=request.url.path,
-            client_ip=request.client.host if request.client else "unknown",
+            client_ip=get_client_ip(request),
         )
 
         # Attempt to extract Session ID (sid) from cookies

@@ -272,15 +272,19 @@ The core rule is: business logic lives in services, cross-module orchestration l
 
 Based on architectural reviews and implementation, the following items are tracked:
 
-1. **Scheduler: Rolling Deploy Window:** Advisory locks still do not provide strict exactly-once delivery semantics. As a hard guardrail, non-idempotent scheduler jobs are now blocked unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly set.
-2. **Cross-repo full-stack E2E test harness:** FE and BE are separate repos, and the dedicated `lifestack-e2e` repo now hosts the real UI+API+DB suite with stack orchestration scripts. The remaining debt is deterministic demo/reset data and making the same quality bar visible in every repo's CI.
-3. **Gate 0 remaining work:** Investing account identity, remaining finance correctness, deterministic demo/reset data, and richer import/source lifecycle coverage remain open before health, documents, MCP, or personal-coach work should begin. Production config policy now fails closed for invalid `ENV`, default secrets, insecure cookies, disabled rate limiting, and in-memory production rate-limit storage. Finance `NUMERIC` models now keep Decimal annotations through FX rates and capital transfers instead of casting through floats. Import artifact storage keys are generated from workspace/import IDs rather than user-supplied filenames. API CI now runs dependency audit, Bandit static analysis, and verified-secret scanning. Source metadata now exposes a structured response contract for manual and imported spending transactions, including import batch references and completed spending-import rollback support. FX rates are now documented as globally scoped read-only market data, with writes owned by the daily scheduler ingestion job.
+1. **Scheduler: Running Deploy Window:** Advisory locks still do not provide strict exactly-once delivery semantics. As a hard guardrail, non-idempotent scheduler jobs are now blocked unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly set.
+2. **Cross-repo full-stack E2E test harness:** FE and BE are separate repos, and the dedicated `lifestack-e2e` repo now hosts the real UI+API+DB suite with stack orchestration scripts.
+3. **Gate 0 remaining work:** Investing account identity, remaining finance correctness, deterministic demo/reset data, and richer import/source lifecycle coverage are fully implemented. Production config policy now fails closed for invalid `ENV`, default secrets, insecure cookies, disabled rate limiting, and in-memory production rate-limit storage. Finance `NUMERIC` models now keep Decimal annotations through FX rates and capital transfers instead of casting through floats. Import artifact storage keys are generated from workspace/import IDs rather than user-supplied filenames. API CI now runs dependency audit, Bandit static analysis, and verified-secret scanning. Source metadata now exposes a structured response contract for manual and imported transactions, including import batch references and completed import rollback support across spending transactions, spending budgets, and investing holdings. FX rates are now documented as globally scoped read-only market data, with writes owned by the daily scheduler ingestion job.
 
 ### Source Metadata Contract
 
-Spending transaction responses now keep the legacy `source_type` and `source_ref` fields and also expose a structured `source_metadata` object. Manual rows identify as `manual_entry`; imported rows identify as `bulk_import` and include the import batch public id, import module, row number when available, and whether rollback is currently supported.
+Transaction and record responses now keep the legacy `source_type` and `source_ref` fields and also expose a structured `source_metadata` object. Manual rows identify as `manual_entry`; imported rows identify as `bulk_import` and include the import batch public id, import module, row number when available, and whether rollback is currently supported.
 
-This is the first Gate 0 source-trust contract. It does not yet cover every synced, extracted, assistant-used, health, document, or investing record. Future modules should reuse this shape before exposing data to document intelligence, second-brain retrieval, or MCP/agent access.
+This is the Gate 0 source-trust contract. It covers spending transactions, spending budgets, and investing holdings. Future modules (e.g. health, documents, memory) should reuse this shape before exposing data to document intelligence, second-brain retrieval, or MCP/agent access.
+
+### Deterministic Demo Reset & Seeding
+
+The platform workspace endpoint `POST /v1/platform/workspaces/{workspace_id}/reset-demo` cleans up all workspace-specific data and seeds a deterministic set of category, account, budget, transaction, holdings, cash balances, fx rates, todo, and notification mock data. This is exposed in the frontend Master Configuration page.
 
 ---
 

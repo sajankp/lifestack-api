@@ -178,6 +178,7 @@ class BudgetResponse(BaseModel):
     category_id: uuid.UUID  # exposed as public_id
     amount: Decimal
     month_start: date
+    source_metadata: SourceMetadataResponse | None = None
     created_at: datetime
     updated_at: datetime
 

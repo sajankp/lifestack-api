@@ -5,6 +5,7 @@ from httpx import AsyncClient
 from sqlmodel import select
 
 from app.auth.models import User
+from app.config import settings
 from app.core.database import postgres
 from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.todo.models import Todo
@@ -227,3 +228,72 @@ async def test_select_workspace_rejects_non_member(client: AsyncClient):
     )
 
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_workspace_demo_reset(client: AsyncClient):
+    owner = await _register_and_login(client, "platformreset")
+
+    create_response = await client.post(
+        "/v1/todo/",
+        json={"title": "Should be deleted"},
+        cookies=owner["cookies"],
+    )
+    assert create_response.status_code == 201
+
+    # 1. By default, ENABLE_DEMO_RESET is False, so reset is blocked (403)
+    reset_blocked_resp = await client.post(
+        f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo",
+        cookies=owner["cookies"],
+    )
+    assert reset_blocked_resp.status_code == 403
+
+    # Enable flag for the remainder of test
+    settings.ENABLE_DEMO_RESET = True
+    try:
+        # 2. Check that a non-owner/non-admin user is rejected
+        member = await _register_and_login(client, "platformresetmember")
+        async with postgres.async_session_maker() as session:
+            member_user = (
+                await session.execute(
+                    select(User).where(User.public_id == member["user_public_id"])
+                )
+            ).scalar_one()
+            session.add(
+                WorkspaceMembership(
+                    workspace_id=owner["workspace_id"],
+                    user_id=member_user.id,
+                    role=WorkspaceRole.MEMBER,
+                )
+            )
+            await session.commit()
+
+        # Select workspace for member
+        select_resp = await client.post(
+            f"/v1/platform/workspaces/{owner['workspace_public_id']}/select",
+            cookies=member["cookies"],
+        )
+        assert select_resp.status_code == 204
+
+        reset_member_resp = await client.post(
+            f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo",
+            cookies=dict(client.cookies),
+        )
+        assert reset_member_resp.status_code == 403
+
+        # 3. Reset successfully as owner
+        reset_resp = await client.post(
+            f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo",
+            cookies=owner["cookies"],
+        )
+        assert reset_resp.status_code == 200
+        assert reset_resp.json() == {"status": "reset_success"}
+
+        todos_resp = await client.get("/v1/todo/", cookies=owner["cookies"])
+        assert todos_resp.status_code == 200
+        todo_items = todos_resp.json()["items"]
+        assert len(todo_items) == 2
+        assert "Should be deleted" not in [t["title"] for t in todo_items]
+        assert "buy groceries tomorrow" in [t["title"] for t in todo_items]
+    finally:
+        settings.ENABLE_DEMO_RESET = False

@@ -3,8 +3,7 @@ from http.cookies import SimpleCookie
 import pytest
 from httpx import ASGITransport, AsyncClient
 from limits.storage import storage_from_string
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
@@ -60,7 +59,7 @@ def migrated_database_url(postgres_container):
     return url
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 async def test_database_engine(migrated_database_url):
     """Share one migrated test database engine across DB-backed tests."""
     engine = create_async_engine(
@@ -73,39 +72,32 @@ async def test_database_engine(migrated_database_url):
     await engine.dispose()
 
 
-async def _reset_database(engine) -> None:
-    global _cached_tables
-
-    if _cached_tables is None:
-        async with engine.begin() as conn:
-            result = await conn.execute(
-                text(
-                    """
-                    SELECT string_agg(format('%I.%I', table_schema, table_name), ', ')
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public'
-                      AND table_type = 'BASE TABLE'
-                      AND table_name NOT IN ('alembic_version', 'currencies')
-                    """
-                )
-            )
-            _cached_tables = result.scalar_one() or ""
-
-    if _cached_tables:
-        async with engine.begin() as conn:
-            await conn.execute(text(f"TRUNCATE {_cached_tables} RESTART IDENTITY CASCADE"))
-
-
 @pytest.fixture
 async def override_database_url(migrated_database_url, test_database_engine):
-    """Point the app at a clean migrated test database for one test run."""
+    """Point the app at a clean migrated test database for one test run using transactional rollbacks."""
     settings.DATABASE_URL = migrated_database_url
     postgres.engine = test_database_engine
-    postgres.async_session_maker = postgres.get_session_maker(postgres.engine)
 
-    await _reset_database(postgres.engine)
+    connection = await test_database_engine.connect()
+    transaction = await connection.begin()
+
+    session_maker = async_sessionmaker(
+        bind=connection,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+        join_transaction_mode="create_savepoint",
+    )
+    postgres.async_session_maker = session_maker
+
+    original_get_session_maker = postgres.get_session_maker
+    postgres.get_session_maker = lambda engine: session_maker
 
     yield migrated_database_url
+
+    postgres.get_session_maker = original_get_session_maker
+    await transaction.rollback()
+    await connection.close()
 
 
 @pytest.fixture

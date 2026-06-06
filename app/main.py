@@ -14,7 +14,9 @@ from app.application.jobs import (
     budget_guardrails_job,
     export_cleanup_job,
     fx_rate_ingestion_job,
+    import_preview_cleanup_job,
     recurring_transactions_job,
+    session_cleanup_job,
     weekly_summary_job,
 )
 from app.auth.router import router as auth_router
@@ -103,6 +105,17 @@ async def lifespan(_app: FastAPI):
             job_id="export_cleanup",
             hour_utc=3,
         )
+        register_daily_job(
+            session_cleanup_job,
+            job_id="session_cleanup",
+            hour_utc=4,
+        )
+        register_daily_job(
+            import_preview_cleanup_job,
+            job_id="import_preview_cleanup",
+            hour_utc=5,
+        )
+
         scheduler.add_job(
             weekly_summary_job,
             "cron",
@@ -148,6 +161,7 @@ def create_app() -> FastAPI:
                 "Authorization",
                 "X-Requested-With",
                 "X-Request-ID",
+                "X-CSRF-Token",
                 "Origin",
                 "Accept",
             ],

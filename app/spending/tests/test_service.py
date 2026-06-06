@@ -129,10 +129,10 @@ async def test_delete_system_category_rejected(cat_service, mock_cat_repo):
 
 
 @pytest.mark.asyncio
-async def test_delete_category_with_transactions_rejected(cat_service, mock_cat_repo):
+async def test_delete_category_in_use_rejected(cat_service, mock_cat_repo):
     custom_cat = _make_category(is_system=False)
     mock_cat_repo.get_by_public_id.return_value = custom_cat
-    mock_cat_repo.has_transactions.return_value = True
+    mock_cat_repo.has_usage.return_value = True
     with pytest.raises(APIError) as exc:
         await cat_service.delete_category(workspace_id=1, public_id=custom_cat.public_id)
     assert exc.value.status_code == 409
@@ -142,7 +142,7 @@ async def test_delete_category_with_transactions_rejected(cat_service, mock_cat_
 async def test_delete_custom_category_success(cat_service, mock_cat_repo):
     custom_cat = _make_category(is_system=False)
     mock_cat_repo.get_by_public_id.return_value = custom_cat
-    mock_cat_repo.has_transactions.return_value = False
+    mock_cat_repo.has_usage.return_value = False
     await cat_service.delete_category(workspace_id=1, public_id=custom_cat.public_id)
     mock_cat_repo.delete.assert_called_once_with(custom_cat)
 

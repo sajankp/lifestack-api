@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     MAX_MULTIPART_BODY_BYTES: int = 10 * 1024 * 1024
     IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3
     IMPORT_LOCAL_PATH: str = "/var/lib/lifestack/imports"
+    IMPORT_PREVIEW_TTL_HOURS: int = 24
+
+    # Session limits
+    MAX_ACTIVE_SESSIONS_PER_USER: int = 5
+    ENABLE_DEMO_RESET: bool = False
 
     # Export storage hardening (Spec 006)
     EXPORT_STORAGE_BACKEND: str = "db"  # db|local|s3

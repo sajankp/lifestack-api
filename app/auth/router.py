@@ -1,8 +1,10 @@
+import hashlib
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.application.workflows import UserRegistrationWorkflow
@@ -64,13 +66,25 @@ async def login_for_access_token(
     # Generate a new Session ID (sid) for this login session
     sid = str(uuid.uuid4())
     refresh_token_expires = timedelta(seconds=settings.REFRESH_TOKEN_EXPIRE_SECONDS)
+    default_workspace = await workspace_service.ensure_default_workspace(user.id, user.username)
+
+    refresh_token = create_token(
+        data={
+            "sub": user.username,
+            "sub_id": str(user.id),
+            "default_workspace_id": default_workspace.id,
+        },
+        expires_delta=refresh_token_expires,
+        sid=sid,
+        token_type="refresh",
+    )
+
     await auth_service.create_session(
         user_id=user.id,
         sid=sid,
         expires_in=refresh_token_expires,
+        initial_token=refresh_token,
     )
-
-    default_workspace = await workspace_service.ensure_default_workspace(user.id, user.username)
 
     access_token_expires = timedelta(seconds=settings.ACCESS_TOKEN_EXPIRE_SECONDS)
     access_token = create_token(
@@ -82,16 +96,6 @@ async def login_for_access_token(
         expires_delta=access_token_expires,
         sid=sid,
         token_type="access",
-    )
-    refresh_token = create_token(
-        data={
-            "sub": user.username,
-            "sub_id": str(user.id),
-            "default_workspace_id": default_workspace.id,
-        },
-        expires_delta=refresh_token_expires,
-        sid=sid,
-        token_type="refresh",
     )
 
     # Set HttpOnly cookies
@@ -142,27 +146,200 @@ async def refresh_token(
     auth_service: AuthService = Depends(get_auth_service),
     workspace_service: WorkspaceService = Depends(get_workspace_service),
 ):
+    def clear_cookies(resp):
+        for key in ("access_token", "refresh_token", "sid"):
+            resp.set_cookie(
+                key=key,
+                value="",
+                httponly=True,
+                max_age=0,
+                expires=0,
+                path="/",
+                samesite=settings.COOKIE_SAMESITE,
+                domain=settings.COOKIE_DOMAIN,
+                secure=settings.COOKIE_SECURE,
+            )
+        clear_csrf_token(resp)
+
     refresh_token = request.cookies.get("refresh_token")
 
     if not refresh_token:
-        raise UnauthorizedError(detail="Refresh token missing")
+        resp = JSONResponse(
+            status_code=401,
+            content={
+                "type": "https://lifestack.app/errors/unauthorized",
+                "code": "unauthorized",
+                "title": "Unauthorized",
+                "status": 401,
+                "detail": "Refresh token missing",
+                "hint": "Authenticate and retry the request.",
+                "instance": "/v1/auth/refresh",
+            },
+            media_type="application/problem+json",
+        )
+        clear_cookies(resp)
+        return resp
 
     try:
         _username, user_id, sid, default_workspace_id = get_user_info_from_token(
             refresh_token, expected_type="refresh"
         )
     except UnauthorizedError:
-        raise UnauthorizedError(detail="Invalid refresh token") from None
+        resp = JSONResponse(
+            status_code=401,
+            content={
+                "type": "https://lifestack.app/errors/unauthorized",
+                "code": "unauthorized",
+                "title": "Unauthorized",
+                "status": 401,
+                "detail": "Invalid refresh token",
+                "hint": "Authenticate and retry the request.",
+                "instance": "/v1/auth/refresh",
+            },
+            media_type="application/problem+json",
+        )
+        clear_cookies(resp)
+        return resp
 
-    await auth_service.touch_session(sid=sid, user_id=int(user_id))
+    # Retrieve the session
+    auth_session = await auth_service.session_repo.get_active_by_sid(sid, int(user_id))
+    if not auth_session:
+        resp = JSONResponse(
+            status_code=401,
+            content={
+                "type": "https://lifestack.app/errors/unauthorized",
+                "code": "unauthorized",
+                "title": "Unauthorized",
+                "status": 401,
+                "detail": "Session is no longer active",
+                "hint": "Authenticate and retry the request.",
+                "instance": "/v1/auth/refresh",
+            },
+            media_type="application/problem+json",
+        )
+        clear_cookies(resp)
+        return resp
+
     user = await auth_service.get_user_by_id(int(user_id))
     if not user or not user.is_active:
-        raise UnauthorizedError(detail="User account is inactive or no longer exists")
+        resp = JSONResponse(
+            status_code=401,
+            content={
+                "type": "https://lifestack.app/errors/unauthorized",
+                "code": "unauthorized",
+                "title": "Unauthorized",
+                "status": 401,
+                "detail": "User account is inactive or no longer exists",
+                "hint": "Authenticate and retry the request.",
+                "instance": "/v1/auth/refresh",
+            },
+            media_type="application/problem+json",
+        )
+        clear_cookies(resp)
+        return resp
+
     if default_workspace_id is None:
         default_workspace = await workspace_service.ensure_default_workspace(user.id, user.username)
         default_workspace_id = default_workspace.id
 
+    incoming_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+    now = datetime.now(UTC)
+
     access_token_expires = timedelta(seconds=settings.ACCESS_TOKEN_EXPIRE_SECONDS)
+    refresh_token_expires = timedelta(seconds=settings.REFRESH_TOKEN_EXPIRE_SECONDS)
+
+    if incoming_hash == auth_session.current_token_hash:
+        # Valid rotation path
+        new_refresh_token = create_token(
+            data={
+                "sub": user.username,
+                "sub_id": str(user.id),
+                "default_workspace_id": default_workspace_id,
+            },
+            expires_delta=refresh_token_expires,
+            sid=sid,
+            token_type="refresh",
+        )
+        auth_session.previous_token_hash = auth_session.current_token_hash
+        auth_session.current_token_hash = hashlib.sha256(
+            new_refresh_token.encode("utf-8")
+        ).hexdigest()
+        auth_session.rotated_at = now
+        auth_session.last_seen_at = now
+        auth_session.expires_at = now + refresh_token_expires
+        auth_service.session_repo.session.add(auth_session)
+        await auth_service.session_repo.session.flush()
+    elif incoming_hash == auth_session.previous_token_hash:
+        # Check grace period (5 seconds)
+        if auth_session.rotated_at is not None:
+            elapsed = now - auth_session.rotated_at
+            elapsed_seconds = elapsed.total_seconds()
+        else:
+            elapsed_seconds = float("inf")
+
+        if elapsed_seconds <= 5.0:
+            # Grace period timeout recovery. Re-issue a new refresh token under same session.
+            new_refresh_token = create_token(
+                data={
+                    "sub": user.username,
+                    "sub_id": str(user.id),
+                    "default_workspace_id": default_workspace_id,
+                },
+                expires_delta=refresh_token_expires,
+                sid=sid,
+                token_type="refresh",
+            )
+            auth_session.current_token_hash = hashlib.sha256(
+                new_refresh_token.encode("utf-8")
+            ).hexdigest()
+            auth_session.last_seen_at = now
+            auth_session.expires_at = now + refresh_token_expires
+            auth_service.session_repo.session.add(auth_session)
+            await auth_service.session_repo.session.flush()
+        else:
+            # Replay attack outside grace period! Revoke entire session family
+            auth_session.revoked_at = now
+            auth_session.last_seen_at = now
+            auth_service.session_repo.session.add(auth_session)
+            await auth_service.session_repo.session.flush()
+            resp = JSONResponse(
+                status_code=401,
+                content={
+                    "type": "https://lifestack.app/errors/unauthorized",
+                    "code": "unauthorized",
+                    "title": "Unauthorized",
+                    "status": 401,
+                    "detail": "Replay attack detected",
+                    "hint": "Authenticate and retry the request.",
+                    "instance": "/v1/auth/refresh",
+                },
+                media_type="application/problem+json",
+            )
+            clear_cookies(resp)
+            return resp
+    else:
+        # Replay attack: token hash doesn't match current or previous!
+        auth_session.revoked_at = now
+        auth_session.last_seen_at = now
+        auth_service.session_repo.session.add(auth_session)
+        await auth_service.session_repo.session.flush()
+        resp = JSONResponse(
+            status_code=401,
+            content={
+                "type": "https://lifestack.app/errors/unauthorized",
+                "code": "unauthorized",
+                "title": "Unauthorized",
+                "status": 401,
+                "detail": "Replay attack detected",
+                "hint": "Authenticate and retry the request.",
+                "instance": "/v1/auth/refresh",
+            },
+            media_type="application/problem+json",
+        )
+        clear_cookies(resp)
+        return resp
+
+    # Generate new access token
     access_token = create_token(
         data={
             "sub": user.username,
@@ -174,11 +351,32 @@ async def refresh_token(
         token_type="access",
     )
 
+    # Set response cookies
     response.set_cookie(
         key="access_token",
         value=access_token,
         httponly=True,
         max_age=settings.ACCESS_TOKEN_EXPIRE_SECONDS,
+        path="/",
+        samesite=settings.COOKIE_SAMESITE,
+        domain=settings.COOKIE_DOMAIN,
+        secure=settings.COOKIE_SECURE,
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=new_refresh_token,
+        httponly=True,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS,
+        path="/",
+        samesite=settings.COOKIE_SAMESITE,
+        domain=settings.COOKIE_DOMAIN,
+        secure=settings.COOKIE_SECURE,
+    )
+    response.set_cookie(
+        key="sid",
+        value=sid,
+        httponly=True,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS,
         path="/",
         samesite=settings.COOKIE_SAMESITE,
         domain=settings.COOKIE_DOMAIN,

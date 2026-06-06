@@ -103,6 +103,9 @@ class SpendingBudget(SQLModel, table=True):
     amount: Decimal = Field(sa_type=sa.Numeric(precision=12, scale=2))
     # First day of the budget month, e.g. 2026-03-01
     month_start: date = Field(sa_type=sa.Date())
+    source_type: str = Field(default="manual", sa_type=sa.String(length=32), index=True)
+    source_ref: str | None = Field(default=None, max_length=255)
+    source_import_id: int | None = Field(default=None, foreign_key="import_batches.id", index=True)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

@@ -591,20 +591,36 @@ class ImportService:
                             category_id=int(p["category_id"]),
                             amount=Decimal(p["amount"]),
                             month_start=datetime.fromisoformat(p["month_start"]).date(),
+                            source_type="imported",
+                            source_import_id=batch.id,
+                            source_ref=f"{batch.public_id}:{row.row_number}",
                         )
                         self.session.add(budget)
                         inserted += 1
                 else:
+                    account_map = await self._account_map(workspace_id)
                     for row in rows:
                         p = row.payload_json
+                        account_name_val = p.get("account_name")
+                        account_name_raw = self._norm(account_name_val) if account_name_val else ""
+                        account_id = (
+                            account_map.get(account_name_raw.lower()) if account_name_raw else None
+                        )
+                        if account_id is None:
+                            raise ValidationError(
+                                detail=f"Account '{account_name_raw or 'Unknown'}' not found in workspace"
+                            )
                         holding = Holding(
                             workspace_id=workspace_id,
                             user_id=user_id,
                             symbol=p["symbol"],
-                            account_name=p["account_name"],
+                            account_id=account_id,
                             quantity=Decimal(p["quantity"]),
                             avg_cost=Decimal(p["avg_cost"]),
                             currency=p["currency"],
+                            source_type="imported",
+                            source_import_id=batch.id,
+                            source_ref=f"{batch.public_id}:{row.row_number}",
                         )
                         self.session.add(holding)
                         inserted += 1
@@ -679,15 +695,20 @@ class ImportService:
                 )
             )
         if batch.status == ImportStatus.completed:
-            if batch.module != ImportModule.spending_transactions:
-                raise ValidationError(
-                    detail=(
-                        f"Completed imports for module '{batch.module}' cannot be rolled back yet."
-                    )
+            if batch.module == ImportModule.spending_transactions:
+                deleted_records = await self.repository.delete_spending_transactions_for_batch(
+                    workspace_id, batch.id
                 )
-            deleted_records = await self.repository.delete_spending_transactions_for_batch(
-                workspace_id, batch.id
-            )
+            elif batch.module == ImportModule.spending_budgets:
+                deleted_records = await self.repository.delete_spending_budgets_for_batch(
+                    workspace_id, batch.id
+                )
+            elif batch.module == ImportModule.investing_holdings:
+                deleted_records = await self.repository.delete_investing_holdings_for_batch(
+                    workspace_id, batch.id
+                )
+            else:
+                deleted_records = 0
             action = "import_rolled_back"
         else:
             deleted_records = 0

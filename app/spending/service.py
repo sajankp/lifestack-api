@@ -211,9 +211,9 @@ class CategoryService:
         category = await self.get_category(workspace_id, public_id)
         if category.is_system:
             raise ForbiddenError(detail="System categories cannot be deleted")
-        if await self.repository.has_transactions(category.id):  # type: ignore[arg-type]
+        if await self.repository.has_usage(category.id):  # type: ignore[arg-type]
             raise CategoryInUseError(
-                detail="Cannot delete a category that has transactions referencing it"
+                detail="Cannot delete a category that is in use by transactions, budgets, or recurring rules"
             )
         before_snap = _snapshot_category(category)
         await self.repository.delete(category)

@@ -13,7 +13,7 @@ Also covers the full happy-path CRUD flows and the REST contract
 
 import calendar
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from httpx import AsyncClient
@@ -493,3 +493,69 @@ async def test_duplicate_category_name_rejected(client: AsyncClient):
         cookies=creds["cookies"],
     )
     assert second.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_cannot_delete_category_with_budget(client: AsyncClient):
+    creds = await _register_and_login(client, "catwithbudget")
+
+    # Create a custom category
+    cat_resp = await client.post(
+        "/v1/spending/categories",
+        json={"name": "Test Delete Category Budget"},
+        cookies=creds["cookies"],
+    )
+    assert cat_resp.status_code == 201
+    cat_id = cat_resp.json()["public_id"]
+
+    # Create a budget against it
+    budget_resp = await client.post(
+        "/v1/spending/budgets",
+        json={
+            "category_id": cat_id,
+            "amount": "500.00",
+            "month_start": date.today().replace(day=1).isoformat(),
+        },
+        cookies=creds["cookies"],
+    )
+    assert budget_resp.status_code == 201
+
+    # Delete must be rejected
+    del_resp = await client.delete(f"/v1/spending/categories/{cat_id}", cookies=creds["cookies"])
+    assert del_resp.status_code == 409
+    assert "Cannot delete a category" in del_resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_cannot_delete_category_with_recurring_rule(client: AsyncClient):
+    creds = await _register_and_login(client, "catwithrecurring")
+
+    # Create a custom category
+    cat_resp = await client.post(
+        "/v1/spending/categories",
+        json={"name": "Test Delete Category Recurring"},
+        cookies=creds["cookies"],
+    )
+    assert cat_resp.status_code == 201
+    cat_id = cat_resp.json()["public_id"]
+
+    # Create a recurring rule against it
+    recurring_resp = await client.post(
+        "/v1/spending/recurring",
+        json={
+            "category_id": cat_id,
+            "amount": "14.99",
+            "type": "expense",
+            "description": "Test delete guard with recurring transaction",
+            "frequency": "monthly",
+            "interval": 1,
+            "anchor_date": date.today().isoformat(),
+        },
+        cookies=creds["cookies"],
+    )
+    assert recurring_resp.status_code == 201
+
+    # Delete must be rejected
+    del_resp = await client.delete(f"/v1/spending/categories/{cat_id}", cookies=creds["cookies"])
+    assert del_resp.status_code == 409
+    assert "Cannot delete a category" in del_resp.json()["detail"]

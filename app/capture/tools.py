@@ -148,8 +148,15 @@ class AgentTools:
                 "message": "Invalid balance format. Must be a decimal number.",
             }
 
+        account = await self.account_repo.get_by_name(self.workspace_id, account_name)
+        if not account or not account.is_active:
+            return {
+                "status": "error",
+                "message": f"Account '{account_name}' is not found or is inactive in this workspace",
+            }
+
         payload = CashBalanceCreate(
-            account_name=account_name,
+            account_id=account.public_id,
             balance=val,
             currency=currency.upper(),
             as_of=datetime.now(UTC),
@@ -164,7 +171,7 @@ class AgentTools:
             "status": "success",
             "entity_public_id": str(cash.public_id),
             "entity_type": "cash_balance",
-            "account_name": cash.account_name,
+            "account_name": account.name,
             "balance": str(cash.balance),
             "currency": cash.currency,
         }
