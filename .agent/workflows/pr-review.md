@@ -119,7 +119,17 @@ Document your reasoning and decision before making changes.
 
 ### Step 2.3: Get Review Comments (If Needed)
 
-Retrieve specific review comments programmatically to understand the context or reply to a thread. Use the GitHub MCP tool (e.g., `mcp_github-mcp-server_pull_request_read` with method `get_review_comments`) if available, or fall back to the `gh` CLI/API.
+Retrieve and format all unresolved pull request review comments grouped by thread using the helper script:
+
+```bash
+# Display unresolved review threads formatted in the terminal
+bash .agent/scripts/fetch-review-comments.sh
+
+# Display all review threads, including resolved ones
+bash .agent/scripts/fetch-review-comments.sh --all
+```
+
+Alternatively, use the GitHub MCP tool (e.g., `mcp_github-mcp-server_pull_request_read` with method `get_review_comments`) if available, or fall back to raw `gh` CLI/API.
 
 ### Step 2.4: Address Feedback and Commit
 
