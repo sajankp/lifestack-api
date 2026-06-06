@@ -35,7 +35,12 @@ from app.notifications.models import Notification
 from app.platform.models import WorkspaceMembership, WorkspaceRole
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
-from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction
+from app.spending.models import (
+    RecurringTransaction,
+    SpendingBudget,
+    SpendingCategory,
+    SpendingTransaction,
+)
 from app.todo.models import RecurringTodoRule, Todo
 
 router = APIRouter(prefix="/platform", tags=["platform"])
@@ -223,8 +228,13 @@ async def reset_demo_data(
         raise ForbiddenError(detail="Not a member of this workspace")
 
     w_id = workspace.id
+    if w_id is None:
+        raise ValueError("workspace_id cannot be None")
 
     # 3. Clean existing workspace data
+    await session.execute(
+        delete(RecurringTransaction).where(RecurringTransaction.workspace_id == w_id)
+    )
     await session.execute(
         delete(ImportPreviewRow).where(
             ImportPreviewRow.import_batch_id.in_(

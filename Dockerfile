@@ -7,10 +7,12 @@ RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/list
 # Install uv for deterministic dependency resolution from uv.lock
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-COPY . .
+COPY pyproject.toml uv.lock ./
 RUN uv export --frozen --no-dev -o requirements.txt && \
-    uv pip install --system --no-cache -r requirements.txt && \
-    uv pip install --system --no-cache --no-deps .
+    uv pip install --system --no-cache -r requirements.txt
+
+COPY . .
+RUN uv pip install --system --no-cache --no-deps .
 
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh

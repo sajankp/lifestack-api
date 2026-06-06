@@ -292,7 +292,6 @@ async def refresh_token(
             auth_session.current_token_hash = hashlib.sha256(
                 new_refresh_token.encode("utf-8")
             ).hexdigest()
-            auth_session.rotated_at = now
             auth_session.last_seen_at = now
             auth_session.expires_at = now + refresh_token_expires
             auth_service.session_repo.session.add(auth_session)
