@@ -112,6 +112,7 @@ class Settings(BaseSettings):
 
     # Session limits
     MAX_ACTIVE_SESSIONS_PER_USER: int = 5
+    ENABLE_DEMO_RESET: bool = False
 
     # Export storage hardening (Spec 006)
     EXPORT_STORAGE_BACKEND: str = "db"  # db|local|s3

@@ -114,13 +114,13 @@ class HoldingService:
     async def _validate_refs(
         self, workspace_id: int, account_id: uuid.UUID, currency: str
     ) -> Account:
-        account = None
-        if self.account_repo is not None:
-            account = await self.account_repo.get_by_public_id(workspace_id, account_id)
-            if not account or not account.is_active:
-                raise ValidationError(
-                    detail=f"Account with ID {account_id} is not found in this workspace"
-                )
+        if self.account_repo is None:
+            raise ValidationError(detail="Account repository is not configured")
+        account = await self.account_repo.get_by_public_id(workspace_id, account_id)
+        if not account or not account.is_active:
+            raise ValidationError(
+                detail=f"Account with ID {account_id} is not found in this workspace"
+            )
         if self.currency_repo is not None:
             code = currency.upper()
             currency_row = await self.currency_repo.get_by_code(code)
@@ -293,13 +293,13 @@ class CashBalanceService:
     async def _validate_refs(
         self, workspace_id: int, account_id: uuid.UUID, currency: str
     ) -> Account:
-        account = None
-        if self.account_repo is not None:
-            account = await self.account_repo.get_by_public_id(workspace_id, account_id)
-            if not account or not account.is_active:
-                raise ValidationError(
-                    detail=f"Account with ID {account_id} is not found in this workspace"
-                )
+        if self.account_repo is None:
+            raise ValidationError(detail="Account repository is not configured")
+        account = await self.account_repo.get_by_public_id(workspace_id, account_id)
+        if not account or not account.is_active:
+            raise ValidationError(
+                detail=f"Account with ID {account_id} is not found in this workspace"
+            )
         if self.currency_repo is not None:
             code = currency.upper()
             currency_row = await self.currency_repo.get_by_code(code)

@@ -222,10 +222,14 @@ async def reset_demo_data(
     if not workspace or not workspace.is_active:
         raise NotFoundError(detail="Workspace not found or is inactive")
 
-    # 2. Check membership
+    # 2. Check membership and role
     membership = await membership_repo.get_membership(workspace.id, current_user["id"])
     if not membership:
         raise ForbiddenError(detail="Not a member of this workspace")
+    if membership.role not in ("owner", "admin"):
+        raise ForbiddenError(detail="Only workspace owners or admins can reset demo data")
+    if not settings.ENABLE_DEMO_RESET:
+        raise ForbiddenError(detail="Demo reset is disabled in this environment")
 
     w_id = workspace.id
     if w_id is None:

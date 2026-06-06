@@ -158,7 +158,7 @@ async def test_refresh_token_rotation_and_reuse_detection(client: AsyncClient):
     # 5. Attempt to reuse refresh_token_1 again but outside the grace period (we patch rotated_at to 10s ago)
     async with async_session_maker() as session:
         repo = AuthSessionRepository(session)
-        auth_sess = await repo.get_active_by_sid(sid_1)
+        auth_sess = await repo.get_active_by_sid(sid_1, user.id)
         assert auth_sess is not None
         auth_sess.rotated_at = datetime.now(UTC) - timedelta(seconds=10)
         session.add(auth_sess)
@@ -178,7 +178,7 @@ async def test_refresh_token_rotation_and_reuse_detection(client: AsyncClient):
     # Verify session is now revoked in database
     async with async_session_maker() as session:
         repo = AuthSessionRepository(session)
-        auth_sess_check = await repo.get_active_by_sid(sid_1)
+        auth_sess_check = await repo.get_active_by_sid(sid_1, user.id)
         assert auth_sess_check is None
 
 
