@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -227,7 +227,7 @@ class HoldingPriceBulkCreate(BaseModel):
     @field_validator("price_date")
     @classmethod
     def validate_price_date(cls, value: date) -> date:
-        today = date.today()
+        today = datetime.now(UTC).date()
         if value > today:
             raise ValueError("Price date cannot be in the future")
         if value < date(1900, 1, 1):

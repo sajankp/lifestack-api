@@ -8,8 +8,9 @@ Use this workflow to systematically review and process open PRs.
 
 > [!CAUTION]
 > **Global Rules Apply Throughout This Workflow**
-> - Never commit without explicit user approval ("AGREE", "YES", "PROCEED")
-> - Never merge or close a PR without explicit user approval
+> - Avoid stopping for approvals before committing; verify tests locally and commit directly once verified.
+> - At the start of a task, always clarify and ask the user what changes/remediations are required.
+> - Never merge or close a PR without explicit user approval.
 > - Verify every commit with `git log` + `git status`
 > - Run local tests before pushing (Gatekeeper Rule)
 >
@@ -133,40 +134,31 @@ Alternatively, use the GitHub MCP tool (e.g., `mcp_github-mcp-server_pull_reques
 
 ### Step 2.4: Address Feedback and Commit
 
-> [!CAUTION]
-> **STOP AND ASK BEFORE COMMITTING**
-> This step involves code changes. Follow the same commit protocol as `/development-workflow`.
-
 **When fixing issues from review:**
 
-1. **Make the code changes**
+1. **Clarify changes**: Ask the user what needs to be changed before starting or describe the planned changes to align on scope.
 
-2. **Run local tests** (Gatekeeper Rule - MANDATORY):
+2. **Make the code changes**
+
+3. **Run local tests** (Gatekeeper Rule - MANDATORY):
    ```bash
    pytest --cov=app app/tests/ -q
    ```
    All tests must pass before proceeding.
 
-3. **Stage changes**:
+4. **Stage changes**:
    ```bash
    git add <files>
    ```
 
-4. **STOP - Request user approval**:
-   ```
-   Message: "Ready to commit PR feedback fixes with message:
-            'fix: address review feedback on [feature]'
-            Local tests passing. Proceed?"
-   ```
-
-5. **Only commit after explicit approval** ("yes", "proceed", "commit")
+5. **Commit directly**: Create the commit using a descriptive message e.g., `fix: address review feedback on [feature]`. (No commit approval is required).
 
 6. **Verify commit succeeded**:
    ```bash
    git log --oneline -1  # Confirm commit appears
    git status            # Check for uncommitted changes (pre-commit can fail)
    ```
-   If `git status` shows changes → pre-commit failed → fix and retry.
+   If `git status` shows changes → pre-commit failed → stage and retry the commit.
 
 7. **Push changes**:
    ```bash

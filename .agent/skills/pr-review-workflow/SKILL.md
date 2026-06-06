@@ -40,11 +40,14 @@ bash .agent/scripts/resolve-review-threads.sh --mode outdated
 
 ## Core Rules
 
-- Never commit, merge, or close a PR without explicit user approval.
+- Avoid stopping for approvals before committing; verify tests locally and commit directly once verified.
+- Ask the user what changes/remediations are required before starting a task.
+- Never merge or close a PR without explicit user approval.
 - Run local tests before push.
 - Validate review suggestions against approved spec and project patterns.
 - Do not run `--mode all` until dry-run + manual validation confirms non-outdated threads are addressed.
 - Request `/gemini review` only after tests pass.
+
 
 ## Review Triage Matrix
 
