@@ -218,6 +218,50 @@ async def test_select_workspace_changes_workspace_used_by_following_requests(cli
 
 
 @pytest.mark.asyncio
+async def test_select_workspace_then_refresh_preserves_selected_workspace(client: AsyncClient):
+    user = await _register_and_login(client, "platformselectrefresh")
+
+    async with postgres.async_session_maker() as session:
+        workspace_b = Workspace(name="Refresh Workspace")
+        session.add(workspace_b)
+        await session.flush()
+        await session.refresh(workspace_b)
+        user_row = (
+            await session.execute(select(User).where(User.public_id == user["user_public_id"]))
+        ).scalar_one()
+        session.add(
+            WorkspaceMembership(
+                workspace_id=workspace_b.id,
+                user_id=user_row.id,
+                role=WorkspaceRole.MEMBER,
+            )
+        )
+        await session.commit()
+        workspace_b_public_id = workspace_b.public_id
+        workspace_b_id = workspace_b.id
+
+    select_response = await client.post(
+        f"/v1/platform/workspaces/{workspace_b_public_id}/select",
+        cookies=user["cookies"],
+    )
+    assert select_response.status_code == 204, select_response.text
+
+    refresh_response = await client.post("/v1/auth/refresh")
+    assert refresh_response.status_code == 200, refresh_response.text
+
+    create_response = await client.post("/v1/todo/", json={"title": "Workspace B after refresh"})
+    assert create_response.status_code == 201, create_response.text
+    todo_public_id = uuid.UUID(create_response.json()["public_id"])
+
+    async with postgres.async_session_maker() as session:
+        todo = (
+            await session.execute(select(Todo).where(Todo.public_id == todo_public_id))
+        ).scalar_one()
+
+    assert todo.workspace_id == workspace_b_id
+
+
+@pytest.mark.asyncio
 async def test_select_workspace_rejects_non_member(client: AsyncClient):
     owner = await _register_and_login(client, "platformrejectowner")
     other = await _register_and_login(client, "platformrejectother")

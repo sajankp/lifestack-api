@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -9,17 +10,19 @@ from sqlalchemy import delete
 from sqlmodel import select
 
 from app.auth.models import User
+from app.auth.repository import AuthSessionRepository
 from app.config import settings
 from app.core.auth import create_token
 from app.core.csrf import issue_csrf_token
 from app.core.dependencies import (
+    get_auth_session_repo,
     get_current_user,
     get_db_session,
     get_membership_repo,
     get_workspace_repo,
     get_workspace_service,
 )
-from app.core.exceptions import ForbiddenError, NotFoundError
+from app.core.exceptions import ForbiddenError, NotFoundError, UnauthorizedError
 from app.exports.models import ExportRecord
 from app.finance.models import Account, CapitalTransfer, FxRate
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow
@@ -147,6 +150,7 @@ async def select_workspace(
     workspace_id: uuid.UUID,
     response: Response,
     current_user: Annotated[dict, Depends(get_current_user)],
+    auth_session_repo: Annotated[AuthSessionRepository, Depends(get_auth_session_repo)],
     workspace_repo: Annotated[WorkspaceRepository, Depends(get_workspace_repo)],
     membership_repo: Annotated[MembershipRepository, Depends(get_membership_repo)],
 ):
@@ -184,6 +188,19 @@ async def select_workspace(
         sid=current_user["sid"],
         token_type="refresh",
     )
+    auth_session = await auth_session_repo.get_active_by_sid(
+        current_user["sid"], current_user["id"]
+    )
+    if auth_session is None:
+        raise UnauthorizedError(detail="Session is no longer active")
+    now = datetime.now(UTC)
+    auth_session.previous_token_hash = auth_session.current_token_hash
+    auth_session.current_token_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+    auth_session.rotated_at = now
+    auth_session.last_seen_at = now
+    auth_session.expires_at = now + refresh_token_expires
+    auth_session_repo.session.add(auth_session)
+    await auth_session_repo.session.flush()
 
     # 4. Set HttpOnly cookies
     response.set_cookie(

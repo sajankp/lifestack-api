@@ -252,5 +252,6 @@ class PerformanceSummaryResponse(BaseModel):
     total_gain_loss_pct: Decimal | None
     snapshot_date: date
     currency: str
+    fx_rates_used: dict[str, Decimal] = Field(default_factory=dict)
 
     model_config = ConfigDict(json_encoders={Decimal: str})
