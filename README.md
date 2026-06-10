@@ -1,10 +1,10 @@
 # Lifestack
 
-> A private personal operating system for actions, money, health, documents, and memory.
+> A finance-led personal operations command center for actions and money, with a clear path to health, documents, memory, and agent access later.
 
-Lifestack is an open-source personal operating system for one user or one household. It is designed to unify the parts of life that usually end up fragmented across separate apps, documents, trackers, and inboxes, while preserving a path to broader platform features later.
+Lifestack is an open-source personal operating system for one user or one household. The current product is intentionally finance-led: spending, investing, tasks, imports/exports, notifications, and summaries form the working demo surface while higher-trust domains stay clearly staged for later.
 
-The core idea is simple: tasks, spending, investing, health, documents, and personal knowledge should not live in separate silos. They should share one data model, one auth system, one dashboard, and eventually one AI interface.
+The core idea is simple: tasks, spending, investing, health, documents, and personal knowledge should not live in separate silos. They should share one data model, one auth system, one dashboard, and eventually one AI interface. Today, that loop is anchored in money and action management.
 
 The long-term wedge is a calm daily briefing: what needs attention today, what changed across money and health, which documents or reports need follow-up, and what the personal coach recommends with visible source context.
 
@@ -28,7 +28,7 @@ Lifestack is being built in stages, with the goal of becoming a private personal
 ### Stage 1: Personal OS Foundation
 - One frontend, one API, one PostgreSQL database
 - JWT-based auth (HttpOnly cookies) carried forward from the existing todo app
-- Todo, spending, investing, dashboard, exports, reminders
+- Todo, spending, investing, dashboard, imports, exports, reminders, workspace RBAC, and safe demo reset
 - Cross-module workflows handled by application services and scheduled jobs
 
 ### Stage 2: Capture Layer
@@ -86,7 +86,7 @@ A fast task manager with priorities, due dates, and a clean service-layer archit
 Track transactions, budgets, and monthly spending patterns.
 
 ### Investment Tracker
-Track holdings, performance, and portfolio-level changes over time.
+Track account-backed holdings, cash balances, FX conversion, performance snapshots, and portfolio-level changes over time.
 
 ### Capture, Notifications, Summaries, Imports, and Exports
 Capture todo and spending intents, receive in-app notifications, review weekly summaries, import CSV data, and export workspace data.
@@ -253,7 +253,8 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Spending analytics endpoints (Spec 017) | ✅ Done |
 | Quick capture API routing (Spec 018) | ✅ Done |
 | Data import/export lifecycle controls | ✅ Gate 0 foundation |
-| Structured source metadata for spending transactions | ✅ Gate 0 partial |
+| Structured source metadata for spending transactions, budgets, and holdings | ✅ Gate 0 foundation |
+| Safe deterministic demo reset | ✅ Gate 0 foundation |
 | Voice-first capture for todos and spending | Stage 2 / partial |
 | AI assistant over existing modules | Stage 3 / planned |
 | Mobile companion app | Stage 4 / planned |
@@ -274,7 +275,7 @@ Based on architectural reviews and implementation, the following items are track
 
 1. **Scheduler: Running Deploy Window:** Advisory locks still do not provide strict exactly-once delivery semantics. As a hard guardrail, non-idempotent scheduler jobs are now blocked unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly set.
 2. **Cross-repo full-stack E2E test harness:** FE and BE are separate repos, and the dedicated `lifestack-e2e` repo now hosts the real UI+API+DB suite with stack orchestration scripts.
-3. **Gate 0 remaining work:** Investing account identity, remaining finance correctness, deterministic demo/reset data, and richer import/source lifecycle coverage are fully implemented. Production config policy now fails closed for invalid `ENV`, default secrets, insecure cookies, disabled rate limiting, and in-memory production rate-limit storage. Finance `NUMERIC` models now keep Decimal annotations through FX rates and capital transfers instead of casting through floats. Import artifact storage keys are generated from workspace/import IDs rather than user-supplied filenames. API CI now runs dependency audit, Bandit static analysis, and verified-secret scanning. Source metadata now exposes a structured response contract for manual and imported transactions, including import batch references and completed import rollback support across spending transactions, spending budgets, and investing holdings. FX rates are now documented as globally scoped read-only market data, with writes owned by the daily scheduler ingestion job.
+3. **Gate 0 hardening work:** Investing account identity, finance correctness, deterministic demo/reset data, and richer import/source lifecycle coverage have been implemented for the public-demo path. Production config policy now fails closed for invalid `ENV`, default secrets, insecure cookies, disabled rate limiting, and in-memory production rate-limit storage. Finance `NUMERIC` models now keep Decimal annotations through FX rates and capital transfers instead of casting through floats. Import artifact storage keys are generated from workspace/import IDs rather than user-supplied filenames. API CI now runs dependency audit, Bandit static analysis, and verified-secret scanning. Source metadata now exposes a structured response contract for manual and imported transactions, including import batch references and completed import rollback support across spending transactions, spending budgets, and investing holdings. FX rates are globally scoped read-only market data for users, with writes owned by scheduled ingestion/service code. Broader maintainability work remains in module decomposition and E2E harness cleanup.
 
 ### Source Metadata Contract
 
@@ -284,7 +285,21 @@ This is the Gate 0 source-trust contract. It covers spending transactions, spend
 
 ### Deterministic Demo Reset & Seeding
 
-The platform workspace endpoint `POST /v1/platform/workspaces/{workspace_id}/reset-demo` cleans up all workspace-specific data and seeds a deterministic set of category, account, budget, transaction, holdings, cash balances, fx rates, todo, and notification mock data. This is exposed in the frontend Master Configuration page.
+The platform workspace endpoint `POST /v1/platform/workspaces/{workspace_id}/reset-demo` cleans up workspace-scoped demo data and seeds a deterministic fixture. It is intentionally guarded:
+
+- Requires `ENABLE_DEMO_RESET=true`.
+- Requires the caller to be an `owner` or `admin` of the target workspace.
+- Requires the target workspace to be the caller's active workspace.
+- Emits audit events for denied attempts and successful resets.
+- The frontend only shows the action when `GET /v1/platform/workspaces/{workspace_id}/reset-demo/status` reports it is allowed, and the confirmation dialog requires typing the active workspace name.
+
+Fixture version `2026-06-10` seeds:
+
+- Accounts: `brokerage` (USD), `wallet` (USD), `eur-wallet` (EUR).
+- Budgets: Rent `1500.00`, Food `400.00`, Utilities `200.00`.
+- Transactions: monthly rent, groceries, coffee, and salary deposit.
+- Investing: AAPL and MSFT holdings, USD brokerage cash, EUR wallet cash, and EUR/USD plus GBP/USD FX rates.
+- Tasks and notifications: two review todos and a welcome notification.
 
 ---
 

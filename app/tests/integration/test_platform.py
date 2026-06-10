@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
@@ -6,7 +7,10 @@ from sqlmodel import select
 
 from app.auth.models import User
 from app.config import settings
+from app.core.audit import AuditLog
 from app.core.database import postgres
+from app.finance.models import Account, FxRate
+from app.investing.models import CashBalance
 from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.todo.models import Todo
 
@@ -291,6 +295,23 @@ async def test_workspace_demo_reset(client: AsyncClient):
         cookies=owner["cookies"],
     )
     assert reset_blocked_resp.status_code == 403
+    reset_status_resp = await client.get(
+        f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo/status",
+        cookies=owner["cookies"],
+    )
+    assert reset_status_resp.status_code == 200
+    assert reset_status_resp.json()["allowed"] is False
+    assert reset_status_resp.json()["reason"] == "feature_flag_disabled"
+    async with postgres.async_session_maker() as session:
+        blocked_audit = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.workspace_id == owner["workspace_id"],
+                    AuditLog.action == "demo_reset_denied",
+                )
+            )
+        ).scalar_one()
+        assert blocked_audit.details["after"]["reason"] == "feature_flag_disabled"
 
     # Enable flag for the remainder of test
     settings.ENABLE_DEMO_RESET = True
@@ -319,6 +340,14 @@ async def test_workspace_demo_reset(client: AsyncClient):
         )
         assert select_resp.status_code == 204
 
+        member_status_resp = await client.get(
+            f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo/status",
+            cookies=dict(client.cookies),
+        )
+        assert member_status_resp.status_code == 200
+        assert member_status_resp.json()["allowed"] is False
+        assert member_status_resp.json()["reason"] == "insufficient_role"
+
         reset_member_resp = await client.post(
             f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo",
             cookies=dict(client.cookies),
@@ -326,6 +355,14 @@ async def test_workspace_demo_reset(client: AsyncClient):
         assert reset_member_resp.status_code == 403
 
         # 3. Reset successfully as owner
+        owner_status_resp = await client.get(
+            f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo/status",
+            cookies=owner["cookies"],
+        )
+        assert owner_status_resp.status_code == 200
+        assert owner_status_resp.json()["allowed"] is True
+        assert owner_status_resp.json()["workspace_name"] == f"{owner['username']}'s Workspace"
+
         reset_resp = await client.post(
             f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo",
             cookies=owner["cookies"],
@@ -339,5 +376,126 @@ async def test_workspace_demo_reset(client: AsyncClient):
         assert len(todo_items) == 2
         assert "Should be deleted" not in [t["title"] for t in todo_items]
         assert "buy groceries tomorrow" in [t["title"] for t in todo_items]
+
+        async with postgres.async_session_maker() as session:
+            reset_audit = (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.workspace_id == owner["workspace_id"],
+                        AuditLog.action == "demo_reset",
+                    )
+                )
+            ).scalar_one()
+            assert reset_audit.details["after"]["fixture_version"] == "2026-06-10"
+            assert reset_audit.details["after"]["seeded"]["accounts"] == [
+                "brokerage",
+                "wallet",
+                "eur-wallet",
+            ]
+
+            accounts = (
+                (
+                    await session.execute(
+                        select(Account)
+                        .where(Account.workspace_id == owner["workspace_id"])
+                        .order_by(Account.name.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert [(account.name, account.default_currency_code) for account in accounts] == [
+                ("brokerage", "USD"),
+                ("eur-wallet", "EUR"),
+                ("wallet", "USD"),
+            ]
+
+            eur_cash = (
+                await session.execute(
+                    select(CashBalance).where(
+                        CashBalance.workspace_id == owner["workspace_id"],
+                        CashBalance.currency == "EUR",
+                    )
+                )
+            ).scalar_one()
+            assert eur_cash.balance == Decimal("1200.00")
+
+            eur_usd = (
+                await session.execute(
+                    select(FxRate).where(
+                        FxRate.base_currency_code == "EUR",
+                        FxRate.quote_currency_code == "USD",
+                        FxRate.source == "ECB",
+                    )
+                )
+            ).scalar_one()
+            assert eur_usd.rate == Decimal("1.0850000000")
+    finally:
+        settings.ENABLE_DEMO_RESET = False
+
+
+@pytest.mark.asyncio
+async def test_workspace_demo_reset_requires_active_workspace(client: AsyncClient):
+    owner = await _register_and_login(client, "platformresetactive")
+
+    async with postgres.async_session_maker() as session:
+        workspace_b = Workspace(name="Reset Target B")
+        session.add(workspace_b)
+        await session.flush()
+        await session.refresh(workspace_b)
+        user_row = (
+            await session.execute(select(User).where(User.public_id == owner["user_public_id"]))
+        ).scalar_one()
+        session.add(
+            WorkspaceMembership(
+                workspace_id=workspace_b.id,
+                user_id=user_row.id,
+                role=WorkspaceRole.OWNER,
+            )
+        )
+        await session.commit()
+        workspace_b_public_id = workspace_b.public_id
+        workspace_b_id = workspace_b.id
+
+    settings.ENABLE_DEMO_RESET = True
+    try:
+        reset_inactive_resp = await client.post(
+            f"/v1/platform/workspaces/{workspace_b_public_id}/reset-demo",
+            cookies=owner["cookies"],
+        )
+        assert reset_inactive_resp.status_code == 403
+        assert "active workspace" in reset_inactive_resp.json()["detail"]
+
+        inactive_status_resp = await client.get(
+            f"/v1/platform/workspaces/{workspace_b_public_id}/reset-demo/status",
+            cookies=owner["cookies"],
+        )
+        assert inactive_status_resp.status_code == 200
+        assert inactive_status_resp.json()["allowed"] is False
+        assert inactive_status_resp.json()["reason"] == "workspace_not_active"
+
+        async with postgres.async_session_maker() as session:
+            denied_audit = (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.workspace_id == workspace_b_id,
+                        AuditLog.action == "demo_reset_denied",
+                    )
+                )
+            ).scalar_one()
+            assert denied_audit.details["after"]["reason"] == "workspace_not_active"
+
+        select_resp = await client.post(
+            f"/v1/platform/workspaces/{workspace_b_public_id}/select",
+            cookies=owner["cookies"],
+        )
+        assert select_resp.status_code == 204
+
+        reset_active_resp = await client.post(
+            f"/v1/platform/workspaces/{workspace_b_public_id}/reset-demo",
+            cookies=dict(client.cookies),
+        )
+        assert reset_active_resp.status_code == 200
+        assert reset_active_resp.json() == {"status": "reset_success"}
     finally:
         settings.ENABLE_DEMO_RESET = False
