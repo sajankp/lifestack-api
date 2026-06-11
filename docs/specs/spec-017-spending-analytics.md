@@ -1,8 +1,8 @@
 # Feature Spec: Spending Analytics & Trends
-**Status:** Partially Implemented
+**Status:** Implemented (Trends V1)
 **Spec ID:** 017
 
-Implementation note (2026-06-11): the backend exposes monthly spending trends through `GET /v1/spending/analytics/trends` with integration coverage. Category breakdown, budget-vs-actual, and savings-rate endpoints remain future work.
+Implementation note (2026-06-11): the backend exposes the implemented Trends V1 slice through `GET /v1/spending/analytics/trends` with integration coverage. The broader analytics endpoints in this document are historical context, not active backlog; future sequencing lives in the product roadmap.
 
 ## 1. Overview
 The spending module (Spec 003) supports transaction recording and budgets, but provides no analytical views. Users cannot answer "how has my food spending trended over 6 months?" or "what percentage of income goes to housing?" without manual calculation. This spec adds read-only analytics endpoints that compute trends, breakdowns, and comparisons from existing transaction data.

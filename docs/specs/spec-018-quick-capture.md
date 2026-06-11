@@ -1,6 +1,8 @@
 # Feature Spec: Quick Capture API
-**Status:** Proposed
+**Status:** Archived - Deferred to Roadmap
 **Spec ID:** 018
+
+Archive note (2026-06-11): this proposal is not an active implementation spec. The shipped capture surface is the voice-agent WebSocket plus tool-calling workflow. This file is retained as historical context; future capture sequencing lives in the product roadmap until a focused implementation slice is selected.
 
 ## 1. Overview
 The README's Stage 2 (Capture Layer) calls for "fast capture for todo, spending, and journal entries" and "simple voice-first input for core actions." This spec introduces a unified capture endpoint that accepts lightweight, low-structure input and routes it to the appropriate module. It is the backend foundation for mobile quick-add, voice transcription results, and future AI-assisted parsing.

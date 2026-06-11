@@ -1,7 +1,7 @@
 # Product Strategy and Roadmap
 
 Date: 2026-06-03
-Last updated: 2026-06-06
+Last updated: 2026-06-11
 
 Scope: current product positioning, demo readiness, and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
 
@@ -271,6 +271,23 @@ Non-goals:
 - Medical advice or diagnosis.
 - Autonomous financial or health actions.
 - Chat-first product design that bypasses structured workflows.
+
+## Post-Gate 0 Roadmap Backlog
+
+Specs can retain non-goals and historical design context, but they should not be used as living future backlog. Product sequencing lives here until a concrete implementation slice is selected.
+
+| Area | Roadmap Item | Why It Belongs Here |
+|---|---|---|
+| Spending analytics | Category breakdown, budget-vs-actual analytics, savings-rate analytics, and richer trend UX. | These are product-surface expansions beyond the implemented trends slice. |
+| Wallet ledger | Ledger-style balance projection, richer transfer timeline UX, reconciliation, and statement matching. | These are finance-product depth items, not blockers for the current demo baseline. |
+| Notifications | Email delivery, push delivery, real-time notification transport, grouping, and digest variants. | Delivery channels depend on mobile/email infrastructure and should be sequenced with notification strategy. |
+| Imports | Very-large-file streaming guarantees, async/background import workers, `.xlsx` imports, smart column mapping, partial-success modes, and virus scanning. | These are scale/operations upgrades beyond the implemented CSV validate-preview-commit workflow. |
+| Currency display | Remaining frontend-wide display polish, locale/date/number profiles, and historical FX replay for every view. | These are consistency and polish tracks after the implemented finance settings foundation. |
+| Investing performance | Richer return math, deeper visualization, benchmark comparison, dividend/total-return views, and automated price feeds. | These should be scoped as explicit analytics/product slices rather than kept as open spec leftovers. |
+| Voice/capture | WebRTC-grade production transport, broader capture domains, multi-item capture, and AI-assisted routing. | Capture is useful as an input layer, but expansion should follow mobile/coach sequencing. |
+| Weekly summaries | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
+| Look-through analytics | UX alerts, quality scoring, derivative look-through, and ingestion-depth improvements. | These are advanced investing analytics tracks after V1 correctness. |
+| Budget model | Grouped budgets and custom financial KPIs. | These are product-model expansions that should be designed intentionally. |
 
 ## 5) Personal Data Trust Model
 
