@@ -1,8 +1,8 @@
 # Feature Spec: Bulk Import via CSV Templates
-**Status:** Partially Implemented
+**Status:** Implemented (CSV V1)
 **Spec ID:** 020
 
-Implementation note (2026-06-11): CSV templates, validate-preview-commit flows, batch history/detail, rollback/delete, source metadata for spending transactions, budgets, and holdings, storage configuration, and integration tests are implemented in `app/imports`. The spec remains partial because true streaming/very-large-file guarantees and later import modules are still future work.
+Implementation note (2026-06-11): CSV templates, validate-preview-commit flows, batch history/detail, rollback/delete, source metadata for spending transactions, budgets, and holdings, storage configuration, and integration tests are implemented in `app/imports`. Stage 2+ notes are context only; future sequencing lives in the product roadmap.
 
 ## 1. Overview
 Manual data entry is a major onboarding bottleneck for spending, budgets, and investing. Users often have historical data in Excel/Sheets. This spec introduces downloadable CSV templates and a fail-all bulk import pipeline that validates first, then writes atomically.
@@ -252,6 +252,7 @@ Implementation guideline:
 - No backfill required.
 
 ## 17. Stage 2+ Extensions
+These are context only, not active backlog inside this spec:
 - Native `.xlsx` template/import support.
 - Background import workers + progress polling.
 - Partial-success mode as optional strategy.

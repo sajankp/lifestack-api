@@ -2,7 +2,7 @@
 **Status:** Implemented (Phase 1)
 **Spec ID:** 015
 
-Implementation note (2026-06-11): in-app notifications, unread counts, preferences, mark-read/mark-all-read/delete flows, budget-guardrail integration, RBAC hardening, and workspace isolation tests are implemented in `app/notifications`. Email and push remain future phases.
+Implementation note (2026-06-11): in-app notifications, unread counts, preferences, mark-read/mark-all-read/delete flows, budget-guardrail integration, RBAC hardening, and workspace isolation tests are implemented in `app/notifications`. Email/push delivery notes below are context only; future delivery sequencing lives in the product roadmap.
 
 ## 1. Overview
 The scheduler (Spec 005) and budget guardrails (Spec 009) currently surface alerts by creating system todos. This is functional but invisible unless the user actively checks their task list. This spec introduces a notification registry and delivery abstraction so any workflow can trigger user-visible alerts through multiple channels.
@@ -45,6 +45,8 @@ This builds on:
 - Mobile/personal-device-aligned push notifications
 - Delivery tracking extended to push channel once mobile infrastructure exists
 
+Phase 2/3 are not active backlog inside this spec. When selected, they should be cut as focused implementation specs.
+
 ## 4. Data Model
 
 ### Notification
@@ -79,7 +81,7 @@ This builds on:
 - `category`: notification category enum
 - `channel_in_app`: boolean, default `true`
 - `channel_email`: boolean, default `false`
-- `channel_push`: boolean, default `false` (future phase)
+- `channel_push`: boolean, default `false`
 - `is_muted`: boolean, default `false` — suppresses all channels for this category
 - `created_at`, `updated_at`
 
@@ -98,8 +100,8 @@ Tracks delivery attempts per channel:
 
 Phase note:
 - In Phase 1, `NotificationDelivery` rows are only required for `in_app`.
-- `email` delivery rows are introduced when Phase 2 is enabled.
-- `push` delivery rows remain future-facing until Phase 3.
+- `email` delivery rows are introduced when a focused email-delivery spec is selected.
+- `push` delivery rows remain reserved until mobile push infrastructure exists.
 
 ## 5. API Surface
 
@@ -122,8 +124,8 @@ Query parameters for list:
 
 Phase note:
 - Phase 1 must support `channel_in_app` and `is_muted`.
-- `channel_email` becomes active in Phase 2.
-- `channel_push` remains reserved for Phase 3.
+- `channel_email` becomes active when email delivery is selected.
+- `channel_push` remains reserved until push delivery is selected.
 
 ## 6. Notification Dispatch Service
 
@@ -153,16 +155,15 @@ class NotificationService:
 3. Create `Notification` row.
 4. For each enabled channel, create `NotificationDelivery` row with `status=pending`.
 5. Process `in_app` immediately (row creation is the delivery).
-6. Queue `email` for async processing only when Phase 2 is enabled.
-7. Do not enqueue `push` until Phase 3 exists.
+6. Do not enqueue non-in-app channels until a focused delivery-channel spec is selected.
 
-### Email Delivery (Phase 2 - minimal)
+### Email Delivery (context only)
 - Scheduler job `notification_email_job` runs every 15 minutes.
 - Picks up `pending` email deliveries, sends via configured SMTP/SES.
 - Updates delivery status to `delivered` or `failed`.
 - Rate limit: max 20 emails per user per hour.
 
-### Push Delivery (Phase 3)
+### Push Delivery (context only)
 - Push channel is modeled but not implemented in this spec's initial rollout.
 - Delivery rows with `channel=push` remain in `pending` until push infrastructure is added.
 
@@ -188,7 +189,7 @@ On generation failure, notify with `category="recurring_failed"`.
 
 ## 8. Configuration
 - `NOTIFICATIONS_ENABLED`: feature flag, default `true`.
-- `NOTIFICATION_EMAIL_ENABLED`: Phase 2 feature flag, default `false`.
+- `NOTIFICATION_EMAIL_ENABLED`: email feature flag, default `false`.
 - `NOTIFICATION_EMAIL_INTERVAL_MINUTES`: email batch frequency, default `15`.
 - `NOTIFICATION_EMAIL_RATE_LIMIT_PER_HOUR`: max emails per user/hour, default `20`.
 - `NOTIFICATION_EMAIL_FROM`: sender address.
@@ -218,7 +219,7 @@ On generation failure, notify with `category="recurring_failed"`.
 - User preferences control which channels receive notifications.
 - In-app delivery is immediate (row creation).
 - Phase 1 is complete with in-app delivery only.
-- Email delivery is introduced separately in Phase 2 via scheduler job.
+- Email delivery is introduced separately through a focused implementation slice.
 - Unread count endpoint provides accurate badge data.
 - Budget guardrails workflow emits notifications alongside todo creation.
 - Audit events emitted for notification lifecycle.

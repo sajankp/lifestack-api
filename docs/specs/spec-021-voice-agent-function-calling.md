@@ -2,7 +2,7 @@
 **Status:** Implemented (Phase 1)
 **Spec ID:** 021
 
-Implementation note (2026-06-11): `/v1/capture/agent/ws`, cookie-only WebSocket authentication, agent tool execution for todo/spending/investing cash balance flows, session/frame/text limits, sanitized provider errors, OpenAPI tag coverage, and capture tests are implemented. WebRTC/media-server orchestration remains a later phase.
+Implementation note (2026-06-11): `/v1/capture/agent/ws`, cookie-only WebSocket authentication, agent tool execution for todo/spending/investing cash balance flows, session/frame/text limits, sanitized provider errors, OpenAPI tag coverage, and capture tests are implemented. The WebRTC/media-server notes below are context only; future sequencing lives in the product roadmap.
 
 ## 1. Overview
 This specification details the architecture and implementation of the **Voice Agent with Function Calling** feature. Traditional client-side speech-to-text (STT) and text-to-speech (TTS) browser APIs lose rich speech nuances (tone, emotion, pauses, emphasis). To provide a premium voice assistant, this feature streams raw audio directly to/from a live conversational LLM backend.
@@ -20,6 +20,8 @@ This specification details the architecture and implementation of the **Voice Ag
 - **Frontend**: Establishes a direct WebRTC peer connection to a media server (like LiveKit).
 - **FastAPI**: Acts as the session orchestrator, handling authentication, token generation, tool definition exposure, state storage, and validation of actions.
 - **Voice Agent**: Sits on the backend, joining the WebRTC room, listening to the user, calling FastAPI tools, and synthesising speech back to the peer connection.
+
+Phase 2/3 is context only, not active backlog inside this spec.
 
 ---
 

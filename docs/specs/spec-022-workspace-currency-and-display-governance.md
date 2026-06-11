@@ -1,8 +1,8 @@
 # Spec 022 - Workspace Currency and Display Governance
 
-**Status:** Partially Implemented
+**Status:** Implemented (V1)
 
-Implementation note (2026-06-11): backend finance settings, currencies, FX rates, investing reporting currency, and user finance settings are implemented. Full status remains partial because this spec is cross-repo and includes frontend-wide currency-display cleanup.
+Implementation note (2026-06-11): backend finance settings, currencies, FX rates, investing reporting currency, user finance settings, and shared frontend currency formatting are implemented. Out-of-scope display polish remains context only; future sequencing lives in the product roadmap.
 
 ## 1) Problem
 Currency behavior is inconsistent across the UI:

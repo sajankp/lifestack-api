@@ -1,8 +1,8 @@
 # Feature Spec: Investment Performance & Returns
-**Status:** Partially Implemented
+**Status:** Implemented (Performance V1)
 **Spec ID:** 014
 
-Implementation note (2026-06-11): the backend now exposes performance summary/history surfaces and persists portfolio snapshots with reporting currency and `fx_rates_used`. Multi-currency conversion coverage is part of the Gate 0 validation path. The remaining spec scope is richer return math, visualization depth, and any future automated price-fetching workflow.
+Implementation note (2026-06-11): the backend exposes the implemented Performance V1 slice: summary/history surfaces, portfolio snapshots, reporting currency, and `fx_rates_used`. The broader return-math and visualization ideas in this document are context, not an active backlog; future sequencing lives in the product roadmap.
 
 ## 1. Overview
 The investing module (Spec 008) tracks holdings and cash balances, and Spec 011 added currency governance and FX valuation. However, there is no mechanism to track portfolio value over time, calculate returns, or surface gain/loss metrics. This spec adds historical valuation snapshots and return calculations.
