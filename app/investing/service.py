@@ -6,7 +6,7 @@ from decimal import Decimal
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
-from app.finance.models import Account
+from app.finance.models import Account, FxRate
 from app.finance.repository import (
     AccountRepository,
     CurrencyRepository,
@@ -72,7 +72,7 @@ def _build_required_pairs(
 def _conversion_rate(
     source_currency: str,
     reporting_currency: str,
-    fx_lookup: dict[tuple[str, str], object],
+    fx_lookup: dict[tuple[str, str], FxRate],
 ) -> Decimal | None:
     if source_currency == reporting_currency:
         return Decimal("1")
@@ -112,7 +112,7 @@ def _convert_amount(
     amount: Decimal,
     source_currency: str,
     reporting_currency: str,
-    fx_lookup: dict[tuple[str, str], object],
+    fx_lookup: dict[tuple[str, str], FxRate],
 ) -> Decimal | None:
     rate = _conversion_rate(source_currency, reporting_currency, fx_lookup)
     if rate is None:
@@ -123,7 +123,7 @@ def _convert_amount(
 def _fx_rates_used(
     used_currencies: list[str],
     reporting_currency: str,
-    fx_lookup: dict[tuple[str, str], object],
+    fx_lookup: dict[tuple[str, str], FxRate],
 ) -> dict[str, str]:
     rates: dict[str, str] = {}
     for curr in used_currencies:
@@ -592,7 +592,7 @@ class PerformanceService:
                 )
             reporting_currency = used_currencies[0]
 
-        fx_lookup: dict[tuple[str, str], object] = {}
+        fx_lookup: dict[tuple[str, str], FxRate] = {}
         if any(curr != reporting_currency for curr in used_currencies):
             if self.fx_rate_repo is None:
                 raise ValidationError(
