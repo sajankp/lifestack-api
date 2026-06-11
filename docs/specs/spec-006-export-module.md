@@ -1,6 +1,8 @@
 # Feature Spec: Export Module
-**Status:** Approved
+**Status:** Implemented
 **Spec ID:** 006
+
+Implementation note (2026-06-11): JSON/CSV export creation, metadata lookup, download, deletion, retention cleanup, storage-backend configuration, and integration tests are implemented in `app/exports` and `app/application/workflows.py`.
 
 ## 1. Overview
 Lifestack should allow a workspace member to export personal data in machine-usable formats (JSON and CSV). Export strengthens trust, portability, and backup readiness.

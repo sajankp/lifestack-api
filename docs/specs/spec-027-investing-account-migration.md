@@ -1,7 +1,9 @@
 # Feature Spec: Investing Account Identity Migration
 
-**Status:** Proposed
+**Status:** Implemented
 **Spec ID:** 027
+
+Implementation note (2026-06-11): investing holdings and cash balances now reference workspace accounts by `account_id`, with compound tenant-safe foreign keys, API UUID contracts, capture-tool account-name resolution, migration/backfill support, and integration coverage.
 
 ## 1. Overview
 

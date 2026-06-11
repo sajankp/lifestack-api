@@ -1,19 +1,21 @@
 # Lifestack Spec Pack V1 (Planning Bundle)
 
-**Status:** Approved
+**Status:** Implemented
 **Branch:** `planning-spec-pack-v1`
 **Purpose:** Provide one coherent planning bundle so implementation can run faster with fewer design reversals.
 
+Implementation note (2026-06-11): this planning bundle is historical. Specs 001-009 have been implemented and are now reflected in the main backend architecture, tests, and README feature table.
+
 ## Included Specs
-- [spec-001-api-versioning-rfc7807.md](./spec-001-api-versioning-rfc7807.md) (Approved)
-- [spec-002-workspace-model-and-isolation.md](./spec-002-workspace-model-and-isolation.md) (Approved)
-- [spec-003-spending-module.md](./spec-003-spending-module.md) (Approved)
-- [spec-004-audit-logging.md](./spec-004-audit-logging.md) (Approved)
-- [spec-005-scheduler.md](./spec-005-scheduler.md) (Approved)
-- [spec-006-export-module.md](./spec-006-export-module.md) (Approved)
-- [spec-007-dashboard-read-model.md](./spec-007-dashboard-read-model.md) (Approved)
-- [spec-008-investing-mvp.md](./spec-008-investing-mvp.md) (Approved)
-- [spec-009-scheduler-first-workflow-budget-guardrails.md](./spec-009-scheduler-first-workflow-budget-guardrails.md) (Approved)
+- [spec-001-api-versioning-rfc7807.md](./spec-001-api-versioning-rfc7807.md) (Implemented)
+- [spec-002-workspace-model-and-isolation.md](./spec-002-workspace-model-and-isolation.md) (Implemented)
+- [spec-003-spending-module.md](./spec-003-spending-module.md) (Implemented)
+- [spec-004-audit-logging.md](./spec-004-audit-logging.md) (Implemented)
+- [spec-005-scheduler.md](./spec-005-scheduler.md) (Implemented)
+- [spec-006-export-module.md](./spec-006-export-module.md) (Implemented)
+- [spec-007-dashboard-read-model.md](./spec-007-dashboard-read-model.md) (Implemented)
+- [spec-008-investing-mvp.md](./spec-008-investing-mvp.md) (Implemented)
+- [spec-009-scheduler-first-workflow-budget-guardrails.md](./spec-009-scheduler-first-workflow-budget-guardrails.md) (Implemented)
 
 ## Why One Planning Branch
 - Review dependency chains once.

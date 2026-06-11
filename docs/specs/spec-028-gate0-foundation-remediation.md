@@ -1,6 +1,6 @@
 # Feature Spec: Gate 0 Foundation Remediation
 
-**Status:** Partially Implemented - Auth/Session Follow-up In Progress
+**Status:** Implemented
 **Spec ID:** 028
 **Last updated:** 2026-06-11
 
@@ -13,7 +13,7 @@ To conclude the **Gate 0: Foundation** milestone, several final hardening and re
 4. **README/spec limitations refresh**: Update documentation to specify execution caveats, known limits, and CI configurations.
 5. **Current-branch product hardening**: Close the remaining demo-safety and workspace/session correctness gaps before treating Gate 0 as public-demo ready.
 
-Current implementation note (2026-06-11): non-spending source metadata and rollback support, summary FX-rate display, deterministic demo reset, workspace-select refresh-token persistence, active-workspace reset targeting, and investing performance FX conversion are implemented through Spec 029. The current follow-up branch hardens auth/session behavior by blocking inactive users on existing access tokens, clearing current browser cookies after password change, rejecting malformed Bearer headers, and making refresh-token grace retries idempotent. It also adds voice/capture frame, cumulative byte, duration, and text-size ceilings with sanitized provider errors, extracts auth/session dependency wiring into `app/auth/dependencies.py` while preserving existing import compatibility, and adds local/test-only E2E workflow hooks so the full-stack harness can trigger guardrails and recurring generation over authenticated HTTP. Remaining Gate 0 follow-ups are mostly broader maintainability and product-facing failure UX, not new product modules.
+Current implementation note (2026-06-11): non-spending source metadata and rollback support, summary FX-rate display, deterministic demo reset, workspace-select refresh-token persistence, active-workspace reset targeting, investing performance FX conversion, auth/session hardening, voice/capture runtime limits, sanitized provider errors, auth dependency extraction, and gated local/test-only E2E workflow hooks are implemented and merged. Remaining work after Gate 0 is roadmap-level maintainability and product polish, not this remediation spec.
 
 ---
 

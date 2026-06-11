@@ -1,6 +1,8 @@
 # Feature Spec: Weekly Summary Workflow
-**Status:** Proposed
+**Status:** Implemented
 **Spec ID:** 016
+
+Implementation note (2026-06-11): weekly summary persistence, list/latest/detail APIs, scheduler job registration, dashboard integration, notification dispatch, idempotency, and tests are implemented in `app/summaries`, `app/application/jobs.py`, and `app/dashboard`.
 
 ## 1. Overview
 The README identifies cross-module workflows as a key differentiator: "weekly summaries can combine productivity and finance data." This spec defines the second major scheduler workflow — a periodic summary that aggregates activity across todo, spending, and investing into a single digest available via API and optionally delivered as a notification.

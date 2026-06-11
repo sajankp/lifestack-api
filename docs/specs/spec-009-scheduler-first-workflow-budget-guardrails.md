@@ -1,6 +1,8 @@
 # Feature Spec: First Scheduler Workflow - Budget Guardrails
-**Status:** Approved
+**Status:** Implemented
 **Spec ID:** 009
+
+Implementation note (2026-06-11): the budget guardrails workflow runs through the scheduler/application workflow layer, emits idempotent system todos and notifications, and is covered by application and E2E-hook tests.
 
 ## 1. Overview
 Defines the first production scheduler workflow built on Spec 005: periodic budget guardrail evaluation that creates or updates a system todo when monthly category spend breaches thresholds.

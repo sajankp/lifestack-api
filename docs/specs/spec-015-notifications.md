@@ -1,6 +1,8 @@
 # Feature Spec: Notifications & Delivery Channel
-**Status:** Proposed
+**Status:** Implemented (Phase 1)
 **Spec ID:** 015
+
+Implementation note (2026-06-11): in-app notifications, unread counts, preferences, mark-read/mark-all-read/delete flows, budget-guardrail integration, RBAC hardening, and workspace isolation tests are implemented in `app/notifications`. Email and push remain future phases.
 
 ## 1. Overview
 The scheduler (Spec 005) and budget guardrails (Spec 009) currently surface alerts by creating system todos. This is functional but invisible unless the user actively checks their task list. This spec introduces a notification registry and delivery abstraction so any workflow can trigger user-visible alerts through multiple channels.

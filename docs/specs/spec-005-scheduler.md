@@ -1,7 +1,9 @@
 # Spec 005: Scheduler and Background Jobs
 
-**Status:** Approved
+**Status:** Implemented
 **Spec ID:** 005
+
+Implementation note (2026-06-11): APScheduler lifecycle wiring, environment gating, advisory locks, per-workspace job boundaries, cleanup jobs, guardrails, recurring generation, weekly summaries, and FX ingestion are implemented through `app/core/scheduler.py`, `app/application/jobs.py`, and `app/main.py`.
 
 ## Problem Statement
 Various background tasks (like checking a budget, sending reminders, or processing recurring transactions) need to execute outside the main HTTP request lifecycle. A simple, reliable, in-process scheduler is needed for Stage 1 of the Lifestack architecture before more complex distributed message queues (like Celery/Redis PubSub) are necessary.

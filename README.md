@@ -251,11 +251,11 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Notifications inbox + preferences (Spec 015, in-app) | ✅ Done |
 | Weekly summaries API + dashboard integration (Spec 016) | ✅ Done |
 | Spending analytics endpoints (Spec 017) | ✅ Done |
-| Quick capture API routing (Spec 018) | ✅ Done |
+| Quick capture API routing (Spec 018) | Planned |
 | Data import/export lifecycle controls | ✅ Gate 0 foundation |
 | Structured source metadata for spending transactions, budgets, and holdings | ✅ Gate 0 foundation |
 | Safe deterministic demo reset | ✅ Gate 0 foundation |
-| Voice-first capture for todos and spending | Stage 2 / partial |
+| Voice-first capture for todos, spending, and investing cash balance tools | Stage 2 / partial |
 | AI assistant over existing modules | Stage 3 / planned |
 | Mobile companion app | Stage 4 / planned |
 | Health-app sync via mobile | Stage 4-5 / planned |

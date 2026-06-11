@@ -1,6 +1,8 @@
 # Feature Spec: API Versioning and RFC 7807 Error Responses
-**Status:** Approved
+**Status:** Implemented
 **Spec ID:** 001
+
+Implementation note (2026-06-11): `/v1` routing, health endpoint policy, RFC 7807 problem details, validation-error extensions, and API contract tests are implemented in `app/main.py`, `app/core/exceptions.py`, and `app/tests/integration/test_api_contracts.py`.
 
 ## 1. Overview
 As per the architecture defined in `ARCHITECTURE.md`, Lifestack API needs to implement API versioning (`/v1/`) and RFC 7807 problem details for all error responses from day one. This spec outlines the implementation of these two core API behaviors.

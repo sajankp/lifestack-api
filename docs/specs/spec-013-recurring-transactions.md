@@ -1,6 +1,8 @@
 # Feature Spec: Recurring Transactions & Subscriptions
-**Status:** In Progress
+**Status:** Implemented
 **Spec ID:** 013
+
+Implementation note (2026-06-11): recurring transaction CRUD, upcoming preview, scheduler generation, catch-up/idempotency behavior, audit logging, and cross-workspace tests are implemented in `app/spending` and `app/application/workflows.py`.
 
 ## 1. Overview
 The spending module (Spec 003) currently requires manual entry for every transaction. In practice, a large portion of personal spending is predictable: rent, subscriptions, salary, insurance, utilities. This spec adds recurring transaction definitions that automatically generate spending entries on schedule.
