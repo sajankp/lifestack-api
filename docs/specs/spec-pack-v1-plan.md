@@ -11,7 +11,7 @@ It records the original planning bundle that grouped the first backend foundatio
 For current product direction, use:
 
 - [Product Strategy and Roadmap](../product/PRODUCT_STRATEGY_AND_ROADMAP.md)
-- [Platform Architecture and Build Plan](../ARCHITECTURE.md)
+- [Platform Architecture and Build Plan](../../ARCHITECTURE.md)
 - Current individual specs under `docs/specs/`
 
 ## Included Specs

@@ -83,7 +83,7 @@ Do not add new pending items to this spec.
 Use these homes instead:
 
 - Product sequencing: [Product Strategy and Roadmap](../product/PRODUCT_STRATEGY_AND_ROADMAP.md)
-- Architecture and module-boundary decisions: [Architecture](../ARCHITECTURE.md) or a focused new spec
+- Architecture and module-boundary decisions: [Architecture](../../ARCHITECTURE.md) or a focused new spec
 - Review/remediation history: root `audit/` documents
 - Execution: GitHub issues or PR descriptions
 
