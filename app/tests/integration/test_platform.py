@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -10,7 +11,7 @@ from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account, FxRate
-from app.investing.models import CashBalance
+from app.investing.models import CashBalance, PortfolioSnapshot
 from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.todo.models import Todo
 
@@ -288,6 +289,20 @@ async def test_workspace_demo_reset(client: AsyncClient):
         cookies=owner["cookies"],
     )
     assert create_response.status_code == 201
+    async with postgres.async_session_maker() as session:
+        session.add(
+            PortfolioSnapshot(
+                workspace_id=owner["workspace_id"],
+                snapshot_date=datetime.now(UTC).date(),
+                total_value=Decimal("999.00"),
+                total_cost=Decimal("500.00"),
+                holdings_value=Decimal("999.00"),
+                cash_value=Decimal("0.00"),
+                currency_code="USD",
+                fx_rates_used={},
+            )
+        )
+        await session.commit()
 
     # 1. By default, ENABLE_DEMO_RESET is False, so reset is blocked (403)
     reset_blocked_resp = await client.post(
@@ -430,6 +445,19 @@ async def test_workspace_demo_reset(client: AsyncClient):
                 )
             ).scalar_one()
             assert eur_usd.rate == Decimal("1.0850000000")
+
+            snapshots = (
+                (
+                    await session.execute(
+                        select(PortfolioSnapshot).where(
+                            PortfolioSnapshot.workspace_id == owner["workspace_id"]
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert snapshots == []
     finally:
         settings.ENABLE_DEMO_RESET = False
 

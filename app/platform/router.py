@@ -192,7 +192,7 @@ async def select_workspace(
     auth_session.last_seen_at = now
     auth_session.expires_at = now + refresh_token_expires
     auth_session_repo.session.add(auth_session)
-    await auth_session_repo.session.flush()
+    await auth_session_repo.session.commit()
 
     # 4. Set HttpOnly cookies
     response.set_cookie(
@@ -309,4 +309,5 @@ async def reset_demo_data(
         raise ForbiddenError(detail="Demo reset is disabled in this environment")
 
     await reset_service.reset_workspace(workspace=workspace, actor_id=current_user["id"])
+    await session.commit()
     return {"status": "reset_success"}

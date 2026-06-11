@@ -48,18 +48,24 @@ from app.investing.schemas import (
     PerformanceSummaryResponse,
 )
 
+MONEY_QUANT = Decimal("0.01")
+
 
 def _build_required_pairs(
     used_currencies: list[str], reporting_currency: str
 ) -> set[tuple[str, str]]:
     required_pairs: set[tuple[str, str]] = set()
+    all_currencies = set(used_currencies) | {reporting_currency}
+    for curr in all_currencies:
+        if curr == "USD":
+            continue
+        required_pairs.add((curr, "USD"))
+        required_pairs.add(("USD", curr))
     for curr in used_currencies:
         if curr == reporting_currency:
             continue
         required_pairs.add((curr, reporting_currency))
-        if curr != "USD" and reporting_currency != "USD":
-            required_pairs.add((curr, "USD"))
-            required_pairs.add(("USD", reporting_currency))
+        required_pairs.add((reporting_currency, curr))
     return required_pairs
 
 
@@ -75,11 +81,29 @@ def _conversion_rate(
     if direct is not None:
         return Decimal(str(direct.rate))
 
-    if source_currency != "USD" and reporting_currency != "USD":
-        base_to_usd = fx_lookup.get((source_currency, "USD"))
-        usd_to_quote = fx_lookup.get(("USD", reporting_currency))
-        if base_to_usd is not None and usd_to_quote is not None:
-            return Decimal(str(base_to_usd.rate)) * Decimal(str(usd_to_quote.rate))
+    inverse = fx_lookup.get((reporting_currency, source_currency))
+    if inverse is not None:
+        inverse_rate = Decimal(str(inverse.rate))
+        if inverse_rate != 0:
+            return Decimal("1") / inverse_rate
+
+    def rate_to_usd(currency: str) -> Decimal | None:
+        if currency == "USD":
+            return Decimal("1")
+        direct_to_usd = fx_lookup.get((currency, "USD"))
+        if direct_to_usd is not None:
+            return Decimal(str(direct_to_usd.rate))
+        usd_to_currency = fx_lookup.get(("USD", currency))
+        if usd_to_currency is not None:
+            usd_to_currency_rate = Decimal(str(usd_to_currency.rate))
+            if usd_to_currency_rate != 0:
+                return Decimal("1") / usd_to_currency_rate
+        return None
+
+    source_to_usd = rate_to_usd(source_currency)
+    reporting_to_usd = rate_to_usd(reporting_currency)
+    if source_to_usd is not None and reporting_to_usd is not None and reporting_to_usd != 0:
+        return source_to_usd / reporting_to_usd
 
     return None
 
@@ -619,18 +643,27 @@ class PerformanceService:
             PortfolioSnapshot(
                 workspace_id=workspace_id,
                 snapshot_date=snapshot_date,
-                total_value=total_value,
-                total_cost=total_cost,
-                holdings_value=holdings_value,
-                cash_value=cash_value,
+                total_value=total_value.quantize(MONEY_QUANT),
+                total_cost=total_cost.quantize(MONEY_QUANT),
+                holdings_value=holdings_value.quantize(MONEY_QUANT),
+                cash_value=cash_value.quantize(MONEY_QUANT),
                 currency_code=reporting_currency,
                 fx_rates_used=_fx_rates_used(used_currencies, reporting_currency, fx_lookup),
             )
         )
 
     async def summary(self, workspace_id: int) -> PerformanceSummaryResponse:
+        configured_reporting_currency: str | None = None
+        if self.finance_setting_repo is not None:
+            settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
+            if settings and settings.reporting_currency_code:
+                configured_reporting_currency = settings.reporting_currency_code.upper()
+
         snapshot = await self.snapshot_repo.latest(workspace_id)
-        if snapshot is None:
+        if snapshot is None or (
+            configured_reporting_currency is not None
+            and snapshot.currency_code != configured_reporting_currency
+        ):
             today = datetime.now(UTC).date()
             await self.create_snapshot(workspace_id, today)
             snapshot = await self.snapshot_repo.latest(workspace_id)

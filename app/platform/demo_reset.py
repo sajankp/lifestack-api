@@ -16,6 +16,7 @@ from app.investing.models import (
     HoldingPrice,
     Instrument,
     InstrumentConstituent,
+    PortfolioSnapshot,
 )
 from app.notifications.models import Notification
 from app.platform.models import Workspace
@@ -96,6 +97,9 @@ class DemoResetService:
         )
 
     async def _clear_workspace_data(self, workspace_id: int) -> None:
+        if workspace_id is None:
+            raise ValueError("workspace_id cannot be None for deletion")
+
         await self.session.execute(
             delete(RecurringTransaction).where(RecurringTransaction.workspace_id == workspace_id)
         )
@@ -137,6 +141,9 @@ class DemoResetService:
         )
         await self.session.execute(
             delete(HoldingPrice).where(HoldingPrice.workspace_id == workspace_id)
+        )
+        await self.session.execute(
+            delete(PortfolioSnapshot).where(PortfolioSnapshot.workspace_id == workspace_id)
         )
         await self.session.execute(delete(Holding).where(Holding.workspace_id == workspace_id))
         await self.session.execute(

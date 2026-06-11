@@ -651,6 +651,27 @@ async def test_performance_summary_converts_multi_currency_snapshot(client: Asyn
     assert snapshot.cash_value == Decimal("108.50")
     assert snapshot.fx_rates_used == {"EUR": "1.0850000000", "GBP": "1.2500000000"}
 
+    settings_res = await client.patch(
+        "/v1/finance/settings",
+        json={"reporting_currency_code": "EUR"},
+    )
+    assert settings_res.status_code == 200, settings_res.text
+
+    perf_eur_res = await client.get("/v1/investing/performance/summary")
+    assert perf_eur_res.status_code == 200, perf_eur_res.text
+    perf_eur = perf_eur_res.json()
+
+    assert perf_eur["currency"] == "EUR"
+    assert Decimal(perf_eur["total_value"]) == Decimal("344.24")
+    assert Decimal(perf_eur["total_cost"]) == Decimal("218.89")
+    assert Decimal(perf_eur["total_gain_loss"]) == Decimal("125.35")
+    assert Decimal(perf_eur["fx_rates_used"]["USD"]).quantize(Decimal("0.0000000001")) == Decimal(
+        "0.9216589862"
+    )
+    assert Decimal(perf_eur["fx_rates_used"]["GBP"]).quantize(Decimal("0.0000000001")) == Decimal(
+        "1.1520737327"
+    )
+
 
 @pytest.mark.asyncio
 async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
