@@ -21,7 +21,7 @@ This specification details the architecture and implementation of the **Voice Ag
 - **FastAPI**: Acts as the session orchestrator, handling authentication, token generation, tool definition exposure, state storage, and validation of actions.
 - **Voice Agent**: Sits on the backend, joining the WebRTC room, listening to the user, calling FastAPI tools, and synthesising speech back to the peer connection.
 
-Phase 2/3 is context only, not active backlog inside this spec.
+Phase 2/3 are context only, not active backlog inside this spec.
 
 ---
 
