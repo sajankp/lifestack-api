@@ -113,6 +113,7 @@ class Settings(BaseSettings):
     # Session limits
     MAX_ACTIVE_SESSIONS_PER_USER: int = 5
     ENABLE_DEMO_RESET: bool = False
+    ENABLE_E2E_TEST_HOOKS: bool = False
 
     # Export storage hardening (Spec 006)
     EXPORT_STORAGE_BACKEND: str = "db"  # db|local|s3
@@ -156,6 +157,10 @@ class Settings(BaseSettings):
 
     # AI Voice Agent (Spec 021)
     GEMINI_API_KEY: str | None = None
+    CAPTURE_MAX_WS_FRAME_BYTES: int = 256 * 1024
+    CAPTURE_MAX_SESSION_BYTES: int = 15 * 1024 * 1024
+    CAPTURE_MAX_SESSION_SECONDS: int = 5 * 60
+    CAPTURE_MAX_TEXT_CHARS: int = 4000
     EXCHANGERATE_API_KEY: str | None = None
     IMPORT_S3_ENDPOINT: str | None = Field(
         default=None,
@@ -251,7 +256,12 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "RATE_LIMIT_STORAGE_URI must be configured (non-memory) in production."
                 )
+            if self.ENABLE_E2E_TEST_HOOKS:
+                raise ValueError("ENABLE_E2E_TEST_HOOKS must remain disabled in production.")
         else:
+            if self.ENABLE_E2E_TEST_HOOKS and self.ENV not in {"local", "test"}:
+                raise ValueError("ENABLE_E2E_TEST_HOOKS is only allowed in local/test.")
+
             # Fallback warning for non-local database when ENV is not production
             parsed_db = urlparse(self.DATABASE_URL)
             is_local_db = parsed_db.hostname in ("localhost", "127.0.0.1", "postgres")

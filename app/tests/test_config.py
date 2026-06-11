@@ -46,3 +46,13 @@ def test_production_settings_reject_memory_rate_limit_storage():
 def test_production_settings_reject_insecure_cookies():
     with pytest.raises(ValueError, match="COOKIE_SECURE"):
         _production_settings(COOKIE_SECURE=False)
+
+
+def test_production_settings_reject_e2e_test_hooks():
+    with pytest.raises(ValueError, match="ENABLE_E2E_TEST_HOOKS"):
+        _production_settings(ENABLE_E2E_TEST_HOOKS=True)
+
+
+def test_non_local_settings_reject_e2e_test_hooks():
+    with pytest.raises(ValueError, match="ENABLE_E2E_TEST_HOOKS"):
+        Settings(ENV="staging", ENABLE_E2E_TEST_HOOKS=True)

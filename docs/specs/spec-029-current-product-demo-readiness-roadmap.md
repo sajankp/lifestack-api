@@ -43,15 +43,16 @@ The current application already has enough surface area for a strong portfolio d
 
 ## 4. Implementation Status Snapshot
 
-Last reviewed: 2026-06-10.
+Last reviewed: 2026-06-11.
 
 | Milestone | Status | Implemented | Open |
 | --- | --- | --- | --- |
 | Milestone 1 - Demo Safety Baseline | Done | Demo reset is feature-flagged, role-gated for owner/admin, limited to the active workspace, exposed only when backend status allows it, audited for denied and successful attempts, confirmation-gated by workspace name, service-owned outside the router, and covered by API/Web tests. | Keep README/spec seed-data descriptions aligned as the fixture evolves. |
-| Milestone 2 - Workspace and Session Correctness | Partial | Workspace selection updates the active workspace token claim, persists refresh-token hash rotation, is covered for follow-up workspace-aware actions plus select-then-refresh, and Web now has a persisted active-workspace model used by destructive reset flows. | Centralize login, refresh, and workspace-select rotation into a shared helper when auth code is next refactored. |
+| Milestone 2 - Workspace and Session Correctness | Partial | Workspace selection updates the active workspace token claim, persists refresh-token hash rotation, is covered for follow-up workspace-aware actions plus select-then-refresh, and Web now has a persisted active-workspace model used by destructive reset flows. Current auth/session follow-up branch also blocks inactive users on existing access tokens, clears cookies after password change, rejects malformed Bearer headers, and keeps refresh grace retries from overwriting the first rotated refresh token. | Centralize login, refresh, and workspace-select rotation into a shared helper when auth code is next refactored. |
+| Milestone 2a - Capture/Voice Safety | Partial | Current auth/session follow-up branch adds voice WebSocket frame, cumulative byte, duration, and text-size limits, plus sanitized provider errors. | Add per-user/workspace WebSocket rate limits if voice becomes a primary workflow, and keep frontend failure UX visible and recoverable. |
 | Milestone 3 - Investing Correctness | Partial | Investing summary and performance snapshots now use shared FX conversion helpers, persist reporting currency and FX rates used, and cover deterministic USD/GBP/EUR fixtures. | Add parity checks between summary and performance totals where both endpoints use the same valuation basis. |
 | Milestone 4 - Documentation Reconciliation | Partial | This roadmap now identifies current surfaces, future-track non-goals, and the demo journey. README, ERD, Spec 014, Spec 028, and the audit index now reflect active workspace reset safety, demo fixture details, user finance settings, auth session rotation, and performance FX metadata. | Finish the broader historical spec-status sweep outside the Spec 029 release gate. |
-| Milestone 5 - Maintainability Cleanup | Partial | Demo reset logic is extracted from the platform router into a dedicated service, and background lifecycle plus DB hardening work from Gate 0 reduced some operational risk. | Split large dependency/frontend modules and replace container-shell E2E helpers. |
+| Milestone 5 - Maintainability Cleanup | Partial | Demo reset logic is extracted from the platform router into a dedicated service, background lifecycle plus DB hardening work from Gate 0 reduced some operational risk, auth/session dependency surface is extracted from `core/dependencies.py` into `auth/dependencies.py`, and local/test-only E2E workflow hooks replace container-shell job triggers. | Split remaining large dependency/frontend modules. |
 
 ## 5. Reviewer Demo Journey
 
@@ -149,8 +150,8 @@ Required work:
 - Extract demo reset logic from the platform router into a service.
 - Split auth identity, workspace resolution, RBAC, and service-factory dependencies where practical.
 - Split large frontend pages into feature hooks, forms, tables, and dialogs.
-- Remove runtime dependency installation from the E2E web container path.
-- Replace container-shell job triggering in E2E with a test-only helper or API.
+- Remove runtime dependency installation from the E2E web container path. (Implemented in `lifestack-e2e` via the `web-e2e` image build.)
+- Replace container-shell job triggering in E2E with a test-only helper or API. (Implemented through gated `/v1/e2e/...` hooks plus Playwright helper calls.)
 
 Acceptance criteria:
 

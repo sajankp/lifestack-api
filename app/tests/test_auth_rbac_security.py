@@ -219,6 +219,28 @@ async def test_inactive_user_cannot_refresh_token(client: AsyncClient):
     assert "inactive" in resp.json().get("detail", "").lower()
 
 
+@pytest.mark.asyncio
+async def test_inactive_user_cannot_use_existing_access_token(client: AsyncClient):
+    """An inactive user must be blocked even when presenting an unexpired access token."""
+    creds = await _register_and_login(client, "inactiveaccess")
+    user, _, _ = await _get_user_and_workspace(creds["username"])
+    access_token = creds["cookies"]["access_token"]
+
+    await _set_user_inactive(user.id)
+
+    cookie_resp = await client.get("/v1/auth/me", cookies=creds["cookies"])
+    assert cookie_resp.status_code == 401
+    assert "inactive" in cookie_resp.json().get("detail", "").lower()
+
+    client.cookies.clear()
+    bearer_resp = await client.get(
+        "/v1/auth/me",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    assert bearer_resp.status_code == 401
+    assert "inactive" in bearer_resp.json().get("detail", "").lower()
+
+
 # ---------------------------------------------------------------------------
 # 4. RBAC: viewer vs member on notifications
 # ---------------------------------------------------------------------------
@@ -361,6 +383,26 @@ async def test_password_change_revokes_existing_sessions(client: AsyncClient):
         cookies={"refresh_token": old_refresh},
     )
     assert refresh_resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_password_change_clears_current_session_cookies(client: AsyncClient):
+    """Password change should leave the current browser with cleared auth cookies."""
+    creds = await _register_and_login(client, "pwchgclear")
+
+    change_resp = await client.post(
+        "/v1/auth/change-password",
+        json={"current_password": creds["password"], "new_password": "NewStrongP@ss1"},
+        cookies=creds["cookies"],
+    )
+    assert change_resp.status_code == 200
+
+    set_cookie_headers = change_resp.headers.get_list("set-cookie")
+    for cookie_name in ("access_token", "refresh_token", "sid", "csrf_token"):
+        assert any(
+            header.startswith(f"{cookie_name}=") and "max-age=0" in header.lower()
+            for header in set_cookie_headers
+        )
 
 
 @pytest.mark.asyncio

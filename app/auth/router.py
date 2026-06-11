@@ -247,6 +247,7 @@ async def refresh_token(
 
     access_token_expires = timedelta(seconds=settings.ACCESS_TOKEN_EXPIRE_SECONDS)
     refresh_token_expires = timedelta(seconds=settings.REFRESH_TOKEN_EXPIRE_SECONDS)
+    new_refresh_token: str | None = None
 
     if incoming_hash == auth_session.current_token_hash:
         # Valid rotation path
@@ -278,22 +279,9 @@ async def refresh_token(
             elapsed_seconds = float("inf")
 
         if elapsed_seconds <= 5.0:
-            # Grace period timeout recovery. Re-issue a new refresh token under same session.
-            new_refresh_token = create_token(
-                data={
-                    "sub": user.username,
-                    "sub_id": str(user.id),
-                    "default_workspace_id": default_workspace_id,
-                },
-                expires_delta=refresh_token_expires,
-                sid=sid,
-                token_type="refresh",
-            )
-            auth_session.current_token_hash = hashlib.sha256(
-                new_refresh_token.encode("utf-8")
-            ).hexdigest()
+            # Concurrent retry recovery: issue a new access token, but do not
+            # overwrite the refresh token already rotated by the first request.
             auth_session.last_seen_at = now
-            auth_session.expires_at = now + refresh_token_expires
             auth_service.session_repo.session.add(auth_session)
             await auth_service.session_repo.session.flush()
         else:
@@ -362,16 +350,17 @@ async def refresh_token(
         domain=settings.COOKIE_DOMAIN,
         secure=settings.COOKIE_SECURE,
     )
-    response.set_cookie(
-        key="refresh_token",
-        value=new_refresh_token,
-        httponly=True,
-        max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS,
-        path="/",
-        samesite=settings.COOKIE_SAMESITE,
-        domain=settings.COOKIE_DOMAIN,
-        secure=settings.COOKIE_SECURE,
-    )
+    if new_refresh_token is not None:
+        response.set_cookie(
+            key="refresh_token",
+            value=new_refresh_token,
+            httponly=True,
+            max_age=settings.REFRESH_TOKEN_EXPIRE_SECONDS,
+            path="/",
+            samesite=settings.COOKIE_SAMESITE,
+            domain=settings.COOKIE_DOMAIN,
+            secure=settings.COOKIE_SECURE,
+        )
     response.set_cookie(
         key="sid",
         value=sid,
@@ -416,6 +405,7 @@ async def logout(
 
 @router.post("/change-password")
 async def change_password(
+    response: Response,
     data: PasswordChange,
     current_user: dict = Depends(get_current_user),
     auth_service: AuthService = Depends(get_auth_service),
@@ -426,6 +416,19 @@ async def change_password(
         new_password=data.new_password,
     )
     await auth_service.revoke_all_sessions(current_user["id"])
+    for key in ("access_token", "refresh_token", "sid"):
+        response.set_cookie(
+            key=key,
+            value="",
+            httponly=True,
+            max_age=0,
+            expires=0,
+            path="/",
+            samesite=settings.COOKIE_SAMESITE,
+            domain=settings.COOKIE_DOMAIN,
+            secure=settings.COOKIE_SECURE,
+        )
+    clear_csrf_token(response)
     return {"message": "Password changed successfully"}
 
 

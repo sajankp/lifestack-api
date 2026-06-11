@@ -163,8 +163,11 @@ These tests verify backend domain business logic, authorization rules, security 
     *   Registering duplicate emails or usernames returns identical generic error messages to prevent account enumeration.
 *   **Session Lifecycle & Refresh Token Rotation**:
     *   Verify refresh token rotation returns a new refresh token and access token on refresh.
-    *   Verify grace period retry logic (allows refreshing with the old token within 5 seconds).
+    *   Verify grace period retry logic allows refreshing with the old token within 5 seconds without overwriting the first rotated refresh token.
     *   Verify replay attack detection (reusing an old refresh token outside the grace period revokes the session family and clears cookie jars).
+    *   Verify inactive users cannot use still-unexpired access tokens.
+    *   Verify password change revokes sessions and clears current browser auth, refresh, sid, and CSRF cookies.
+    *   Verify malformed Bearer authorization headers fail closed.
 *   **Logout All**:
     *   Logging out of all sessions revokes all refresh tokens and sessions associated with the user across devices.
 *   **Proxy & Client IP Detection**:
@@ -260,6 +263,9 @@ These tests verify backend domain business logic, authorization rules, security 
 ### ⏰ Scheduler & Guardrails Background Jobs (`test_scheduler.py`)
 *   **Scheduler Gating**:
     *   Verify the scheduler is disabled in testing environments unless explicitly overridden.
+*   **Local E2E Workflow Hooks** (`integration/test_e2e_hooks.py`):
+    *   Verify `/v1/e2e/...` routes are not registered by default.
+    *   Verify explicitly enabled local hooks run current-workspace budget guardrail and recurring transaction workflows over authenticated HTTP.
 *   **Budget Guardrails State Machine**:
     *   A. Spend under threshold: no todo created.
     *   B. Spend reaches warning threshold (>=90%): warning todo created, audit log written.

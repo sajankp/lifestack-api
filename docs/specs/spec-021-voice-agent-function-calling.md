@@ -90,10 +90,19 @@ All audit logs are executed internally by the target service. The Agent Tool lay
 
 ## 7. Security Considerations
 - Validate user session authentication upon WebSocket handshake.
-- Limit max duration and rate limit WebSocket connection sessions.
+- Limit WebSocket session duration, single-frame bytes, cumulative session bytes, and text-message size with conservative environment-backed defaults.
+- Return sanitized client-facing provider errors while logging raw provider failures server-side.
 - Verify workspace-scoping and authorization of the user session on every tool function call.
 
 ---
 
-## 8. MCP (Model Context Protocol) Compatibility
+## 8. Runtime Limits
+- `CAPTURE_MAX_WS_FRAME_BYTES`: maximum single client audio frame, default `262144` bytes.
+- `CAPTURE_MAX_SESSION_BYTES`: maximum cumulative client audio bytes per session, default `15728640` bytes.
+- `CAPTURE_MAX_SESSION_SECONDS`: maximum voice session duration, default `300` seconds.
+- `CAPTURE_MAX_TEXT_CHARS`: maximum text message size, default `4000` characters.
+
+---
+
+## 9. MCP (Model Context Protocol) Compatibility
 Tool functions are designed as decoupled, standalone Python functions that do not depend on FastAPI dependencies or request context directly. This allows the same registry and function interfaces to be exposed as MCP tools in the next stage.

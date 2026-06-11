@@ -18,6 +18,8 @@ This checklist is for release-hardening and regression review on `main`.
 - [ ] Invalid frequency/interval/date inputs are rejected with `4xx`, not `5xx`.
 - [ ] Scheduler/workflow loops have non-advancing-date safety guards.
 - [x] Multipart imports are rejected at request ingress when they exceed `MAX_MULTIPART_BODY_BYTES`.
+- [x] Voice capture WebSocket sessions enforce frame, cumulative byte, duration, and text-size limits.
+- [x] Voice provider failures return sanitized client-facing errors.
 
 ## Audit and Traceability
 - [ ] Mutation paths emit audit logs with before/after snapshots.
@@ -26,6 +28,7 @@ This checklist is for release-hardening and regression review on `main`.
 
 ## Scheduler and Background Safety
 - [ ] Scheduler jobs are idempotent or explicitly blocked by scheduler policy.
+- [x] Local E2E workflow trigger routes are gated by `ENABLE_E2E_TEST_HOOKS` and rejected outside local/test environments.
 - [ ] Advisory lock strategy prevents concurrent duplicate execution.
 - [ ] Per-workspace error isolation and timeout handling verified.
 
@@ -44,6 +47,17 @@ This checklist is for release-hardening and regression review on `main`.
 - [x] CI runs Bandit static analysis against `app/`.
 - [x] CI runs TruffleHog secret scanning for verified live secrets.
 - [x] Local pre-commit checks reject committed private keys.
+
+## Verification Log (2026-06-11)
+- Gate 0 auth/session follow-up checks passed:
+  - `uv run pytest app/tests/test_auth_rbac_security.py::test_inactive_user_cannot_use_existing_access_token app/tests/test_auth_rbac_security.py::test_password_change_clears_current_session_cookies app/tests/test_security_hardening.py::test_refresh_token_rotation_and_reuse_detection -q`
+  - `uv run pytest app/tests/test_auth_rbac_security.py app/tests/test_security_hardening.py app/tests/integration/test_api.py -q`
+- Gate 0 capture/voice resource-ceiling checks passed:
+  - `uv run ruff check app/capture/agent.py app/tests/capture/test_agent.py app/tests/capture/test_capture_router.py app/tests/integration/test_capture.py app/config.py`
+  - `uv run pytest app/tests/capture app/tests/integration/test_capture.py -q`
+- Full backend verification passed after auth/session, capture/voice, and dependency extraction changes:
+  - `uv run pre-commit run --all-files`
+  - `uv run pytest -q` (`271 passed`)
 
 ## Verification Log (2026-06-05)
 - Container runtime hardening reconciled against `Dockerfile`:
