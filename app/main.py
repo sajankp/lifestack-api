@@ -55,6 +55,7 @@ from app.notifications.router import router as notifications_router
 from app.platform.router import router as platform_router
 from app.spending.router import router as spending_router
 from app.summaries.router import router as summaries_router
+from app.testing.router import router as testing_router
 from app.todo.router import router as todo_router
 
 # Initialize logging before creating the app
@@ -204,6 +205,8 @@ def create_app() -> FastAPI:
     _app.include_router(capture_router, prefix=settings.API_V1_STR)
     _app.include_router(imports_router, prefix=settings.API_V1_STR)
     _app.include_router(platform_router, prefix=settings.API_V1_STR)
+    if settings.ENABLE_E2E_TEST_HOOKS and settings.ENV in {"local", "test"}:
+        _app.include_router(testing_router, prefix=settings.API_V1_STR)
 
     _app.include_router(health_router)
 

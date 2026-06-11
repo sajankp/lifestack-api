@@ -263,6 +263,9 @@ These tests verify backend domain business logic, authorization rules, security 
 ### ⏰ Scheduler & Guardrails Background Jobs (`test_scheduler.py`)
 *   **Scheduler Gating**:
     *   Verify the scheduler is disabled in testing environments unless explicitly overridden.
+*   **Local E2E Workflow Hooks** (`integration/test_e2e_hooks.py`):
+    *   Verify `/v1/e2e/...` routes are not registered by default.
+    *   Verify explicitly enabled local hooks run current-workspace budget guardrail and recurring transaction workflows over authenticated HTTP.
 *   **Budget Guardrails State Machine**:
     *   A. Spend under threshold: no todo created.
     *   B. Spend reaches warning threshold (>=90%): warning todo created, audit log written.

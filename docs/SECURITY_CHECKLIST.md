@@ -28,6 +28,7 @@ This checklist is for release-hardening and regression review on `main`.
 
 ## Scheduler and Background Safety
 - [ ] Scheduler jobs are idempotent or explicitly blocked by scheduler policy.
+- [x] Local E2E workflow trigger routes are gated by `ENABLE_E2E_TEST_HOOKS` and rejected outside local/test environments.
 - [ ] Advisory lock strategy prevents concurrent duplicate execution.
 - [ ] Per-workspace error isolation and timeout handling verified.
 

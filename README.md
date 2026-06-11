@@ -336,6 +336,10 @@ The `/v1/capture/agent/ws` voice WebSocket is cookie-authenticated and bounded b
 
 Provider errors are logged server-side and returned to the client as sanitized retryable messages.
 
+## Local E2E Test Hooks
+
+The `/v1/e2e/...` workflow trigger routes are registered only when `ENABLE_E2E_TEST_HOOKS=true` and `ENV` is `local` or `test`. They exist for the isolated `lifestack-e2e` Docker Compose harness so Playwright can trigger budget guardrails and recurring transaction generation over authenticated HTTP instead of shelling into containers. Production and staging settings reject this flag.
+
 ## Bulk Import Storage Configuration
 
 Spec 020 bulk CSV imports support configurable file persistence:

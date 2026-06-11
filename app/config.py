@@ -113,6 +113,7 @@ class Settings(BaseSettings):
     # Session limits
     MAX_ACTIVE_SESSIONS_PER_USER: int = 5
     ENABLE_DEMO_RESET: bool = False
+    ENABLE_E2E_TEST_HOOKS: bool = False
 
     # Export storage hardening (Spec 006)
     EXPORT_STORAGE_BACKEND: str = "db"  # db|local|s3
@@ -255,7 +256,12 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "RATE_LIMIT_STORAGE_URI must be configured (non-memory) in production."
                 )
+            if self.ENABLE_E2E_TEST_HOOKS:
+                raise ValueError("ENABLE_E2E_TEST_HOOKS must remain disabled in production.")
         else:
+            if self.ENABLE_E2E_TEST_HOOKS and self.ENV not in {"local", "test"}:
+                raise ValueError("ENABLE_E2E_TEST_HOOKS is only allowed in local/test.")
+
             # Fallback warning for non-local database when ENV is not production
             parsed_db = urlparse(self.DATABASE_URL)
             is_local_db = parsed_db.hostname in ("localhost", "127.0.0.1", "postgres")
