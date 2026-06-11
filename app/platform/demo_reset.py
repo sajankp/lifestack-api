@@ -351,22 +351,29 @@ class DemoResetService:
         ])
 
     async def _seed_fx_rate(self, base_currency: str, quote_currency: str, rate: Decimal) -> None:
-        existing = await self.session.execute(
-            select(FxRate).where(
-                FxRate.base_currency_code == base_currency,
-                FxRate.quote_currency_code == quote_currency,
-                FxRate.source == "ECB",
+        now = datetime.now(UTC)
+        existing = (
+            await self.session.execute(
+                select(FxRate).where(
+                    FxRate.base_currency_code == base_currency,
+                    FxRate.quote_currency_code == quote_currency,
+                    FxRate.source == "ECB",
+                )
             )
-        )
-        if existing.scalars().first():
+        ).scalar_one_or_none()
+        if existing:
+            existing.rate = rate
+            existing.as_of = now
+            existing.fetched_at = now
+            self.session.add(existing)
             return
         self.session.add(
             FxRate(
                 base_currency_code=base_currency,
                 quote_currency_code=quote_currency,
                 rate=rate,
-                as_of=datetime.now(UTC),
-                fetched_at=datetime.now(UTC),
+                as_of=now,
+                fetched_at=now,
                 source="ECB",
             )
         )

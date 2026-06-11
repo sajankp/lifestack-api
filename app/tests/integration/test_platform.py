@@ -10,7 +10,7 @@ from app.auth.models import User
 from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
-from app.finance.models import Account, FxRate
+from app.finance.models import Account, Currency, FxRate
 from app.investing.models import CashBalance, PortfolioSnapshot
 from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.todo.models import Todo
@@ -302,6 +302,36 @@ async def test_workspace_demo_reset(client: AsyncClient):
                 fx_rates_used={},
             )
         )
+        for code, name, symbol in [
+            ("USD", "US Dollar", "$"),
+            ("EUR", "Euro", "EUR"),
+        ]:
+            existing_currency = await session.get(Currency, code)
+            if existing_currency is None:
+                session.add(Currency(code=code, name=name, symbol=symbol, minor_unit=2))
+        stale_eur_usd = (
+            await session.execute(
+                select(FxRate).where(
+                    FxRate.base_currency_code == "EUR",
+                    FxRate.quote_currency_code == "USD",
+                    FxRate.source == "ECB",
+                )
+            )
+        ).scalar_one_or_none()
+        if stale_eur_usd is None:
+            session.add(
+                FxRate(
+                    base_currency_code="EUR",
+                    quote_currency_code="USD",
+                    rate=Decimal("9.9990000000"),
+                    as_of=datetime.now(UTC),
+                    fetched_at=datetime.now(UTC),
+                    source="ECB",
+                )
+            )
+        else:
+            stale_eur_usd.rate = Decimal("9.9990000000")
+            session.add(stale_eur_usd)
         await session.commit()
 
     # 1. By default, ENABLE_DEMO_RESET is False, so reset is blocked (403)
