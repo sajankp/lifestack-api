@@ -1,18 +1,21 @@
-# Spec: Current Product Demo Readiness Roadmap
+# Historical Record: Gate 0 Demo Readiness
 
-**Status:** Active - Partially Implemented
+**Status:** Archived - Implemented
 **Spec ID:** 029
-**Date:** 2026-06-06
+**Created:** 2026-06-06
+**Archived:** 2026-06-11
 
-## 1. Purpose
+This document is no longer an active roadmap or backlog tracker.
 
-This roadmap defines the active near-term product and engineering sequence for the current Lifestack branch.
+Spec 029 captured the short-lived execution plan for making the current Lifestack product credible, safe, and easy to demonstrate before adding larger life domains such as health, documents, second brain, MCP, or a personal coach. That Gate 0 demo-readiness work has landed across the API, Web, and E2E repositories.
 
-The goal is to make the existing application credible, safe, and easy to demonstrate before adding new life domains such as health, documents, second brain, MCP, or a personal coach.
+Future product sequencing should live in [Product Strategy and Roadmap](../product/PRODUCT_STRATEGY_AND_ROADMAP.md). Specs should describe approved implementation contracts, not carry open-ended pending-item lists.
 
-## 2. Product Position
+## Product Position Preserved
 
-Lifestack currently works best as a **finance-led personal operations command center**.
+The Gate 0 product position remains useful:
+
+Lifestack works best today as a **finance-led personal operations command center**.
 
 Primary current surfaces:
 
@@ -22,41 +25,35 @@ Primary current surfaces:
 
 Supporting surfaces:
 
-- Imports and exports: realistic data movement, portability, and trust.
+- Imports and exports: data movement, portability, and trust.
 - Todos and notifications: action layer for follow-ups and system-generated work.
 - Workspaces and RBAC: trust boundary and demo credibility.
 - Master config: admin/settings surface, not a daily destination.
 
-Experimental surfaces:
+Experimental surface:
 
 - Voice/capture: input layer over structured services, not the core product.
 
-## 3. Product Non-Goals For This Roadmap
+## Closed Outcomes
 
-- Do not add health tracking.
-- Do not add document intelligence or RAG.
-- Do not add MCP tools.
-- Do not expand the coach experience.
-- Do not add more major product modules before Gate 0 is public-demo safe.
+Gate 0 demo readiness closed the following outcomes:
 
-The current application already has enough surface area for a strong portfolio demo. The next product work is composition, correctness, and trust.
+- Demo reset is feature-flagged, role-gated for owner/admin, limited to the active workspace, audited, confirmation-gated by workspace name, service-owned outside the router, and covered by API/Web tests.
+- Workspace selection updates the active workspace token claim and persists refresh-token hash rotation.
+- Frontend active-workspace state is explicit enough for destructive reset flows.
+- Auth/session hardening blocks inactive users on existing access tokens, clears current browser cookies after password change, rejects malformed Bearer headers, and keeps refresh grace retries from overwriting the first rotated refresh token.
+- Voice WebSocket frame, cumulative byte, duration, and text-size limits are implemented.
+- Provider errors for voice/capture are sanitized, and frontend failure UX is visible and recoverable.
+- Investing summary and performance snapshots use shared FX conversion helpers and persist reporting currency plus FX rates used.
+- Demo reset logic is extracted from the platform router into a dedicated service.
+- Auth/session dependency wiring is extracted from `core/dependencies.py` into `auth/dependencies.py`.
+- Local/test-only E2E workflow hooks replace container-shell job triggers.
+- The E2E web image no longer installs dependencies at runtime.
+- README, ERD, Spec 014, Spec 028, the V1 spec-pack archive, and the historical spec-status sweep distinguish implemented, partial, planned, and archived behavior.
 
-## 4. Implementation Status Snapshot
+## Reviewer Demo Journey
 
-Last reviewed: 2026-06-11.
-
-| Milestone | Status | Implemented | Open |
-| --- | --- | --- | --- |
-| Milestone 1 - Demo Safety Baseline | Done | Demo reset is feature-flagged, role-gated for owner/admin, limited to the active workspace, exposed only when backend status allows it, audited for denied and successful attempts, confirmation-gated by workspace name, service-owned outside the router, and covered by API/Web tests. | Keep README/spec seed-data descriptions aligned as the fixture evolves. |
-| Milestone 2 - Workspace and Session Correctness | Done | Workspace selection updates the active workspace token claim, persists refresh-token hash rotation, is covered for follow-up workspace-aware actions plus select-then-refresh, and Web now has a persisted active-workspace model used by destructive reset flows. Auth/session hardening also blocks inactive users on existing access tokens, clears cookies after password change, rejects malformed Bearer headers, and keeps refresh grace retries from overwriting the first rotated refresh token. | Centralize login, refresh, and workspace-select rotation into a shared helper when auth code is next refactored. |
-| Milestone 2a - Capture/Voice Safety | Done | Voice WebSocket frame, cumulative byte, duration, and text-size limits are implemented, provider errors are sanitized, and frontend failure UX is visible and recoverable. | Add per-user/workspace WebSocket rate limits if voice becomes a primary workflow. |
-| Milestone 3 - Investing Correctness | Partial | Investing summary and performance snapshots now use shared FX conversion helpers, persist reporting currency and FX rates used, and cover deterministic USD/GBP/EUR fixtures. | Add parity checks between summary and performance totals where both endpoints use the same valuation basis. |
-| Milestone 4 - Documentation Reconciliation | Done | This roadmap now identifies current surfaces, future-track non-goals, and the demo journey. README, ERD, Spec 014, Spec 028, the audit index, and the historical spec-status sweep reflect the merged Gate 0 state. | Keep docs aligned as future specs move from roadmap to implementation. |
-| Milestone 5 - Maintainability Cleanup | Partial | Demo reset logic is extracted from the platform router into a dedicated service, background lifecycle plus DB hardening work from Gate 0 reduced some operational risk, auth/session dependency surface is extracted from `core/dependencies.py` into `auth/dependencies.py`, and local/test-only E2E workflow hooks replace container-shell job triggers. | Split remaining large dependency/frontend modules. |
-
-## 5. Reviewer Demo Journey
-
-The intended first five minutes of review:
+The intended first five minutes of review remain:
 
 1. Dashboard: show financial health, upcoming tasks, latest summary, and portfolio snapshot.
 2. Spending: show budget guardrails and recurring transactions.
@@ -67,107 +64,34 @@ The intended first five minutes of review:
 
 The demo should show insight before data entry. The user should quickly understand what changed, what needs attention, and what action to take next.
 
-## 6. Milestone 1 - Demo Safety Baseline
+## Non-Goals Preserved
 
-Goal: destructive demo features are safe, scoped, and intentional.
+The following remained intentionally outside Gate 0:
 
-Required work:
+- health tracking
+- document intelligence or RAG
+- MCP tools
+- expanded coach experience
+- new major product modules
 
-- Restrict demo reset to owner/admin roles.
-- Add an explicit demo/reset feature flag.
-- Ensure reset can target only the intended workspace.
-- Emit audit events for reset attempts and outcomes.
-- Hide or disable reset UI for users who cannot run it.
-- Require a confirmation phrase that includes the workspace name.
+Those belong in the product roadmap until an implementation slice is explicitly selected.
 
-Acceptance criteria:
+## Post-Gate 0 Backlog Placement
 
-- Viewer and member reset attempts return `403 Forbidden`.
-- Reset is unavailable when the feature flag is disabled.
-- Reset always displays and uses the active workspace.
-- Reset seed data matches the spec and README.
+Do not add new pending items to this spec.
 
-## 7. Milestone 2 - Workspace and Session Correctness
+Use these homes instead:
 
-Goal: workspace switching is safe, predictable, and session-compatible.
+- Product sequencing: [Product Strategy and Roadmap](../product/PRODUCT_STRATEGY_AND_ROADMAP.md)
+- Architecture and module-boundary decisions: [Architecture](../ARCHITECTURE.md) or a focused new spec
+- Review/remediation history: root `audit/` documents
+- Execution: GitHub issues or PR descriptions
 
-Required work:
+Examples of post-Gate 0 work that should stay outside this spec:
 
-- Persist refresh-token hash changes when workspace selection issues a new refresh token.
-- Centralize login, refresh, and workspace-select session rotation semantics.
-- Add a frontend active-workspace state model.
-- Avoid inferring workspace targets from list order.
-- Make active workspace visible enough for destructive/admin flows.
-
-Acceptance criteria:
-
-- Login, select another workspace, then refresh succeeds.
-- Workspace-aware frontend actions use active workspace state.
-- Multi-workspace users can identify which workspace they are acting in.
-
-## 8. Milestone 3 - Investing Correctness
-
-Goal: investing analytics are correct for multi-currency portfolios.
-
-Required work:
-
-- Reuse or extract FX conversion logic for performance snapshots.
-- Convert holdings and cash into reporting currency before aggregate performance values are stored or returned.
-- Expose reporting currency and FX rates used when conversion occurs.
-- Add regression tests for USD, GBP, and EUR accounts with known rates.
-
-Acceptance criteria:
-
-- Summary and performance values agree for the same reporting currency.
-- Snapshot responses do not mix native currency amounts under a single USD label.
-- Multi-currency test fixtures produce deterministic totals.
-
-## 9. Milestone 4 - Documentation Reconciliation
-
-Goal: docs make the current state and roadmap obvious to reviewers.
-
-Required work:
-
-- Update README to describe the current product as a finance-led personal operations command center.
-- Keep future health, document, second brain, MCP, and coach tracks clearly separated from implemented features.
-- Update ERD for current auth session and finance settings fields.
-- Update spec statuses to `Proposed`, `Approved`, `Implemented`, `Partially Implemented`, or `Superseded`.
-- Align demo reset seed data between spec, implementation, README, and tests.
-- Keep historical roadmaps marked as historical.
-
-Acceptance criteria:
-
-- A reviewer can tell what exists today, what is planned, and what is intentionally deferred.
-- No roadmap implies that future high-trust domains are already implemented.
-- Spec 028 and this roadmap agree on Gate 0 hardening priorities.
-
-## 10. Milestone 5 - Maintainability Cleanup
-
-Goal: reduce complexity in the areas that now carry the most product risk.
-
-Required work:
-
-- Extract demo reset logic from the platform router into a service.
-- Split auth identity, workspace resolution, RBAC, and service-factory dependencies where practical.
-- Split large frontend pages into feature hooks, forms, tables, and dialogs.
-- Remove runtime dependency installation from the E2E web container path. (Implemented in `lifestack-e2e` via the `web-e2e` image build.)
-- Replace container-shell job triggering in E2E with a test-only helper or API. (Implemented through gated `/v1/e2e/...` hooks plus Playwright helper calls.)
-
-Acceptance criteria:
-
-- Security-critical auth/workspace code is smaller and easier to review.
-- Reset behavior is service-tested outside the router.
-- E2E setup is repeatable from a clean checkout.
-
-## 11. Release Gate
-
-Gate 0 is public-demo ready only when:
-
-- Demo reset is safe and role-gated.
-- Workspace switch plus refresh is covered by tests.
-- Frontend active workspace state is explicit.
-- Multi-currency investing performance is correct.
-- README and specs distinguish current features from future tracks.
-- The reviewer demo journey can be completed without manual database edits or hidden setup knowledge.
-
-After this release gate, Track 1 mobile companion work can begin.
+- frontend page decomposition
+- backend dependency/module decomposition beyond the completed auth/session split
+- per-user/workspace WebSocket rate limits if voice becomes a primary workflow
+- broader valuation-assumption UX
+- production observability, backup/restore, and runbooks
+- mobile companion, health, documents, MCP, second brain, and coach tracks

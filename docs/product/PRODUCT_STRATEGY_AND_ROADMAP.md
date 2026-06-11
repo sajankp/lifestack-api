@@ -134,9 +134,11 @@ The roadmap can use stage numbers for planning, but user-facing product eras sho
 
 Goal: make the existing product credible, secure, and demoable before adding new life domains.
 
-Active execution roadmap: [`spec-029-current-product-demo-readiness-roadmap.md`](../specs/spec-029-current-product-demo-readiness-roadmap.md).
+Status: complete. The historical closure record lives in [`spec-029-current-product-demo-readiness-roadmap.md`](../specs/spec-029-current-product-demo-readiness-roadmap.md).
 
-Acceptance criteria:
+Gate 0 is not an active roadmap anymore. New pending work should be tracked in this product roadmap, focused implementation specs, audit documents, or GitHub issues/PRs.
+
+Closed acceptance criteria:
 
 - Role-based authorization is enforced where roles already exist.
 - Password policy, session controls, and security findings are addressed.
