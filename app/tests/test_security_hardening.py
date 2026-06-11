@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -67,6 +68,17 @@ async def test_inactive_user_login(client: AsyncClient):
     )
     assert response.status_code == 401
     assert "Incorrect username or password" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_bearer_authorization_header_rejected(client: AsyncClient):
+    """Malformed Bearer headers should fail closed instead of being partially parsed."""
+    response = await client.get(
+        "/v1/auth/me",
+        headers={"Authorization": "Bearer token-with unexpected-extra-part"},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid authorization header"
 
 
 @pytest.mark.asyncio
@@ -147,13 +159,18 @@ async def test_refresh_token_rotation_and_reuse_detection(client: AsyncClient):
     assert sid_2 == sid_1  # SID remains same for session family
 
     # 4. Legitimate retry within 5-second grace period (reuse refresh_token_1)
-    # We pass cookies_1 to simulate the retry before receiving the rotated ones
+    # We pass cookies_1 to simulate an overlapping retry before the browser
+    # receives/applies the rotated refresh cookie from the first response.
     grace_resp = await client.post("/v1/auth/refresh", cookies=cookies_1)
     assert grace_resp.status_code == 200
 
     cookies_2_retry = dict(grace_resp.cookies)
     refresh_token_2_retry = cookies_2_retry.get("refresh_token")
-    assert refresh_token_2_retry is not None
+    assert refresh_token_2_retry is None
+
+    # The first rotated refresh token must remain the live token after the retry.
+    current_refresh_resp = await client.post("/v1/auth/refresh", cookies=cookies_2)
+    assert current_refresh_resp.status_code == 200
 
     # 5. Attempt to reuse refresh_token_1 again but outside the grace period (we patch rotated_at to 10s ago)
     async with async_session_maker() as session:
@@ -187,34 +204,40 @@ async def test_get_client_ip_proxy_validation():
     """Verify that get_client_ip correctly validates X-Forwarded-For based on TRUSTED_PROXIES."""
 
     # Helper mock connection info
+    @dataclass
     class MockClient:
-        def __init__(self, host: str):
-            self.host = host
+        host: str
 
+    @dataclass
     class MockRequest:
-        def __init__(self, client_host: str | None, headers: dict):
-            self.client = MockClient(client_host) if client_host else None
-            self.headers = headers
+        client: MockClient | None
+        headers: dict[str, str]
+
+    def make_request(client_host: str | None, headers: dict[str, str]) -> MockRequest:
+        return MockRequest(
+            client=MockClient(client_host) if client_host else None,
+            headers=headers,
+        )
 
     # Make sure settings has expected TRUSTED_PROXIES
     settings.TRUSTED_PROXIES = ["127.0.0.1", "1.2.3.4"]
 
     # CASE 1: Untrusted client IP with X-Forwarded-For -> must ignore header and return client IP
-    req_untrusted = MockRequest(
+    req_untrusted = make_request(
         client_host="5.5.5.5", headers={"x-forwarded-for": "9.9.9.9, 8.8.8.8"}
     )
     assert get_client_ip(req_untrusted) == "5.5.5.5"
 
     # CASE 2: Trusted client IP with X-Forwarded-For -> must trust header and return leftmost IP
-    req_trusted = MockRequest(
+    req_trusted = make_request(
         client_host="127.0.0.1", headers={"x-forwarded-for": "9.9.9.9, 8.8.8.8"}
     )
     assert get_client_ip(req_trusted) == "9.9.9.9"
 
     # CASE 3: Trusted client IP with no X-Forwarded-For -> must return client IP
-    req_trusted_no_header = MockRequest(client_host="127.0.0.1", headers={})
+    req_trusted_no_header = make_request(client_host="127.0.0.1", headers={})
     assert get_client_ip(req_trusted_no_header) == "127.0.0.1"
 
     # CASE 4: No client connection info -> must return "unknown"
-    req_no_client = MockRequest(client_host=None, headers={"x-forwarded-for": "9.9.9.9"})
+    req_no_client = make_request(client_host=None, headers={"x-forwarded-for": "9.9.9.9"})
     assert get_client_ip(req_no_client) == "unknown"

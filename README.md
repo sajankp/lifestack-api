@@ -325,6 +325,17 @@ API docs: `http://localhost:8000/docs`
 
 MCP integration is intentionally not documented here until its auth and usage flow are finalized.
 
+## Voice Capture Runtime Limits
+
+The `/v1/capture/agent/ws` voice WebSocket is cookie-authenticated and bounded by conservative defaults:
+
+- `CAPTURE_MAX_WS_FRAME_BYTES=262144`
+- `CAPTURE_MAX_SESSION_BYTES=15728640`
+- `CAPTURE_MAX_SESSION_SECONDS=300`
+- `CAPTURE_MAX_TEXT_CHARS=4000`
+
+Provider errors are logged server-side and returned to the client as sanitized retryable messages.
+
 ## Bulk Import Storage Configuration
 
 Spec 020 bulk CSV imports support configurable file persistence:

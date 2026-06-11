@@ -1,7 +1,9 @@
 import asyncio
 import base64
 import json
+import time
 from contextlib import suppress
+from dataclasses import dataclass, field
 
 import structlog
 import websockets
@@ -24,6 +26,77 @@ GEMINI_LIVE_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generati
 # Uncomment when 3.1 gains function-calling + TEXT support:
 #   GEMINI_MODEL = "models/gemini-3.1-flash-live-preview"
 GEMINI_MODEL = "models/gemini-2.5-flash-native-audio-latest"
+
+CAPTURE_POLICY_VIOLATION_CLOSE_CODE = 4008
+CAPTURE_PROVIDER_UNAVAILABLE_CLOSE_CODE = 4002
+CAPTURE_CLIENT_ERROR = "Voice capture is temporarily unavailable. Please try again."
+CAPTURE_PROVIDER_ERROR = "Voice provider returned an error. Please try again."
+CAPTURE_INVALID_MESSAGE_ERROR = "Voice capture received an invalid client message."
+
+
+class CaptureSessionLimitExceededError(Exception):
+    def __init__(
+        self,
+        detail: str,
+        *,
+        close_code: int = CAPTURE_POLICY_VIOLATION_CLOSE_CODE,
+    ) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.close_code = close_code
+
+
+@dataclass
+class CaptureSessionLimiter:
+    max_frame_bytes: int
+    max_session_bytes: int
+    max_session_seconds: float
+    max_text_chars: int
+    started_at: float = field(default_factory=time.monotonic)
+    total_client_bytes: int = 0
+
+    @classmethod
+    def from_settings(cls) -> "CaptureSessionLimiter":
+        return cls(
+            max_frame_bytes=settings.CAPTURE_MAX_WS_FRAME_BYTES,
+            max_session_bytes=settings.CAPTURE_MAX_SESSION_BYTES,
+            max_session_seconds=settings.CAPTURE_MAX_SESSION_SECONDS,
+            max_text_chars=settings.CAPTURE_MAX_TEXT_CHARS,
+        )
+
+    def check_elapsed(self) -> None:
+        if time.monotonic() - self.started_at > self.max_session_seconds:
+            raise CaptureSessionLimitExceededError("Voice session time limit reached.")
+
+    def validate_client_message(self, message: dict) -> None:
+        self.check_elapsed()
+
+        audio_bytes = message.get("bytes")
+        if audio_bytes is not None:
+            frame_size = len(audio_bytes)
+            if frame_size > self.max_frame_bytes:
+                raise CaptureSessionLimitExceededError("Voice audio frame is too large.")
+
+            self.total_client_bytes += frame_size
+            if self.total_client_bytes > self.max_session_bytes:
+                raise CaptureSessionLimitExceededError("Voice session audio limit reached.")
+
+        text = message.get("text")
+        if text is not None and len(text) > self.max_text_chars:
+            raise CaptureSessionLimitExceededError("Voice text message is too large.")
+
+
+async def _send_capture_error(
+    client_ws: WebSocket,
+    message: str,
+    *,
+    close_code: int | None = None,
+) -> None:
+    with suppress(Exception):
+        await client_ws.send_json({"type": "error", "message": message})
+    if close_code is not None:
+        with suppress(Exception):
+            await client_ws.close(code=close_code)
 
 
 class AudioDecoder:
@@ -272,7 +345,7 @@ async def _handle_gemini_message(
     if gemini_error:
         error_msg = gemini_error.get("message", "Unknown error from Gemini API")
         logger.error("gemini_api_error", error=error_msg)
-        await client_ws.send_json({"type": "error", "message": error_msg})
+        await _send_capture_error(client_ws, CAPTURE_PROVIDER_ERROR)
         return
     # ── serverContent ────────────────────────────────────────────────────────
     server_content = msg.get("serverContent")
@@ -334,16 +407,17 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
     api_key = settings.GEMINI_API_KEY
     if not api_key:
         logger.error("gemini_api_key_missing")
-        await client_ws.send_json({
-            "type": "error",
-            "message": "Gemini API key is not configured on the server.",
-        })
-        await client_ws.close(code=4002)
+        await _send_capture_error(
+            client_ws,
+            CAPTURE_CLIENT_ERROR,
+            close_code=CAPTURE_PROVIDER_UNAVAILABLE_CLOSE_CODE,
+        )
         return
 
     gemini_url = f"{GEMINI_LIVE_URL}?key={api_key}"
     decoder = AudioDecoder()
     await decoder.start()
+    limiter = CaptureSessionLimiter.from_settings()
 
     gemini_ws = None
     ws_context_manager = None
@@ -393,13 +467,41 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
         async def client_to_gemini_loop():
             while True:
                 message = await client_ws.receive()
+                try:
+                    limiter.validate_client_message(message)
+                except CaptureSessionLimitExceededError as exc:
+                    logger.warning(
+                        "capture_session_limit_exceeded",
+                        detail=exc.detail,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                    )
+                    await _send_capture_error(
+                        client_ws,
+                        exc.detail,
+                        close_code=exc.close_code,
+                    )
+                    return
 
-                if "bytes" in message:
+                if message.get("bytes") is not None:
                     # Encoded audio (WebM/Opus etc.) — ffmpeg decodes to PCM
                     await decoder.send_encoded_chunk(message["bytes"])
 
-                elif "text" in message:
-                    client_msg = json.loads(message["text"])
+                elif message.get("text") is not None:
+                    try:
+                        client_msg = json.loads(message["text"])
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "capture_invalid_client_json",
+                            user_id=user_id,
+                            workspace_id=workspace_id,
+                        )
+                        await _send_capture_error(
+                            client_ws,
+                            CAPTURE_INVALID_MESSAGE_ERROR,
+                            close_code=CAPTURE_POLICY_VIOLATION_CLOSE_CODE,
+                        )
+                        return
                     msg_type = client_msg.get("type")
 
                     if msg_type == "text":
@@ -413,8 +515,20 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
         try:
             done, _ = await asyncio.wait(
                 [pcm_task, gemini_task, client_task],
+                timeout=settings.CAPTURE_MAX_SESSION_SECONDS,
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            if not done:
+                logger.warning(
+                    "capture_session_duration_exceeded",
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                )
+                await _send_capture_error(
+                    client_ws,
+                    "Voice session time limit reached.",
+                    close_code=CAPTURE_POLICY_VIOLATION_CLOSE_CODE,
+                )
             for task in done:
                 if task.cancelled():
                     continue
@@ -430,11 +544,7 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
 
     except Exception as e:
         logger.error("gemini_live_session_error", error=str(e))
-        with suppress(Exception):
-            await client_ws.send_json({
-                "type": "error",
-                "message": f"Connection to Gemini Live API failed: {e}",
-            })
+        await _send_capture_error(client_ws, CAPTURE_CLIENT_ERROR)
     finally:
         await decoder.close()
         if ws_context_manager is not None:

@@ -156,6 +156,10 @@ class Settings(BaseSettings):
 
     # AI Voice Agent (Spec 021)
     GEMINI_API_KEY: str | None = None
+    CAPTURE_MAX_WS_FRAME_BYTES: int = 256 * 1024
+    CAPTURE_MAX_SESSION_BYTES: int = 15 * 1024 * 1024
+    CAPTURE_MAX_SESSION_SECONDS: int = 5 * 60
+    CAPTURE_MAX_TEXT_CHARS: int = 4000
     EXCHANGERATE_API_KEY: str | None = None
     IMPORT_S3_ENDPOINT: str | None = Field(
         default=None,

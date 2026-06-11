@@ -2,7 +2,13 @@ import pytest
 from sqlalchemy import select
 
 from app.auth.models import User
-from app.capture.agent import execute_agent_tool
+from app.capture.agent import (
+    CAPTURE_PROVIDER_ERROR,
+    CaptureSessionLimiter,
+    CaptureSessionLimitExceededError,
+    _handle_gemini_message,
+    execute_agent_tool,
+)
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account, AccountType
@@ -10,6 +16,18 @@ from app.investing.models import CashBalance
 from app.platform.models import Workspace, WorkspaceMembership
 from app.spending.models import SpendingCategory, SpendingTransaction
 from app.todo.models import Todo
+
+
+class FakeClientWebSocket:
+    def __init__(self):
+        self.sent_json: list[dict] = []
+        self.sent_bytes: list[bytes] = []
+
+    async def send_json(self, payload: dict):
+        self.sent_json.append(payload)
+
+    async def send_bytes(self, payload: bytes):
+        self.sent_bytes.append(payload)
 
 
 @pytest.fixture
@@ -198,3 +216,77 @@ async def test_execute_agent_tool_error_handling(seed_agent_test_data):
     res = await execute_agent_tool(name="unknown_tool", args={}, user_id=10, workspace_id=20)
     assert res["status"] == "error"
     assert "Unknown function" in res["message"]
+
+
+def test_capture_session_limiter_rejects_oversized_audio_frame():
+    limiter = CaptureSessionLimiter(
+        max_frame_bytes=4,
+        max_session_bytes=10,
+        max_session_seconds=60,
+        max_text_chars=50,
+    )
+
+    with pytest.raises(CaptureSessionLimitExceededError) as exc_info:
+        limiter.validate_client_message({"bytes": b"12345"})
+
+    assert exc_info.value.detail == "Voice audio frame is too large."
+
+
+def test_capture_session_limiter_rejects_cumulative_audio_bytes():
+    limiter = CaptureSessionLimiter(
+        max_frame_bytes=8,
+        max_session_bytes=10,
+        max_session_seconds=60,
+        max_text_chars=50,
+    )
+
+    limiter.validate_client_message({"bytes": b"12345"})
+    limiter.validate_client_message({"bytes": b"12345"})
+    with pytest.raises(CaptureSessionLimitExceededError) as exc_info:
+        limiter.validate_client_message({"bytes": b"1"})
+
+    assert exc_info.value.detail == "Voice session audio limit reached."
+
+
+def test_capture_session_limiter_rejects_long_text_message():
+    limiter = CaptureSessionLimiter(
+        max_frame_bytes=8,
+        max_session_bytes=10,
+        max_session_seconds=60,
+        max_text_chars=5,
+    )
+
+    with pytest.raises(CaptureSessionLimitExceededError) as exc_info:
+        limiter.validate_client_message({"text": "too long"})
+
+    assert exc_info.value.detail == "Voice text message is too large."
+
+
+def test_capture_session_limiter_rejects_expired_session():
+    limiter = CaptureSessionLimiter(
+        max_frame_bytes=8,
+        max_session_bytes=10,
+        max_session_seconds=1,
+        max_text_chars=50,
+    )
+    limiter.started_at -= 2
+
+    with pytest.raises(CaptureSessionLimitExceededError) as exc_info:
+        limiter.validate_client_message({"bytes": b"1"})
+
+    assert exc_info.value.detail == "Voice session time limit reached."
+
+
+@pytest.mark.asyncio
+async def test_gemini_provider_errors_are_sanitized_for_client():
+    client_ws = FakeClientWebSocket()
+
+    await _handle_gemini_message(
+        {"error": {"message": "API key leaked in provider error"}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=1,
+        workspace_id=1,
+    )
+
+    assert client_ws.sent_json == [{"type": "error", "message": CAPTURE_PROVIDER_ERROR}]
