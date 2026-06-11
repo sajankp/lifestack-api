@@ -179,5 +179,5 @@ Tests are written first (Red phase) then implementation makes them Green.
 - [x] Mobile navigation usable at 375px-768px widths
 - [x] Import delete and export delete work end-to-end
 - [x] Finance transfer arithmetic validated
-- [x] Source metadata field on transactions, budgets, holdings, cash balances, and transfers
+- [x] Source metadata field on transactions, budgets, and holdings
 - [x] READMEs up to date
