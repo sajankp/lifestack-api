@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.core.audit import AuditLog
 from app.core.database import postgres
-from app.finance.models import Account
+from app.finance.models import Account, Currency, FxRate, WorkspaceCurrency
 from app.investing.models import CashBalance, Holding, PortfolioSnapshot
 
 
@@ -507,6 +507,170 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
     # Breakdown contains correct currency mappings for both
     assert Decimal(summary["currency_breakdown"]["USD"]) == Decimal("2500.00")
     assert Decimal(summary["currency_breakdown"]["GBP"]) == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
+async def test_performance_summary_converts_multi_currency_snapshot(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="investing-performance-fx@example.com",
+        username="investing-performance-fx",
+        password="TestPass123!",
+    )
+
+    settings_res = await client.patch(
+        "/v1/finance/settings",
+        json={"reporting_currency_code": "USD"},
+    )
+    assert settings_res.status_code == 200, settings_res.text
+
+    async with postgres.async_session_maker() as session:
+        account = (
+            await session.execute(
+                select(Account).where(Account.public_id == uuid.UUID(account_map["usd-wallet"]))
+            )
+        ).scalar_one()
+        workspace_id = account.workspace_id
+        existing_eur = (
+            await session.execute(select(Currency).where(Currency.code == "EUR"))
+        ).scalar_one_or_none()
+        if existing_eur is None:
+            session.add(Currency(code="EUR", name="Euro", symbol="EUR", minor_unit=2))
+        enabled_eur = (
+            await session.execute(
+                select(WorkspaceCurrency).where(
+                    WorkspaceCurrency.workspace_id == workspace_id,
+                    WorkspaceCurrency.currency_code == "EUR",
+                )
+            )
+        ).scalar_one_or_none()
+        if enabled_eur is None:
+            session.add(WorkspaceCurrency(workspace_id=workspace_id, currency_code="EUR"))
+        await session.commit()
+
+    price_date = datetime.now(UTC).date()
+    usd_holding_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "AAPL",
+            "account_id": account_map["usd-wallet"],
+            "quantity": "2.00000000",
+            "avg_cost": "100.00",
+            "currency": "usd",
+        },
+    )
+    assert usd_holding_res.status_code == 201, usd_holding_res.text
+
+    gbp_holding_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "VUSA",
+            "account_id": account_map["gbp-wallet"],
+            "quantity": "3.00000000",
+            "avg_cost": "10.00",
+            "currency": "gbp",
+        },
+    )
+    assert gbp_holding_res.status_code == 201, gbp_holding_res.text
+
+    cash_res = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_map["eur-wallet"],
+            "balance": "100.00",
+            "currency": "eur",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert cash_res.status_code == 201, cash_res.text
+
+    price_res = await client.post(
+        "/v1/investing/prices",
+        json={
+            "price_date": price_date.isoformat(),
+            "prices": [
+                {
+                    "holding_public_id": usd_holding_res.json()["public_id"],
+                    "unit_price": "110.00",
+                },
+                {
+                    "holding_public_id": gbp_holding_res.json()["public_id"],
+                    "unit_price": "12.00",
+                },
+            ],
+        },
+    )
+    assert price_res.status_code == 201, price_res.text
+
+    now = datetime.now(UTC)
+    async with postgres.async_session_maker() as session:
+        session.add_all([
+            FxRate(
+                base_currency_code="GBP",
+                quote_currency_code="USD",
+                rate=Decimal("1.2500000000"),
+                as_of=now,
+                fetched_at=now,
+                source="test",
+            ),
+            FxRate(
+                base_currency_code="EUR",
+                quote_currency_code="USD",
+                rate=Decimal("1.0850000000"),
+                as_of=now,
+                fetched_at=now,
+                source="test",
+            ),
+        ])
+        await session.commit()
+
+    perf_res = await client.get("/v1/investing/performance/summary")
+    assert perf_res.status_code == 200, perf_res.text
+    perf = perf_res.json()
+
+    assert perf["currency"] == "USD"
+    assert Decimal(perf["total_value"]) == Decimal("373.50")
+    assert Decimal(perf["total_cost"]) == Decimal("237.50")
+    assert Decimal(perf["total_gain_loss"]) == Decimal("136.00")
+    assert Decimal(perf["fx_rates_used"]["GBP"]) == Decimal("1.2500000000")
+    assert Decimal(perf["fx_rates_used"]["EUR"]) == Decimal("1.0850000000")
+
+    async with postgres.async_session_maker() as session:
+        snapshot = (
+            await session.execute(
+                select(PortfolioSnapshot).where(
+                    PortfolioSnapshot.workspace_id == workspace_id,
+                    PortfolioSnapshot.currency_code == "USD",
+                )
+            )
+        ).scalar_one()
+
+    assert snapshot.total_value == Decimal("373.50")
+    assert snapshot.total_cost == Decimal("237.50")
+    assert snapshot.holdings_value == Decimal("265.00")
+    assert snapshot.cash_value == Decimal("108.50")
+    assert snapshot.fx_rates_used == {"EUR": "1.0850000000", "GBP": "1.2500000000"}
+
+    settings_res = await client.patch(
+        "/v1/finance/settings",
+        json={"reporting_currency_code": "EUR"},
+    )
+    assert settings_res.status_code == 200, settings_res.text
+
+    perf_eur_res = await client.get("/v1/investing/performance/summary")
+    assert perf_eur_res.status_code == 200, perf_eur_res.text
+    perf_eur = perf_eur_res.json()
+
+    assert perf_eur["currency"] == "EUR"
+    assert Decimal(perf_eur["total_value"]) == Decimal("344.24")
+    assert Decimal(perf_eur["total_cost"]) == Decimal("218.89")
+    assert Decimal(perf_eur["total_gain_loss"]) == Decimal("125.35")
+    assert Decimal(perf_eur["fx_rates_used"]["USD"]).quantize(Decimal("0.0000000001")) == Decimal(
+        "0.9216589862"
+    )
+    assert Decimal(perf_eur["fx_rates_used"]["GBP"]).quantize(Decimal("0.0000000001")) == Decimal(
+        "1.1520737327"
+    )
 
 
 @pytest.mark.asyncio

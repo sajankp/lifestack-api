@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -21,13 +21,14 @@ def test_portfolio_snapshot_has_latest_query_index():
 
 def test_holding_price_bulk_create_validation():
     item = HoldingPriceItem(holding_public_id=uuid.uuid4(), unit_price=150.00)
+    today = datetime.now(UTC).date()
 
     # CASE 1: Valid date (today)
-    valid_data = HoldingPriceBulkCreate(price_date=date.today(), prices=[item])
-    assert valid_data.price_date == date.today()
+    valid_data = HoldingPriceBulkCreate(price_date=today, prices=[item])
+    assert valid_data.price_date == today
 
     # CASE 2: Future date
-    future_date = date.today() + timedelta(days=1)
+    future_date = today + timedelta(days=1)
     with pytest.raises(ValidationError) as exc_info:
         HoldingPriceBulkCreate(price_date=future_date, prices=[item])
     assert "Price date cannot be in the future" in str(exc_info.value)

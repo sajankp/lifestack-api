@@ -1,6 +1,6 @@
 # Spec: Current Product Demo Readiness Roadmap
 
-**Status:** Proposed
+**Status:** Active - Partially Implemented
 **Spec ID:** 029
 **Date:** 2026-06-06
 
@@ -41,7 +41,19 @@ Experimental surfaces:
 
 The current application already has enough surface area for a strong portfolio demo. The next product work is composition, correctness, and trust.
 
-## 4. Reviewer Demo Journey
+## 4. Implementation Status Snapshot
+
+Last reviewed: 2026-06-10.
+
+| Milestone | Status | Implemented | Open |
+| --- | --- | --- | --- |
+| Milestone 1 - Demo Safety Baseline | Done | Demo reset is feature-flagged, role-gated for owner/admin, limited to the active workspace, exposed only when backend status allows it, audited for denied and successful attempts, confirmation-gated by workspace name, service-owned outside the router, and covered by API/Web tests. | Keep README/spec seed-data descriptions aligned as the fixture evolves. |
+| Milestone 2 - Workspace and Session Correctness | Partial | Workspace selection updates the active workspace token claim, persists refresh-token hash rotation, is covered for follow-up workspace-aware actions plus select-then-refresh, and Web now has a persisted active-workspace model used by destructive reset flows. | Centralize login, refresh, and workspace-select rotation into a shared helper when auth code is next refactored. |
+| Milestone 3 - Investing Correctness | Partial | Investing summary and performance snapshots now use shared FX conversion helpers, persist reporting currency and FX rates used, and cover deterministic USD/GBP/EUR fixtures. | Add parity checks between summary and performance totals where both endpoints use the same valuation basis. |
+| Milestone 4 - Documentation Reconciliation | Partial | This roadmap now identifies current surfaces, future-track non-goals, and the demo journey. README, ERD, Spec 014, Spec 028, and the audit index now reflect active workspace reset safety, demo fixture details, user finance settings, auth session rotation, and performance FX metadata. | Finish the broader historical spec-status sweep outside the Spec 029 release gate. |
+| Milestone 5 - Maintainability Cleanup | Partial | Demo reset logic is extracted from the platform router into a dedicated service, and background lifecycle plus DB hardening work from Gate 0 reduced some operational risk. | Split large dependency/frontend modules and replace container-shell E2E helpers. |
+
+## 5. Reviewer Demo Journey
 
 The intended first five minutes of review:
 
@@ -54,7 +66,7 @@ The intended first five minutes of review:
 
 The demo should show insight before data entry. The user should quickly understand what changed, what needs attention, and what action to take next.
 
-## 5. Milestone 1 - Demo Safety Baseline
+## 6. Milestone 1 - Demo Safety Baseline
 
 Goal: destructive demo features are safe, scoped, and intentional.
 
@@ -74,7 +86,7 @@ Acceptance criteria:
 - Reset always displays and uses the active workspace.
 - Reset seed data matches the spec and README.
 
-## 6. Milestone 2 - Workspace and Session Correctness
+## 7. Milestone 2 - Workspace and Session Correctness
 
 Goal: workspace switching is safe, predictable, and session-compatible.
 
@@ -92,7 +104,7 @@ Acceptance criteria:
 - Workspace-aware frontend actions use active workspace state.
 - Multi-workspace users can identify which workspace they are acting in.
 
-## 7. Milestone 3 - Investing Correctness
+## 8. Milestone 3 - Investing Correctness
 
 Goal: investing analytics are correct for multi-currency portfolios.
 
@@ -109,7 +121,7 @@ Acceptance criteria:
 - Snapshot responses do not mix native currency amounts under a single USD label.
 - Multi-currency test fixtures produce deterministic totals.
 
-## 8. Milestone 4 - Documentation Reconciliation
+## 9. Milestone 4 - Documentation Reconciliation
 
 Goal: docs make the current state and roadmap obvious to reviewers.
 
@@ -128,7 +140,7 @@ Acceptance criteria:
 - No roadmap implies that future high-trust domains are already implemented.
 - Spec 028 and this roadmap agree on Gate 0 hardening priorities.
 
-## 9. Milestone 5 - Maintainability Cleanup
+## 10. Milestone 5 - Maintainability Cleanup
 
 Goal: reduce complexity in the areas that now carry the most product risk.
 
@@ -146,7 +158,7 @@ Acceptance criteria:
 - Reset behavior is service-tested outside the router.
 - E2E setup is repeatable from a clean checkout.
 
-## 10. Release Gate
+## 11. Release Gate
 
 Gate 0 is public-demo ready only when:
 

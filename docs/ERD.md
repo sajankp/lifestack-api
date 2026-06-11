@@ -26,6 +26,9 @@ erDiagram
         string sid UK
         datetime expires_at
         datetime revoked_at
+        string current_token_hash
+        string previous_token_hash
+        datetime rotated_at
         datetime last_seen_at
         datetime created_at
     }
@@ -257,6 +260,17 @@ erDiagram
         int id PK
         int workspace_id FK
         string reporting_currency_code FK
+        string currency_display_preference
+        datetime created_at
+        datetime updated_at
+    }
+
+    USER_FINANCE_SETTINGS {
+        int id PK
+        int workspace_id FK
+        int user_id FK
+        string reporting_currency_override_code FK
+        string currency_display_preference_override
         datetime created_at
         datetime updated_at
     }
@@ -305,6 +319,9 @@ erDiagram
     CURRENCIES ||--o{ ACCOUNTS : default_currency
     WORKSPACES ||--o| WORKSPACE_FINANCE_SETTINGS : config
     CURRENCIES ||--o| WORKSPACE_FINANCE_SETTINGS : reporting_currency
+    WORKSPACES ||--o{ USER_FINANCE_SETTINGS : user_overrides
+    USERS ||--o{ USER_FINANCE_SETTINGS : configures
+    CURRENCIES ||--o{ USER_FINANCE_SETTINGS : reporting_override
     CURRENCIES ||--o{ FX_RATES : base_currency
     CURRENCIES ||--o{ FX_RATES : quote_currency
     WORKSPACES ||--o{ CAPITAL_TRANSFERS : scopes
@@ -507,8 +524,9 @@ erDiagram
 
 - `workspace_id` is the tenant boundary for every business table.
 - `public_id` is the external identifier exposed to API clients.
+- `auth_sessions` stores refresh-token rotation hashes so login, refresh, and workspace selection can keep replay protection consistent.
 - `spending_transactions` and `spending_budgets` enforce the `category_id + workspace_id` pairing with composite foreign keys in the database, even though Mermaid shows them as simple relationships.
-- `workspace_finance_settings` is effectively one row per workspace.
+- `workspace_finance_settings` is effectively one row per workspace; `user_finance_settings` stores per-user display/reporting overrides inside that workspace.
 - `workspace_currencies` is the workspace-level allow-list for currencies.
 - `fx_rates` stores currency pairs with both a base and quote currency reference.
 - `capital_transfers` connects the spending and investing modules through accounts and currencies.

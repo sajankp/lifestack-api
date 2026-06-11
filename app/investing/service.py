@@ -6,7 +6,7 @@ from decimal import Decimal
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
-from app.finance.models import Account
+from app.finance.models import Account, FxRate
 from app.finance.repository import (
     AccountRepository,
     CurrencyRepository,
@@ -47,6 +47,92 @@ from app.investing.schemas import (
     OverlapRow,
     PerformanceSummaryResponse,
 )
+
+MONEY_QUANT = Decimal("0.01")
+
+
+def _build_required_pairs(
+    used_currencies: list[str], reporting_currency: str
+) -> set[tuple[str, str]]:
+    required_pairs: set[tuple[str, str]] = set()
+    all_currencies = set(used_currencies) | {reporting_currency}
+    for curr in all_currencies:
+        if curr == "USD":
+            continue
+        required_pairs.add((curr, "USD"))
+        required_pairs.add(("USD", curr))
+    for curr in used_currencies:
+        if curr == reporting_currency:
+            continue
+        required_pairs.add((curr, reporting_currency))
+        required_pairs.add((reporting_currency, curr))
+    return required_pairs
+
+
+def _conversion_rate(
+    source_currency: str,
+    reporting_currency: str,
+    fx_lookup: dict[tuple[str, str], FxRate],
+) -> Decimal | None:
+    if source_currency == reporting_currency:
+        return Decimal("1")
+
+    direct = fx_lookup.get((source_currency, reporting_currency))
+    if direct is not None:
+        return Decimal(str(direct.rate))
+
+    inverse = fx_lookup.get((reporting_currency, source_currency))
+    if inverse is not None:
+        inverse_rate = Decimal(str(inverse.rate))
+        if inverse_rate != 0:
+            return Decimal("1") / inverse_rate
+
+    def rate_to_usd(currency: str) -> Decimal | None:
+        if currency == "USD":
+            return Decimal("1")
+        direct_to_usd = fx_lookup.get((currency, "USD"))
+        if direct_to_usd is not None:
+            return Decimal(str(direct_to_usd.rate))
+        usd_to_currency = fx_lookup.get(("USD", currency))
+        if usd_to_currency is not None:
+            usd_to_currency_rate = Decimal(str(usd_to_currency.rate))
+            if usd_to_currency_rate != 0:
+                return Decimal("1") / usd_to_currency_rate
+        return None
+
+    source_to_usd = rate_to_usd(source_currency)
+    reporting_to_usd = rate_to_usd(reporting_currency)
+    if source_to_usd is not None and reporting_to_usd is not None and reporting_to_usd != 0:
+        return source_to_usd / reporting_to_usd
+
+    return None
+
+
+def _convert_amount(
+    amount: Decimal,
+    source_currency: str,
+    reporting_currency: str,
+    fx_lookup: dict[tuple[str, str], FxRate],
+) -> Decimal | None:
+    rate = _conversion_rate(source_currency, reporting_currency, fx_lookup)
+    if rate is None:
+        return None
+    return amount * rate
+
+
+def _fx_rates_used(
+    used_currencies: list[str],
+    reporting_currency: str,
+    fx_lookup: dict[tuple[str, str], FxRate],
+) -> dict[str, str]:
+    rates: dict[str, str] = {}
+    for curr in used_currencies:
+        if curr == reporting_currency:
+            continue
+        rate = _conversion_rate(curr, reporting_currency, fx_lookup)
+        if rate is not None:
+            rates[curr] = str(rate)
+    return rates
 
 
 def _snapshot_holding(holding: Holding) -> dict:
@@ -452,11 +538,15 @@ class PerformanceService:
         cash_repo: CashBalanceRepository,
         holding_price_repo: HoldingPriceRepository,
         snapshot_repo: PortfolioSnapshotRepository,
+        finance_setting_repo: FinanceSettingRepository | None = None,
+        fx_rate_repo: FxRateRepository | None = None,
     ):
         self.holding_repo = holding_repo
         self.cash_repo = cash_repo
         self.holding_price_repo = holding_price_repo
         self.snapshot_repo = snapshot_repo
+        self.finance_setting_repo = finance_setting_repo
+        self.fx_rate_repo = fx_rate_repo
 
     async def submit_prices(self, workspace_id: int, payload: HoldingPriceBulkCreate) -> None:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -479,6 +569,41 @@ class PerformanceService:
         cash_balances, _ = await self.cash_repo.get_all(workspace_id, limit=10000, offset=0)
         holdings_value = Decimal("0")
         total_cost = Decimal("0")
+        cash_value = Decimal("0")
+        used_currencies = sorted({
+            *(h.currency.upper() for h in holdings),
+            *(c.currency.upper() for c in cash_balances),
+        })
+
+        reporting_currency: str | None = None
+        if self.finance_setting_repo is not None:
+            settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
+            if settings and settings.reporting_currency_code:
+                reporting_currency = settings.reporting_currency_code.upper()
+
+        if not used_currencies:
+            reporting_currency = reporting_currency or "USD"
+        elif reporting_currency is None:
+            if len(used_currencies) > 1:
+                raise ValidationError(
+                    detail=(
+                        "Reporting currency is required for multi-currency performance snapshots"
+                    )
+                )
+            reporting_currency = used_currencies[0]
+
+        fx_lookup: dict[tuple[str, str], FxRate] = {}
+        if any(curr != reporting_currency for curr in used_currencies):
+            if self.fx_rate_repo is None:
+                raise ValidationError(
+                    detail="FX rates are required for multi-currency performance snapshots"
+                )
+            required_pairs = _build_required_pairs(used_currencies, reporting_currency)
+            fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
+                list(required_pairs),
+                as_of=datetime.combine(snapshot_date, datetime.max.time(), UTC),
+            )
+
         holding_ids = [h.id for h in holdings if h.id is not None]
         latest_prices = await self.holding_price_repo.latest_prices_on_or_before_bulk(
             workspace_id, holding_ids, snapshot_date
@@ -488,26 +613,57 @@ class PerformanceService:
                 continue
             latest_price = latest_prices.get(h.id)
             unit_price = latest_price.unit_price if latest_price is not None else h.avg_cost
-            holdings_value += h.quantity * unit_price
-            total_cost += h.quantity * h.avg_cost
-        cash_value = sum((c.balance for c in cash_balances), Decimal("0"))
+            currency = h.currency.upper()
+            native_value = h.quantity * unit_price
+            native_cost = h.quantity * h.avg_cost
+            converted_value = _convert_amount(native_value, currency, reporting_currency, fx_lookup)
+            converted_cost = _convert_amount(native_cost, currency, reporting_currency, fx_lookup)
+            if converted_value is None or converted_cost is None:
+                raise ValidationError(
+                    detail=(
+                        f"FX rate from {currency} to {reporting_currency} is required "
+                        "for performance snapshots"
+                    )
+                )
+            holdings_value += converted_value
+            total_cost += converted_cost
+        for cash in cash_balances:
+            currency = cash.currency.upper()
+            converted_value = _convert_amount(cash.balance, currency, reporting_currency, fx_lookup)
+            if converted_value is None:
+                raise ValidationError(
+                    detail=(
+                        f"FX rate from {currency} to {reporting_currency} is required "
+                        "for performance snapshots"
+                    )
+                )
+            cash_value += converted_value
         total_value = holdings_value + cash_value
         await self.snapshot_repo.upsert(
             PortfolioSnapshot(
                 workspace_id=workspace_id,
                 snapshot_date=snapshot_date,
-                total_value=total_value,
-                total_cost=total_cost,
-                holdings_value=holdings_value,
-                cash_value=cash_value,
-                currency_code="USD",
-                fx_rates_used={},
+                total_value=total_value.quantize(MONEY_QUANT),
+                total_cost=total_cost.quantize(MONEY_QUANT),
+                holdings_value=holdings_value.quantize(MONEY_QUANT),
+                cash_value=cash_value.quantize(MONEY_QUANT),
+                currency_code=reporting_currency,
+                fx_rates_used=_fx_rates_used(used_currencies, reporting_currency, fx_lookup),
             )
         )
 
     async def summary(self, workspace_id: int) -> PerformanceSummaryResponse:
+        configured_reporting_currency: str | None = None
+        if self.finance_setting_repo is not None:
+            settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
+            if settings and settings.reporting_currency_code:
+                configured_reporting_currency = settings.reporting_currency_code.upper()
+
         snapshot = await self.snapshot_repo.latest(workspace_id)
-        if snapshot is None:
+        if snapshot is None or (
+            configured_reporting_currency is not None
+            and snapshot.currency_code != configured_reporting_currency
+        ):
             today = datetime.now(UTC).date()
             await self.create_snapshot(workspace_id, today)
             snapshot = await self.snapshot_repo.latest(workspace_id)
@@ -522,6 +678,7 @@ class PerformanceService:
             total_gain_loss_pct=pct,
             snapshot_date=snapshot.snapshot_date,
             currency=snapshot.currency_code,
+            fx_rates_used=snapshot.fx_rates_used or {},
         )
 
 
@@ -816,42 +973,6 @@ class InvestingSummaryService:
         self.finance_setting_repo = finance_setting_repo
         self.fx_rate_repo = fx_rate_repo
 
-    @staticmethod
-    def _build_required_pairs(
-        used_currencies: list[str], reporting_currency: str
-    ) -> set[tuple[str, str]]:
-        required_pairs: set[tuple[str, str]] = set()
-        for curr in used_currencies:
-            if curr == reporting_currency:
-                continue
-            required_pairs.add((curr, reporting_currency))
-            if curr != "USD" and reporting_currency != "USD":
-                required_pairs.add((curr, "USD"))
-                required_pairs.add(("USD", reporting_currency))
-        return required_pairs
-
-    @staticmethod
-    def _convert_amount(
-        amount: Decimal,
-        source_currency: str,
-        reporting_currency: str,
-        fx_lookup: dict[tuple[str, str], object],
-    ) -> Decimal | None:
-        if source_currency == reporting_currency:
-            return amount
-
-        direct = fx_lookup.get((source_currency, reporting_currency))
-        if direct is not None:
-            return amount * Decimal(str(direct.rate))
-
-        if source_currency != "USD" and reporting_currency != "USD":
-            base_to_usd = fx_lookup.get((source_currency, "USD"))
-            usd_to_quote = fx_lookup.get(("USD", reporting_currency))
-            if base_to_usd is not None and usd_to_quote is not None:
-                return amount * Decimal(str(base_to_usd.rate)) * Decimal(str(usd_to_quote.rate))
-
-        return None
-
     async def get_summary(self, workspace_id: int) -> InvestingSummaryResponse:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
         cash_balances, _ = await self.cash_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -934,7 +1055,7 @@ class InvestingSummaryService:
                 )
 
             valuation_as_of = datetime.now(UTC)
-            required_pairs = self._build_required_pairs(used_currencies, reporting_currency)
+            required_pairs = _build_required_pairs(used_currencies, reporting_currency)
             fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
                 list(required_pairs), as_of=valuation_as_of
             )
@@ -943,9 +1064,7 @@ class InvestingSummaryService:
             for holding in holdings:
                 native_value = holding.quantity * holding.avg_cost
                 curr = holding.currency.upper()
-                converted_value = self._convert_amount(
-                    native_value, curr, reporting_currency, fx_lookup
-                )
+                converted_value = _convert_amount(native_value, curr, reporting_currency, fx_lookup)
                 if converted_value is None:
                     return InvestingSummaryResponse(
                         portfolio_value=None,
@@ -962,9 +1081,7 @@ class InvestingSummaryService:
             converted_cash = Decimal("0")
             for cash in cash_balances:
                 curr = cash.currency.upper()
-                converted_value = self._convert_amount(
-                    cash.balance, curr, reporting_currency, fx_lookup
-                )
+                converted_value = _convert_amount(cash.balance, curr, reporting_currency, fx_lookup)
                 if converted_value is None:
                     return InvestingSummaryResponse(
                         portfolio_value=None,
@@ -978,11 +1095,6 @@ class InvestingSummaryService:
                     )
                 converted_cash += converted_value
 
-            fx_rates_used = {
-                base: rate.rate
-                for (base, quote), rate in fx_lookup.items()
-                if quote == reporting_currency
-            }
             return InvestingSummaryResponse(
                 portfolio_value=converted_portfolio,
                 holdings_count=len(holdings),
@@ -992,7 +1104,7 @@ class InvestingSummaryService:
                 reporting_currency=reporting_currency,
                 valuation_status="converted_available",
                 fx_as_of=valuation_as_of,
-                fx_rates_used=fx_rates_used,
+                fx_rates_used=_fx_rates_used(used_currencies, reporting_currency, fx_lookup),
             )
 
         portfolio_value = Decimal("0")

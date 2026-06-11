@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
@@ -12,6 +12,7 @@ from app.todo.models import RecurringTodoRule, Todo
 
 @pytest.mark.asyncio
 async def test_process_workspace_recurring_todos_generates_items(override_database_url):
+    today = datetime.now(UTC).date()
     async with postgres.async_session_maker() as session:
         user = User(
             id=808,
@@ -33,8 +34,8 @@ async def test_process_workspace_recurring_todos_generates_items(override_databa
                 priority="medium",
                 frequency="weekly",
                 interval=1,
-                anchor_date=date.today(),
-                next_due_date=date.today(),
+                anchor_date=today,
+                next_due_date=today,
                 is_active=True,
             )
         )

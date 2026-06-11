@@ -1,8 +1,8 @@
 # Feature Spec: Gate 0 Foundation Remediation
 
-**Status:** Partially Implemented - Needs Hardening
+**Status:** Partially Implemented - Spec 029 Demo Readiness In Progress
 **Spec ID:** 028
-**Last updated:** 2026-06-06
+**Last updated:** 2026-06-10
 
 ## 1. Overview
 
@@ -12,6 +12,8 @@ To conclude the **Gate 0: Foundation** milestone, several final hardening and re
 3. **Deterministic demo seed/reset**: Introduce an API endpoint to clear workspace-scoped transaction/holding data and seed a realistic, deterministic set of mock assets, categories, budgets, todos, and notifications to allow clean product demonstration.
 4. **README/spec limitations refresh**: Update documentation to specify execution caveats, known limits, and CI configurations.
 5. **Current-branch product hardening**: Close the remaining demo-safety and workspace/session correctness gaps before treating Gate 0 as public-demo ready.
+
+Current implementation note (2026-06-10): non-spending source metadata and rollback support, summary FX-rate display, deterministic demo reset, workspace-select refresh-token persistence, active-workspace reset targeting, and investing performance FX conversion are implemented or actively covered by Spec 029. Remaining Gate 0 follow-ups are mostly broader maintainability and E2E harness cleanup, not new product modules.
 
 ---
 
@@ -74,9 +76,9 @@ To conclude the **Gate 0: Foundation** milestone, several final hardening and re
 * **`README.md` updates**:
   * Document known sandbox/docker limits.
   * Add exact CI test matrices and command structures.
-  * Describe the current product as a finance-led personal operations command center.
-  * Keep health, documents, second brain, MCP, and personal coach tracks clearly marked as future roadmap.
-  * Document the safe demo journey and reset constraints.
+  * Describe the current product as a finance-led personal operations command center. `Done`
+  * Keep health, documents, second brain, MCP, and personal coach tracks clearly marked as future roadmap. `Done`
+  * Document the safe demo journey and reset constraints. `Done`
 
 ### 2.5 Workspace/Session Demo Readiness
 * **Workspace Selection Session Rotation**:
