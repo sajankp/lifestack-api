@@ -1,6 +1,8 @@
 # Feature Spec: Workspace Model and Isolation
-**Status:** Approved
+**Status:** Implemented
 **Spec ID:** 002
+
+Implementation note (2026-06-11): workspace provisioning, active workspace resolution, membership roles, session workspace selection, and cross-workspace isolation tests are implemented across `app/platform`, `app/auth`, and the integration suites.
 
 ## 1. Overview
 

@@ -1,7 +1,9 @@
 # Spec 004: Audit Logging
 
-**Status:** Approved
+**Status:** Implemented
 **Spec ID:** 004
+
+Implementation note (2026-06-11): append-only audit logging is implemented in `app/core/audit.py` and used by todo, spending, finance, investing, imports, exports, notifications, and platform reset flows, with mutation-focused integration coverage.
 
 ## Problem Statement
 The Lifestack API needs a way to track data mutations (creates, updates, deletes, and other actions like completions) across modules (todo, spending, etc.) to form an immutable history of events. This is critical for the "personal OS" trust factor, security monitoring, and eventually restoring or analyzing historical user actions.

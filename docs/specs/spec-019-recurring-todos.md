@@ -1,8 +1,10 @@
 # Spec 019 - Recurring Todos (Phase 1.1)
 
-Status: Proposed
+Status: Implemented
 Owner: Backend + Frontend
-Last updated: 2026-05-27
+Last updated: 2026-06-11
+
+Implementation note: recurring todo CRUD, scheduler generation, catch-up behavior, auditing, and backend tests are implemented in `app/todo` and `app/application/workflows.py`.
 
 ## Goal
 Allow users to define recurring todo rules that automatically generate todo items on schedule.

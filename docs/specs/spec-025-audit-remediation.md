@@ -1,6 +1,8 @@
 # Feature Spec: API and Database Security Remediation
-**Status:** Proposed
+**Status:** Implemented
 **Spec ID:** 025
+
+Implementation note (2026-06-11): RBAC, trusted-proxy/HSTS handling, inactive-user refresh blocking, password and username validation, timing-attack mitigation, import filename sanitization, WebSocket auth hardening, CORS method hardening, membership uniqueness, and weekly-summary scheduling are implemented and tested.
 
 ## 1. Overview
 This specification details the technical designs for addressing the Critical and High-priority backend audit findings. It establishes a robust role-based access control (RBAC) mechanism, secures session/websocket authentication, validates HTTP forwarded protocols, prevents username timing attacks, sanitizes import inputs, and schedules the weekly summary workflow.

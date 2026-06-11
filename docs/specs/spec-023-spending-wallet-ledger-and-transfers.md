@@ -1,6 +1,8 @@
 # Spec 023 - Spending Wallet Ledger and Transfers
 
-**Status:** Proposed
+**Status:** Partially Implemented
+
+Implementation note (2026-06-11): finance accounts, account-backed spending transactions, transfer APIs, tenant-safe account constraints, and import/export compatibility are implemented. Full ledger-style balance projection and complete spending timeline UX remain future work.
 
 ## 1) Problem
 Spending currently stores `wallet_name` as free text on transactions, which helps tagging but does not provide:

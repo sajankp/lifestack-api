@@ -1,6 +1,8 @@
 # Spec 024 - Phase 1 Runtime API Integration Contract (Investing-First)
 
-**Status:** Proposed
+**Status:** Implemented
+
+Implementation note (2026-06-11): the Phase 1 backend contract is implemented across auth, workspace, finance, spending, investing, dashboard, notifications, summaries, imports, and exports, and is exercised by backend integration tests plus the full-stack E2E suite.
 
 ## 1) Problem
 Phase 1 feature specs exist, but the app runtime still depends on cross-module API contracts that are not explicitly captured as a single "must-work-together" integration spec.

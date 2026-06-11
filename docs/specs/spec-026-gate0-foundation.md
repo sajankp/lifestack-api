@@ -1,6 +1,8 @@
 # Feature Spec: Gate 0 — Foundation Hardening
-**Status:** Approved
+**Status:** Implemented
 **Spec ID:** 026
+
+Implementation note (2026-06-11): Gate 0 foundation hardening is implemented across the backend, web, and E2E repos: auth/RBAC/session hardening, focused tests, data lifecycle controls, source metadata, finance correctness, FX ingestion, demo reset, and E2E harness cleanup have all landed on `main`.
 
 ## 1. Overview
 
@@ -170,12 +172,12 @@ Tests are written first (Red phase) then implementation makes them Green.
 
 ## 8. Acceptance Criteria (Gate 0 Done)
 
-- [ ] RBAC and inactive access rules enforced and tested
-- [ ] Auth: password policy, password change, logout-all-sessions, safe refresh
-- [ ] Existing test suite remains green
-- [ ] New test suites for notifications, capture, summaries
-- [ ] Mobile navigation usable at 375px–768px widths
-- [ ] Import delete and export delete work end-to-end
-- [ ] Finance transfer arithmetic validated
-- [ ] Source metadata field on transactions
-- [ ] READMEs up to date
+- [x] RBAC and inactive access rules enforced and tested
+- [x] Auth: password policy, password change, logout-all-sessions, safe refresh
+- [x] Existing test suite remains green
+- [x] New test suites for notifications, capture, summaries
+- [x] Mobile navigation usable at 375px-768px widths
+- [x] Import delete and export delete work end-to-end
+- [x] Finance transfer arithmetic validated
+- [x] Source metadata field on transactions, budgets, and holdings
+- [x] READMEs up to date

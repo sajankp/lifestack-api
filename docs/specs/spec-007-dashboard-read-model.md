@@ -2,6 +2,8 @@
 **Status:** Implemented
 **Spec ID:** 007
 
+Implementation note (2026-06-11): `GET /v1/dashboard/summary` is implemented through `app/dashboard` and `DashboardSummaryWorkflow`, with integration tests covering authenticated shape, empty-state defaults, workspace isolation, and cross-module summary behavior.
+
 ## 1. Overview
 Dashboard is a read model that aggregates key workspace state across modules without duplicating domain business rules.
 

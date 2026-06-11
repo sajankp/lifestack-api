@@ -1,6 +1,8 @@
 # Feature Spec: Investing Module MVP
-**Status:** Approved
+**Status:** Implemented
 **Spec ID:** 008
+
+Implementation note (2026-06-11): account-backed holdings, cash balances, portfolio summary, audit logging, workspace isolation, and integration tests are implemented in `app/investing`.
 
 ## 1. Overview
 Investing MVP introduces workspace-scoped holdings and manual portfolio tracking to complete the core Lifestack triad (todo, spending, investing).

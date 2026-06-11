@@ -1,6 +1,8 @@
 # Feature Spec: Spending Module
-**Status:** Approved
+**Status:** Implemented
 **Spec ID:** 003
+
+Implementation note (2026-06-11): categories, transactions, budgets, account linkage, source metadata, workspace scoping, audit logging, and integration coverage are implemented in `app/spending`.
 
 ## 1. Overview
 The Spending module is the financial domain for Lifestack. It should let an authenticated user record income and expenses, organize them into workspace-scoped categories, and define monthly category budgets.
@@ -13,8 +15,8 @@ This spec is intentionally aligned to the current architecture:
 - missing resources and validation failures return RFC 7807 problem details
 
 Current codebase note:
-- `spending` is planned in the architecture but is not implemented yet
-- registration currently provisions a default workspace only; it does not yet seed spending categories
+- `spending` is implemented and remains the core finance-led daily tracking surface.
+- registration provisions a default workspace; demo reset can seed representative spending categories and budgets when the gated demo feature is enabled.
 
 ## 2. Goals
 - Track income and expense transactions for the active workspace.

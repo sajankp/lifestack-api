@@ -1,6 +1,8 @@
 # Feature Spec: Voice Agent with Function Calling
-**Status:** Proposed
+**Status:** Implemented (Phase 1)
 **Spec ID:** 021
+
+Implementation note (2026-06-11): `/v1/capture/agent/ws`, cookie-only WebSocket authentication, agent tool execution for todo/spending/investing cash balance flows, session/frame/text limits, sanitized provider errors, OpenAPI tag coverage, and capture tests are implemented. WebRTC/media-server orchestration remains a later phase.
 
 ## 1. Overview
 This specification details the architecture and implementation of the **Voice Agent with Function Calling** feature. Traditional client-side speech-to-text (STT) and text-to-speech (TTS) browser APIs lose rich speech nuances (tone, emotion, pauses, emphasis). To provide a premium voice assistant, this feature streams raw audio directly to/from a live conversational LLM backend.
