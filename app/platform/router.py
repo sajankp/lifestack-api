@@ -68,6 +68,16 @@ def _workspace_role_value(role: WorkspaceRole | str | None) -> str | None:
     return role
 
 
+def _default_workspace_id(current_user: dict) -> int | None:
+    raw_workspace_id = current_user.get("default_workspace_id")
+    if raw_workspace_id is None:
+        return None
+    try:
+        return int(raw_workspace_id)
+    except (TypeError, ValueError):
+        return None
+
+
 @router.get("/workspaces/", response_model=WorkspaceListResponse)
 async def list_workspaces(
     current_user: Annotated[dict, Depends(get_current_user)],
@@ -234,7 +244,7 @@ async def get_demo_reset_status(
 
     membership = await membership_repo.get_membership(workspace.id, current_user["id"])
     role = _workspace_role_value(membership.role if membership else None)
-    is_active_workspace = current_user.get("default_workspace_id") == workspace.id
+    is_active_workspace = _default_workspace_id(current_user) == workspace.id
     has_role = role in ("owner", "admin")
     allowed = bool(settings.ENABLE_DEMO_RESET and is_active_workspace and has_role)
 
@@ -273,7 +283,7 @@ async def reset_demo_data(
 
     reset_service = DemoResetService(session, audit_logger)
 
-    if current_user.get("default_workspace_id") != workspace.id:
+    if _default_workspace_id(current_user) != workspace.id:
         await reset_service.log_denied(
             workspace=workspace,
             actor_id=current_user["id"],
