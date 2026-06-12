@@ -450,3 +450,42 @@ async def test_import_delete_completed_investing_holdings_rolls_back_records(
     holdings_after_delete = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
     assert holdings_after_delete.status_code == 200
     assert len(holdings_after_delete.json()["items"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_import_workspace_isolation(client: AsyncClient):
+    creds_a = await _register_and_login(client, "ws_a")
+    creds_b = await _register_and_login(client, "ws_b")
+
+    # User A creates an import batch
+    csv_content = (
+        "occurred_at,type,amount,category,description\n"
+        f"{datetime.now(UTC).isoformat()},expense,15.00,Other,some description\n"
+    )
+    files = {"file": ("tx.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "spending-transactions"},
+        files=files,
+        cookies=creds_a["cookies"],
+    )
+    assert validate.status_code == 200
+    import_id = validate.json()["import_batch"]["public_id"]
+
+    # User B (different workspace) attempts to fetch User A's import batch -> 404
+    get_resp = await client.get(f"/v1/imports/{import_id}", cookies=creds_b["cookies"])
+    assert get_resp.status_code == 404
+
+    # User B attempts to commit User A's import batch -> 404
+    commit_resp = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds_b["cookies"])
+    assert commit_resp.status_code == 404
+
+    # User B attempts to delete User A's import batch -> 404
+    del_resp = await client.delete(f"/v1/imports/{import_id}", cookies=creds_b["cookies"])
+    assert del_resp.status_code == 404
+
+    # User B lists imports -> User A's import batch should not be present
+    list_resp = await client.get("/v1/imports", cookies=creds_b["cookies"])
+    assert list_resp.status_code == 200
+    batch_ids = [item["public_id"] for item in list_resp.json()["items"]]
+    assert import_id not in batch_ids
