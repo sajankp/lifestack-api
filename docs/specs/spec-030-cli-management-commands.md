@@ -32,8 +32,8 @@ python -m app.cli.run <job_name> [--workspace-id <workspace_id>] [--week-start <
 
 ### Production Gating
 To ensure E2E HTTP endpoints are absolutely not exposed in production:
-1. The routing setup in [app/main.py](file:///root/projects/lifestack/lifestack-api/app/main.py#L208-L209) gates the `testing_router` to `settings.ENABLE_E2E_TEST_HOOKS` and `settings.ENV in {"local", "test"}`.
-2. The config validator in [app/config.py](file:///root/projects/lifestack/lifestack-api/app/config.py#L259-L263) explicitly fails fast if `ENV == "production"` and `ENABLE_E2E_TEST_HOOKS == True`.
+1. The routing setup in [app/main.py](../../app/main.py) gates the `testing_router` to `settings.ENABLE_E2E_TEST_HOOKS` and `settings.ENV in {"local", "test"}`.
+2. The config validator in [app/config.py](../../app/config.py) explicitly fails fast if `ENV == "production"` and `ENABLE_E2E_TEST_HOOKS == True`.
 We will add automated tests to explicitly verify that `testing_router` routes are inaccessible and raise a `404` in staging/production setups, confirming the validation safety.
 
 ## Implementation Details

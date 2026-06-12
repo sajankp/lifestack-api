@@ -50,7 +50,7 @@ async def main() -> None:
 
     # Validations
     week_start_date = None
-    if args.week_start:
+    if args.week_start is not None:
         if args.job != "weekly_summary":
             print(
                 "Error: --week-start is only applicable for the 'weekly_summary' job.",
@@ -63,7 +63,7 @@ async def main() -> None:
             print("Error: --week-start must be in YYYY-MM-DD format.", file=sys.stderr)
             sys.exit(1)
 
-    if args.workspace_id and args.job not in {
+    if args.workspace_id is not None and args.job not in {
         "budget_guardrails",
         "recurring_transactions",
         "weekly_summary",
