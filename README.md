@@ -340,6 +340,27 @@ Provider errors are logged server-side and returned to the client as sanitized r
 
 The `/v1/e2e/...` workflow trigger routes are registered only when `ENABLE_E2E_TEST_HOOKS=true` and `ENV` is `local` or `test`. They exist for the isolated `lifestack-e2e` Docker Compose harness so Playwright can trigger budget guardrails and recurring transaction generation over authenticated HTTP instead of shelling into containers. Production and staging settings reject this flag.
 
+## CLI Management Commands
+
+For manual orchestration or triggering background jobs within the Python environment (similar to Django's management commands), you can use the CLI runner:
+
+```bash
+python -m app.cli.run <job_name> [--workspace-id <workspace_id>] [--week-start <YYYY-MM-DD>]
+```
+
+Supported job names:
+- `budget_guardrails`
+- `recurring_transactions`
+- `fx_rate_ingestion`
+- `export_cleanup`
+- `session_cleanup`
+- `import_preview_cleanup`
+- `weekly_summary`
+
+Options:
+- `--workspace-id`: Limits the execution of `budget_guardrails`, `recurring_transactions`, or `weekly_summary` to a single workspace.
+- `--week-start`: Specific to `weekly_summary` (Format: `YYYY-MM-DD`), allowing manual generation or re-generation of a specific week.
+
 ## Bulk Import Storage Configuration
 
 Spec 020 bulk CSV imports support configurable file persistence:
