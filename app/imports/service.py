@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import UploadFile
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -586,16 +587,35 @@ class ImportService:
                 elif batch.module == ImportModule.spending_budgets:
                     for row in rows:
                         p = row.payload_json
-                        budget = SpendingBudget(
-                            workspace_id=workspace_id,
-                            category_id=int(p["category_id"]),
-                            amount=Decimal(p["amount"]),
-                            month_start=datetime.fromisoformat(p["month_start"]).date(),
-                            source_type="imported",
-                            source_import_id=batch.id,
-                            source_ref=f"{batch.public_id}:{row.row_number}",
-                        )
-                        self.session.add(budget)
+                        # Check if budget already exists for this category/month
+                        month_start_date = datetime.fromisoformat(p["month_start"]).date()
+                        existing_budget = (
+                            await self.session.execute(
+                                select(SpendingBudget).where(
+                                    SpendingBudget.workspace_id == workspace_id,
+                                    SpendingBudget.category_id == int(p["category_id"]),
+                                    SpendingBudget.month_start == month_start_date,
+                                )
+                            )
+                        ).scalar_one_or_none()
+
+                        if existing_budget:
+                            existing_budget.amount = Decimal(p["amount"])
+                            existing_budget.source_type = "imported"
+                            existing_budget.source_import_id = batch.id
+                            existing_budget.source_ref = f"{batch.public_id}:{row.row_number}"
+                            existing_budget.updated_at = datetime.now(UTC)
+                        else:
+                            budget = SpendingBudget(
+                                workspace_id=workspace_id,
+                                category_id=int(p["category_id"]),
+                                amount=Decimal(p["amount"]),
+                                month_start=month_start_date,
+                                source_type="imported",
+                                source_import_id=batch.id,
+                                source_ref=f"{batch.public_id}:{row.row_number}",
+                            )
+                            self.session.add(budget)
                         inserted += 1
                 else:
                     account_map = await self._account_map(workspace_id)
@@ -610,19 +630,40 @@ class ImportService:
                             raise ValidationError(
                                 detail=f"Account '{account_name_raw or 'Unknown'}' not found in workspace"
                             )
-                        holding = Holding(
-                            workspace_id=workspace_id,
-                            user_id=user_id,
-                            symbol=p["symbol"],
-                            account_id=account_id,
-                            quantity=Decimal(p["quantity"]),
-                            avg_cost=Decimal(p["avg_cost"]),
-                            currency=p["currency"],
-                            source_type="imported",
-                            source_import_id=batch.id,
-                            source_ref=f"{batch.public_id}:{row.row_number}",
-                        )
-                        self.session.add(holding)
+
+                        # Check if holding already exists for this unique combination
+                        existing_holding = (
+                            await self.session.execute(
+                                select(Holding).where(
+                                    Holding.workspace_id == workspace_id,
+                                    Holding.symbol == p["symbol"],
+                                    Holding.account_id == account_id,
+                                )
+                            )
+                        ).scalar_one_or_none()
+
+                        if existing_holding:
+                            existing_holding.quantity = Decimal(p["quantity"])
+                            existing_holding.avg_cost = Decimal(p["avg_cost"])
+                            existing_holding.currency = p["currency"]
+                            existing_holding.source_type = "imported"
+                            existing_holding.source_import_id = batch.id
+                            existing_holding.source_ref = f"{batch.public_id}:{row.row_number}"
+                            existing_holding.updated_at = datetime.now(UTC)
+                        else:
+                            holding = Holding(
+                                workspace_id=workspace_id,
+                                user_id=user_id,
+                                symbol=p["symbol"],
+                                account_id=account_id,
+                                quantity=Decimal(p["quantity"]),
+                                avg_cost=Decimal(p["avg_cost"]),
+                                currency=p["currency"],
+                                source_type="imported",
+                                source_import_id=batch.id,
+                                source_ref=f"{batch.public_id}:{row.row_number}",
+                            )
+                            self.session.add(holding)
                         inserted += 1
 
                 await self.session.flush()
@@ -647,7 +688,7 @@ class ImportService:
                     "changed_fields": ["status", "inserted_rows"],
                 },
             )
-        except Exception:
+        except Exception as e:
             await self.session.rollback()
             batch = await self.repository.get_by_public_id(workspace_id, import_public_id)
             if not batch:
@@ -655,6 +696,10 @@ class ImportService:
             batch.status = ImportStatus.failed_commit
             batch.updated_at = datetime.now(UTC)
             await self.repository.save_batch(batch)
+            if isinstance(e, IntegrityError):
+                raise ValidationError(
+                    detail=f"Database conflict or integrity error during import: {e.orig}"
+                ) from e
             raise
 
         return batch, inserted, auto_created_categories

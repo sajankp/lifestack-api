@@ -1,5 +1,6 @@
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
@@ -14,6 +15,7 @@ from app.core.dependencies import (
     get_investing_analytics_service,
     get_investing_cash_balance_service,
     get_investing_constituent_service,
+    get_investing_holding_price_repo,
     get_investing_holding_service,
     get_investing_instrument_service,
     get_investing_performance_service,
@@ -23,6 +25,7 @@ from app.core.dependencies import (
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.finance.service import AccountService
 from app.imports.repository import ImportRepository
+from app.investing.repository import HoldingPriceRepository
 from app.investing.schemas import (
     CashBalanceCreate,
     CashBalanceResponse,
@@ -61,11 +64,27 @@ async def _build_account_cache(
     return {a.id: (a.public_id, a.name) for a in accounts if a.id is not None}
 
 
+def _populate_valuation_fields(
+    data: dict, quantity: Decimal, avg_cost: Decimal, unit_price: Decimal | None
+) -> None:
+    current_price = unit_price if unit_price is not None else avg_cost
+    current_value = quantity * current_price
+    book_value = quantity * avg_cost
+    gain_loss = current_value - book_value
+    gain_loss_pct = (gain_loss / book_value * Decimal("100")) if book_value else Decimal("0")
+
+    data["current_price"] = current_price
+    data["current_value"] = current_value
+    data["gain_loss"] = gain_loss
+    data["gain_loss_pct"] = gain_loss_pct
+
+
 @router.get("/holdings", response_model=PaginatedResponse[HoldingResponse])
 async def list_holdings(
     holding_service: Annotated[HoldingService, Depends(get_investing_holding_service)],
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     import_repo: Annotated[ImportRepository, Depends(get_import_repo)],
+    price_repo: Annotated[HoldingPriceRepository, Depends(get_investing_holding_price_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     pagination: Annotated[PaginationParams, Depends()],
@@ -83,6 +102,13 @@ async def list_holdings(
 
     account_cache = await _build_account_cache(account_service, workspace_id)
     import_cache = await _build_import_batch_cache(import_repo, workspace_id, holdings)
+
+    holding_ids = [h.id for h in holdings if h.id is not None]
+    today = datetime.now(UTC).date()
+    latest_prices = await price_repo.latest_prices_on_or_before_bulk(
+        workspace_id, holding_ids, today
+    )
+
     items = []
     for h in holdings:
         pub_id, name = account_cache.get(h.account_id, (None, "Unknown"))
@@ -92,6 +118,11 @@ async def list_holdings(
         data["source_metadata"] = _source_metadata_response(
             h.source_type, h.source_ref, import_cache.get(h.source_import_id)
         )
+
+        price_row = latest_prices.get(h.id) if h.id is not None else None
+        unit_price = price_row.unit_price if price_row is not None else None
+        _populate_valuation_fields(data, h.quantity, h.avg_cost, unit_price)
+
         items.append(HoldingResponse.model_validate(data))
     return PaginatedResponse(
         items=items,
@@ -106,6 +137,7 @@ async def create_holding(
     holding_in: HoldingCreate,
     holding_service: Annotated[HoldingService, Depends(get_investing_holding_service)],
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    price_repo: Annotated[HoldingPriceRepository, Depends(get_investing_holding_price_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -121,6 +153,16 @@ async def create_holding(
     data["source_metadata"] = _source_metadata_response(
         holding.source_type, holding.source_ref, None
     )
+
+    today = datetime.now(UTC).date()
+    price_row = (
+        await price_repo.latest_price_on_or_before(workspace_id, holding.id, today)
+        if holding.id is not None
+        else None
+    )
+    unit_price = price_row.unit_price if price_row is not None else None
+    _populate_valuation_fields(data, holding.quantity, holding.avg_cost, unit_price)
+
     return HoldingResponse.model_validate(data)
 
 
@@ -130,6 +172,7 @@ async def update_holding(
     holding_in: HoldingUpdate,
     holding_service: Annotated[HoldingService, Depends(get_investing_holding_service)],
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    price_repo: Annotated[HoldingPriceRepository, Depends(get_investing_holding_price_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -149,6 +192,16 @@ async def update_holding(
     data["source_metadata"] = _source_metadata_response(
         holding.source_type, holding.source_ref, None
     )
+
+    today = datetime.now(UTC).date()
+    price_row = (
+        await price_repo.latest_price_on_or_before(workspace_id, holding.id, today)
+        if holding.id is not None
+        else None
+    )
+    unit_price = price_row.unit_price if price_row is not None else None
+    _populate_valuation_fields(data, holding.quantity, holding.avg_cost, unit_price)
+
     return HoldingResponse.model_validate(data)
 
 
@@ -363,6 +416,40 @@ async def submit_prices(
 ):
     await performance_service.submit_prices(workspace_id, payload)
     return {"ok": True}
+
+
+@router.post("/prices/refresh", status_code=status.HTTP_200_OK)
+async def refresh_prices(
+    performance_service: Annotated[PerformanceService, Depends(get_investing_performance_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    prices = await performance_service.refresh_workspace_prices(workspace_id)
+
+    if prices:
+        price_details = {sym: str(price) for sym, price in prices.items()}
+        await audit_logger.log(
+            workspace_id=workspace_id,
+            actor_id=user["id"],
+            action="holding_prices_submitted",
+            module="investing",
+            entity_type="holding_price",
+            entity_id=0,
+            details={
+                "entity_public_id": str(uuid.UUID(int=0)),
+                "before": None,
+                "after": {
+                    "prices": price_details,
+                    "source": "api",
+                },
+                "changed_fields": ["prices"],
+                "prices": price_details,
+                "source": "api",
+            },
+        )
+    return {"updated": list(prices.keys())}
 
 
 @router.get("/performance/summary", response_model=PerformanceSummaryResponse)

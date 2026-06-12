@@ -453,6 +453,111 @@ async def test_import_delete_completed_investing_holdings_rolls_back_records(
 
 
 @pytest.mark.asyncio
+async def test_import_investing_holdings_upserts_on_duplicate(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "brokerage", "account_type": "brokerage", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+
+    # 1. Add a holding manually or via first import
+    csv_content1 = (
+        "symbol,account_name,quantity,avg_cost,currency\nAAPL,brokerage,10.00,150.00,USD\n"
+    )
+    files1 = {"file": ("holdings1.csv", io.BytesIO(csv_content1.encode("utf-8")), "text/csv")}
+    validate1 = await client.post(
+        "/v1/imports",
+        data={"module": "investing-holdings"},
+        files=files1,
+        cookies=creds["cookies"],
+    )
+    assert validate1.status_code == 200
+    import_id1 = validate1.json()["import_batch"]["public_id"]
+    commit_resp1 = await client.post(f"/v1/imports/{import_id1}/commit", cookies=creds["cookies"])
+    assert commit_resp1.status_code == 200
+
+    # Verify first import holding quantity is 10.00
+    holdings = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
+    assert holdings.status_code == 200
+    items = holdings.json()["items"]
+    assert len(items) == 1
+    assert items[0]["symbol"] == "AAPL"
+    assert items[0]["quantity"] == "10.00000000"
+    assert items[0]["avg_cost"] == "150.00"
+
+    # 2. Upload and commit import with same holding symbol/account but different quantity/avg_cost
+    csv_content2 = (
+        "symbol,account_name,quantity,avg_cost,currency\nAAPL,brokerage,15.50,165.00,USD\n"
+    )
+    files2 = {"file": ("holdings2.csv", io.BytesIO(csv_content2.encode("utf-8")), "text/csv")}
+    validate2 = await client.post(
+        "/v1/imports",
+        data={"module": "investing-holdings"},
+        files=files2,
+        cookies=creds["cookies"],
+    )
+    assert validate2.status_code == 200
+    import_id2 = validate2.json()["import_batch"]["public_id"]
+    commit_resp2 = await client.post(f"/v1/imports/{import_id2}/commit", cookies=creds["cookies"])
+    assert commit_resp2.status_code == 200
+
+    # Verify that duplicate holding is updated/upserted and not duplicated
+    holdings_after = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
+    assert holdings_after.status_code == 200
+    items_after = holdings_after.json()["items"]
+    assert len(items_after) == 1
+    assert items_after[0]["symbol"] == "AAPL"
+    assert items_after[0]["quantity"] == "15.50000000"
+    assert items_after[0]["avg_cost"] == "165.00"
+
+
+@pytest.mark.asyncio
+async def test_import_spending_budgets_upserts_on_duplicate(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
+    food = next(c for c in cats if c["name"] == "Food & Dining")
+
+    # 1. Import budget first time
+    csv_content1 = f"month_start,category,amount\n2026-06-01,{food['public_id']},500.00\n"
+    files1 = {"file": ("budgets1.csv", io.BytesIO(csv_content1.encode("utf-8")), "text/csv")}
+    validate1 = await client.post(
+        "/v1/imports",
+        data={"module": "spending-budgets"},
+        files=files1,
+        cookies=creds["cookies"],
+    )
+    assert validate1.status_code == 200
+    import_id1 = validate1.json()["import_batch"]["public_id"]
+    commit_resp1 = await client.post(f"/v1/imports/{import_id1}/commit", cookies=creds["cookies"])
+    assert commit_resp1.status_code == 200
+
+    # 2. Import budget second time for the same month and category but different amount
+    csv_content2 = f"month_start,category,amount\n2026-06-01,{food['public_id']},750.00\n"
+    files2 = {"file": ("budgets2.csv", io.BytesIO(csv_content2.encode("utf-8")), "text/csv")}
+    validate2 = await client.post(
+        "/v1/imports",
+        data={"module": "spending-budgets"},
+        files=files2,
+        cookies=creds["cookies"],
+    )
+    assert validate2.status_code == 200
+    import_id2 = validate2.json()["import_batch"]["public_id"]
+    commit_resp2 = await client.post(f"/v1/imports/{import_id2}/commit", cookies=creds["cookies"])
+    assert commit_resp2.status_code == 200
+
+    # Verify that the budget is updated/upserted and not duplicated or failing
+    budgets = await client.get("/v1/spending/budgets", cookies=creds["cookies"])
+    assert budgets.status_code == 200
+    items = budgets.json()["items"]
+    assert len(items) == 1
+    assert items[0]["amount"] == "750.00"
+
+
+@pytest.mark.asyncio
 async def test_import_workspace_isolation(client: AsyncClient):
     creds_a = await _register_and_login(client, "ws_a")
     creds_b = await _register_and_login(client, "ws_b")

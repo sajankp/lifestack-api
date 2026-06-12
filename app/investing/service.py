@@ -1,7 +1,10 @@
+import asyncio
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
+
+import httpx
 
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
@@ -531,6 +534,27 @@ class CashBalanceService:
             )
 
 
+async def _fetch_stock_price(symbol: str) -> Decimal | None:
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol.upper().strip()}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            result = data.get("chart", {}).get("result")
+            if result and len(result) > 0:
+                meta = result[0].get("meta", {})
+                price = meta.get("regularMarketPrice")
+                if price is not None:
+                    return Decimal(str(price))
+        except Exception:
+            pass
+    return None
+
+
 class PerformanceService:
     def __init__(
         self,
@@ -547,6 +571,35 @@ class PerformanceService:
         self.snapshot_repo = snapshot_repo
         self.finance_setting_repo = finance_setting_repo
         self.fx_rate_repo = fx_rate_repo
+
+    async def refresh_workspace_prices(self, workspace_id: int) -> dict[str, Decimal]:
+        holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
+        if not holdings:
+            return {}
+
+        symbols = sorted({h.symbol.upper().strip() for h in holdings})
+        tasks = [_fetch_stock_price(sym) for sym in symbols]
+        results = await asyncio.gather(*tasks)
+        prices = {
+            sym: price for sym, price in zip(symbols, results, strict=False) if price is not None
+        }
+
+        if prices:
+            today = datetime.now(UTC).date()
+            for h in holdings:
+                if h.id is not None:
+                    sym = h.symbol.upper().strip()
+                    if sym in prices:
+                        await self.holding_price_repo.upsert_price(
+                            workspace_id=workspace_id,
+                            holding_id=h.id,
+                            price_date=today,
+                            unit_price=prices[sym],
+                            source="api",
+                        )
+            await self.create_snapshot(workspace_id, today)
+
+        return prices
 
     async def submit_prices(self, workspace_id: int, payload: HoldingPriceBulkCreate) -> None:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)

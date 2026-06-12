@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
@@ -887,3 +888,65 @@ async def test_portfolio_snapshot_fx_rates_validation():
                 currency_code="USD",
                 fx_rates_used=invalid_fx,
             )
+
+
+@pytest.mark.asyncio
+async def test_investing_prices_refresh_and_valuation_fields(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="refresh-val@example.com",
+        username="refresh-val",
+        password="TestPass123!",
+    )
+
+    # 1. Create a holding
+    holding_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "AAPL",
+            "account_id": account_map["brokerage"],
+            "quantity": "10.00000000",
+            "avg_cost": "150.00",
+            "currency": "USD",
+        },
+    )
+    assert holding_res.status_code == 201
+    holding = holding_res.json()
+
+    # No prices yet -> fallback to avg_cost
+    assert Decimal(holding["current_price"]) == Decimal("150.00")
+    assert Decimal(holding["current_value"]) == Decimal("1500.00")
+    assert Decimal(holding["gain_loss"]) == Decimal("0.00")
+    assert Decimal(holding["gain_loss_pct"]) == Decimal("0.00")
+
+    # 2. Trigger refresh with mock stock API
+    with patch("app.investing.service._fetch_stock_price", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = Decimal("180.00")
+
+        refresh_res = await client.post("/v1/investing/prices/refresh")
+        assert refresh_res.status_code == 200
+        assert "AAPL" in refresh_res.json()["updated"]
+
+        mock_fetch.assert_called_once_with("AAPL")
+
+    # 3. Verify updated fields in holding list
+    list_res = await client.get("/v1/investing/holdings")
+    assert list_res.status_code == 200
+    items = list_res.json()["items"]
+    assert len(items) == 1
+    h_data = items[0]
+
+    assert Decimal(h_data["current_price"]) == Decimal("180.00")
+    assert Decimal(h_data["current_value"]) == Decimal("1800.00")
+    assert Decimal(h_data["gain_loss"]) == Decimal("300.00")
+    assert Decimal(h_data["gain_loss_pct"]) == Decimal("20.00")
+
+    # 4. Verify audit log
+    async with postgres.async_session_maker() as session:
+        result = await session.execute(
+            select(AuditLog).where(AuditLog.action == "holding_prices_submitted")
+        )
+        audit = result.scalars().first()
+        assert audit is not None
+        assert audit.details["prices"]["AAPL"] == "180.00"
+        assert audit.details["source"] == "api"

@@ -51,6 +51,11 @@ class HoldingResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    current_price: Decimal | None = None
+    current_value: Decimal | None = None
+    gain_loss: Decimal | None = None
+    gain_loss_pct: Decimal | None = None
+
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 
 
