@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -18,8 +18,12 @@ from app.core.dependencies import (
     require_min_role,
 )
 from app.core.exceptions import NotFoundError
+from app.notifications.repository import NotificationRepository
+from app.notifications.service import NotificationService
 from app.platform.repository import WorkspaceRepository
 from app.spending.models import RecurringTransaction
+from app.summaries.repository import WeeklySummaryRepository
+from app.summaries.service import WeeklySummaryService
 
 router = APIRouter(prefix="/e2e", tags=["testing"])
 
@@ -29,8 +33,19 @@ class WorkflowRunResponse(BaseModel):
     generated_count: int | None = None
 
 
+class WeeklySummaryWorkflowRunResponse(BaseModel):
+    status: str = "ok"
+    summary_public_id: str
+    week_start: date
+    week_end: date
+
+
 class RecurringTransactionTriggerRequest(BaseModel):
     description: str = Field(..., min_length=1, max_length=500)
+
+
+class WeeklySummaryTriggerRequest(BaseModel):
+    week_start: date | None = None
 
 
 async def _active_workspace_or_404(workspace_id: int, workspace_repo: WorkspaceRepository):
@@ -80,3 +95,30 @@ async def trigger_recurring_transactions(
 
     generated_count = await process_workspace_recurring_transactions(session, workspace)
     return WorkflowRunResponse(generated_count=generated_count)
+
+
+@router.post("/workflows/weekly-summary", response_model=WeeklySummaryWorkflowRunResponse)
+async def trigger_weekly_summary(
+    payload: WeeklySummaryTriggerRequest,
+    user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("owner"))],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    workspace_repo: Annotated[WorkspaceRepository, Depends(get_workspace_repo)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> WeeklySummaryWorkflowRunResponse:
+    await _active_workspace_or_404(workspace_id, workspace_repo)
+    today = datetime.now(UTC).date()
+    default_week_start = today - timedelta(days=today.weekday() + 7)
+    service = WeeklySummaryService(
+        WeeklySummaryRepository(session),
+        session,
+        NotificationService(NotificationRepository(session)),
+    )
+    summary = await service.generate_for_workspace_week(
+        workspace_id, user["id"], payload.week_start or default_week_start
+    )
+    return WeeklySummaryWorkflowRunResponse(
+        summary_public_id=str(summary.public_id),
+        week_start=summary.week_start,
+        week_end=summary.week_end,
+    )

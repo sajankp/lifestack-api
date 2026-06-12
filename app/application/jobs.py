@@ -11,7 +11,7 @@ Boundary rules:
 """
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import structlog
 from sqlalchemy import func, select
@@ -52,7 +52,7 @@ BUDGET_GUARDRAILS_LOCK_KEY = ADVISORY_LOCK_BUDGET_GUARDRAILS
 WORKSPACE_EVALUATION_TIMEOUT_SECONDS = 300.0
 
 
-async def budget_guardrails_job() -> None:
+async def budget_guardrails_job(workspace_id: int | None = None) -> None:
     """
     Cron-triggered job that evaluates budget guardrails across all active
     workspaces (Spec 009).
@@ -82,9 +82,12 @@ async def budget_guardrails_job() -> None:
             )
             return
 
-        workspaces_res = await session.execute(
-            select(Workspace).where(Workspace.is_active == True)  # noqa: E712
-        )
+        if workspace_id is not None:
+            workspaces_res = await session.execute(
+                select(Workspace).where(Workspace.id == workspace_id, Workspace.is_active)
+            )
+        else:
+            workspaces_res = await session.execute(select(Workspace).where(Workspace.is_active))
         workspaces = workspaces_res.scalars().all()
 
         # --- Step 2: Per-workspace evaluation with isolated transactions ---
@@ -139,7 +142,7 @@ async def budget_guardrails_job() -> None:
 RECURRING_TRANSACTIONS_LOCK_KEY = ADVISORY_LOCK_RECURRING_TRANSACTIONS
 
 
-async def recurring_transactions_job() -> None:
+async def recurring_transactions_job(workspace_id: int | None = None) -> None:
     """
     Cron-triggered job that generates spending transactions for all due recurring
     rules across all active workspaces (Spec 013).
@@ -168,9 +171,14 @@ async def recurring_transactions_job() -> None:
             return
 
         async with postgres.async_session_maker() as session:
-            workspaces_res = await session.execute(
-                select(Workspace.id).where(Workspace.is_active == True)  # noqa: E712
-            )
+            if workspace_id is not None:
+                workspaces_res = await session.execute(
+                    select(Workspace.id).where(Workspace.id == workspace_id, Workspace.is_active)
+                )
+            else:
+                workspaces_res = await session.execute(
+                    select(Workspace.id).where(Workspace.is_active)
+                )
             workspace_ids = list(workspaces_res.scalars().all())
 
         total_generated = 0
@@ -243,7 +251,9 @@ WEEKLY_SUMMARY_ROLE_ORDER = {
 }
 
 
-async def weekly_summary_job() -> None:
+async def weekly_summary_job(
+    workspace_id: int | None = None, week_start: date | None = None
+) -> None:
     """
     Cron-triggered job that generates weekly summaries across all active workspaces.
     Runs every Monday at 01:30 UTC.
@@ -263,7 +273,14 @@ async def weekly_summary_job() -> None:
 
         try:
             async with postgres.async_session_maker() as session:
-                workspaces_res = await session.execute(select(Workspace).where(Workspace.is_active))
+                if workspace_id is not None:
+                    workspaces_res = await session.execute(
+                        select(Workspace).where(Workspace.id == workspace_id, Workspace.is_active)
+                    )
+                else:
+                    workspaces_res = await session.execute(
+                        select(Workspace).where(Workspace.is_active)
+                    )
                 workspaces = list(workspaces_res.scalars().all())
                 workspace_ids = [
                     workspace.id for workspace in workspaces if workspace.id is not None
@@ -287,9 +304,12 @@ async def weekly_summary_job() -> None:
                         )
 
             # Calculate week_start as the Monday of the previous week
-            today = start_time.date()
-            days_since_monday = today.weekday()
-            last_monday = today - timedelta(days=days_since_monday + 7)
+            if week_start is None:
+                today = start_time.date()
+                days_since_monday = today.weekday()
+                last_monday = today - timedelta(days=days_since_monday + 7)
+            else:
+                last_monday = week_start
 
             for workspace in workspaces:
                 workspace_id = workspace.id

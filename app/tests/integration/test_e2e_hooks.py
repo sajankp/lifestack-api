@@ -1,10 +1,10 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http.cookies import SimpleCookie
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.config import settings
+from app.config import Settings, settings
 from app.main import app, create_app
 from app.tests.integration.test_spending import _register_and_login
 
@@ -141,3 +141,79 @@ async def test_e2e_recurring_hook_generates_due_transaction(client: AsyncClient)
         item["description"] == rule_description and item["amount"] == "19.99"
         for item in transactions.json()["items"]
     )
+
+
+@pytest.mark.asyncio
+async def test_e2e_weekly_summary_hook_returns_generated_summary(client: AsyncClient):
+    creds = await _register_and_login(client, "e2eweekly")
+    now = datetime.now(UTC)
+    week_start = (now.date() - timedelta(days=now.weekday())).isoformat()
+    week_end = (datetime.fromisoformat(week_start).date() + timedelta(days=6)).isoformat()
+
+    todo = await client.post(
+        "/v1/todo/",
+        json={"title": "E2E hook weekly summary task", "priority": "medium"},
+        cookies=creds["cookies"],
+    )
+    assert todo.status_code == 201, todo.text
+
+    settings.ENABLE_E2E_TEST_HOOKS = True
+    settings.ENV = "local"
+    try:
+        async with await _e2e_hook_client() as hook_client:
+            hook_client.cookies.update(creds["cookies"])
+            response = await hook_client.post(
+                "/v1/e2e/workflows/weekly-summary",
+                json={"week_start": week_start},
+            )
+    finally:
+        settings.ENABLE_E2E_TEST_HOOKS = False
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["summary_public_id"]
+    assert body["week_start"] == week_start
+    assert body["week_end"] == week_end
+
+    summaries = await client.get("/v1/summaries/weekly", cookies=creds["cookies"])
+    assert summaries.status_code == 200
+    assert summaries.json()["items"][0]["public_id"] == body["summary_public_id"]
+    assert summaries.json()["items"][0]["todo_summary"]["tasks_created"] == 1
+
+    unread = await client.get("/v1/notifications/unread-count", cookies=creds["cookies"])
+    assert unread.status_code == 200
+    assert unread.json()["count"] == 1
+
+
+def test_e2e_hooks_production_gating_settings():
+    # Should raise error if we try to set ENABLE_E2E_TEST_HOOKS=True in production
+    with pytest.raises(
+        ValueError, match="ENABLE_E2E_TEST_HOOKS must remain disabled in production"
+    ):
+        Settings(
+            ENV="production",
+            SECRET_KEY="production-secret-key-changed-in-production-12345",
+            METRICS_TOKEN="production-metrics-token-changed-in-production-12345",
+            COOKIE_SECURE=True,
+            RATE_LIMIT_STORAGE_URI="redis://localhost:6379/1",
+            ENABLE_E2E_TEST_HOOKS=True,
+        )
+
+    # Should raise error if we try to set ENABLE_E2E_TEST_HOOKS=True in staging
+    with pytest.raises(ValueError, match="ENABLE_E2E_TEST_HOOKS is only allowed in local/test"):
+        Settings(
+            ENV="staging",
+            ENABLE_E2E_TEST_HOOKS=True,
+        )
+
+    # Valid config in production with ENABLE_E2E_TEST_HOOKS=False should succeed
+    prod_settings = Settings(
+        ENV="production",
+        SECRET_KEY="production-secret-key-changed-in-production-12345",
+        METRICS_TOKEN="production-metrics-token-changed-in-production-12345",
+        COOKIE_SECURE=True,
+        RATE_LIMIT_STORAGE_URI="redis://localhost:6379/1",
+        ENABLE_E2E_TEST_HOOKS=False,
+    )
+    assert prod_settings.ENABLE_E2E_TEST_HOOKS is False

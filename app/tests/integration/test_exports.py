@@ -206,3 +206,32 @@ async def test_export_cleanup_workflow(client: AsyncClient, monkeypatch, tmp_pat
         assert record.artifact_blob is None
 
     assert not local_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_export_workspace_isolation(client: AsyncClient):
+    creds_a = await _register_and_login(client, "ws_a")
+    creds_b = await _register_and_login(client, "ws_b")
+
+    # User A creates an export
+    create_resp = await client.post(
+        "/v1/exports",
+        json={"format": "json", "modules": ["todo"]},
+        cookies=creds_a["cookies"],
+    )
+    assert create_resp.status_code == 201
+    export_id = create_resp.json()["public_id"]
+
+    # User B (different workspace) attempts to fetch User A's export -> 404
+    get_resp = await client.get(f"/v1/exports/{export_id}", cookies=creds_b["cookies"])
+    assert get_resp.status_code == 404
+
+    # User B attempts to download User A's export -> 404
+    download_resp = await client.get(
+        f"/v1/exports/{export_id}/download", cookies=creds_b["cookies"]
+    )
+    assert download_resp.status_code == 404
+
+    # User B attempts to delete User A's export -> 404
+    del_resp = await client.delete(f"/v1/exports/{export_id}", cookies=creds_b["cookies"])
+    assert del_resp.status_code == 404
