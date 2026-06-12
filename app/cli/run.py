@@ -62,6 +62,9 @@ async def main() -> None:
         except ValueError:
             print("Error: --week-start must be in YYYY-MM-DD format.", file=sys.stderr)
             sys.exit(1)
+        if week_start_date.weekday() != 0:
+            print("Error: --week-start must be a Monday.", file=sys.stderr)
+            sys.exit(1)
 
     if args.workspace_id is not None and args.job not in {
         "budget_guardrails",

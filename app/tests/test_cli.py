@@ -83,3 +83,20 @@ async def test_cli_runner_workspace_id_not_supported_on_global_jobs():
             await main()
         assert exc_info.value.code == 1
         mock_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cli_runner_non_monday_week_start():
+    mock_job = AsyncMock()
+    with (
+        patch("app.cli.run.JOBS", {"weekly_summary": mock_job}),
+        patch.object(
+            sys,
+            "argv",
+            ["run.py", "weekly_summary", "--workspace-id", "456", "--week-start", "2026-06-02"],
+        ),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            await main()
+        assert exc_info.value.code == 1
+        mock_job.assert_not_called()
