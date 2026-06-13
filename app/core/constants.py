@@ -14,6 +14,9 @@
 #   1003 – weekly_summary_job
 #   1004 – fx_rate_ingestion_job
 #   1005 – export_cleanup_job
+#   1006 – session_cleanup_job
+#   1007 – import_preview_cleanup_job
+#   1008 – constituent_ingestion_job
 # ---------------------------------------------------------------------------
 
 ADVISORY_LOCK_BUDGET_GUARDRAILS: int = 1001
@@ -23,3 +26,4 @@ ADVISORY_LOCK_FX_RATE_INGESTION: int = 1004
 ADVISORY_LOCK_EXPORT_CLEANUP: int = 1005
 ADVISORY_LOCK_SESSION_CLEANUP: int = 1006
 ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP: int = 1007
+ADVISORY_LOCK_CONSTITUENT_INGESTION: int = 1008

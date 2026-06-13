@@ -39,6 +39,7 @@ from app.investing.schemas import (
     InstrumentConstituentUpsert,
     InstrumentCreate,
     InstrumentResponse,
+    InstrumentUpdate,
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
     PerformanceSummaryResponse,
@@ -62,6 +63,32 @@ async def _build_account_cache(
 ) -> dict[int, tuple[uuid.UUID, str]]:
     accounts, _ = await account_service.list_accounts(workspace_id, limit=10000, offset=0)
     return {a.id: (a.public_id, a.name) for a in accounts if a.id is not None}
+
+
+async def _build_instrument_type_cache(
+    holding_service: HoldingService, workspace_id: int, holdings: list | tuple
+) -> dict[int, str]:
+    if holding_service.instrument_repo is None:
+        return {}
+    instrument_ids = [h.instrument_id for h in holdings if h.instrument_id is not None]
+    instruments = await holding_service.instrument_repo.get_by_ids(instrument_ids)
+    return {
+        instrument_id: instrument.instrument_type
+        for instrument_id, instrument in instruments.items()
+    }
+
+
+async def _instrument_response(
+    instrument_service: InstrumentService, workspace_id: int, instrument
+) -> InstrumentResponse:
+    data = instrument.model_dump()
+    if instrument.company_id is not None:
+        company = await instrument_service.company_repo.get_by_id(instrument.company_id)
+        if company is not None and company.workspace_id == workspace_id:
+            data["company_id"] = company.public_id
+        else:
+            data["company_id"] = None
+    return InstrumentResponse.model_validate(data)
 
 
 def _populate_valuation_fields(
@@ -102,6 +129,9 @@ async def list_holdings(
 
     account_cache = await _build_account_cache(account_service, workspace_id)
     import_cache = await _build_import_batch_cache(import_repo, workspace_id, holdings)
+    instrument_type_cache = await _build_instrument_type_cache(
+        holding_service, workspace_id, holdings
+    )
 
     holding_ids = [h.id for h in holdings if h.id is not None]
     today = datetime.now(UTC).date()
@@ -113,6 +143,11 @@ async def list_holdings(
     for h in holdings:
         pub_id, name = account_cache.get(h.account_id, (None, "Unknown"))
         data = h.model_dump()
+        data["instrument_type"] = (
+            instrument_type_cache.get(h.instrument_id, "stock")
+            if h.instrument_id is not None
+            else "stock"
+        )
         data["account_id"] = pub_id
         data["account_name"] = name
         data["source_metadata"] = _source_metadata_response(
@@ -148,6 +183,7 @@ async def create_holding(
     )
     account = await account_service.account_repository.get_by_id(workspace_id, holding.account_id)
     data = holding.model_dump()
+    data["instrument_type"] = holding_in.instrument_type.value
     data["account_id"] = account.public_id if account else None
     data["account_name"] = account.name if account else "Unknown"
     data["source_metadata"] = _source_metadata_response(
@@ -187,6 +223,14 @@ async def update_holding(
     )
     account = await account_service.account_repository.get_by_id(workspace_id, holding.account_id)
     data = holding.model_dump()
+    instrument_type_cache = await _build_instrument_type_cache(
+        holding_service, workspace_id, [holding]
+    )
+    data["instrument_type"] = (
+        instrument_type_cache.get(holding.instrument_id, "stock")
+        if holding.instrument_id is not None
+        else "stock"
+    )
     data["account_id"] = account.public_id if account else None
     data["account_name"] = account.name if account else "Unknown"
     data["source_metadata"] = _source_metadata_response(
@@ -331,7 +375,9 @@ async def list_instruments(
     _user: Annotated[dict, Depends(get_current_user)],
 ):
     instruments = await instrument_service.list_instruments(workspace_id)
-    return [InstrumentResponse.model_validate(item) for item in instruments]
+    return [
+        await _instrument_response(instrument_service, workspace_id, item) for item in instruments
+    ]
 
 
 @router.post("/instruments", response_model=InstrumentResponse, status_code=status.HTTP_201_CREATED)
@@ -343,7 +389,20 @@ async def create_instrument(
     _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     instrument = await instrument_service.create_instrument(workspace_id, payload)
-    return InstrumentResponse.model_validate(instrument)
+    return await _instrument_response(instrument_service, workspace_id, instrument)
+
+
+@router.patch("/instruments/{instrument_id}", response_model=InstrumentResponse)
+async def update_instrument(
+    instrument_id: uuid.UUID,
+    payload: InstrumentUpdate,
+    instrument_service: Annotated[InstrumentService, Depends(get_investing_instrument_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    instrument = await instrument_service.update_instrument(workspace_id, instrument_id, payload)
+    return await _instrument_response(instrument_service, workspace_id, instrument)
 
 
 @router.get(

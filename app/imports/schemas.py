@@ -24,6 +24,7 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
         "quantity",
         "avg_cost",
         "currency",
+        "instrument_type",
     ],
 }
 

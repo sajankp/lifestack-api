@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account, Currency, FxRate, WorkspaceCurrency
-from app.investing.models import CashBalance, Holding, PortfolioSnapshot
+from app.investing.models import CashBalance, Holding, Instrument, PortfolioSnapshot
 
 
 async def _register_and_login(
@@ -300,6 +300,105 @@ async def test_investing_duplicate_holding_conflict(client: AsyncClient):
     assert second.headers["content-type"].startswith("application/problem+json")
     body = second.json()
     assert body["type"] == "https://lifestack.app/errors/conflict"
+
+
+@pytest.mark.asyncio
+async def test_holding_instrument_type_defaults_to_stock_and_supports_etf(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="investing-instrument-type@example.com",
+        username="investing-instrument-type",
+        password="TestPass123!",
+    )
+
+    stock_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "AAPL",
+            "account_id": account_map["brokerage"],
+            "quantity": "1.00000000",
+            "avg_cost": "100.00",
+            "currency": "USD",
+        },
+    )
+    assert stock_res.status_code == 201, stock_res.text
+    assert stock_res.json()["instrument_type"] == "stock"
+
+    etf_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "VUSA",
+            "account_id": account_map["wallet"],
+            "quantity": "2.00000000",
+            "avg_cost": "80.00",
+            "currency": "USD",
+            "instrument_type": "etf",
+        },
+    )
+    assert etf_res.status_code == 201, etf_res.text
+    assert etf_res.json()["instrument_type"] == "etf"
+
+    list_res = await client.get("/v1/investing/holdings")
+    assert list_res.status_code == 200
+    by_symbol = {item["symbol"]: item for item in list_res.json()["items"]}
+    assert by_symbol["AAPL"]["instrument_type"] == "stock"
+    assert by_symbol["VUSA"]["instrument_type"] == "etf"
+
+    async with postgres.async_session_maker() as session:
+        instruments = (
+            (
+                await session.execute(
+                    select(Instrument).where(Instrument.symbol.in_(["AAPL", "VUSA"]))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        instrument_by_symbol = {item.symbol: item for item in instruments}
+        assert instrument_by_symbol["AAPL"].instrument_type == "stock"
+        assert instrument_by_symbol["AAPL"].company_id is not None
+        assert instrument_by_symbol["VUSA"].instrument_type == "etf"
+        assert instrument_by_symbol["VUSA"].company_id is None
+
+
+@pytest.mark.asyncio
+async def test_patch_instrument_type_corrects_existing_auto_created_stock(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="investing-patch-instrument@example.com",
+        username="investing-patch-instrument",
+        password="TestPass123!",
+    )
+
+    holding_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "QQQ",
+            "account_id": account_map["brokerage"],
+            "quantity": "1.00000000",
+            "avg_cost": "300.00",
+            "currency": "USD",
+        },
+    )
+    assert holding_res.status_code == 201, holding_res.text
+
+    instruments_res = await client.get("/v1/investing/instruments")
+    assert instruments_res.status_code == 200
+    instrument = next(item for item in instruments_res.json() if item["symbol"] == "QQQ")
+    assert instrument["instrument_type"] == "stock"
+
+    patch_res = await client.patch(
+        f"/v1/investing/instruments/{instrument['public_id']}",
+        json={"instrument_type": "etf", "name": "Invesco QQQ Trust"},
+    )
+    assert patch_res.status_code == 200, patch_res.text
+    assert patch_res.json()["instrument_type"] == "etf"
+    assert patch_res.json()["name"] == "Invesco QQQ Trust"
+
+    list_res = await client.get("/v1/investing/holdings")
+    assert list_res.status_code == 200
+    qqq = next(item for item in list_res.json()["items"] if item["symbol"] == "QQQ")
+    assert qqq["instrument_type"] == "etf"
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ from datetime import datetime
 
 from app.application.jobs import (
     budget_guardrails_job,
+    constituent_ingestion_job,
     export_cleanup_job,
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
@@ -17,6 +18,7 @@ JOBS = {
     "budget_guardrails": budget_guardrails_job,
     "recurring_transactions": recurring_transactions_job,
     "fx_rate_ingestion": fx_rate_ingestion_job,
+    "constituent_ingestion": constituent_ingestion_job,
     "export_cleanup": export_cleanup_job,
     "session_cleanup": session_cleanup_job,
     "import_preview_cleanup": import_preview_cleanup_job,

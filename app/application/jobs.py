@@ -21,12 +21,15 @@ from app.application.workflows import (
     cleanup_expired_sessions,
     cleanup_import_previews,
     evaluate_workspace_budget_guardrails,
+    ingest_constituents,
     ingest_fx_rates,
     process_workspace_recurring_todos,
     process_workspace_recurring_transactions,
 )
+from app.config import settings
 from app.core.constants import (
     ADVISORY_LOCK_BUDGET_GUARDRAILS,
+    ADVISORY_LOCK_CONSTITUENT_INGESTION,
     ADVISORY_LOCK_EXPORT_CLEANUP,
     ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
@@ -388,6 +391,7 @@ async def weekly_summary_job(
 
 
 FX_RATE_INGESTION_LOCK_KEY = ADVISORY_LOCK_FX_RATE_INGESTION
+CONSTITUENT_INGESTION_LOCK_KEY = ADVISORY_LOCK_CONSTITUENT_INGESTION
 EXPORT_CLEANUP_LOCK_KEY = ADVISORY_LOCK_EXPORT_CLEANUP
 
 
@@ -430,6 +434,48 @@ async def fx_rate_ingestion_job() -> None:
             logger.error(
                 "fx_rate_ingestion_job_failed",
                 job_name="fx_rate_ingestion_job",
+                duration_ms=total_ms,
+                error=str(e),
+                exc_info=True,
+            )
+            raise e
+
+
+async def constituent_ingestion_job() -> None:
+    """
+    Daily job that fetches ETF/MF constituent holdings and upserts day-level snapshots.
+    """
+    start_time = datetime.now(UTC)
+    logger.info("constituent_ingestion_job_start", job_name="constituent_ingestion_job")
+
+    async with postgres.async_session_maker() as session, session.begin():
+        lock_res = await session.execute(
+            select(func.pg_try_advisory_xact_lock(CONSTITUENT_INGESTION_LOCK_KEY))
+        )
+        has_lock = lock_res.scalar()
+        if not has_lock:
+            logger.info(
+                "constituent_ingestion_job_skipped_lock_held",
+                job_name="constituent_ingestion_job",
+            )
+            return
+
+        try:
+            result = await ingest_constituents(
+                session, staleness_days=settings.CONSTITUENT_INGESTION_STALENESS_DAYS
+            )
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info(
+                "constituent_ingestion_job_completed",
+                job_name="constituent_ingestion_job",
+                duration_ms=total_ms,
+                result_summary=result,
+            )
+        except Exception as e:
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.error(
+                "constituent_ingestion_job_failed",
+                job_name="constituent_ingestion_job",
                 duration_ms=total_ms,
                 error=str(e),
                 exc_info=True,

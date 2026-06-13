@@ -1,11 +1,23 @@
 # Feature Spec: Automated Price Updates & Investing UI Enhancements
-**Status:** Proposed (Docs Before Code)
+**Status:** Implemented
 **Spec ID:** 031
 
-## 1. Overview
-Currently, the investing module tracks holdings, cash balances, and historical book cost. While a performance snapshot system exists on the backend to compute actual valuation, the holdings list UI only shows historical **Book Value** (`quantity * avg_cost`).
+## Implementation Notes (2026-06-13)
 
-This feature introduces:
+- Implemented `POST /v1/investing/prices/refresh` to fetch latest prices from Yahoo Finance and update
+  current-day holding prices.
+- Implemented current valuation fields on holding responses: current price, current value, gain/loss,
+  and gain/loss percentage.
+- Implemented manual single-holding price updates through the existing bulk price endpoint.
+- Implemented frontend holdings-table enhancements: unit price, current value, gain/loss display,
+  refresh action, and inline manual price editing.
+- Remaining future work belongs in the roadmap as scheduled/background price cadence, richer return
+  math, benchmarks, dividends, and deeper performance visualization.
+
+## 1. Overview
+Before this slice, the investing module tracked holdings, cash balances, and historical book cost. While a performance snapshot system existed on the backend to compute valuation, the holdings list UI only showed historical **Book Value** (`quantity * avg_cost`).
+
+This feature introduced:
 1. **Automated Price Updates:** Integration with an external API (Yahoo Finance unofficial chart API) to fetch stock/ETF unit prices automatically.
 2. **On-Demand Refresh:** A backend endpoint and frontend action to trigger a real-time price fetch and portfolio snapshot update.
 3. **UI Enhancements:** Display of current Unit Price, Current Value, and Gain/Loss (both absolute and percentage) in the holdings table, along with manual price update actions.

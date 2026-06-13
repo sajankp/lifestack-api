@@ -25,7 +25,7 @@ from app.imports.models import (
 )
 from app.imports.repository import ImportRepository
 from app.imports.schemas import SPENDEE_TRANSACTION_HEADERS, TEMPLATE_HEADERS
-from app.investing.models import Holding
+from app.investing.models import Company, Holding, Instrument, InstrumentType
 from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
@@ -57,7 +57,7 @@ class ImportService:
         elif module == ImportModule.spending_budgets:
             lines.append("2026-05-01,Food & Dining,800.00")
         else:
-            lines.append("AAPL,brokerage,10,150.25,USD")
+            lines.append("AAPL,brokerage,10,150.25,USD,stock")
         return "\n".join(lines) + "\n"
 
     async def _hash_file(self, upload: UploadFile) -> tuple[str, int]:
@@ -160,6 +160,55 @@ class ImportService:
         rows = (await self.session.execute(select(Currency.code))).scalars().all()
         return {r.upper() for r in rows}
 
+    async def _resolve_or_create_instrument(
+        self, workspace_id: int, symbol: str, instrument_type: InstrumentType
+    ) -> Instrument:
+        instrument = (
+            await self.session.execute(
+                select(Instrument).where(
+                    Instrument.workspace_id == workspace_id,
+                    Instrument.symbol == symbol,
+                )
+            )
+        ).scalar_one_or_none()
+        if instrument is not None:
+            if (
+                instrument_type != InstrumentType.stock
+                and instrument.instrument_type != instrument_type.value
+            ):
+                instrument.instrument_type = instrument_type.value
+                instrument.updated_at = datetime.now(UTC)
+                if instrument_type != InstrumentType.stock:
+                    instrument.company_id = None
+            return instrument
+
+        company_id: int | None = None
+        if instrument_type == InstrumentType.stock:
+            company = (
+                await self.session.execute(
+                    select(Company).where(
+                        Company.workspace_id == workspace_id,
+                        Company.name == symbol,
+                    )
+                )
+            ).scalar_one_or_none()
+            if company is None:
+                company = Company(workspace_id=workspace_id, name=symbol, ticker=symbol)
+                self.session.add(company)
+                await self.session.flush()
+            company_id = company.id
+
+        instrument = Instrument(
+            workspace_id=workspace_id,
+            symbol=symbol,
+            name=symbol,
+            instrument_type=instrument_type.value,
+            company_id=company_id,
+        )
+        self.session.add(instrument)
+        await self.session.flush()
+        return instrument
+
     @staticmethod
     def _norm(value: str | None) -> str:
         return (value or "").strip()
@@ -206,6 +255,14 @@ class ImportService:
             headers = reader.fieldnames or []
             header_mode = "default"
             valid_headers = [TEMPLATE_HEADERS[module]]
+            if module == ImportModule.investing_holdings:
+                valid_headers.append([
+                    "symbol",
+                    "account_name",
+                    "quantity",
+                    "avg_cost",
+                    "currency",
+                ])
             if module == ImportModule.spending_transactions:
                 valid_headers.append(SPENDEE_TRANSACTION_HEADERS)
             if headers not in valid_headers:
@@ -391,6 +448,9 @@ class ImportService:
                     quantity_raw = self._norm(row.get("quantity"))
                     avg_cost_raw = self._norm(row.get("avg_cost"))
                     currency_raw = self._norm(row.get("currency")).upper()
+                    instrument_type_raw = (
+                        self._norm(row.get("instrument_type")).lower() or InstrumentType.stock.value
+                    )
 
                     if not symbol_raw:
                         add_error("symbol", "required", "symbol is required", symbol_raw)
@@ -407,6 +467,13 @@ class ImportService:
                             "invalid_currency",
                             "currency must exist in reference table",
                             currency_raw,
+                        )
+                    if instrument_type_raw not in {item.value for item in InstrumentType}:
+                        add_error(
+                            "instrument_type",
+                            "invalid_enum",
+                            "instrument_type must be stock, etf, or mutual_fund",
+                            instrument_type_raw,
                         )
 
                     try:
@@ -441,6 +508,7 @@ class ImportService:
                         "quantity": str(quantity) if quantity is not None else None,
                         "avg_cost": str(avg_cost) if avg_cost is not None else None,
                         "currency": currency_raw,
+                        "instrument_type": instrument_type_raw,
                     }
 
                 if row_errors:
@@ -630,6 +698,12 @@ class ImportService:
                             raise ValidationError(
                                 detail=f"Account '{account_name_raw or 'Unknown'}' not found in workspace"
                             )
+                        instrument_type = InstrumentType(
+                            p.get("instrument_type") or InstrumentType.stock.value
+                        )
+                        instrument = await self._resolve_or_create_instrument(
+                            workspace_id, p["symbol"], instrument_type
+                        )
 
                         # Check if holding already exists for this unique combination
                         existing_holding = (
@@ -646,6 +720,7 @@ class ImportService:
                             existing_holding.quantity = Decimal(p["quantity"])
                             existing_holding.avg_cost = Decimal(p["avg_cost"])
                             existing_holding.currency = p["currency"]
+                            existing_holding.instrument_id = instrument.id
                             existing_holding.source_type = "imported"
                             existing_holding.source_import_id = batch.id
                             existing_holding.source_ref = f"{batch.public_id}:{row.row_number}"
@@ -656,6 +731,7 @@ class ImportService:
                                 user_id=user_id,
                                 symbol=p["symbol"],
                                 account_id=account_id,
+                                instrument_id=instrument.id,
                                 quantity=Decimal(p["quantity"]),
                                 avg_cost=Decimal(p["avg_cost"]),
                                 currency=p["currency"],

@@ -11,6 +11,7 @@ from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.imports.models import ImportBatch
+from app.investing.models import Holding, Instrument
 from app.spending.models import SpendingTransaction
 
 
@@ -133,6 +134,18 @@ async def test_import_template_download_as_attachment(client: AsyncClient):
         == 'attachment; filename="spending-transactions-template.csv"'
     )
     assert "occurred_at,type,amount,category,description" in response.text
+
+
+@pytest.mark.asyncio
+async def test_import_investing_template_includes_optional_instrument_type(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    response = await client.get(
+        "/v1/imports/templates/investing-holdings", cookies=creds["cookies"]
+    )
+
+    assert response.status_code == 200
+    assert "symbol,account_name,quantity,avg_cost,currency,instrument_type" in response.text
 
 
 @pytest.mark.asyncio
@@ -512,6 +525,113 @@ async def test_import_investing_holdings_upserts_on_duplicate(client: AsyncClien
     assert items_after[0]["symbol"] == "AAPL"
     assert items_after[0]["quantity"] == "15.50000000"
     assert items_after[0]["avg_cost"] == "165.00"
+
+
+@pytest.mark.asyncio
+async def test_import_investing_holdings_with_instrument_type_column(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "brokerage", "account_type": "brokerage", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+
+    csv_content = (
+        "symbol,account_name,quantity,avg_cost,currency,instrument_type\n"
+        "VUSA,brokerage,10.00,80.00,USD,etf\n"
+    )
+    files = {"file": ("holdings.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-holdings"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200, validate.text
+    body = validate.json()
+    assert body["import_batch"]["status"] == "validated"
+    import_id = body["import_batch"]["public_id"]
+
+    commit_resp = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit_resp.status_code == 200, commit_resp.text
+
+    holdings = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
+    assert holdings.status_code == 200
+    item = holdings.json()["items"][0]
+    assert item["symbol"] == "VUSA"
+    assert item["instrument_type"] == "etf"
+
+    async with postgres.async_session_maker() as session:
+        holding = (
+            await session.execute(select(Holding).where(Holding.symbol == "VUSA"))
+        ).scalar_one()
+        instrument = (
+            await session.execute(select(Instrument).where(Instrument.symbol == "VUSA"))
+        ).scalar_one()
+        assert holding.instrument_id == instrument.id
+        assert instrument.instrument_type == "etf"
+
+
+@pytest.mark.asyncio
+async def test_import_investing_holdings_without_instrument_type_defaults_to_stock(
+    client: AsyncClient,
+):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "brokerage", "account_type": "brokerage", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+
+    csv_content = "symbol,account_name,quantity,avg_cost,currency\nAAPL,brokerage,5,150,USD\n"
+    files = {"file": ("holdings.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-holdings"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200, validate.text
+    import_id = validate.json()["import_batch"]["public_id"]
+
+    commit_resp = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit_resp.status_code == 200, commit_resp.text
+
+    holdings = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
+    assert holdings.status_code == 200
+    assert holdings.json()["items"][0]["instrument_type"] == "stock"
+
+
+@pytest.mark.asyncio
+async def test_import_investing_holdings_invalid_instrument_type(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "brokerage", "account_type": "brokerage", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+
+    csv_content = (
+        "symbol,account_name,quantity,avg_cost,currency,instrument_type\n"
+        "VUSA,brokerage,10.00,80.00,USD,fund\n"
+    )
+    files = {"file": ("holdings.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-holdings"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200, validate.text
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_field"]["instrument_type"] == 1
 
 
 @pytest.mark.asyncio

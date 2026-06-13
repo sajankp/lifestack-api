@@ -14,6 +14,7 @@ class HoldingCreate(BaseModel):
     quantity: Decimal = Field(..., gt=0, decimal_places=8)
     avg_cost: Decimal = Field(..., ge=0, decimal_places=2)
     currency: str = Field(..., min_length=1, max_length=10)
+    instrument_type: InstrumentType = InstrumentType.stock
 
     @field_validator("symbol")
     @classmethod
@@ -42,6 +43,7 @@ class HoldingUpdate(BaseModel):
 class HoldingResponse(BaseModel):
     public_id: uuid.UUID
     symbol: str
+    instrument_type: InstrumentType = InstrumentType.stock
     account_id: uuid.UUID
     account_name: str
     quantity: Decimal
@@ -130,6 +132,11 @@ class InstrumentCreate(BaseModel):
         return value.strip().upper()
 
 
+class InstrumentUpdate(BaseModel):
+    instrument_type: InstrumentType | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+
+
 class InstrumentResponse(BaseModel):
     public_id: uuid.UUID
     symbol: str
@@ -161,6 +168,7 @@ class InstrumentConstituentUpsert(BaseModel):
     source: str = Field(..., min_length=1, max_length=64)
     fetched_at: datetime
     constituents: list[InstrumentConstituentCreate] = Field(default_factory=list, min_length=1)
+    renormalise: bool = False
 
 
 class InstrumentConstituentResponse(BaseModel):

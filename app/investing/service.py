@@ -45,6 +45,7 @@ from app.investing.schemas import (
     InstrumentConstituentResponse,
     InstrumentConstituentUpsert,
     InstrumentCreate,
+    InstrumentUpdate,
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
     OverlapRow,
@@ -172,17 +173,24 @@ class HoldingService:
         self.account_repo = account_repo
         self.currency_repo = currency_repo
 
-    async def _resolve_or_create_stock_instrument(
-        self, workspace_id: int, symbol: str
+    async def _resolve_or_create_instrument(
+        self, workspace_id: int, symbol: str, instrument_type: InstrumentType
     ) -> Instrument | None:
         if self.instrument_repo is None:
             return None
         instrument = await self.instrument_repo.get_by_symbol(workspace_id, symbol)
         if instrument is not None:
+            if (
+                instrument_type != InstrumentType.stock
+                and instrument.instrument_type != instrument_type.value
+            ):
+                instrument.instrument_type = instrument_type.value
+                instrument.updated_at = datetime.now(UTC)
+                instrument = await self.instrument_repo.save(instrument)
             return instrument
 
         company: Company | None = None
-        if self.company_repo is not None:
+        if self.company_repo is not None and instrument_type == InstrumentType.stock:
             company = await self.company_repo.get_by_name(workspace_id, symbol)
             if company is None:
                 company = await self.company_repo.create(
@@ -194,7 +202,7 @@ class HoldingService:
                 workspace_id=workspace_id,
                 symbol=symbol,
                 name=symbol,
-                instrument_type=InstrumentType.stock.value,
+                instrument_type=instrument_type.value,
                 company_id=company.id if company else None,
             )
         )
@@ -259,7 +267,9 @@ class HoldingService:
             avg_cost=holding_in.avg_cost,
             currency=holding_in.currency,
         )
-        instrument = await self._resolve_or_create_stock_instrument(workspace_id, holding_in.symbol)
+        instrument = await self._resolve_or_create_instrument(
+            workspace_id, holding_in.symbol, holding_in.instrument_type
+        )
         if instrument is not None:
             holding.instrument_id = instrument.id
         holding = await self.repository.create(holding)
@@ -775,6 +785,37 @@ class InstrumentService:
             )
         )
 
+    async def update_instrument(
+        self, workspace_id: int, public_id: uuid.UUID, payload: InstrumentUpdate
+    ) -> Instrument:
+        instrument = await self.instrument_repo.get_by_public_id(workspace_id, public_id)
+        if instrument is None:
+            raise NotFoundError(detail=f"Instrument '{public_id}' not found")
+
+        update_data = payload.model_dump(exclude_unset=True)
+        if not update_data:
+            return instrument
+
+        if payload.name is not None:
+            instrument.name = payload.name
+        if payload.instrument_type is not None:
+            instrument.instrument_type = payload.instrument_type.value
+            if payload.instrument_type == InstrumentType.stock and instrument.company_id is None:
+                company = await self.company_repo.get_by_name(workspace_id, instrument.name)
+                if company is None:
+                    company = await self.company_repo.create(
+                        Company(
+                            workspace_id=workspace_id,
+                            name=instrument.name,
+                            ticker=instrument.symbol,
+                        )
+                    )
+                instrument.company_id = company.id
+            if payload.instrument_type != InstrumentType.stock:
+                instrument.company_id = None
+        instrument.updated_at = datetime.now(UTC)
+        return await self.instrument_repo.save(instrument)
+
 
 class ConstituentService:
     def __init__(
@@ -799,7 +840,15 @@ class ConstituentService:
         if instrument.instrument_type == InstrumentType.stock.value:
             raise ValidationError(detail="Stock instruments cannot have constituent snapshots")
 
-        total_weight = sum(item.weight for item in payload.constituents)
+        constituents = list(payload.constituents)
+        total_weight = sum(item.weight for item in constituents)
+        if payload.renormalise:
+            if total_weight <= 0:
+                raise ValidationError(detail="Constituent weights must be positive")
+            for item in constituents:
+                item.weight = item.weight / total_weight
+            total_weight = sum(item.weight for item in constituents)
+
         if not (Decimal("0.99") <= total_weight <= Decimal("1.01")):
             raise ValidationError(
                 detail=f"Constituent weights must sum to approximately 1.0 (got {total_weight})"
@@ -809,9 +858,9 @@ class ConstituentService:
             instrument.id, payload.as_of_date, payload.source
         )  # type: ignore[arg-type]
         rows: list[InstrumentConstituent] = []
-        requested_names = [item.company_name for item in payload.constituents]
+        requested_names = [item.company_name for item in constituents]
         companies_by_name = await self.company_repo.get_by_names(workspace_id, requested_names)
-        for item in payload.constituents:
+        for item in constituents:
             company = companies_by_name.get(item.company_name)
             if company is None:
                 company = await self.company_repo.create(
