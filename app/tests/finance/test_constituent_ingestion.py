@@ -62,12 +62,20 @@ async def test_yahoo_constituent_provider_parses_top_holdings(monkeypatch):
             ]
         }
     }
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = mock_data
-    mock_resp.raise_for_status = MagicMock()
 
-    async def mock_get(*args, **kwargs):
-        return mock_resp
+    async def mock_get(self, url, *args, **kwargs):
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        if "fc.yahoo.com" in url:
+            resp.status_code = 200
+            resp.text = "ok"
+        elif "getcrumb" in url:
+            resp.status_code = 200
+            resp.text = "test_crumb"
+        else:
+            resp.status_code = 200
+            resp.json.return_value = mock_data
+        return resp
 
     monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
 
@@ -175,3 +183,43 @@ async def test_constituent_ingestion_job_propagates_exception(client, monkeypatc
 
     with pytest.raises(ValueError, match="Boom"):
         await constituent_ingestion_job()
+
+
+@pytest.mark.asyncio
+async def test_yahoo_constituent_provider_backoff_on_429(monkeypatch, tmp_path):
+    temp_cache_file = str(tmp_path / ".yahoo_session_cache.json")
+    monkeypatch.setattr("app.application.constituent_provider.CACHE_FILE_PATH", temp_cache_file)
+
+    calls = 0
+
+    async def mock_get(self, url, *args, **kwargs):
+        nonlocal calls
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        if "fc.yahoo.com" in url:
+            resp.status_code = 200
+            resp.text = "ok"
+        elif "getcrumb" in url:
+            calls += 1
+            resp.status_code = 429
+            resp.text = "Too Many Requests"
+        else:
+            resp.status_code = 429
+            resp.text = "Rate limited"
+        return resp
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    provider = YahooFinanceConstituentProvider()
+    result = await provider.fetch("spy")
+
+    assert result is None
+    assert calls == 1
+
+    _, _, backoff_until = provider._load_cache()
+    assert backoff_until is not None
+    assert backoff_until > datetime.now(UTC).timestamp()
+
+    result2 = await provider.fetch("spy")
+    assert result2 is None
+    assert calls == 1
