@@ -544,8 +544,12 @@ class CashBalanceService:
             )
 
 
-async def _fetch_stock_price(symbol: str) -> Decimal | None:
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol.upper().strip()}"
+async def _fetch_stock_price(symbol: str, currency: str | None = None) -> Decimal | None:
+    sym = symbol.upper().strip()
+    if currency and currency.upper() == "INR" and "." not in sym:
+        sym = f"{sym}.NS"
+
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     }
@@ -587,29 +591,38 @@ class PerformanceService:
         if not holdings:
             return {}
 
-        symbols = sorted({h.symbol.upper().strip() for h in holdings})
-        tasks = [_fetch_stock_price(sym) for sym in symbols]
+        unique_keys = sorted({
+            (h.symbol.upper().strip(), h.currency.upper().strip()) for h in holdings
+        })
+        tasks = [_fetch_stock_price(sym, curr) for sym, curr in unique_keys]
         results = await asyncio.gather(*tasks)
-        prices = {
-            sym: price for sym, price in zip(symbols, results, strict=False) if price is not None
+
+        price_map = {
+            (sym, curr): price
+            for (sym, curr), price in zip(unique_keys, results, strict=False)
+            if price is not None
         }
 
-        if prices:
+        prices_updated = {}
+        if price_map:
             today = datetime.now(UTC).date()
             for h in holdings:
                 if h.id is not None:
                     sym = h.symbol.upper().strip()
-                    if sym in prices:
+                    curr = h.currency.upper().strip()
+                    price = price_map.get((sym, curr))
+                    if price is not None:
                         await self.holding_price_repo.upsert_price(
                             workspace_id=workspace_id,
                             holding_id=h.id,
                             price_date=today,
-                            unit_price=prices[sym],
+                            unit_price=price,
                             source="api",
                         )
+                        prices_updated[sym] = price
             await self.create_snapshot(workspace_id, today)
 
-        return prices
+        return prices_updated
 
     async def submit_prices(self, workspace_id: int, payload: HoldingPriceBulkCreate) -> None:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)

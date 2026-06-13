@@ -1026,7 +1026,7 @@ async def test_investing_prices_refresh_and_valuation_fields(client: AsyncClient
         assert refresh_res.status_code == 200
         assert "AAPL" in refresh_res.json()["updated"]
 
-        mock_fetch.assert_called_once_with("AAPL")
+        mock_fetch.assert_called_once_with("AAPL", "USD")
 
     # 3. Verify updated fields in holding list
     list_res = await client.get("/v1/investing/holdings")
@@ -1049,3 +1049,37 @@ async def test_investing_prices_refresh_and_valuation_fields(client: AsyncClient
         assert audit is not None
         assert audit.details["prices"]["AAPL"] == "180.00"
         assert audit.details["source"] == "api"
+
+
+@pytest.mark.asyncio
+async def test_investing_prices_refresh_indian_stock_appends_ns(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="indian-refresh@example.com",
+        username="indian-refresh",
+        password="TestPass123!",
+    )
+
+    # Create an INR holding with symbol TATSILV (no dot)
+    holding_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "TATSILV",
+            "account_id": account_map["brokerage"],
+            "quantity": "10.00000000",
+            "avg_cost": "20.00",
+            "currency": "INR",
+        },
+    )
+    assert holding_res.status_code == 201
+
+    # Trigger refresh with mock fetch API
+    with patch("app.investing.service._fetch_stock_price", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = Decimal("23.34")
+
+        refresh_res = await client.post("/v1/investing/prices/refresh")
+        assert refresh_res.status_code == 200
+        assert "TATSILV" in refresh_res.json()["updated"]
+
+        # Assert that it was called with symbol TATSILV and currency INR
+        mock_fetch.assert_called_once_with("TATSILV", "INR")
