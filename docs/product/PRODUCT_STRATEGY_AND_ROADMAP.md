@@ -1,9 +1,9 @@
 # Product Strategy and Roadmap
 
 Date: 2026-06-03
-Last updated: 2026-06-13
+Last updated: 2026-06-14
 
-Scope: current product positioning, demo readiness, and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
+Scope: current product positioning, implementation status, post-Gate 0 backlog, and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
 
 ## 1) Product Thesis
 
@@ -36,7 +36,7 @@ That workflow should feel like a calm operating briefing, not a chat transcript 
 
 The current product already has a strong foundation:
 
-- Auth, workspace scoping, todos, spending, investing, dashboard, notifications, summaries, imports, exports, recurring workflows, and quick capture.
+- Auth, workspace scoping, todos, spending, investing, dashboard, notifications, summaries, imports, exports, recurring workflows, and the Phase 1 voice/tool-calling capture surface.
 - A scheduler and notification model that can later support medication reminders and health follow-ups.
 - A service-layer architecture that gives future AI/mobile/document adapters a stable place to call into existing product capabilities.
 
@@ -83,7 +83,54 @@ The first five minutes of a public portfolio demo should be intentionally guided
 
 The demo should make insight more visible than data entry. Reviewers should leave with the impression that Lifestack helps the user notice, decide, and act.
 
-## 3) Product Track Decision
+## 3) Implementation Status
+
+This roadmap is the living home for product sequencing. Specs remain the source of truth for scoped implementation contracts or historical closure records.
+
+| Status | Specs | Roadmap Meaning |
+|---|---|---|
+| Historical foundation | [`spec-pack-v1-plan.md`](../specs/spec-pack-v1-plan.md), [`spec-029-current-product-demo-readiness-roadmap.md`](../specs/spec-029-current-product-demo-readiness-roadmap.md) | Gate 0 and the V1 spec pack are complete historical records, not active backlog. |
+| Implemented platform baseline | Specs 001, 002, 004, 005, 006, 007, 008, and 010 | API conventions, workspace isolation, audit logging, scheduler foundation, exports, dashboard reads, investing MVP, and FastTodo reference decisions are implemented baseline capabilities. |
+| Implemented finance and investing baseline | Specs 011, 012, 014, 022, 023, 027, [`031`](../specs/spec-031-automated-price-updates-and-ui.md), [`032`](../specs/spec-032-automated-constituent-ingestion.md), and [`034`](../specs/spec-034-constituent-csv-import.md) | Currency governance, look-through analytics, performance V1, account identity, price refresh, automated constituent ingestion, and workspace-facing constituent CSV import are implemented. Future work should be scoped as new slices rather than appended to completed specs. |
+| Implemented workflow and operations baseline | Specs 003, 009, 013, 015, 016, 017, 019, 020, 024, 025, 026, and 028 | Spending, scheduler workflows, recurring todos, notifications, weekly summaries, CSV imports, runtime integration, audit remediation, and Gate 0 hardening are implemented at their documented stage. |
+| Archived or partial capture path | [`Spec 018`](../specs/spec-018-quick-capture.md), [`Spec 021`](../specs/spec-021-voice-agent-function-calling.md) | Spec 018 quick capture is archived/deferred to roadmap. Spec 021 voice/tool calling is implemented as Phase 1; production capture expansion remains a roadmap item. |
+| Proposed/current slices | [`Spec 030`](../specs/spec-030-cli-management-commands.md) | CLI management commands remain a proposed/current implementation candidate. |
+| Deferred future data model | [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md), [`Spec 035`](../specs/spec-035-platform-market-data-curation.md) | Hybrid global instrument catalog and platform market-data curation are deferred backlog items until the workspace-scoped investing flows, permission model, and provenance requirements are ready. |
+
+## 4) Near-Term Roadmap
+
+This is the Post-Gate 0 roadmap backlog, promoted near the top because it contains the next practical product slices. These items should deepen the current finance-led product before Lifestack expands into new life domains.
+
+### Immediate Focus
+
+1. Keep investing look-through improvements focused on accuracy, correction flows, and visible data quality before adding global/shared data ownership.
+2. Polish the current daily-work surfaces: todos, recurring todos, imports, investing forms, and dashboard cues.
+3. Treat [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md) hybrid instrument catalog as the next data-model decision point after workspace-scoped investing flows settle.
+4. Defer platform-wide constituent and price-data curation until there is a clear admin persona, provenance model, and rollback workflow.
+
+### Core Product Depth
+
+| Area | Roadmap Item | Why It Belongs Here |
+|---|---|---|
+| Spending analytics | Category breakdown, budget-vs-actual analytics, savings-rate analytics, and richer trend UX. | These are product-surface expansions beyond the implemented trends slice. |
+| Wallet ledger | Ledger-style balance projection, richer transfer timeline UX, reconciliation, and statement matching. | These are finance-product depth items, not blockers for the current demo baseline. |
+| Notifications | Email delivery, push delivery, real-time notification transport, grouping, and digest variants. | Delivery channels depend on mobile/email infrastructure and should be sequenced with notification strategy. |
+| Imports | Very-large-file streaming guarantees, async/background import workers, `.xlsx` imports, smart column mapping, partial-success modes, and virus scanning. | These are scale/operations upgrades beyond the implemented CSV validate-preview-commit workflow. |
+| Currency display | Remaining frontend-wide display polish, locale/date/number profiles, and historical FX replay for every view. | These are consistency and polish tracks after the implemented finance settings foundation. |
+| Voice/capture | WebRTC-grade production transport, broader capture domains, multi-item capture, and AI-assisted routing. | Capture is useful as an input layer, but expansion should follow mobile/coach sequencing. |
+| Weekly summaries | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
+| Budget model | Grouped budgets and custom financial KPIs. | These are product-model expansions that should be designed intentionally. |
+
+### Investing and Market Data
+
+| Area | Roadmap Item | Why It Belongs Here |
+|---|---|---|
+| Investing performance | Richer return math, deeper visualization, benchmark comparison, dividend/total-return views, and scheduled/background price-refresh cadence. | On-demand automated price refresh is implemented; deeper performance analytics and scheduled pricing should be scoped as explicit product slices. |
+| Hybrid instrument catalog | [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md): global public instruments/companies with workspace-scoped tenant overrides. | This reduces duplicate public securities and redundant provider calls, but should wait until the current workspace-scoped investing flows settle. |
+| Look-through analytics | UX alerts, quality scoring, company identity normalization, derivative look-through, and deeper constituent-provider coverage. | Look-through analytics and automated ETF/MF constituent ingestion are implemented; these are advanced accuracy, scale, and UX tracks after V1 correctness. |
+| Platform market data | [`Spec 035`](../specs/spec-035-platform-market-data-curation.md): platform-admin curation for shared/global constituent datasets, instrument prices, licensed market-data uploads, provenance, and rollback. | Workspace-level constituent CSV import is handled by [`Spec 034`](../specs/spec-034-constituent-csv-import.md); shared/global market-data curation is a later-stage permission and data-governance problem. |
+
+## 5) Long-Term Product Direction
 
 Recommended direction: keep the long-term product track, but gate implementation.
 
@@ -115,7 +162,7 @@ Settings and master configuration should remain deliberately low-traffic. They a
 
 MCP should be treated as a later-stage integration layer with real product value. The goal is to let trusted external agents connect to the user's Lifestack context, preferences, second brain, and selected domain data through explicit permissions. This makes migration between AI assistants smoother because the user's durable personal context lives in Lifestack rather than inside any one model vendor.
 
-## 4) Recommended Sequence
+## 6) Long-Term Product Sequence
 
 The roadmap can use stage numbers for planning, but user-facing product eras should have memorable names:
 
@@ -148,7 +195,7 @@ Closed acceptance criteria:
 - The frontend has an explicit active-workspace model and destructive actions target that workspace only.
 - Multi-currency investing summaries and performance snapshots use clear reporting-currency semantics.
 - Specs, ERD, README, and roadmap documents distinguish implemented behavior from planned or partially implemented behavior.
-- Mobile shell/navigation is responsive enough for quick capture.
+- Mobile shell/navigation is responsive enough for lightweight capture and review flows.
 - READMEs separate current features from planned roadmap scope.
 
 ### Track 1: Mobile Companion Foundation
@@ -170,7 +217,7 @@ Non-goals:
 - General personal coach automation.
 - Multi-user SaaS mobile features.
 
-### Track 2: Health MVP
+### Track 2: Health Memory
 
 Goal: support manual health tracking before depending on external sync.
 
@@ -272,24 +319,7 @@ Non-goals:
 - Autonomous financial or health actions.
 - Chat-first product design that bypasses structured workflows.
 
-## Post-Gate 0 Roadmap Backlog
-
-Specs can retain non-goals and historical design context, but they should not be used as living future backlog. Product sequencing lives here until a concrete implementation slice is selected.
-
-| Area | Roadmap Item | Why It Belongs Here |
-|---|---|---|
-| Spending analytics | Category breakdown, budget-vs-actual analytics, savings-rate analytics, and richer trend UX. | These are product-surface expansions beyond the implemented trends slice. |
-| Wallet ledger | Ledger-style balance projection, richer transfer timeline UX, reconciliation, and statement matching. | These are finance-product depth items, not blockers for the current demo baseline. |
-| Notifications | Email delivery, push delivery, real-time notification transport, grouping, and digest variants. | Delivery channels depend on mobile/email infrastructure and should be sequenced with notification strategy. |
-| Imports | Very-large-file streaming guarantees, async/background import workers, `.xlsx` imports, smart column mapping, partial-success modes, and virus scanning. | These are scale/operations upgrades beyond the implemented CSV validate-preview-commit workflow. |
-| Currency display | Remaining frontend-wide display polish, locale/date/number profiles, and historical FX replay for every view. | These are consistency and polish tracks after the implemented finance settings foundation. |
-| Investing performance | Richer return math, deeper visualization, benchmark comparison, dividend/total-return views, and scheduled/background price-refresh cadence. | On-demand automated price refresh is implemented; deeper performance analytics and scheduled pricing should be scoped as explicit product slices. |
-| Voice/capture | WebRTC-grade production transport, broader capture domains, multi-item capture, and AI-assisted routing. | Capture is useful as an input layer, but expansion should follow mobile/coach sequencing. |
-| Weekly summaries | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
-| Look-through analytics | UX alerts, quality scoring, global instrument catalog, company identity normalization, derivative look-through, and deeper constituent-provider coverage. | Look-through analytics and automated ETF/MF constituent ingestion are implemented; these are advanced accuracy, scale, and UX tracks after V1 correctness. |
-| Budget model | Grouped budgets and custom financial KPIs. | These are product-model expansions that should be designed intentionally. |
-
-## 5) Personal Data Trust Model
+## 7) Personal Data Trust Model
 
 Trust is a product feature, not only an implementation detail.
 
@@ -301,7 +331,7 @@ Trust is a product feature, not only an implementation detail.
 - **Audit trails:** assistant actions and automated workflows should leave enough history for the user to understand what happened and why.
 - **Cited responses:** document-backed and health-backed answers should cite source records instead of presenting unsupported conclusions.
 
-## 6) Candidate Module Parking Lot
+## 8) Candidate Module Parking Lot
 
 These modules make conceptual sense, but they are not current roadmap commitments. Keep them here for product memory and revisit only when they strengthen the daily briefing, second brain, or coach loop.
 
@@ -316,7 +346,7 @@ These modules make conceptual sense, but they are not current roadmap commitment
 
 Mental health and energy should probably rank above food/nutrition for the personal-coach vision, especially if the first useful version is a low-friction check-in rather than a dense tracker.
 
-## 7) PO Risks
+## 9) Product Risks
 
 | Risk | Why It Matters | Mitigation |
 |---|---|---|
@@ -328,9 +358,9 @@ Mental health and energy should probably rank above food/nutrition for the perso
 | Agent access leakage | MCP can make private data easier to over-share. | Use explicit scopes, audit logs, and conservative defaults. |
 | SaaS pressure | Monetization can distort the personal operating-system vision. | Keep SaaS later and optional; do not optimize early modules for broad-market admin needs. |
 
-## 8) README Update Requirements
+## 10) Documentation Alignment
 
-The README should:
+The README and other public-facing docs should stay aligned with this roadmap:
 
 - Describe the current product as a finance-led personal operations command center before introducing future health, document, and coach tracks.
 - Include a short reviewer/demo journey for the first five minutes of product evaluation.
@@ -344,7 +374,7 @@ The README should:
 - Clarify MCP as a permissioned integration layer for trusted agents, not a main product module.
 - Keep candidate modules as a parking lot rather than active roadmap promises.
 
-## 9) PO Verdict
+## 11) Strategic Verdict
 
 Proceed with the product track, but do not make it the immediate feature implementation branch.
 
