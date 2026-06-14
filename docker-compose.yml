@@ -26,5 +26,14 @@ services:
     image: redis:7-alpine
     ports: ["6379:6379"]
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      - api
+
 volumes:
   pg-data:
