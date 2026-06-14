@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.models import AuthSession, User
+from app.auth.models import AuthSession, PasswordResetToken, User
 from app.auth.schemas import UserCreate
 from app.core.auth import hash_password
 
@@ -111,3 +111,19 @@ class AuthSessionRepository:
         result = await self.session.execute(statement)
         await self.session.flush()
         return result.rowcount or 0
+
+
+class PasswordResetTokenRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, token: PasswordResetToken) -> PasswordResetToken:
+        self.session.add(token)
+        await self.session.flush()
+        await self.session.refresh(token)
+        return token
+
+    async def get_by_hash(self, token_hash: str) -> PasswordResetToken | None:
+        statement = select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()

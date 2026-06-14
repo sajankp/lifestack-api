@@ -3,12 +3,19 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.application.workflows import UserRegistrationWorkflow
-from app.auth.schemas import PasswordChange, TokenResponse, UserCreate, UserResponse
+from app.auth.schemas import (
+    ForgotPasswordRequest,
+    PasswordChange,
+    ResetPasswordRequest,
+    TokenResponse,
+    UserCreate,
+    UserResponse,
+)
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.auth import create_token, get_user_info_from_token
@@ -453,3 +460,28 @@ async def logout_all(
         )
     clear_csrf_token(response)
     return {"message": "Logged out from all devices"}
+
+
+@router.post("/forgot-password")
+@limiter.limit(settings.RATE_LIMIT_AUTH)
+async def forgot_password(
+    request: Request,
+    data: ForgotPasswordRequest,
+    auth_service: AuthService = Depends(get_auth_service),
+):
+    await auth_service.forgot_password(data.email)
+    return {"message": "If the email is registered, a password reset link has been sent."}
+
+
+@router.post("/reset-password")
+@limiter.limit(settings.RATE_LIMIT_AUTH)
+async def reset_password(
+    request: Request,
+    data: ResetPasswordRequest,
+    auth_service: AuthService = Depends(get_auth_service),
+):
+    try:
+        await auth_service.reset_password(data.token, data.new_password)
+    except UnauthorizedError as e:
+        raise HTTPException(status_code=400, detail=e.detail) from e
+    return {"message": "Password has been reset successfully."}
