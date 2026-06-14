@@ -1,6 +1,7 @@
 from http.cookies import SimpleCookie
 
 import pytest
+from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from limits.storage import storage_from_string
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -9,7 +10,6 @@ from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
 
 from alembic import command
-from alembic.config import Config
 from app.config import settings
 from app.core.database import postgres
 from app.core.dependencies import limiter
