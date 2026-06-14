@@ -1,17 +1,20 @@
 import io
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
 from sqlmodel import select
 
+from app.auth.models import User
 from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.imports.models import ImportBatch
-from app.investing.models import Holding, Instrument
+from app.investing.models import Company, Holding, Instrument, InstrumentConstituent
+from app.platform.models import WorkspaceMembership
 from app.spending.models import SpendingTransaction
 
 
@@ -714,3 +717,241 @@ async def test_import_workspace_isolation(client: AsyncClient):
     assert list_resp.status_code == 200
     batch_ids = [item["public_id"] for item in list_resp.json()["items"]]
     assert import_id not in batch_ids
+
+
+@pytest.mark.asyncio
+async def test_import_investing_constituents_lifecycle(client: AsyncClient):
+    suffix = uuid.uuid4().hex[:8]
+    creds = await _register_and_login(client, suffix)
+
+    # 1. Look up user and workspace to insert test instruments
+    async with postgres.async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.username == f"import_{suffix}"))
+        ).scalar_one()
+        membership = (
+            await session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+            )
+        ).scalar_one()
+        workspace_id = membership.workspace_id
+
+        # Insert active ETF
+        etf = Instrument(
+            workspace_id=workspace_id,
+            symbol="UMMA",
+            name="Wahed Shariah ETF",
+            instrument_type="etf",
+            is_active=True,
+        )
+        # Insert inactive ETF
+        etf_inactive = Instrument(
+            workspace_id=workspace_id,
+            symbol="INACTIVE_ETF",
+            name="Inactive ETF",
+            instrument_type="etf",
+            is_active=False,
+        )
+        # Insert stock
+        stock = Instrument(
+            workspace_id=workspace_id,
+            symbol="AAPL",
+            name="Apple Inc",
+            instrument_type="stock",
+            is_active=True,
+        )
+        session.add_all([etf, etf_inactive, stock])
+        await session.commit()
+
+    # Test A: Rejection of invalid instrument symbols / types / inactive
+    csv_invalid_instrument = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "UMMA,Apple Inc,AAPL,0.50,2026-06-14\n"
+        "NONEXISTENT,Microsoft Corp,MSFT,0.50,2026-06-14\n"
+    )
+    files = {
+        "file": ("constituents.csv", io.BytesIO(csv_invalid_instrument.encode("utf-8")), "text/csv")
+    }
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_field"]["instrument_symbol"] == 1
+    assert any(
+        "must resolve to an active ETF/Mutual Fund" in err["message"] for err in body["errors"]
+    )
+
+    # Test B: Rejection of stock
+    csv_stock = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "AAPL,Apple Inc,AAPL,1.00,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_stock.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_field"]["instrument_symbol"] == 1
+
+    # Test C: Rejection of inactive ETF
+    csv_inactive = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "INACTIVE_ETF,Apple Inc,AAPL,1.00,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_inactive.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_field"]["instrument_symbol"] == 1
+
+    # Test D: Rejection of invalid weight sums (e.g. 0.80 instead of ~1.00)
+    csv_invalid_weight = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "UMMA,Apple Inc,AAPL,0.40,2026-06-14\n"
+        "UMMA,Microsoft Corp,MSFT,0.40,2026-06-14\n"
+    )
+    files = {
+        "file": ("constituents.csv", io.BytesIO(csv_invalid_weight.encode("utf-8")), "text/csv")
+    }
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_code"]["invalid_weight_sum"] == 1
+
+    # Test E: Successful validation and commit of valid weights (sum = 1.00)
+    csv_valid = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "UMMA,Apple Inc,AAPL,0.60,2026-06-14\n"
+        "UMMA,Microsoft Corp,MSFT,0.40,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_valid.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "validated"
+    assert body["error_summary"]["total_errors"] == 0
+    import_id = body["import_batch"]["public_id"]
+
+    # Commit the import
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code == 200
+    assert commit.json()["inserted_rows"] == 2
+    assert commit.json()["import_batch"]["status"] == "completed"
+
+    # Verify that DB contains the constituents and companies are created
+    async with postgres.async_session_maker() as session:
+        # Check companies are created
+        company_aapl = (
+            await session.execute(
+                select(Company).where(
+                    Company.workspace_id == workspace_id, Company.name == "Apple Inc"
+                )
+            )
+        ).scalar_one()
+        assert company_aapl.ticker == "AAPL"
+
+        company_msft = (
+            await session.execute(
+                select(Company).where(
+                    Company.workspace_id == workspace_id, Company.name == "Microsoft Corp"
+                )
+            )
+        ).scalar_one()
+        assert company_msft.ticker == "MSFT"
+
+        # Check constituents
+        consts = (
+            (
+                await session.execute(
+                    select(InstrumentConstituent).where(
+                        InstrumentConstituent.instrument_id == etf.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(consts) == 2
+        weights = {c.constituent_company_id: c.weight for c in consts}
+        assert weights[company_aapl.id] == Decimal("0.60000000")
+        assert weights[company_msft.id] == Decimal("0.40000000")
+        for c in consts:
+            assert c.source == "csv_import"
+
+    # Test F: Overwrite behavior (subsequent import of different constituents on same date replaces existing ones)
+    csv_overwrite = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "UMMA,NVIDIA Corp,NVDA,1.00,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_overwrite.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "validated"
+    import_id_2 = body["import_batch"]["public_id"]
+
+    commit_2 = await client.post(f"/v1/imports/{import_id_2}/commit", cookies=creds["cookies"])
+    assert commit_2.status_code == 200
+    assert commit_2.json()["inserted_rows"] == 1
+
+    # Verify that NVIDIA has replaced Apple Inc and Microsoft Corp
+    async with postgres.async_session_maker() as session:
+        # Check Nvidia company was created
+        company_nvda = (
+            await session.execute(
+                select(Company).where(
+                    Company.workspace_id == workspace_id, Company.name == "NVIDIA Corp"
+                )
+            )
+        ).scalar_one()
+        assert company_nvda.ticker == "NVDA"
+
+        # Check constituents: only NVDA should exist for UMMA on 2026-06-14
+        consts = (
+            (
+                await session.execute(
+                    select(InstrumentConstituent).where(
+                        InstrumentConstituent.instrument_id == etf.id,
+                        InstrumentConstituent.as_of_date
+                        == datetime.strptime("2026-06-14", "%Y-%m-%d").date(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(consts) == 1
+        assert consts[0].constituent_company_id == company_nvda.id
+        assert consts[0].weight == Decimal("1.00000000")

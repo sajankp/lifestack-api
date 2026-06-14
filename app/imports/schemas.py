@@ -26,6 +26,13 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
         "currency",
         "instrument_type",
     ],
+    ImportModule.investing_constituents: [
+        "instrument_symbol",
+        "company_name",
+        "company_ticker",
+        "weight",
+        "as_of_date",
+    ],
 }
 
 SPENDEE_TRANSACTION_HEADERS = [
