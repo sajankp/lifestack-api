@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import sys
+import traceback
 from datetime import datetime
 
 from app.application.jobs import (
@@ -94,6 +95,7 @@ async def main() -> None:
         print(f"Job '{args.job}' completed successfully.")
     except Exception as e:
         print(f"Error executing job '{args.job}': {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
 

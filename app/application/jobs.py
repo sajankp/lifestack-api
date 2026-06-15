@@ -92,6 +92,11 @@ async def budget_guardrails_job(workspace_id: int | None = None) -> None:
         else:
             workspaces_res = await session.execute(select(Workspace).where(Workspace.is_active))
         workspaces = workspaces_res.scalars().all()
+        if workspace_id is not None and not workspaces:
+            logger.warning(
+                "budget_guardrails_job_workspace_not_found_or_inactive",
+                workspace_id=workspace_id,
+            )
 
         # --- Step 2: Per-workspace evaluation with isolated transactions ---
         for workspace in workspaces:
@@ -183,6 +188,11 @@ async def recurring_transactions_job(workspace_id: int | None = None) -> None:
                     select(Workspace.id).where(Workspace.is_active)
                 )
             workspace_ids = list(workspaces_res.scalars().all())
+            if workspace_id is not None and not workspace_ids:
+                logger.warning(
+                    "recurring_transactions_job_workspace_not_found_or_inactive",
+                    workspace_id=workspace_id,
+                )
 
         total_generated = 0
         total_todos_generated = 0
@@ -285,6 +295,11 @@ async def weekly_summary_job(
                         select(Workspace).where(Workspace.is_active)
                     )
                 workspaces = list(workspaces_res.scalars().all())
+                if workspace_id is not None and not workspaces:
+                    logger.warning(
+                        "weekly_summary_job_workspace_not_found_or_inactive",
+                        workspace_id=workspace_id,
+                    )
                 workspace_ids = [
                     workspace.id for workspace in workspaces if workspace.id is not None
                 ]
