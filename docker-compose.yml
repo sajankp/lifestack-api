@@ -14,7 +14,13 @@ services:
       REDIS_URL: redis://redis:6379/1
       RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
       interval: 10s
       timeout: 5s
       retries: 3
