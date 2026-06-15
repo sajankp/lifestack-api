@@ -2,18 +2,30 @@ services:
   api:
     build: .
     ports: ["8000:8000"]
-    depends_on: [postgres, redis]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file: .env
+    restart: unless-stopped
     environment:
-      - DATABASE_URL=postgresql+asyncpg://lifestack:lifestack@postgres:5432/lifestack
-      - REDIS_URL=redis://redis:6379/1
-      - RATE_LIMIT_STORAGE_URI=redis://redis:6379/1
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://lifestack:lifestack@postgres:5432/lifestack}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/1}
+      RATE_LIMIT_STORAGE_URI: ${RATE_LIMIT_STORAGE_URI:-redis://redis:6379/1}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     volumes:
       - .:/app
       - /app/.venv
 
   postgres:
     image: postgres:18
+    profiles: ["local"]
     environment:
       POSTGRES_USER: lifestack
       POSTGRES_PASSWORD: lifestack
@@ -21,10 +33,21 @@ services:
     ports: ["5432:5432"]
     volumes:
       - pg-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lifestack -d lifestack"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
+    profiles: ["local"]
     ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -33,7 +56,8 @@ services:
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
     restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   pg-data:
