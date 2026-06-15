@@ -55,6 +55,28 @@ def test_settings_normalizes_comma_separated_origin_strings():
     ]
 
 
+def test_settings_normalizes_escaped_json_string_origins():
+    settings = Settings(
+        BACKEND_CORS_ORIGINS='[\\"https://www.lifestack.sajankp.com\\",\\"https://lifestack.sajankp.com\\"]'
+    )
+
+    assert settings.cors_allowed_origins == [
+        "https://www.lifestack.sajankp.com",
+        "https://lifestack.sajankp.com",
+    ]
+
+
+def test_settings_normalizes_bracketed_comma_separated_origins():
+    settings = Settings(
+        BACKEND_CORS_ORIGINS="[https://www.lifestack.sajankp.com, https://lifestack.sajankp.com]"
+    )
+
+    assert settings.cors_allowed_origins == [
+        "https://www.lifestack.sajankp.com",
+        "https://lifestack.sajankp.com",
+    ]
+
+
 def test_settings_rejects_unknown_env_values():
     with pytest.raises(ValueError, match="ENV must be one of"):
         Settings(ENV="prod")

@@ -238,14 +238,31 @@ class Settings(BaseSettings):
             try:
                 parsed = json.loads(value)
             except json.JSONDecodeError:
-                parsed = None
+                try:
+                    parsed = json.loads(value.replace(r"\"", '"'))
+                except json.JSONDecodeError:
+                    parsed = None
             if isinstance(parsed, list):
                 return [str(origin).strip() for origin in parsed if str(origin).strip()]
 
-        if "," in value:
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            if value.endswith("]"):
+                value = value[1:-1].strip()
 
-        return [value]
+        if "," in value:
+            return [
+                Settings._strip_origin_wrapping(origin)
+                for origin in value.split(",")
+                if Settings._strip_origin_wrapping(origin)
+            ]
+
+        return [Settings._strip_origin_wrapping(value)]
+
+    @staticmethod
+    def _strip_origin_wrapping(value: str) -> str:
+        origin = value.strip().strip("'\"").strip()
+        if origin.startswith(r"\"") and origin.endswith(r"\""):
+            origin = origin[2:-2].strip()
+        return origin.strip("'\"").strip()
 
     @model_validator(mode="before")
     @classmethod
