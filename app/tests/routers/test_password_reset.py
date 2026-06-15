@@ -38,37 +38,6 @@ async def test_forgot_password_generic_success(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_password_reset_flow_success(client: AsyncClient):
-    # 1. Register a user
-    user_data = {
-        "email": "flow@example.com",
-        "username": "flowuser",
-        "password": "TestPass123!",
-    }
-    register_res = await client.post("/v1/auth/register", json=user_data)
-    assert register_res.status_code == 200
-
-    # 2. Trigger forgot password
-    forgot_res = await client.post("/v1/auth/forgot-password", json={"email": "flow@example.com"})
-    assert forgot_res.status_code == 200
-
-    # 3. Retrieve token from database (since we don't have SMTP)
-    async with postgres.async_session_maker() as session:
-        statement = select(PasswordResetToken)
-        result = await session.execute(statement)
-        token_record = result.scalars().first()
-        assert token_record is not None
-
-    # Wait, the token_hash is stored in the database, but we need the plain text token to send to the router.
-    # But wait! We don't have the plain text token from database because we only stored the hash.
-    # Wait, how does the test get the token?
-    # Ah! Let's mock the `secrets.token_urlsafe` or just intercept/read it?
-    # Or in the test, we can mock `secrets.token_urlsafe` to return a known value!
-    # Yes! We can patch `secrets.token_urlsafe` in the test to return "mocked_plain_text_token_value".
-    # This is a very standard way to test generated tokens!
-
-
-@pytest.mark.asyncio
 async def test_password_reset_flow_with_mocked_token(client: AsyncClient, monkeypatch):
     test_token = "mocked-reset-token-12345"
     monkeypatch.setattr("secrets.token_urlsafe", lambda *args, **kwargs: test_token)

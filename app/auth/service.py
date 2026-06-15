@@ -3,6 +3,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 import structlog
+from sqlalchemy import select
 
 from app.auth.models import AuthSession, PasswordResetToken, User
 from app.auth.repository import AuthSessionRepository, PasswordResetTokenRepository, UserRepository
@@ -118,6 +119,9 @@ class AuthService:
     async def forgot_password(self, email: str) -> None:
         user = await self.user_repo.get_by_email(email)
         if not user or not user.is_active:
+            dummy_token = secrets.token_urlsafe(32)
+            hashlib.sha256(dummy_token.encode("utf-8")).hexdigest()
+            await self.user_repo.session.execute(select(1))
             # Prevent email enumeration by failing silently with a log
             self.logger.info(
                 "Password reset requested for non-existent or inactive email", email=email
@@ -136,7 +140,7 @@ class AuthService:
         await self.reset_token_repo.create(reset_token)
 
         # Log the mock URL to the container stdout
-        reset_url = f"https://www.apis.sajankp.com/reset-password?token={token}"
+        reset_url = f"{settings.FRONTEND_URL.rstrip('/')}/reset-password?token={token}"
         self.logger.info("Password Reset Link Generated", email=email, reset_url=reset_url)
 
     async def reset_password(self, token: str, new_password: str) -> None:
