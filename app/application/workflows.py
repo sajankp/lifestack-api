@@ -778,11 +778,18 @@ async def ingest_constituents(
         .scalars()
         .all()
     )
+    await session.commit()
 
     instrument_repo = InstrumentRepository(session)
     company_repo = CompanyRepository(session)
     constituent_repo = InstrumentConstituentRepository(session)
     constituent_service = ConstituentService(instrument_repo, company_repo, constituent_repo)
+
+    instrument_ids = [instrument.id for instrument in instruments if instrument.id is not None]
+    latest_by_instrument = await constituent_repo.get_latest_on_or_before_many(
+        instrument_ids, today
+    )
+    await session.commit()
 
     result: dict[str, str] = {}
     for instrument in instruments:
@@ -791,7 +798,7 @@ async def ingest_constituents(
             result[key] = "failed"
             continue
 
-        latest = await constituent_repo.get_latest_on_or_before(instrument.id, today)
+        latest = latest_by_instrument.get(instrument.id, [])
         if latest and latest[0].as_of_date >= stale_before:
             result[key] = "skipped"
             continue
@@ -829,11 +836,13 @@ async def ingest_constituents(
             constituents=normalised_constituents,
         )
         try:
-            await constituent_service.upsert_constituents(
-                instrument.workspace_id, instrument.public_id, payload
-            )
+            async with session.begin():
+                await constituent_service.upsert_constituents(
+                    instrument.workspace_id, instrument.public_id, payload
+                )
             result[key] = "ok"
         except Exception as exc:
+            await session.rollback()
             logger.warning(
                 "constituent_ingestion_symbol_failed",
                 workspace_id=instrument.workspace_id,

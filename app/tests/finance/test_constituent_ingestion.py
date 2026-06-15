@@ -115,7 +115,7 @@ async def test_ingest_constituents_end_to_end_normalises_weights(client):
             )
         )
 
-    async with postgres.async_session_maker() as session, session.begin():
+    async with postgres.async_session_maker() as session:
         result = await ingest_constituents(session, provider=provider, staleness_days=0)
 
     assert result == {f"{workspace_id}:VUSA": "ok"}
@@ -148,9 +148,9 @@ async def test_ingest_constituents_staleness_guard_skips_fresh_snapshot(client):
             )
         )
 
-    async with postgres.async_session_maker() as session, session.begin():
+    async with postgres.async_session_maker() as session:
         first = await ingest_constituents(session, provider=provider, staleness_days=7)
-    async with postgres.async_session_maker() as session, session.begin():
+    async with postgres.async_session_maker() as session:
         second = await ingest_constituents(session, provider=provider, staleness_days=7)
 
     assert first == {f"{workspace_id}:VTI": "ok"}

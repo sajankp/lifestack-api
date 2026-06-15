@@ -594,7 +594,13 @@ class PerformanceService:
         unique_keys = sorted({
             (h.symbol.upper().strip(), h.currency.upper().strip()) for h in holdings
         })
-        tasks = [_fetch_stock_price(sym, curr) for sym, curr in unique_keys]
+        sem = asyncio.Semaphore(5)
+
+        async def throttled_fetch(sym: str, curr: str) -> Decimal | None:
+            async with sem:
+                return await _fetch_stock_price(sym, curr)
+
+        tasks = [throttled_fetch(sym, curr) for sym, curr in unique_keys]
         results = await asyncio.gather(*tasks)
 
         price_map = {
@@ -859,7 +865,7 @@ class ConstituentService:
             if total_weight <= 0:
                 raise ValidationError(detail="Constituent weights must be positive")
             for item in constituents:
-                item.weight = item.weight / total_weight
+                item.weight = (item.weight / total_weight).quantize(Decimal("0.00000001"))
             total_weight = sum(item.weight for item in constituents)
 
         if not (Decimal("0.99") <= total_weight <= Decimal("1.01")):

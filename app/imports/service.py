@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fastapi import UploadFile
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -803,19 +803,40 @@ class ImportService:
                         self.session.add(tx)
                         inserted += 1
                 elif batch.module == ImportModule.spending_budgets:
-                    for row in rows:
-                        p = row.payload_json
-                        # Check if budget already exists for this category/month
-                        month_start_date = datetime.fromisoformat(p["month_start"]).date()
-                        existing_budget = (
-                            await self.session.execute(
-                                select(SpendingBudget).where(
-                                    SpendingBudget.workspace_id == workspace_id,
-                                    SpendingBudget.category_id == int(p["category_id"]),
-                                    SpendingBudget.month_start == month_start_date,
+                    budget_keys = {
+                        (
+                            int(row.payload_json["category_id"]),
+                            datetime.fromisoformat(row.payload_json["month_start"]).date(),
+                        )
+                        for row in rows
+                    }
+                    existing_budgets = {}
+                    if budget_keys:
+                        budget_rows = (
+                            (
+                                await self.session.execute(
+                                    select(SpendingBudget).where(
+                                        SpendingBudget.workspace_id == workspace_id,
+                                        tuple_(
+                                            SpendingBudget.category_id,
+                                            SpendingBudget.month_start,
+                                        ).in_(budget_keys),
+                                    )
                                 )
                             )
-                        ).scalar_one_or_none()
+                            .scalars()
+                            .all()
+                        )
+                        existing_budgets = {
+                            (budget.category_id, budget.month_start): budget
+                            for budget in budget_rows
+                        }
+
+                    for row in rows:
+                        p = row.payload_json
+                        month_start_date = datetime.fromisoformat(p["month_start"]).date()
+                        budget_key = (int(p["category_id"]), month_start_date)
+                        existing_budget = existing_budgets.get(budget_key)
 
                         if existing_budget:
                             existing_budget.amount = Decimal(p["amount"])
@@ -834,9 +855,42 @@ class ImportService:
                                 source_ref=f"{batch.public_id}:{row.row_number}",
                             )
                             self.session.add(budget)
+                            existing_budgets[budget_key] = budget
                         inserted += 1
                 elif batch.module == ImportModule.investing_holdings:
                     account_map = await self._account_map(workspace_id)
+                    holding_keys = set()
+                    for row in rows:
+                        p = row.payload_json
+                        account_name_val = p.get("account_name")
+                        account_name_raw = self._norm(account_name_val) if account_name_val else ""
+                        account_id = (
+                            account_map.get(account_name_raw.lower()) if account_name_raw else None
+                        )
+                        if account_id is not None:
+                            holding_keys.add((p["symbol"], account_id))
+
+                    existing_holdings = {}
+                    if holding_keys:
+                        holding_rows = (
+                            (
+                                await self.session.execute(
+                                    select(Holding).where(
+                                        Holding.workspace_id == workspace_id,
+                                        tuple_(Holding.symbol, Holding.account_id).in_(
+                                            holding_keys
+                                        ),
+                                    )
+                                )
+                            )
+                            .scalars()
+                            .all()
+                        )
+                        existing_holdings = {
+                            (holding.symbol, holding.account_id): holding
+                            for holding in holding_rows
+                        }
+
                     for row in rows:
                         p = row.payload_json
                         account_name_val = p.get("account_name")
@@ -855,16 +909,8 @@ class ImportService:
                             workspace_id, p["symbol"], instrument_type
                         )
 
-                        # Check if holding already exists for this unique combination
-                        existing_holding = (
-                            await self.session.execute(
-                                select(Holding).where(
-                                    Holding.workspace_id == workspace_id,
-                                    Holding.symbol == p["symbol"],
-                                    Holding.account_id == account_id,
-                                )
-                            )
-                        ).scalar_one_or_none()
+                        holding_key = (p["symbol"], account_id)
+                        existing_holding = existing_holdings.get(holding_key)
 
                         if existing_holding:
                             existing_holding.quantity = Decimal(p["quantity"])
@@ -890,6 +936,7 @@ class ImportService:
                                 source_ref=f"{batch.public_id}:{row.row_number}",
                             )
                             self.session.add(holding)
+                            existing_holdings[holding_key] = holding
                         inserted += 1
                 else:  # ImportModule.investing_constituents
                     for row in rows:

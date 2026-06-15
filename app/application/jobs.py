@@ -14,7 +14,7 @@ import asyncio
 from datetime import UTC, date, datetime, timedelta
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.application.workflows import (
     cleanup_expired_exports,
@@ -448,11 +448,12 @@ async def constituent_ingestion_job() -> None:
     start_time = datetime.now(UTC)
     logger.info("constituent_ingestion_job_start", job_name="constituent_ingestion_job")
 
-    async with postgres.async_session_maker() as session, session.begin():
-        lock_res = await session.execute(
-            select(func.pg_try_advisory_xact_lock(CONSTITUENT_INGESTION_LOCK_KEY))
+    async with postgres.engine.connect() as lock_conn:
+        lock_res = await lock_conn.execute(
+            select(func.pg_try_advisory_lock(CONSTITUENT_INGESTION_LOCK_KEY))
         )
         has_lock = lock_res.scalar()
+        await lock_conn.commit()
         if not has_lock:
             logger.info(
                 "constituent_ingestion_job_skipped_lock_held",
@@ -461,9 +462,10 @@ async def constituent_ingestion_job() -> None:
             return
 
         try:
-            result = await ingest_constituents(
-                session, staleness_days=settings.CONSTITUENT_INGESTION_STALENESS_DAYS
-            )
+            async with postgres.async_session_maker() as session:
+                result = await ingest_constituents(
+                    session, staleness_days=settings.CONSTITUENT_INGESTION_STALENESS_DAYS
+                )
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.info(
                 "constituent_ingestion_job_completed",
@@ -481,6 +483,12 @@ async def constituent_ingestion_job() -> None:
                 exc_info=True,
             )
             raise e
+        finally:
+            await lock_conn.execute(
+                text("SELECT pg_advisory_unlock(:lock_key)"),
+                {"lock_key": CONSTITUENT_INGESTION_LOCK_KEY},
+            )
+            await lock_conn.commit()
 
 
 async def export_cleanup_job() -> None:

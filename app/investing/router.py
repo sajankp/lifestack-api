@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, status
 
@@ -79,11 +79,18 @@ async def _build_instrument_type_cache(
 
 
 async def _instrument_response(
-    instrument_service: InstrumentService, workspace_id: int, instrument
+    instrument_service: InstrumentService,
+    workspace_id: int,
+    instrument,
+    company_cache: dict[int, Any] | None = None,
 ) -> InstrumentResponse:
     data = instrument.model_dump()
     if instrument.company_id is not None:
-        company = await instrument_service.company_repo.get_by_id(instrument.company_id)
+        company = (
+            company_cache.get(instrument.company_id)
+            if company_cache is not None
+            else await instrument_service.company_repo.get_by_id(instrument.company_id)
+        )
         if company is not None and company.workspace_id == workspace_id:
             data["company_id"] = company.public_id
         else:
@@ -375,8 +382,11 @@ async def list_instruments(
     _user: Annotated[dict, Depends(get_current_user)],
 ):
     instruments = await instrument_service.list_instruments(workspace_id)
+    company_ids = [item.company_id for item in instruments if item.company_id is not None]
+    company_cache = await instrument_service.company_repo.get_by_ids(company_ids)
     return [
-        await _instrument_response(instrument_service, workspace_id, item) for item in instruments
+        await _instrument_response(instrument_service, workspace_id, item, company_cache)
+        for item in instruments
     ]
 
 

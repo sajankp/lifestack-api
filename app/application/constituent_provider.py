@@ -1,6 +1,10 @@
 import contextlib
+import fcntl
 import json
 import os
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -15,6 +19,20 @@ CACHE_FILE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     ".yahoo_session_cache.json",
 )
+
+
+@contextmanager
+def _cache_lock() -> Iterator[None]:
+    cache_lock_path = f"{CACHE_FILE_PATH}.lock"
+    lock_dir = os.path.dirname(cache_lock_path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
+    with open(cache_lock_path, "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 @dataclass(frozen=True)
@@ -40,35 +58,46 @@ class YahooFinanceConstituentProvider:
     provider_key = "yahoo-finance-top-n-normalised"
 
     def _load_cache(self) -> tuple[dict | None, str | None, float | None]:
-        if os.path.exists(CACHE_FILE_PATH):
-            try:
-                with open(CACHE_FILE_PATH) as f:
-                    data = json.load(f)
-                    return data.get("cookies"), data.get("crumb"), data.get("backoff_until")
-            except Exception:
-                pass
+        with _cache_lock():
+            if os.path.exists(CACHE_FILE_PATH):
+                try:
+                    with open(CACHE_FILE_PATH) as f:
+                        data = json.load(f)
+                        return data.get("cookies"), data.get("crumb"), data.get("backoff_until")
+                except Exception:
+                    pass
         return None, None, None
 
     def _save_cache(
         self, cookies: dict | None, crumb: str | None, backoff_until: float | None = None
     ) -> None:
         try:
-            existing = {}
-            if os.path.exists(CACHE_FILE_PATH):
-                with contextlib.suppress(Exception), open(CACHE_FILE_PATH) as f:
-                    existing = json.load(f)
+            with _cache_lock():
+                existing = {}
+                if os.path.exists(CACHE_FILE_PATH):
+                    with contextlib.suppress(Exception), open(CACHE_FILE_PATH) as f:
+                        existing = json.load(f)
 
-            if cookies is not None:
-                existing["cookies"] = cookies
-            if crumb is not None:
-                existing["crumb"] = crumb
-            if backoff_until is not None:
-                existing["backoff_until"] = backoff_until
-            elif "backoff_until" not in existing:
-                existing["backoff_until"] = None
+                if cookies is not None:
+                    existing["cookies"] = cookies
+                if crumb is not None:
+                    existing["crumb"] = crumb
+                if backoff_until is not None:
+                    existing["backoff_until"] = backoff_until
+                elif "backoff_until" not in existing:
+                    existing["backoff_until"] = None
 
-            with open(CACHE_FILE_PATH, "w") as f:
-                json.dump(existing, f)
+                cache_dir = os.path.dirname(CACHE_FILE_PATH)
+                fd, temp_path = tempfile.mkstemp(
+                    prefix=".yahoo_session_cache.", suffix=".tmp", dir=cache_dir or None
+                )
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        json.dump(existing, f)
+                    os.replace(temp_path, CACHE_FILE_PATH)
+                finally:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(temp_path)
         except Exception as exc:
             logger.warning("failed_to_save_yahoo_cache", error=str(exc))
 
@@ -76,8 +105,18 @@ class YahooFinanceConstituentProvider:
         try:
             _, _, backoff_until = self._load_cache()
             existing = {"cookies": None, "crumb": None, "backoff_until": backoff_until}
-            with open(CACHE_FILE_PATH, "w") as f:
-                json.dump(existing, f)
+            with _cache_lock():
+                cache_dir = os.path.dirname(CACHE_FILE_PATH)
+                fd, temp_path = tempfile.mkstemp(
+                    prefix=".yahoo_session_cache.", suffix=".tmp", dir=cache_dir or None
+                )
+                try:
+                    with os.fdopen(fd, "w") as f:
+                        json.dump(existing, f)
+                    os.replace(temp_path, CACHE_FILE_PATH)
+                finally:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(temp_path)
         except Exception as exc:
             logger.warning("failed_to_clear_yahoo_cache", error=str(exc))
 
