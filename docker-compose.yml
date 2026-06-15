@@ -10,9 +10,9 @@ services:
     env_file: .env
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://lifestack:lifestack@postgres:5432/lifestack
-      REDIS_URL: redis://redis:6379/1
-      RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://lifestack:lifestack@postgres:5432/lifestack}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/1}
+      RATE_LIMIT_STORAGE_URI: ${RATE_LIMIT_STORAGE_URI:-redis://redis:6379/1}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
@@ -25,6 +25,7 @@ services:
 
   postgres:
     image: postgres:18
+    profiles: ["local"]
     environment:
       POSTGRES_USER: lifestack
       POSTGRES_PASSWORD: lifestack
@@ -40,6 +41,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    profiles: ["local"]
     ports: ["6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
