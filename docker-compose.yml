@@ -9,6 +9,22 @@ services:
         condition: service_healthy
     env_file: .env
     restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://lifestack:lifestack@postgres:5432/lifestack
+      REDIS_URL: redis://redis:6379/1
+      RATE_LIMIT_STORAGE_URI: redis://redis:6379/1
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     volumes:
       - .:/app
       - /app/.venv
