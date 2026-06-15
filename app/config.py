@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "super-secret-key-change-in-production"
     ACCESS_TOKEN_EXPIRE_SECONDS: int = 60 * 30  # 30 mins
     REFRESH_TOKEN_EXPIRE_SECONDS: int = 60 * 60 * 24 * 7  # 7 days
+    FRONTEND_URL: str = "http://localhost:5173"
 
     # Environment
     ENV: str = "local"  # One of: local, staging, production

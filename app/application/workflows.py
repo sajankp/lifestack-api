@@ -842,7 +842,6 @@ async def ingest_constituents(
                 )
             result[key] = "ok"
         except Exception as exc:
-            await session.rollback()
             logger.warning(
                 "constituent_ingestion_symbol_failed",
                 workspace_id=instrument.workspace_id,

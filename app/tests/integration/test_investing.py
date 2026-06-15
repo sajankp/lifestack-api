@@ -1026,7 +1026,10 @@ async def test_investing_prices_refresh_and_valuation_fields(client: AsyncClient
         assert refresh_res.status_code == 200
         assert "AAPL" in refresh_res.json()["updated"]
 
-        mock_fetch.assert_called_once_with("AAPL", "USD")
+        mock_fetch.assert_called_once()
+        _, symbol, currency = mock_fetch.call_args.args
+        assert symbol == "AAPL"
+        assert currency == "USD"
 
     # 3. Verify updated fields in holding list
     list_res = await client.get("/v1/investing/holdings")
@@ -1082,4 +1085,7 @@ async def test_investing_prices_refresh_indian_stock_appends_ns(client: AsyncCli
         assert "TATSILV" in refresh_res.json()["updated"]
 
         # Assert that it was called with symbol TATSILV and currency INR
-        mock_fetch.assert_called_once_with("TATSILV", "INR")
+        mock_fetch.assert_called_once()
+        _, symbol, currency = mock_fetch.call_args.args
+        assert symbol == "TATSILV"
+        assert currency == "INR"

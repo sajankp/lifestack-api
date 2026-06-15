@@ -860,6 +860,29 @@ class ImportService:
                 elif batch.module == ImportModule.investing_holdings:
                     account_map = await self._account_map(workspace_id)
                     holding_keys = set()
+                    instruments_map = {}
+                    symbols = {
+                        str(row.payload_json["symbol"]).upper()
+                        for row in rows
+                        if row.payload_json.get("symbol")
+                    }
+                    if symbols:
+                        instrument_rows = (
+                            (
+                                await self.session.execute(
+                                    select(Instrument).where(
+                                        Instrument.workspace_id == workspace_id,
+                                        Instrument.symbol.in_(symbols),
+                                    )
+                                )
+                            )
+                            .scalars()
+                            .all()
+                        )
+                        instruments_map = {
+                            instrument.symbol.upper(): instrument for instrument in instrument_rows
+                        }
+
                     for row in rows:
                         p = row.payload_json
                         account_name_val = p.get("account_name")
@@ -905,9 +928,13 @@ class ImportService:
                         instrument_type = InstrumentType(
                             p.get("instrument_type") or InstrumentType.stock.value
                         )
-                        instrument = await self._resolve_or_create_instrument(
-                            workspace_id, p["symbol"], instrument_type
-                        )
+                        symbol_key = p["symbol"].upper()
+                        instrument = instruments_map.get(symbol_key)
+                        if instrument is None:
+                            instrument = await self._resolve_or_create_instrument(
+                                workspace_id, p["symbol"], instrument_type
+                            )
+                            instruments_map[symbol_key] = instrument
 
                         holding_key = (p["symbol"], account_id)
                         existing_holding = existing_holdings.get(holding_key)
@@ -957,8 +984,14 @@ class ImportService:
                             await self.session.flush()
                             company_cache[company_name_norm] = company
 
+                        instrument_id = p.get("instrument_id")
+                        if instrument_id is None:
+                            raise ValidationError(
+                                detail="Instrument ID is missing in preview payload"
+                            )
+
                         constituent = InstrumentConstituent(
-                            instrument_id=int(p["instrument_id"]),
+                            instrument_id=int(instrument_id),
                             constituent_company_id=company.id,
                             weight=Decimal(p["weight"]),
                             as_of_date=datetime.strptime(p["as_of_date"], "%Y-%m-%d").date(),

@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -118,6 +119,9 @@ class AuthService:
     async def forgot_password(self, email: str) -> None:
         user = await self.user_repo.get_by_email(email)
         if not user or not user.is_active:
+            dummy_token = secrets.token_urlsafe(32)
+            hashlib.sha256(dummy_token.encode("utf-8")).hexdigest()
+            await asyncio.sleep(0.05)
             # Prevent email enumeration by failing silently with a log
             self.logger.info(
                 "Password reset requested for non-existent or inactive email", email=email
@@ -135,9 +139,11 @@ class AuthService:
         )
         await self.reset_token_repo.create(reset_token)
 
-        # Log the mock URL to the container stdout
-        reset_url = f"https://www.apis.sajankp.com/reset-password?token={token}"
-        self.logger.info("Password Reset Link Generated", email=email, reset_url=reset_url)
+        if settings.ENV in ("local", "test"):
+            reset_url = f"{settings.FRONTEND_URL.rstrip('/')}/reset-password?token={token}"
+            self.logger.info("Password Reset Link Generated", email=email, reset_url=reset_url)
+        else:
+            self.logger.info("Password reset email triggered", email=email)
 
     async def reset_password(self, token: str, new_password: str) -> None:
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -160,6 +166,9 @@ class AuthService:
         self.user_repo.session.add(user)
         self.reset_token_repo.session.add(reset_token)
         await self.user_repo.session.flush()
+        if self.reset_token_repo.session is not self.user_repo.session:
+            await self.reset_token_repo.session.flush()
 
         # Invalidate all active sessions for this user
-        await self.revoke_all_sessions(user.id)
+        if user.id is not None:
+            await self.revoke_all_sessions(user.id)

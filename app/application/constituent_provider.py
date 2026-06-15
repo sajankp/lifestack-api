@@ -1,5 +1,4 @@
 import contextlib
-import fcntl
 import json
 import os
 import tempfile
@@ -13,6 +12,11 @@ from typing import Protocol
 import httpx
 import structlog
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None
+
 logger = structlog.get_logger(__name__)
 
 CACHE_FILE_PATH = os.path.join(
@@ -23,6 +27,10 @@ CACHE_FILE_PATH = os.path.join(
 
 @contextmanager
 def _cache_lock() -> Iterator[None]:
+    if fcntl is None:
+        yield
+        return
+
     cache_lock_path = f"{CACHE_FILE_PATH}.lock"
     lock_dir = os.path.dirname(cache_lock_path)
     if lock_dir:

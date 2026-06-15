@@ -544,7 +544,9 @@ class CashBalanceService:
             )
 
 
-async def _fetch_stock_price(symbol: str, currency: str | None = None) -> Decimal | None:
+async def _fetch_stock_price(
+    client: httpx.AsyncClient, symbol: str, currency: str | None = None
+) -> Decimal | None:
     sym = symbol.upper().strip()
     if currency and currency.upper() == "INR" and "." not in sym:
         sym = f"{sym}.NS"
@@ -553,19 +555,18 @@ async def _fetch_stock_price(symbol: str, currency: str | None = None) -> Decima
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     }
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            result = data.get("chart", {}).get("result")
-            if result and len(result) > 0:
-                meta = result[0].get("meta", {})
-                price = meta.get("regularMarketPrice")
-                if price is not None:
-                    return Decimal(str(price))
-        except Exception:
-            pass
+    try:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        result = data.get("chart", {}).get("result")
+        if result and len(result) > 0:
+            meta = result[0].get("meta", {})
+            price = meta.get("regularMarketPrice")
+            if price is not None:
+                return Decimal(str(price))
+    except Exception:
+        pass
     return None
 
 
@@ -596,12 +597,14 @@ class PerformanceService:
         })
         sem = asyncio.Semaphore(5)
 
-        async def throttled_fetch(sym: str, curr: str) -> Decimal | None:
-            async with sem:
-                return await _fetch_stock_price(sym, curr)
+        async with httpx.AsyncClient(timeout=10.0) as client:
 
-        tasks = [throttled_fetch(sym, curr) for sym, curr in unique_keys]
-        results = await asyncio.gather(*tasks)
+            async def throttled_fetch(sym: str, curr: str) -> Decimal | None:
+                async with sem:
+                    return await _fetch_stock_price(client, sym, curr)
+
+            tasks = [throttled_fetch(sym, curr) for sym, curr in unique_keys]
+            results = await asyncio.gather(*tasks)
 
         price_map = {
             (sym, curr): price
