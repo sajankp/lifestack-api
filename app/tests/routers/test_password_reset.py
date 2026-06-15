@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -96,9 +97,10 @@ async def test_password_reset_fails_expired(client: AsyncClient, monkeypatch):
 
     # 3. Set expires_at in the past
     async with postgres.async_session_maker() as session:
-        statement = select(PasswordResetToken)
+        token_hash = hashlib.sha256(test_token.encode("utf-8")).hexdigest()
+        statement = select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
         result = await session.execute(statement)
-        token_record = result.scalars().first()
+        token_record = result.scalars().one()
         token_record.expires_at = datetime.now(UTC) - timedelta(minutes=1)
         session.add(token_record)
         await session.commit()
@@ -130,9 +132,10 @@ async def test_password_reset_fails_already_used(client: AsyncClient, monkeypatc
 
     # 3. Set used_at in the database
     async with postgres.async_session_maker() as session:
-        statement = select(PasswordResetToken)
+        token_hash = hashlib.sha256(test_token.encode("utf-8")).hexdigest()
+        statement = select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
         result = await session.execute(statement)
-        token_record = result.scalars().first()
+        token_record = result.scalars().one()
         token_record.used_at = datetime.now(UTC)
         session.add(token_record)
         await session.commit()
