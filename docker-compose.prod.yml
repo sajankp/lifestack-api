@@ -1,5 +1,7 @@
 services:
   api:
-    env_file:
+    # Requires Docker Compose v2.24.4+ for the !override merge tag.
+    env_file: !override
       - path: .env.production
         required: true
+    environment: !reset {}
