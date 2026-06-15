@@ -1,5 +1,4 @@
 services:
   api:
     # Requires Docker Compose v2.20.0+ for the !reset merge tag.
-    depends_on: !reset []
     env_file: !reset [.env.production]
