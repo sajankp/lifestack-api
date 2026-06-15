@@ -1,3 +1,4 @@
+import json
 import secrets
 from urllib.parse import urlparse
 
@@ -212,7 +213,7 @@ class Settings(BaseSettings):
         if not raw_value:
             return []
 
-        origins = [raw_value] if isinstance(raw_value, str) else list(raw_value)
+        origins = self._coerce_origin_values(raw_value)
         sanitized: list[str] = []
         for raw_origin in origins:
             origin_str = str(raw_origin).strip()
@@ -223,6 +224,45 @@ class Settings(BaseSettings):
             if normalized not in sanitized:
                 sanitized.append(normalized)
         return sanitized
+
+    @staticmethod
+    def _coerce_origin_values(raw_value: list[AnyHttpUrl] | str) -> list[str | AnyHttpUrl]:
+        if not isinstance(raw_value, str):
+            return list(raw_value)
+
+        value = raw_value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1].strip()
+
+        if value.startswith("["):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                try:
+                    parsed = json.loads(value.replace(r"\"", '"'))
+                except json.JSONDecodeError:
+                    parsed = None
+            if isinstance(parsed, list):
+                return [str(origin).strip() for origin in parsed if str(origin).strip()]
+
+            if value.endswith("]"):
+                value = value[1:-1].strip()
+
+        if "," in value:
+            return [
+                Settings._strip_origin_wrapping(origin)
+                for origin in value.split(",")
+                if Settings._strip_origin_wrapping(origin)
+            ]
+
+        return [Settings._strip_origin_wrapping(value)]
+
+    @staticmethod
+    def _strip_origin_wrapping(value: str) -> str:
+        origin = value.strip().strip("'\"").strip()
+        if origin.startswith(r"\"") and origin.endswith(r"\""):
+            origin = origin[2:-2].strip()
+        return origin.strip("'\"").strip()
 
     @model_validator(mode="before")
     @classmethod
