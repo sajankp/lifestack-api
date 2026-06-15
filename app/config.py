@@ -76,7 +76,10 @@ class Settings(BaseSettings):
     # Cookie Security
     COOKIE_SECURE: bool = False  # Set True in production (HTTPS)
     COOKIE_SAMESITE: str = "lax"
-    COOKIE_DOMAIN: str | None = None
+    COOKIE_DOMAIN: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("COOKIE_DOMAIN", "CSRF_COOKIE_DOMAIN"),
+    )
 
     # Trusted Proxies (Spec 025)
     TRUSTED_PROXIES: list[str] = ["127.0.0.1", "::1", "testclient"]
@@ -302,6 +305,10 @@ class Settings(BaseSettings):
                 )
             if self.ENABLE_E2E_TEST_HOOKS:
                 raise ValueError("ENABLE_E2E_TEST_HOOKS must remain disabled in production.")
+            if not self.COOKIE_DOMAIN:
+                raise ValueError(
+                    "COOKIE_DOMAIN must be set in production (e.g. .sajankp.com) to allow cross-subdomain CSRF cookies."
+                )
         else:
             if self.ENABLE_E2E_TEST_HOOKS and self.ENV not in {"local", "test"}:
                 raise ValueError("ENABLE_E2E_TEST_HOOKS is only allowed in local/test.")
