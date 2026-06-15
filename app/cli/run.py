@@ -1,10 +1,12 @@
 import argparse
 import asyncio
 import sys
+import traceback
 from datetime import datetime
 
 from app.application.jobs import (
     budget_guardrails_job,
+    constituent_ingestion_job,
     export_cleanup_job,
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
@@ -17,6 +19,7 @@ JOBS = {
     "budget_guardrails": budget_guardrails_job,
     "recurring_transactions": recurring_transactions_job,
     "fx_rate_ingestion": fx_rate_ingestion_job,
+    "constituent_ingestion": constituent_ingestion_job,
     "export_cleanup": export_cleanup_job,
     "session_cleanup": session_cleanup_job,
     "import_preview_cleanup": import_preview_cleanup_job,
@@ -92,6 +95,7 @@ async def main() -> None:
         print(f"Job '{args.job}' completed successfully.")
     except Exception as e:
         print(f"Error executing job '{args.job}': {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
 

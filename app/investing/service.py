@@ -1,7 +1,10 @@
+import asyncio
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
+
+import httpx
 
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
@@ -42,6 +45,7 @@ from app.investing.schemas import (
     InstrumentConstituentResponse,
     InstrumentConstituentUpsert,
     InstrumentCreate,
+    InstrumentUpdate,
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
     OverlapRow,
@@ -169,17 +173,24 @@ class HoldingService:
         self.account_repo = account_repo
         self.currency_repo = currency_repo
 
-    async def _resolve_or_create_stock_instrument(
-        self, workspace_id: int, symbol: str
+    async def _resolve_or_create_instrument(
+        self, workspace_id: int, symbol: str, instrument_type: InstrumentType
     ) -> Instrument | None:
         if self.instrument_repo is None:
             return None
         instrument = await self.instrument_repo.get_by_symbol(workspace_id, symbol)
         if instrument is not None:
+            if (
+                instrument_type != InstrumentType.stock
+                and instrument.instrument_type != instrument_type.value
+            ):
+                instrument.instrument_type = instrument_type.value
+                instrument.updated_at = datetime.now(UTC)
+                instrument = await self.instrument_repo.save(instrument)
             return instrument
 
         company: Company | None = None
-        if self.company_repo is not None:
+        if self.company_repo is not None and instrument_type == InstrumentType.stock:
             company = await self.company_repo.get_by_name(workspace_id, symbol)
             if company is None:
                 company = await self.company_repo.create(
@@ -191,7 +202,7 @@ class HoldingService:
                 workspace_id=workspace_id,
                 symbol=symbol,
                 name=symbol,
-                instrument_type=InstrumentType.stock.value,
+                instrument_type=instrument_type.value,
                 company_id=company.id if company else None,
             )
         )
@@ -256,7 +267,9 @@ class HoldingService:
             avg_cost=holding_in.avg_cost,
             currency=holding_in.currency,
         )
-        instrument = await self._resolve_or_create_stock_instrument(workspace_id, holding_in.symbol)
+        instrument = await self._resolve_or_create_instrument(
+            workspace_id, holding_in.symbol, holding_in.instrument_type
+        )
         if instrument is not None:
             holding.instrument_id = instrument.id
         holding = await self.repository.create(holding)
@@ -531,6 +544,32 @@ class CashBalanceService:
             )
 
 
+async def _fetch_stock_price(
+    client: httpx.AsyncClient, symbol: str, currency: str | None = None
+) -> Decimal | None:
+    sym = symbol.upper().strip()
+    if currency and currency.upper() == "INR" and "." not in sym:
+        sym = f"{sym}.NS"
+
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
+    try:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        result = data.get("chart", {}).get("result")
+        if result and len(result) > 0:
+            meta = result[0].get("meta", {})
+            price = meta.get("regularMarketPrice")
+            if price is not None:
+                return Decimal(str(price))
+    except Exception:
+        pass
+    return None
+
+
 class PerformanceService:
     def __init__(
         self,
@@ -547,6 +586,52 @@ class PerformanceService:
         self.snapshot_repo = snapshot_repo
         self.finance_setting_repo = finance_setting_repo
         self.fx_rate_repo = fx_rate_repo
+
+    async def refresh_workspace_prices(self, workspace_id: int) -> dict[str, Decimal]:
+        holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
+        if not holdings:
+            return {}
+
+        unique_keys = sorted({
+            (h.symbol.upper().strip(), h.currency.upper().strip()) for h in holdings
+        })
+        sem = asyncio.Semaphore(5)
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+
+            async def throttled_fetch(sym: str, curr: str) -> Decimal | None:
+                async with sem:
+                    return await _fetch_stock_price(client, sym, curr)
+
+            tasks = [throttled_fetch(sym, curr) for sym, curr in unique_keys]
+            results = await asyncio.gather(*tasks)
+
+        price_map = {
+            (sym, curr): price
+            for (sym, curr), price in zip(unique_keys, results, strict=False)
+            if price is not None
+        }
+
+        prices_updated = {}
+        if price_map:
+            today = datetime.now(UTC).date()
+            for h in holdings:
+                if h.id is not None:
+                    sym = h.symbol.upper().strip()
+                    curr = h.currency.upper().strip()
+                    price = price_map.get((sym, curr))
+                    if price is not None:
+                        await self.holding_price_repo.upsert_price(
+                            workspace_id=workspace_id,
+                            holding_id=h.id,
+                            price_date=today,
+                            unit_price=price,
+                            source="api",
+                        )
+                        prices_updated[sym] = price
+            await self.create_snapshot(workspace_id, today)
+
+        return prices_updated
 
     async def submit_prices(self, workspace_id: int, payload: HoldingPriceBulkCreate) -> None:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -722,6 +807,37 @@ class InstrumentService:
             )
         )
 
+    async def update_instrument(
+        self, workspace_id: int, public_id: uuid.UUID, payload: InstrumentUpdate
+    ) -> Instrument:
+        instrument = await self.instrument_repo.get_by_public_id(workspace_id, public_id)
+        if instrument is None:
+            raise NotFoundError(detail=f"Instrument '{public_id}' not found")
+
+        update_data = payload.model_dump(exclude_unset=True)
+        if not update_data:
+            return instrument
+
+        if payload.name is not None:
+            instrument.name = payload.name
+        if payload.instrument_type is not None:
+            instrument.instrument_type = payload.instrument_type.value
+            if payload.instrument_type == InstrumentType.stock and instrument.company_id is None:
+                company = await self.company_repo.get_by_name(workspace_id, instrument.name)
+                if company is None:
+                    company = await self.company_repo.create(
+                        Company(
+                            workspace_id=workspace_id,
+                            name=instrument.name,
+                            ticker=instrument.symbol,
+                        )
+                    )
+                instrument.company_id = company.id
+            if payload.instrument_type != InstrumentType.stock:
+                instrument.company_id = None
+        instrument.updated_at = datetime.now(UTC)
+        return await self.instrument_repo.save(instrument)
+
 
 class ConstituentService:
     def __init__(
@@ -746,7 +862,15 @@ class ConstituentService:
         if instrument.instrument_type == InstrumentType.stock.value:
             raise ValidationError(detail="Stock instruments cannot have constituent snapshots")
 
-        total_weight = sum(item.weight for item in payload.constituents)
+        constituents = list(payload.constituents)
+        total_weight = sum(item.weight for item in constituents)
+        if payload.renormalise:
+            if total_weight <= 0:
+                raise ValidationError(detail="Constituent weights must be positive")
+            for item in constituents:
+                item.weight = (item.weight / total_weight).quantize(Decimal("0.00000001"))
+            total_weight = sum(item.weight for item in constituents)
+
         if not (Decimal("0.99") <= total_weight <= Decimal("1.01")):
             raise ValidationError(
                 detail=f"Constituent weights must sum to approximately 1.0 (got {total_weight})"
@@ -756,9 +880,9 @@ class ConstituentService:
             instrument.id, payload.as_of_date, payload.source
         )  # type: ignore[arg-type]
         rows: list[InstrumentConstituent] = []
-        requested_names = [item.company_name for item in payload.constituents]
+        requested_names = [item.company_name for item in constituents]
         companies_by_name = await self.company_repo.get_by_names(workspace_id, requested_names)
-        for item in payload.constituents:
+        for item in constituents:
             company = companies_by_name.get(item.company_name)
             if company is None:
                 company = await self.company_repo.create(

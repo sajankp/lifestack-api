@@ -14,19 +14,22 @@ import asyncio
 from datetime import UTC, date, datetime, timedelta
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.application.workflows import (
     cleanup_expired_exports,
     cleanup_expired_sessions,
     cleanup_import_previews,
     evaluate_workspace_budget_guardrails,
+    ingest_constituents,
     ingest_fx_rates,
     process_workspace_recurring_todos,
     process_workspace_recurring_transactions,
 )
+from app.config import settings
 from app.core.constants import (
     ADVISORY_LOCK_BUDGET_GUARDRAILS,
+    ADVISORY_LOCK_CONSTITUENT_INGESTION,
     ADVISORY_LOCK_EXPORT_CLEANUP,
     ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
@@ -89,6 +92,11 @@ async def budget_guardrails_job(workspace_id: int | None = None) -> None:
         else:
             workspaces_res = await session.execute(select(Workspace).where(Workspace.is_active))
         workspaces = workspaces_res.scalars().all()
+        if workspace_id is not None and not workspaces:
+            logger.warning(
+                "budget_guardrails_job_workspace_not_found_or_inactive",
+                workspace_id=workspace_id,
+            )
 
         # --- Step 2: Per-workspace evaluation with isolated transactions ---
         for workspace in workspaces:
@@ -180,6 +188,11 @@ async def recurring_transactions_job(workspace_id: int | None = None) -> None:
                     select(Workspace.id).where(Workspace.is_active)
                 )
             workspace_ids = list(workspaces_res.scalars().all())
+            if workspace_id is not None and not workspace_ids:
+                logger.warning(
+                    "recurring_transactions_job_workspace_not_found_or_inactive",
+                    workspace_id=workspace_id,
+                )
 
         total_generated = 0
         total_todos_generated = 0
@@ -282,6 +295,11 @@ async def weekly_summary_job(
                         select(Workspace).where(Workspace.is_active)
                     )
                 workspaces = list(workspaces_res.scalars().all())
+                if workspace_id is not None and not workspaces:
+                    logger.warning(
+                        "weekly_summary_job_workspace_not_found_or_inactive",
+                        workspace_id=workspace_id,
+                    )
                 workspace_ids = [
                     workspace.id for workspace in workspaces if workspace.id is not None
                 ]
@@ -388,6 +406,7 @@ async def weekly_summary_job(
 
 
 FX_RATE_INGESTION_LOCK_KEY = ADVISORY_LOCK_FX_RATE_INGESTION
+CONSTITUENT_INGESTION_LOCK_KEY = ADVISORY_LOCK_CONSTITUENT_INGESTION
 EXPORT_CLEANUP_LOCK_KEY = ADVISORY_LOCK_EXPORT_CLEANUP
 
 
@@ -435,6 +454,56 @@ async def fx_rate_ingestion_job() -> None:
                 exc_info=True,
             )
             raise e
+
+
+async def constituent_ingestion_job() -> None:
+    """
+    Daily job that fetches ETF/MF constituent holdings and upserts day-level snapshots.
+    """
+    start_time = datetime.now(UTC)
+    logger.info("constituent_ingestion_job_start", job_name="constituent_ingestion_job")
+
+    async with postgres.engine.connect() as lock_conn:
+        lock_res = await lock_conn.execute(
+            select(func.pg_try_advisory_lock(CONSTITUENT_INGESTION_LOCK_KEY))
+        )
+        has_lock = lock_res.scalar()
+        await lock_conn.commit()
+        if not has_lock:
+            logger.info(
+                "constituent_ingestion_job_skipped_lock_held",
+                job_name="constituent_ingestion_job",
+            )
+            return
+
+        try:
+            async with postgres.async_session_maker() as session:
+                result = await ingest_constituents(
+                    session, staleness_days=settings.CONSTITUENT_INGESTION_STALENESS_DAYS
+                )
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info(
+                "constituent_ingestion_job_completed",
+                job_name="constituent_ingestion_job",
+                duration_ms=total_ms,
+                result_summary=result,
+            )
+        except Exception as e:
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.error(
+                "constituent_ingestion_job_failed",
+                job_name="constituent_ingestion_job",
+                duration_ms=total_ms,
+                error=str(e),
+                exc_info=True,
+            )
+            raise e
+        finally:
+            await lock_conn.execute(
+                text("SELECT pg_advisory_unlock(:lock_key)"),
+                {"lock_key": CONSTITUENT_INGESTION_LOCK_KEY},
+            )
+            await lock_conn.commit()
 
 
 async def export_cleanup_job() -> None:

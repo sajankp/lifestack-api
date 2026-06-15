@@ -8,7 +8,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import delete, select, tuple_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -24,7 +25,7 @@ from app.imports.models import (
 )
 from app.imports.repository import ImportRepository
 from app.imports.schemas import SPENDEE_TRANSACTION_HEADERS, TEMPLATE_HEADERS
-from app.investing.models import Holding
+from app.investing.models import Company, Holding, Instrument, InstrumentConstituent, InstrumentType
 from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
@@ -55,8 +56,10 @@ class ImportService:
             lines.append("2026-05-01T09:30:00Z,expense,42.50,Food & Dining,Breakfast")
         elif module == ImportModule.spending_budgets:
             lines.append("2026-05-01,Food & Dining,800.00")
+        elif module == ImportModule.investing_constituents:
+            lines.append("UMMA,Apple Inc,AAPL,0.082,2026-06-14")
         else:
-            lines.append("AAPL,brokerage,10,150.25,USD")
+            lines.append("AAPL,brokerage,10,150.25,USD,stock")
         return "\n".join(lines) + "\n"
 
     async def _hash_file(self, upload: UploadFile) -> tuple[str, int]:
@@ -159,6 +162,55 @@ class ImportService:
         rows = (await self.session.execute(select(Currency.code))).scalars().all()
         return {r.upper() for r in rows}
 
+    async def _resolve_or_create_instrument(
+        self, workspace_id: int, symbol: str, instrument_type: InstrumentType
+    ) -> Instrument:
+        instrument = (
+            await self.session.execute(
+                select(Instrument).where(
+                    Instrument.workspace_id == workspace_id,
+                    Instrument.symbol == symbol,
+                )
+            )
+        ).scalar_one_or_none()
+        if instrument is not None:
+            if (
+                instrument_type != InstrumentType.stock
+                and instrument.instrument_type != instrument_type.value
+            ):
+                instrument.instrument_type = instrument_type.value
+                instrument.updated_at = datetime.now(UTC)
+                if instrument_type != InstrumentType.stock:
+                    instrument.company_id = None
+            return instrument
+
+        company_id: int | None = None
+        if instrument_type == InstrumentType.stock:
+            company = (
+                await self.session.execute(
+                    select(Company).where(
+                        Company.workspace_id == workspace_id,
+                        Company.name == symbol,
+                    )
+                )
+            ).scalar_one_or_none()
+            if company is None:
+                company = Company(workspace_id=workspace_id, name=symbol, ticker=symbol)
+                self.session.add(company)
+                await self.session.flush()
+            company_id = company.id
+
+        instrument = Instrument(
+            workspace_id=workspace_id,
+            symbol=symbol,
+            name=symbol,
+            instrument_type=instrument_type.value,
+            company_id=company_id,
+        )
+        self.session.add(instrument)
+        await self.session.flush()
+        return instrument
+
     @staticmethod
     def _norm(value: str | None) -> str:
         return (value or "").strip()
@@ -198,6 +250,19 @@ class ImportService:
         account_map = await self._account_map(workspace_id)
         currency_set = await self._currency_set()
 
+        instruments_map = {}
+        if module == ImportModule.investing_constituents:
+            inst_rows = (
+                (
+                    await self.session.execute(
+                        select(Instrument).where(Instrument.workspace_id == workspace_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            instruments_map = {inst.symbol.upper(): inst for inst in inst_rows}
+
         await upload.seek(0)
         wrapped = io.TextIOWrapper(upload.file, encoding="utf-8-sig", newline="")
         try:
@@ -205,6 +270,14 @@ class ImportService:
             headers = reader.fieldnames or []
             header_mode = "default"
             valid_headers = [TEMPLATE_HEADERS[module]]
+            if module == ImportModule.investing_holdings:
+                valid_headers.append([
+                    "symbol",
+                    "account_name",
+                    "quantity",
+                    "avg_cost",
+                    "currency",
+                ])
             if module == ImportModule.spending_transactions:
                 valid_headers.append(SPENDEE_TRANSACTION_HEADERS)
             if headers not in valid_headers:
@@ -235,6 +308,7 @@ class ImportService:
             previews: list[ImportPreviewRow] = []
             total_rows = 0
             valid_rows = 0
+            weight_groups: dict[tuple[str, str], list[Decimal]] = {}
 
             for row_no, row in enumerate(reader, start=2):
                 if total_rows >= self.MAX_VALIDATION_ROWS:
@@ -384,12 +458,15 @@ class ImportService:
                         "category_id": category_id,
                         "amount": str(amount) if amount is not None else None,
                     }
-                else:
+                elif module == ImportModule.investing_holdings:
                     symbol_raw = self._norm(row.get("symbol")).upper()
                     account_name_raw = self._norm(row.get("account_name"))
                     quantity_raw = self._norm(row.get("quantity"))
                     avg_cost_raw = self._norm(row.get("avg_cost"))
                     currency_raw = self._norm(row.get("currency")).upper()
+                    instrument_type_raw = (
+                        self._norm(row.get("instrument_type")).lower() or InstrumentType.stock.value
+                    )
 
                     if not symbol_raw:
                         add_error("symbol", "required", "symbol is required", symbol_raw)
@@ -406,6 +483,13 @@ class ImportService:
                             "invalid_currency",
                             "currency must exist in reference table",
                             currency_raw,
+                        )
+                    if instrument_type_raw not in {item.value for item in InstrumentType}:
+                        add_error(
+                            "instrument_type",
+                            "invalid_enum",
+                            "instrument_type must be stock, etf, or mutual_fund",
+                            instrument_type_raw,
                         )
 
                     try:
@@ -440,7 +524,92 @@ class ImportService:
                         "quantity": str(quantity) if quantity is not None else None,
                         "avg_cost": str(avg_cost) if avg_cost is not None else None,
                         "currency": currency_raw,
+                        "instrument_type": instrument_type_raw,
                     }
+                else:
+                    instrument_symbol_raw = self._norm(row.get("instrument_symbol")).upper()
+                    company_name_raw = self._norm(row.get("company_name"))
+                    company_ticker_raw = self._norm(row.get("company_ticker"))
+                    weight_raw = self._norm(row.get("weight"))
+                    as_of_date_raw = self._norm(row.get("as_of_date"))
+
+                    inst = None
+                    if not instrument_symbol_raw:
+                        add_error(
+                            "instrument_symbol",
+                            "required",
+                            "instrument_symbol is required",
+                            instrument_symbol_raw,
+                        )
+                    else:
+                        inst = instruments_map.get(instrument_symbol_raw)
+                        if (
+                            not inst
+                            or not inst.is_active
+                            or inst.instrument_type
+                            not in {InstrumentType.etf.value, InstrumentType.mutual_fund.value}
+                        ):
+                            add_error(
+                                "instrument_symbol",
+                                "invalid_instrument",
+                                "instrument_symbol must resolve to an active ETF/Mutual Fund instrument in the current workspace",
+                                instrument_symbol_raw,
+                            )
+
+                    if not company_name_raw:
+                        add_error(
+                            "company_name",
+                            "required",
+                            "company_name is required",
+                            company_name_raw,
+                        )
+
+                    weight = None
+                    try:
+                        weight = Decimal(weight_raw)
+                        if weight <= 0:
+                            raise InvalidOperation
+                    except Exception:
+                        add_error(
+                            "weight",
+                            "invalid_decimal",
+                            "weight must be a positive decimal",
+                            weight_raw,
+                        )
+                        weight = None
+
+                    as_of_date = None
+                    try:
+                        as_of_date = datetime.strptime(as_of_date_raw, "%Y-%m-%d").date()
+                    except Exception:
+                        add_error(
+                            "as_of_date",
+                            "invalid_date",
+                            "as_of_date must be a valid date in YYYY-MM-DD format",
+                            as_of_date_raw,
+                        )
+                        as_of_date = None
+
+                    payload = {
+                        "instrument_id": inst.id if inst else None,
+                        "instrument_symbol": instrument_symbol_raw,
+                        "company_name": company_name_raw,
+                        "company_ticker": company_ticker_raw or None,
+                        "weight": str(weight) if weight is not None else None,
+                        "as_of_date": as_of_date.isoformat() if as_of_date else None,
+                    }
+
+                    if (
+                        instrument_symbol_raw
+                        and inst
+                        and inst.is_active
+                        and inst.instrument_type
+                        in {InstrumentType.etf.value, InstrumentType.mutual_fund.value}
+                        and weight is not None
+                        and as_of_date is not None
+                    ):
+                        key = (instrument_symbol_raw, as_of_date_raw)
+                        weight_groups.setdefault(key, []).append(weight)
 
                 if row_errors:
                     errors.extend(row_errors)
@@ -460,6 +629,20 @@ class ImportService:
                     if errors:
                         await self.repository.add_errors(errors)
                         errors = []
+
+            for (sym, dt_str), weights in weight_groups.items():
+                total_w = sum(weights)
+                if not (Decimal("0.99") <= total_w <= Decimal("1.01")):
+                    errors.append(
+                        ImportError(
+                            import_batch_id=batch.id,
+                            row_number=1,
+                            field_name="weight",
+                            error_code="invalid_weight_sum",
+                            message=f"Total weight for instrument '{sym}' on date '{dt_str}' is {total_w}, which is outside the range 0.99 - 1.01.",
+                            raw_value=str(total_w),
+                        )
+                    )
 
             if previews:
                 await self.repository.add_preview_rows(previews)
@@ -532,6 +715,42 @@ class ImportService:
         inserted = 0
         auto_created_categories: list[str] = []
         try:
+            if batch.module == ImportModule.investing_constituents:
+                # 1. Fetch all preview rows to extract unique target snapshots (instrument_id, as_of_date)
+                preview_rows = await self.repository.iter_preview_rows(batch.id)
+                unique_snapshots = set()
+                for row in preview_rows:
+                    p = row.payload_json
+                    inst_id = p.get("instrument_id")
+                    as_of_date_str = p.get("as_of_date")
+                    if inst_id is not None and as_of_date_str:
+                        unique_snapshots.add((
+                            int(inst_id),
+                            datetime.strptime(as_of_date_str, "%Y-%m-%d").date(),
+                        ))
+
+                # 2. Delete existing snapshot records under source "csv_import"
+                for inst_id, as_of_date in unique_snapshots:
+                    await self.session.execute(
+                        delete(InstrumentConstituent).where(
+                            InstrumentConstituent.instrument_id == inst_id,
+                            InstrumentConstituent.as_of_date == as_of_date,
+                            InstrumentConstituent.source == "csv_import",
+                        )
+                    )
+
+                # 3. Cache existing workspace companies by lowercased name
+                company_rows = (
+                    (
+                        await self.session.execute(
+                            select(Company).where(Company.workspace_id == workspace_id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                company_cache = {c.name.strip().lower(): c for c in company_rows}
+
             category_name_to_id = await self._category_maps(workspace_id)
             by_name, _by_public = category_name_to_id
             offset = 0
@@ -584,21 +803,117 @@ class ImportService:
                         self.session.add(tx)
                         inserted += 1
                 elif batch.module == ImportModule.spending_budgets:
+                    budget_keys = {
+                        (
+                            int(row.payload_json["category_id"]),
+                            datetime.fromisoformat(row.payload_json["month_start"]).date(),
+                        )
+                        for row in rows
+                    }
+                    existing_budgets = {}
+                    if budget_keys:
+                        budget_rows = (
+                            (
+                                await self.session.execute(
+                                    select(SpendingBudget).where(
+                                        SpendingBudget.workspace_id == workspace_id,
+                                        tuple_(
+                                            SpendingBudget.category_id,
+                                            SpendingBudget.month_start,
+                                        ).in_(budget_keys),
+                                    )
+                                )
+                            )
+                            .scalars()
+                            .all()
+                        )
+                        existing_budgets = {
+                            (budget.category_id, budget.month_start): budget
+                            for budget in budget_rows
+                        }
+
                     for row in rows:
                         p = row.payload_json
-                        budget = SpendingBudget(
-                            workspace_id=workspace_id,
-                            category_id=int(p["category_id"]),
-                            amount=Decimal(p["amount"]),
-                            month_start=datetime.fromisoformat(p["month_start"]).date(),
-                            source_type="imported",
-                            source_import_id=batch.id,
-                            source_ref=f"{batch.public_id}:{row.row_number}",
-                        )
-                        self.session.add(budget)
+                        month_start_date = datetime.fromisoformat(p["month_start"]).date()
+                        budget_key = (int(p["category_id"]), month_start_date)
+                        existing_budget = existing_budgets.get(budget_key)
+
+                        if existing_budget:
+                            existing_budget.amount = Decimal(p["amount"])
+                            existing_budget.source_type = "imported"
+                            existing_budget.source_import_id = batch.id
+                            existing_budget.source_ref = f"{batch.public_id}:{row.row_number}"
+                            existing_budget.updated_at = datetime.now(UTC)
+                        else:
+                            budget = SpendingBudget(
+                                workspace_id=workspace_id,
+                                category_id=int(p["category_id"]),
+                                amount=Decimal(p["amount"]),
+                                month_start=month_start_date,
+                                source_type="imported",
+                                source_import_id=batch.id,
+                                source_ref=f"{batch.public_id}:{row.row_number}",
+                            )
+                            self.session.add(budget)
+                            existing_budgets[budget_key] = budget
                         inserted += 1
-                else:
+                elif batch.module == ImportModule.investing_holdings:
                     account_map = await self._account_map(workspace_id)
+                    holding_keys = set()
+                    instruments_map = {}
+                    symbols = {
+                        str(row.payload_json["symbol"]).upper()
+                        for row in rows
+                        if row.payload_json.get("symbol")
+                    }
+                    if symbols:
+                        instrument_rows = (
+                            (
+                                await self.session.execute(
+                                    select(Instrument).where(
+                                        Instrument.workspace_id == workspace_id,
+                                        Instrument.symbol.in_(symbols),
+                                    )
+                                )
+                            )
+                            .scalars()
+                            .all()
+                        )
+                        instruments_map = {
+                            instrument.symbol.upper(): instrument for instrument in instrument_rows
+                        }
+
+                    for row in rows:
+                        p = row.payload_json
+                        account_name_val = p.get("account_name")
+                        account_name_raw = self._norm(account_name_val) if account_name_val else ""
+                        account_id = (
+                            account_map.get(account_name_raw.lower()) if account_name_raw else None
+                        )
+                        if account_id is not None:
+                            holding_keys.add((p["symbol"], account_id))
+
+                    existing_holdings = {}
+                    if holding_keys:
+                        holding_rows = (
+                            (
+                                await self.session.execute(
+                                    select(Holding).where(
+                                        Holding.workspace_id == workspace_id,
+                                        tuple_(Holding.symbol, Holding.account_id).in_(
+                                            holding_keys
+                                        ),
+                                    )
+                                )
+                            )
+                            .scalars()
+                            .all()
+                        )
+                        existing_holdings = {
+                            (holding.symbol, holding.account_id): holding
+                            for holding in holding_rows
+                        }
+
                     for row in rows:
                         p = row.payload_json
                         account_name_val = p.get("account_name")
@@ -610,19 +925,80 @@ class ImportService:
                             raise ValidationError(
                                 detail=f"Account '{account_name_raw or 'Unknown'}' not found in workspace"
                             )
-                        holding = Holding(
-                            workspace_id=workspace_id,
-                            user_id=user_id,
-                            symbol=p["symbol"],
-                            account_id=account_id,
-                            quantity=Decimal(p["quantity"]),
-                            avg_cost=Decimal(p["avg_cost"]),
-                            currency=p["currency"],
-                            source_type="imported",
-                            source_import_id=batch.id,
-                            source_ref=f"{batch.public_id}:{row.row_number}",
+                        instrument_type = InstrumentType(
+                            p.get("instrument_type") or InstrumentType.stock.value
                         )
-                        self.session.add(holding)
+                        symbol_key = p["symbol"].upper()
+                        instrument = instruments_map.get(symbol_key)
+                        if instrument is None:
+                            instrument = await self._resolve_or_create_instrument(
+                                workspace_id, p["symbol"], instrument_type
+                            )
+                            instruments_map[symbol_key] = instrument
+
+                        holding_key = (p["symbol"], account_id)
+                        existing_holding = existing_holdings.get(holding_key)
+
+                        if existing_holding:
+                            existing_holding.quantity = Decimal(p["quantity"])
+                            existing_holding.avg_cost = Decimal(p["avg_cost"])
+                            existing_holding.currency = p["currency"]
+                            existing_holding.instrument_id = instrument.id
+                            existing_holding.source_type = "imported"
+                            existing_holding.source_import_id = batch.id
+                            existing_holding.source_ref = f"{batch.public_id}:{row.row_number}"
+                            existing_holding.updated_at = datetime.now(UTC)
+                        else:
+                            holding = Holding(
+                                workspace_id=workspace_id,
+                                user_id=user_id,
+                                symbol=p["symbol"],
+                                account_id=account_id,
+                                instrument_id=instrument.id,
+                                quantity=Decimal(p["quantity"]),
+                                avg_cost=Decimal(p["avg_cost"]),
+                                currency=p["currency"],
+                                source_type="imported",
+                                source_import_id=batch.id,
+                                source_ref=f"{batch.public_id}:{row.row_number}",
+                            )
+                            self.session.add(holding)
+                            existing_holdings[holding_key] = holding
+                        inserted += 1
+                else:  # ImportModule.investing_constituents
+                    for row in rows:
+                        p = row.payload_json
+                        company_name_raw = p.get("company_name")
+                        company_name_norm = (
+                            company_name_raw.strip().lower() if company_name_raw else ""
+                        )
+
+                        company = company_cache.get(company_name_norm)
+                        if company is None:
+                            company = Company(
+                                workspace_id=workspace_id,
+                                name=company_name_raw,
+                                ticker=p.get("company_ticker") or None,
+                            )
+                            self.session.add(company)
+                            await self.session.flush()
+                            company_cache[company_name_norm] = company
+
+                        instrument_id = p.get("instrument_id")
+                        if instrument_id is None:
+                            raise ValidationError(
+                                detail="Instrument ID is missing in preview payload"
+                            )
+
+                        constituent = InstrumentConstituent(
+                            instrument_id=int(instrument_id),
+                            constituent_company_id=company.id,
+                            weight=Decimal(p["weight"]),
+                            as_of_date=datetime.strptime(p["as_of_date"], "%Y-%m-%d").date(),
+                            source="csv_import",
+                            fetched_at=datetime.now(UTC),
+                        )
+                        self.session.add(constituent)
                         inserted += 1
 
                 await self.session.flush()
@@ -647,7 +1023,7 @@ class ImportService:
                     "changed_fields": ["status", "inserted_rows"],
                 },
             )
-        except Exception:
+        except Exception as e:
             await self.session.rollback()
             batch = await self.repository.get_by_public_id(workspace_id, import_public_id)
             if not batch:
@@ -655,6 +1031,10 @@ class ImportService:
             batch.status = ImportStatus.failed_commit
             batch.updated_at = datetime.now(UTC)
             await self.repository.save_batch(batch)
+            if isinstance(e, IntegrityError):
+                raise ValidationError(
+                    detail=f"Database conflict or integrity error during import: {e.orig}"
+                ) from e
             raise
 
         return batch, inserted, auto_created_categories

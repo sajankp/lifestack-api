@@ -1,16 +1,20 @@
 import io
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
 from sqlmodel import select
 
+from app.auth.models import User
 from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.imports.models import ImportBatch
+from app.investing.models import Company, Holding, Instrument, InstrumentConstituent
+from app.platform.models import WorkspaceMembership
 from app.spending.models import SpendingTransaction
 
 
@@ -133,6 +137,18 @@ async def test_import_template_download_as_attachment(client: AsyncClient):
         == 'attachment; filename="spending-transactions-template.csv"'
     )
     assert "occurred_at,type,amount,category,description" in response.text
+
+
+@pytest.mark.asyncio
+async def test_import_investing_template_includes_optional_instrument_type(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    response = await client.get(
+        "/v1/imports/templates/investing-holdings", cookies=creds["cookies"]
+    )
+
+    assert response.status_code == 200
+    assert "symbol,account_name,quantity,avg_cost,currency,instrument_type" in response.text
 
 
 @pytest.mark.asyncio
@@ -453,6 +469,218 @@ async def test_import_delete_completed_investing_holdings_rolls_back_records(
 
 
 @pytest.mark.asyncio
+async def test_import_investing_holdings_upserts_on_duplicate(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "brokerage", "account_type": "brokerage", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+
+    # 1. Add a holding manually or via first import
+    csv_content1 = (
+        "symbol,account_name,quantity,avg_cost,currency\nAAPL,brokerage,10.00,150.00,USD\n"
+    )
+    files1 = {"file": ("holdings1.csv", io.BytesIO(csv_content1.encode("utf-8")), "text/csv")}
+    validate1 = await client.post(
+        "/v1/imports",
+        data={"module": "investing-holdings"},
+        files=files1,
+        cookies=creds["cookies"],
+    )
+    assert validate1.status_code == 200
+    import_id1 = validate1.json()["import_batch"]["public_id"]
+    commit_resp1 = await client.post(f"/v1/imports/{import_id1}/commit", cookies=creds["cookies"])
+    assert commit_resp1.status_code == 200
+
+    # Verify first import holding quantity is 10.00
+    holdings = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
+    assert holdings.status_code == 200
+    items = holdings.json()["items"]
+    assert len(items) == 1
+    assert items[0]["symbol"] == "AAPL"
+    assert items[0]["quantity"] == "10.00000000"
+    assert items[0]["avg_cost"] == "150.00"
+
+    # 2. Upload and commit import with same holding symbol/account but different quantity/avg_cost
+    csv_content2 = (
+        "symbol,account_name,quantity,avg_cost,currency\nAAPL,brokerage,15.50,165.00,USD\n"
+    )
+    files2 = {"file": ("holdings2.csv", io.BytesIO(csv_content2.encode("utf-8")), "text/csv")}
+    validate2 = await client.post(
+        "/v1/imports",
+        data={"module": "investing-holdings"},
+        files=files2,
+        cookies=creds["cookies"],
+    )
+    assert validate2.status_code == 200
+    import_id2 = validate2.json()["import_batch"]["public_id"]
+    commit_resp2 = await client.post(f"/v1/imports/{import_id2}/commit", cookies=creds["cookies"])
+    assert commit_resp2.status_code == 200
+
+    # Verify that duplicate holding is updated/upserted and not duplicated
+    holdings_after = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
+    assert holdings_after.status_code == 200
+    items_after = holdings_after.json()["items"]
+    assert len(items_after) == 1
+    assert items_after[0]["symbol"] == "AAPL"
+    assert items_after[0]["quantity"] == "15.50000000"
+    assert items_after[0]["avg_cost"] == "165.00"
+
+
+@pytest.mark.asyncio
+async def test_import_investing_holdings_with_instrument_type_column(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "brokerage", "account_type": "brokerage", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+
+    csv_content = (
+        "symbol,account_name,quantity,avg_cost,currency,instrument_type\n"
+        "VUSA,brokerage,10.00,80.00,USD,etf\n"
+    )
+    files = {"file": ("holdings.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-holdings"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200, validate.text
+    body = validate.json()
+    assert body["import_batch"]["status"] == "validated"
+    import_id = body["import_batch"]["public_id"]
+
+    commit_resp = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit_resp.status_code == 200, commit_resp.text
+
+    holdings = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
+    assert holdings.status_code == 200
+    item = holdings.json()["items"][0]
+    assert item["symbol"] == "VUSA"
+    assert item["instrument_type"] == "etf"
+
+    async with postgres.async_session_maker() as session:
+        holding = (
+            await session.execute(select(Holding).where(Holding.symbol == "VUSA"))
+        ).scalar_one()
+        instrument = (
+            await session.execute(select(Instrument).where(Instrument.symbol == "VUSA"))
+        ).scalar_one()
+        assert holding.instrument_id == instrument.id
+        assert instrument.instrument_type == "etf"
+
+
+@pytest.mark.asyncio
+async def test_import_investing_holdings_without_instrument_type_defaults_to_stock(
+    client: AsyncClient,
+):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "brokerage", "account_type": "brokerage", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+
+    csv_content = "symbol,account_name,quantity,avg_cost,currency\nAAPL,brokerage,5,150,USD\n"
+    files = {"file": ("holdings.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-holdings"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200, validate.text
+    import_id = validate.json()["import_batch"]["public_id"]
+
+    commit_resp = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit_resp.status_code == 200, commit_resp.text
+
+    holdings = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
+    assert holdings.status_code == 200
+    assert holdings.json()["items"][0]["instrument_type"] == "stock"
+
+
+@pytest.mark.asyncio
+async def test_import_investing_holdings_invalid_instrument_type(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "brokerage", "account_type": "brokerage", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+
+    csv_content = (
+        "symbol,account_name,quantity,avg_cost,currency,instrument_type\n"
+        "VUSA,brokerage,10.00,80.00,USD,fund\n"
+    )
+    files = {"file": ("holdings.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-holdings"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200, validate.text
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_field"]["instrument_type"] == 1
+
+
+@pytest.mark.asyncio
+async def test_import_spending_budgets_upserts_on_duplicate(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
+    food = next(c for c in cats if c["name"] == "Food & Dining")
+
+    # 1. Import budget first time
+    csv_content1 = f"month_start,category,amount\n2026-06-01,{food['public_id']},500.00\n"
+    files1 = {"file": ("budgets1.csv", io.BytesIO(csv_content1.encode("utf-8")), "text/csv")}
+    validate1 = await client.post(
+        "/v1/imports",
+        data={"module": "spending-budgets"},
+        files=files1,
+        cookies=creds["cookies"],
+    )
+    assert validate1.status_code == 200
+    import_id1 = validate1.json()["import_batch"]["public_id"]
+    commit_resp1 = await client.post(f"/v1/imports/{import_id1}/commit", cookies=creds["cookies"])
+    assert commit_resp1.status_code == 200
+
+    # 2. Import budget second time for the same month and category but different amount
+    csv_content2 = f"month_start,category,amount\n2026-06-01,{food['public_id']},750.00\n"
+    files2 = {"file": ("budgets2.csv", io.BytesIO(csv_content2.encode("utf-8")), "text/csv")}
+    validate2 = await client.post(
+        "/v1/imports",
+        data={"module": "spending-budgets"},
+        files=files2,
+        cookies=creds["cookies"],
+    )
+    assert validate2.status_code == 200
+    import_id2 = validate2.json()["import_batch"]["public_id"]
+    commit_resp2 = await client.post(f"/v1/imports/{import_id2}/commit", cookies=creds["cookies"])
+    assert commit_resp2.status_code == 200
+
+    # Verify that the budget is updated/upserted and not duplicated or failing
+    budgets = await client.get("/v1/spending/budgets", cookies=creds["cookies"])
+    assert budgets.status_code == 200
+    items = budgets.json()["items"]
+    assert len(items) == 1
+    assert items[0]["amount"] == "750.00"
+
+
+@pytest.mark.asyncio
 async def test_import_workspace_isolation(client: AsyncClient):
     creds_a = await _register_and_login(client, "ws_a")
     creds_b = await _register_and_login(client, "ws_b")
@@ -489,3 +717,241 @@ async def test_import_workspace_isolation(client: AsyncClient):
     assert list_resp.status_code == 200
     batch_ids = [item["public_id"] for item in list_resp.json()["items"]]
     assert import_id not in batch_ids
+
+
+@pytest.mark.asyncio
+async def test_import_investing_constituents_lifecycle(client: AsyncClient):
+    suffix = uuid.uuid4().hex[:8]
+    creds = await _register_and_login(client, suffix)
+
+    # 1. Look up user and workspace to insert test instruments
+    async with postgres.async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.username == f"import_{suffix}"))
+        ).scalar_one()
+        membership = (
+            await session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+            )
+        ).scalar_one()
+        workspace_id = membership.workspace_id
+
+        # Insert active ETF
+        etf = Instrument(
+            workspace_id=workspace_id,
+            symbol="UMMA",
+            name="Wahed Shariah ETF",
+            instrument_type="etf",
+            is_active=True,
+        )
+        # Insert inactive ETF
+        etf_inactive = Instrument(
+            workspace_id=workspace_id,
+            symbol="INACTIVE_ETF",
+            name="Inactive ETF",
+            instrument_type="etf",
+            is_active=False,
+        )
+        # Insert stock
+        stock = Instrument(
+            workspace_id=workspace_id,
+            symbol="AAPL",
+            name="Apple Inc",
+            instrument_type="stock",
+            is_active=True,
+        )
+        session.add_all([etf, etf_inactive, stock])
+        await session.commit()
+
+    # Test A: Rejection of invalid instrument symbols / types / inactive
+    csv_invalid_instrument = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "UMMA,Apple Inc,AAPL,0.50,2026-06-14\n"
+        "NONEXISTENT,Microsoft Corp,MSFT,0.50,2026-06-14\n"
+    )
+    files = {
+        "file": ("constituents.csv", io.BytesIO(csv_invalid_instrument.encode("utf-8")), "text/csv")
+    }
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_field"]["instrument_symbol"] == 1
+    assert any(
+        "must resolve to an active ETF/Mutual Fund" in err["message"] for err in body["errors"]
+    )
+
+    # Test B: Rejection of stock
+    csv_stock = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "AAPL,Apple Inc,AAPL,1.00,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_stock.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_field"]["instrument_symbol"] == 1
+
+    # Test C: Rejection of inactive ETF
+    csv_inactive = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "INACTIVE_ETF,Apple Inc,AAPL,1.00,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_inactive.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_field"]["instrument_symbol"] == 1
+
+    # Test D: Rejection of invalid weight sums (e.g. 0.80 instead of ~1.00)
+    csv_invalid_weight = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "UMMA,Apple Inc,AAPL,0.40,2026-06-14\n"
+        "UMMA,Microsoft Corp,MSFT,0.40,2026-06-14\n"
+    )
+    files = {
+        "file": ("constituents.csv", io.BytesIO(csv_invalid_weight.encode("utf-8")), "text/csv")
+    }
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_code"]["invalid_weight_sum"] == 1
+
+    # Test E: Successful validation and commit of valid weights (sum = 1.00)
+    csv_valid = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "UMMA,Apple Inc,AAPL,0.60,2026-06-14\n"
+        "UMMA,Microsoft Corp,MSFT,0.40,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_valid.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "validated"
+    assert body["error_summary"]["total_errors"] == 0
+    import_id = body["import_batch"]["public_id"]
+
+    # Commit the import
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code == 200
+    assert commit.json()["inserted_rows"] == 2
+    assert commit.json()["import_batch"]["status"] == "completed"
+
+    # Verify that DB contains the constituents and companies are created
+    async with postgres.async_session_maker() as session:
+        # Check companies are created
+        company_aapl = (
+            await session.execute(
+                select(Company).where(
+                    Company.workspace_id == workspace_id, Company.name == "Apple Inc"
+                )
+            )
+        ).scalar_one()
+        assert company_aapl.ticker == "AAPL"
+
+        company_msft = (
+            await session.execute(
+                select(Company).where(
+                    Company.workspace_id == workspace_id, Company.name == "Microsoft Corp"
+                )
+            )
+        ).scalar_one()
+        assert company_msft.ticker == "MSFT"
+
+        # Check constituents
+        consts = (
+            (
+                await session.execute(
+                    select(InstrumentConstituent).where(
+                        InstrumentConstituent.instrument_id == etf.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(consts) == 2
+        weights = {c.constituent_company_id: c.weight for c in consts}
+        assert weights[company_aapl.id] == Decimal("0.60000000")
+        assert weights[company_msft.id] == Decimal("0.40000000")
+        for c in consts:
+            assert c.source == "csv_import"
+
+    # Test F: Overwrite behavior (subsequent import of different constituents on same date replaces existing ones)
+    csv_overwrite = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "UMMA,NVIDIA Corp,NVDA,1.00,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_overwrite.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "validated"
+    import_id_2 = body["import_batch"]["public_id"]
+
+    commit_2 = await client.post(f"/v1/imports/{import_id_2}/commit", cookies=creds["cookies"])
+    assert commit_2.status_code == 200
+    assert commit_2.json()["inserted_rows"] == 1
+
+    # Verify that NVIDIA has replaced Apple Inc and Microsoft Corp
+    async with postgres.async_session_maker() as session:
+        # Check Nvidia company was created
+        company_nvda = (
+            await session.execute(
+                select(Company).where(
+                    Company.workspace_id == workspace_id, Company.name == "NVIDIA Corp"
+                )
+            )
+        ).scalar_one()
+        assert company_nvda.ticker == "NVDA"
+
+        # Check constituents: only NVDA should exist for UMMA on 2026-06-14
+        consts = (
+            (
+                await session.execute(
+                    select(InstrumentConstituent).where(
+                        InstrumentConstituent.instrument_id == etf.id,
+                        InstrumentConstituent.as_of_date
+                        == datetime.strptime("2026-06-14", "%Y-%m-%d").date(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(consts) == 1
+        assert consts[0].constituent_company_id == company_nvda.id
+        assert consts[0].weight == Decimal("1.00000000")

@@ -24,6 +24,13 @@
   - investing look-through analytics UI tab
   - unit tests and Playwright E2E coverage
 
+## Follow-Up Implementation Notes (2026-06-13)
+- Spec 032 implemented the ingestion side of this architecture:
+  - holding creation and investing-holdings CSV import now support `instrument_type`
+  - instruments can be corrected with `PATCH /v1/investing/instruments/{instrument_id}`
+  - `constituent_ingestion_job` fetches and normalizes ETF/MF top holdings into day-level snapshots
+  - the analytics UI includes an instrument correction panel for existing holdings
+
 ## 1. Overview
 Users often hold a mix of direct stocks and pooled vehicles (ETFs, mutual funds). Portfolio totals alone hide concentration and duplicate exposure created by overlapping fund constituents.
 
