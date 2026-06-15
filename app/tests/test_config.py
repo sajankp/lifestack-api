@@ -22,6 +22,39 @@ def test_settings_normalizes_known_env_values():
     assert settings.ENV == "staging"
 
 
+def test_settings_normalizes_json_string_cors_origins():
+    settings = Settings(
+        BACKEND_CORS_ORIGINS='["https://www.lifestack.sajankp.com/register","https://lifestack.sajankp.com"]'
+    )
+
+    assert settings.cors_allowed_origins == [
+        "https://www.lifestack.sajankp.com",
+        "https://lifestack.sajankp.com",
+    ]
+
+
+def test_settings_normalizes_wrapped_json_string_csrf_origins():
+    settings = Settings(
+        CSRF_TRUSTED_ORIGINS='\'["https://www.lifestack.sajankp.com","https://lifestack.sajankp.com/register"]\''
+    )
+
+    assert settings.csrf_trusted_origins == [
+        "https://www.lifestack.sajankp.com",
+        "https://lifestack.sajankp.com",
+    ]
+
+
+def test_settings_normalizes_comma_separated_origin_strings():
+    settings = Settings(
+        BACKEND_CORS_ORIGINS="https://www.lifestack.sajankp.com, https://lifestack.sajankp.com"
+    )
+
+    assert settings.cors_allowed_origins == [
+        "https://www.lifestack.sajankp.com",
+        "https://lifestack.sajankp.com",
+    ]
+
+
 def test_settings_rejects_unknown_env_values():
     with pytest.raises(ValueError, match="ENV must be one of"):
         Settings(ENV="prod")
