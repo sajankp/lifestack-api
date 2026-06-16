@@ -9,6 +9,7 @@ def _production_settings(**overrides) -> Settings:
         "SECRET_KEY": "production-secret-key-with-enough-entropy",
         "METRICS_TOKEN": "production-metrics-token-with-enough-entropy",
         "COOKIE_SECURE": True,
+        "COOKIE_DOMAIN": ".sajankp.com",
         "RATE_LIMIT_ENABLED": True,
         "RATE_LIMIT_STORAGE_URI": "redis://redis:6379/1",
     }

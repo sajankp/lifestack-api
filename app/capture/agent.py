@@ -15,17 +15,8 @@ from app.core.database import postgres
 
 logger = structlog.get_logger(__name__)
 
-GEMINI_LIVE_URL = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
-
-# Active model — Gemini 2.5 Flash Native Audio.
-# This model supports ["TEXT", "AUDIO"] responseModalities which is required
-# for function calling (the model emits text during tool-call reasoning).
-#
-# gemini-3.1-flash-live-preview is NOT used because it only supports ["AUDIO"]
-# modality, which conflicts with function calling (empty-output error on tool turns).
-# Uncomment when 3.1 gains function-calling + TEXT support:
-#   GEMINI_MODEL = "models/gemini-3.1-flash-live-preview"
-GEMINI_MODEL = "models/gemini-2.5-flash-native-audio-latest"
+# GEMINI live endpoint and model are configured via `settings.GEMINI_LIVE_URL`
+# and `settings.GEMINI_MODEL` (env-configurable).
 
 CAPTURE_POLICY_VIOLATION_CLOSE_CODE = 4008
 CAPTURE_PROVIDER_UNAVAILABLE_CLOSE_CODE = 4002
@@ -186,7 +177,7 @@ async def execute_agent_tool(name: str, args: dict, user_id: int, workspace_id: 
             return {"status": "error", "message": str(e)}
 
 
-def _build_setup_message() -> dict:
+def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
     """
     Build the Gemini Live API setup payload for Gemini 2.5 Flash Native Audio.
 
@@ -200,17 +191,15 @@ def _build_setup_message() -> dict:
     That model only supports ["AUDIO"] modality which is incompatible with function
     calling (causes 1007 errors). Switch back to 3.1 once it supports TEXT+AUDIO.
     """
+    if response_modalities is None:
+        response_modalities = ["TEXT", "AUDIO"]
+
     return {
         "setup": {
-            "model": GEMINI_MODEL,
+            "model": settings.GEMINI_MODEL,
             "generationConfig": {
-                # TEXT + AUDIO required: model emits text during tool-call reasoning.
-                # Audio-only causes "model output must contain either output text
-                # or tool calls" errors from the server when the model reasons.
-                "responseModalities": ["TEXT", "AUDIO"],
+                "responseModalities": response_modalities,
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Aoede"}}},
-                # Disable dynamic thinking (2.5 model default) — thinking-only turns
-                # with no actual output trigger the empty-output server error.
                 "thinkingConfig": {"thinkingBudget": 0},
             },
             "systemInstruction": {
@@ -306,27 +295,67 @@ async def _connect_gemini(gemini_url: str) -> tuple:
     Returns (websocket, context_manager) on success.
     Raises RuntimeError if connection or setup fails.
     """
-    logger.info("connecting_to_gemini", model=GEMINI_MODEL)
-    ws_conn = websockets.connect(gemini_url)
-    ws = await ws_conn.__aenter__()
+    logger.info("connecting_to_gemini", model=settings.GEMINI_MODEL)
 
-    try:
-        setup_message = _build_setup_message()
-        await ws.send(json.dumps(setup_message))
+    # Try a sequence of response modality options to handle provider/model changes
+    modality_attempts = [
+        ["TEXT", "AUDIO"],
+        ["TEXT"],
+        ["AUDIO"],
+    ]
 
-        first_msg_raw = await asyncio.wait_for(ws.recv(), timeout=8.0)
-        first_msg = json.loads(first_msg_raw)
+    last_err: Exception | None = None
+    for modalities in modality_attempts:
+        ws_conn = websockets.connect(gemini_url)
+        ws = await ws_conn.__aenter__()
+        try:
+            setup_message = _build_setup_message(response_modalities=modalities)
+            await ws.send(json.dumps(setup_message))
 
-        if "setupComplete" not in first_msg:
+            first_msg_raw = await asyncio.wait_for(ws.recv(), timeout=8.0)
+            first_msg = json.loads(first_msg_raw)
+
+            # Successful setup returns a setupComplete envelope
+            if "setupComplete" in first_msg:
+                logger.info(
+                    "gemini_ws_setup_completed",
+                    model=settings.GEMINI_MODEL,
+                    modalities=modalities,
+                )
+                return ws, ws_conn
+
+            # If the response explicitly rejects the response modalities, try next set
+            err_text = json.dumps(first_msg)
+            if "response modalities" in err_text or "requested combination" in err_text:
+                logger.warning(
+                    "gemini_modality_rejected",
+                    model=settings.GEMINI_MODEL,
+                    tried=modalities,
+                    response=first_msg,
+                )
+                with suppress(Exception):
+                    await ws_conn.__aexit__(None, None, None)
+                continue
+
+            # Unexpected response — raise and abort
             raise RuntimeError(f"Unexpected setup response from Gemini: {first_msg}")
 
-        logger.info("gemini_ws_setup_completed", model=GEMINI_MODEL)
-        return ws, ws_conn
+        except Exception as exc:
+            last_err = exc
+            with suppress(Exception):
+                await ws_conn.__aexit__(None, None, None)
+            # If this looks like a modality rejection message, loop to retry with other options
+            if isinstance(exc, RuntimeError) and (
+                "response modalities" in str(exc) or "requested combination" in str(exc)
+            ):
+                continue
+            # For other errors (e.g. connection, timeout, auth), fail fast instead of retrying
+            break
 
-    except Exception:
-        with suppress(Exception):
-            await ws_conn.__aexit__(None, None, None)
-        raise
+    # Exhausted attempts
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("Failed to establish Gemini WebSocket connection")
 
 
 async def _handle_gemini_message(
@@ -414,7 +443,7 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
         )
         return
 
-    gemini_url = f"{GEMINI_LIVE_URL}?key={api_key}"
+    gemini_url = f"{settings.GEMINI_LIVE_URL}?key={api_key}"
     decoder = AudioDecoder()
     await decoder.start()
     limiter = CaptureSessionLimiter.from_settings()
@@ -424,7 +453,7 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
 
     try:
         gemini_ws, ws_context_manager = await _connect_gemini(gemini_url)
-        logger.info("gemini_session_active", model=GEMINI_MODEL)
+        logger.info("gemini_session_active", model=settings.GEMINI_MODEL)
 
         # ── Background: stream decoded PCM → Gemini ───────────────────────────
         async def pcm_to_gemini_loop():

@@ -196,6 +196,7 @@ def test_e2e_hooks_production_gating_settings():
             SECRET_KEY="production-secret-key-changed-in-production-12345",
             METRICS_TOKEN="production-metrics-token-changed-in-production-12345",
             COOKIE_SECURE=True,
+            COOKIE_DOMAIN=".sajankp.com",
             RATE_LIMIT_STORAGE_URI="redis://localhost:6379/1",
             ENABLE_E2E_TEST_HOOKS=True,
         )
@@ -213,6 +214,7 @@ def test_e2e_hooks_production_gating_settings():
         SECRET_KEY="production-secret-key-changed-in-production-12345",
         METRICS_TOKEN="production-metrics-token-changed-in-production-12345",
         COOKIE_SECURE=True,
+        COOKIE_DOMAIN=".sajankp.com",
         RATE_LIMIT_STORAGE_URI="redis://localhost:6379/1",
         ENABLE_E2E_TEST_HOOKS=False,
     )
