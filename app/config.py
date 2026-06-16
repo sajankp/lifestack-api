@@ -162,6 +162,8 @@ class Settings(BaseSettings):
 
     # AI Voice Agent (Spec 021)
     GEMINI_API_KEY: str | None = None
+    GEMINI_LIVE_URL: str = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+    GEMINI_MODEL: str = "models/gemini-2.5-flash-native-audio-latest"
     CAPTURE_MAX_WS_FRAME_BYTES: int = 256 * 1024
     CAPTURE_MAX_SESSION_BYTES: int = 15 * 1024 * 1024
     CAPTURE_MAX_SESSION_SECONDS: int = 5 * 60
