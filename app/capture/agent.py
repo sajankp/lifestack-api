@@ -349,8 +349,8 @@ async def _connect_gemini(gemini_url: str) -> tuple:
                 "response modalities" in str(exc) or "requested combination" in str(exc)
             ):
                 continue
-            # otherwise, try next modalities attempt
-            continue
+            # For other errors (e.g. connection, timeout, auth), fail fast instead of retrying
+            break
 
     # Exhausted attempts
     if last_err is not None:
