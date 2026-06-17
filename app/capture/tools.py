@@ -98,6 +98,23 @@ class AgentTools:
         ]
         return {"status": "success", "total": total, "items": items}
 
+    async def list_next_due_items(self, limit: int = 5) -> dict:
+        """Return the next due todo items (title, due_date, public_id)."""
+        todos = await self.todo_service.get_next_due_items(
+            self.workspace_id, datetime.now(UTC), limit
+        )
+        items = [
+            {
+                "public_id": str(t.public_id),
+                "title": t.title,
+                "due_date": t.due_date.isoformat() if t.due_date else None,
+                "priority": t.priority,
+                "completed": t.completed,
+            }
+            for t in todos
+        ]
+        return {"status": "success", "total": len(items), "items": items}
+
     async def get_todo(self, public_id: str) -> dict:
         """Retrieve a single todo by public_id."""
         try:

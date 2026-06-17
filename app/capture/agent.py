@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import inspect
 import json
 import time
 from contextlib import suppress
@@ -148,43 +149,25 @@ async def execute_agent_tool(name: str, args: dict, user_id: int, workspace_id: 
     async with postgres.async_session_maker() as session:
         try:
             tools = AgentTools(session=session, user_id=user_id, workspace_id=workspace_id)
-            if name == "create_todo_task":
-                res = await tools.create_todo_task(
-                    title=args.get("title", ""),
-                    due_date=args.get("due_date"),
-                    priority=args.get("priority", "medium"),
-                )
-            elif name == "log_spending_transaction":
-                res = await tools.log_spending_transaction(
-                    amount=args.get("amount", "0"),
-                    category_name=args.get("category_name", "other"),
-                    description=args.get("description", ""),
-                )
-            elif name == "log_cash_balance":
-                res = await tools.log_cash_balance(
-                    account_name=args.get("account_name", ""),
-                    balance=args.get("balance", "0"),
-                    currency=args.get("currency", "USD"),
-                )
-            elif name == "list_todos":
-                res = await tools.list_todos(
-                    completed=args.get("completed"),
-                    limit=args.get("limit", 50),
-                    offset=args.get("offset", 0),
-                )
-            elif name == "get_todo":
-                res = await tools.get_todo(public_id=args.get("public_id"))
-            elif name == "update_todo":
-                res = await tools.update_todo(
-                    public_id=args.get("public_id"),
-                    title=args.get("title"),
-                    description=args.get("description"),
-                    due_date=args.get("due_date"),
-                    priority=args.get("priority"),
-                    completed=args.get("completed"),
-                )
-            elif name == "delete_todo":
-                res = await tools.delete_todo(public_id=args.get("public_id"))
+            dispatch = {
+                "create_todo_task": tools.create_todo_task,
+                "log_spending_transaction": tools.log_spending_transaction,
+                "log_cash_balance": tools.log_cash_balance,
+                "list_todos": tools.list_todos,
+                "get_todo": tools.get_todo,
+                "update_todo": tools.update_todo,
+                "delete_todo": tools.delete_todo,
+                "list_next_due_items": tools.list_next_due_items,
+            }
+
+            if name in dispatch:
+                fn = dispatch[name]
+                sig = inspect.signature(fn)
+                call_kwargs = {}
+                for p in sig.parameters.values():
+                    if p.name in args:
+                        call_kwargs[p.name] = args[p.name]
+                res = await fn(**call_kwargs)
             else:
                 res = {"status": "error", "message": f"Unknown function: {name}"}
 
