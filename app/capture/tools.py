@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -13,7 +14,7 @@ from app.spending.repository import CategoryRepository, TransactionRepository
 from app.spending.schemas import TransactionCreate
 from app.spending.service import CategoryService, TransactionService
 from app.todo.repository import TodoRepository
-from app.todo.schemas import TodoCreate
+from app.todo.schemas import TodoCreate, TodoUpdate
 from app.todo.service import TodoService
 
 
@@ -77,6 +78,117 @@ class AgentTools:
             "due_date": todo.due_date.isoformat() if todo.due_date else None,
             "priority": todo.priority,
         }
+
+    async def list_todos(
+        self, completed: bool | None = None, limit: int = 50, offset: int = 0
+    ) -> dict:
+        """List todos in the workspace. Returns a dict with items and total count."""
+        todos, total = await self.todo_service.list_todos(
+            self.workspace_id, completed, limit, offset
+        )
+        items = [
+            {
+                "public_id": str(t.public_id),
+                "title": t.title,
+                "due_date": t.due_date.isoformat() if t.due_date else None,
+                "priority": t.priority,
+                "completed": t.completed,
+            }
+            for t in todos
+        ]
+        return {"status": "success", "total": total, "items": items}
+
+    async def get_todo(self, public_id: str) -> dict:
+        """Retrieve a single todo by public_id."""
+        try:
+            pid = uuid.UUID(public_id)
+        except Exception:
+            return {"status": "error", "message": "Invalid public_id"}
+
+        try:
+            todo = await self.todo_service.get_todo(self.workspace_id, pid)
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+        return {
+            "status": "success",
+            "entity_public_id": str(todo.public_id),
+            "title": todo.title,
+            "description": todo.description,
+            "due_date": todo.due_date.isoformat() if todo.due_date else None,
+            "priority": todo.priority,
+            "completed": todo.completed,
+        }
+
+    async def update_todo(
+        self,
+        public_id: str,
+        title: str | None = None,
+        description: str | None = None,
+        due_date: str | None = None,
+        priority: str | None = None,
+        completed: bool | None = None,
+    ) -> dict:
+        """Update fields on an existing todo. due_date should be YYYY-MM-DD if provided."""
+        try:
+            pid = uuid.UUID(public_id)
+        except Exception:
+            return {"status": "error", "message": "Invalid public_id"}
+
+        parsed_due = None
+        if due_date:
+            try:
+                parsed_due = datetime.strptime(due_date.strip(), "%Y-%m-%d")
+            except Exception:
+                return {
+                    "status": "error",
+                    "message": "Invalid due_date format. Use YYYY-MM-DD.",
+                }
+
+        update_payload = TodoUpdate(
+            title=title,
+            description=description,
+            due_date=parsed_due,
+            priority=priority,
+            completed=completed,
+        )
+
+        try:
+            todo = await self.todo_service.update_todo(
+                self.workspace_id,
+                pid,
+                update_payload,
+                actor_id=self.user_id,
+                audit_logger=self.audit_logger,
+            )
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+        return {
+            "status": "success",
+            "entity_public_id": str(todo.public_id),
+            "title": todo.title,
+            "due_date": todo.due_date.isoformat() if todo.due_date else None,
+            "priority": todo.priority,
+            "completed": todo.completed,
+        }
+
+    async def delete_todo(self, public_id: str) -> dict:
+        """Delete a todo by public_id."""
+        try:
+            pid = uuid.UUID(public_id)
+        except Exception:
+            return {"status": "error", "message": "Invalid public_id"}
+        try:
+            await self.todo_service.delete_todo(
+                self.workspace_id,
+                pid,
+                actor_id=self.user_id,
+                audit_logger=self.audit_logger,
+            )
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        return {"status": "success", "entity_public_id": public_id}
 
     async def log_spending_transaction(
         self, amount: str, category_name: str, description: str
