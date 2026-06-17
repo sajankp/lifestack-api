@@ -5,3 +5,14 @@ services:
       - path: .env.production
         required: true
     environment: !reset {}
+
+  cloudflared:
+    # Pin to a known stable version to avoid unexpected breaking changes from 'latest'
+    image: cloudflare/cloudflared:2026.6.0
+    command: tunnel --no-autoupdate --protocol http2 run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy

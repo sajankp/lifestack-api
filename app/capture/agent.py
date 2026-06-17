@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import inspect
 import json
 import time
 from contextlib import suppress
@@ -148,24 +149,25 @@ async def execute_agent_tool(name: str, args: dict, user_id: int, workspace_id: 
     async with postgres.async_session_maker() as session:
         try:
             tools = AgentTools(session=session, user_id=user_id, workspace_id=workspace_id)
-            if name == "create_todo_task":
-                res = await tools.create_todo_task(
-                    title=args.get("title", ""),
-                    due_date=args.get("due_date"),
-                    priority=args.get("priority", "medium"),
-                )
-            elif name == "log_spending_transaction":
-                res = await tools.log_spending_transaction(
-                    amount=args.get("amount", "0"),
-                    category_name=args.get("category_name", "other"),
-                    description=args.get("description", ""),
-                )
-            elif name == "log_cash_balance":
-                res = await tools.log_cash_balance(
-                    account_name=args.get("account_name", ""),
-                    balance=args.get("balance", "0"),
-                    currency=args.get("currency", "USD"),
-                )
+            dispatch = {
+                "create_todo_task": tools.create_todo_task,
+                "log_spending_transaction": tools.log_spending_transaction,
+                "log_cash_balance": tools.log_cash_balance,
+                "list_todos": tools.list_todos,
+                "get_todo": tools.get_todo,
+                "update_todo": tools.update_todo,
+                "delete_todo": tools.delete_todo,
+                "list_next_due_items": tools.list_next_due_items,
+            }
+
+            if name in dispatch:
+                fn = dispatch[name]
+                sig = inspect.signature(fn)
+                call_kwargs = {}
+                for p in sig.parameters.values():
+                    if p.name in args:
+                        call_kwargs[p.name] = args[p.name]
+                res = await fn(**call_kwargs)
             else:
                 res = {"status": "error", "message": f"Unknown function: {name}"}
 
@@ -344,10 +346,23 @@ async def _connect_gemini(gemini_url: str) -> tuple:
             last_err = exc
             with suppress(Exception):
                 await ws_conn.__aexit__(None, None, None)
-            # If this looks like a modality rejection message, loop to retry with other options
-            if isinstance(exc, RuntimeError) and (
-                "response modalities" in str(exc) or "requested combination" in str(exc)
-            ):
+            # If the websocket closed with a 1007 close code and includes the
+            # modality-rejection text, treat as modalilty rejection and retry.
+            try:
+                # Some websocket implementations expose a `close_code` attribute
+                # on the exception or on the underlying close event. Check common
+                # places safely.
+                close_code = getattr(exc, "code", None) or getattr(exc, "close_code", None)
+                close_reason = getattr(exc, "reason", None) or str(exc)
+                if close_code == 1007 and (
+                    "response modalities" in str(close_reason)
+                    or "requested combination" in str(close_reason)
+                ):
+                    continue
+            except Exception:
+                pass
+            # Fall back to checking the message text if structured attributes are unavailable.
+            if "response modalities" in str(exc) or "requested combination" in str(exc):
                 continue
             # For other errors (e.g. connection, timeout, auth), fail fast instead of retrying
             break
