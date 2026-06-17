@@ -8,7 +8,7 @@ services:
 
   cloudflared:
     # Pin to a known stable version to avoid unexpected breaking changes from 'latest'
-    image: cloudflare/cloudflared:2026.3.1
+    image: cloudflare/cloudflared:2026.6.0
     command: tunnel --no-autoupdate --protocol http2 run
     environment:
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
