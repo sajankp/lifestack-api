@@ -208,9 +208,14 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                 "parts": [
                     {
                         "text": (
-                            "You are a helpful personal voice assistant. You have access to tools to "
-                            "create todo tasks, log spending transactions, and update cash balances. "
-                            "Always use these tools when asked. Keep your verbal responses concise and natural."
+                            "You are a helpful personal voice assistant. You have access to workspace tools: "
+                            "`create_todo_task`, `list_todos`, `get_todo`, `update_todo`, `delete_todo`, "
+                            "and `list_next_due_items`, plus finance tools for logging transactions and "
+                            "cash balances. When a user asks to manage todos, prefer the todo functions "
+                            "and return concise, factual results. Always call the matching function when "
+                            "the user requests an action (creating, listing, retrieving, updating, or deleting a todo). "
+                            "For informational queries, use `list_todos` or `list_next_due_items`. Keep spoken responses "
+                            "short and avoid repeating structured data — let the tools provide authoritative outputs."
                         )
                     }
                 ]
@@ -282,6 +287,102 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                                     },
                                 },
                                 "required": ["account_name", "balance", "currency"],
+                            },
+                        },
+                        {
+                            "name": "list_todos",
+                            "description": "List todos in the workspace.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "completed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Filter by completion status (true/false).",
+                                    },
+                                    "limit": {
+                                        "type": "NUMBER",
+                                        "description": "Maximum number of items to return.",
+                                    },
+                                    "offset": {
+                                        "type": "NUMBER",
+                                        "description": "Offset for pagination.",
+                                    },
+                                },
+                            },
+                        },
+                        {
+                            "name": "get_todo",
+                            "description": "Retrieve a single todo by public_id.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "public_id": {
+                                        "type": "STRING",
+                                        "description": "The public UUID of the todo item.",
+                                    },
+                                },
+                                "required": ["public_id"],
+                            },
+                        },
+                        {
+                            "name": "update_todo",
+                            "description": "Update fields on an existing todo.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "public_id": {
+                                        "type": "STRING",
+                                        "description": "The public UUID of the todo.",
+                                    },
+                                    "title": {
+                                        "type": "STRING",
+                                        "description": "New title.",
+                                    },
+                                    "description": {
+                                        "type": "STRING",
+                                        "description": "New description.",
+                                    },
+                                    "due_date": {
+                                        "type": "STRING",
+                                        "description": "Due date in YYYY-MM-DD.",
+                                    },
+                                    "priority": {
+                                        "type": "STRING",
+                                        "description": "Priority: low|medium|high.",
+                                    },
+                                    "completed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Mark complete (true) or incomplete (false).",
+                                    },
+                                },
+                                "required": ["public_id"],
+                            },
+                        },
+                        {
+                            "name": "delete_todo",
+                            "description": "Delete a todo by public_id.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "public_id": {
+                                        "type": "STRING",
+                                        "description": "The public UUID of the todo to delete.",
+                                    },
+                                },
+                                "required": ["public_id"],
+                            },
+                        },
+                        {
+                            "name": "list_next_due_items",
+                            "description": "Return the next due todo items.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "limit": {
+                                        "type": "NUMBER",
+                                        "description": "Maximum number of items to return.",
+                                    },
+                                },
                             },
                         },
                     ]
