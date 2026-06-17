@@ -345,9 +345,10 @@ async def _connect_gemini(gemini_url: str) -> tuple:
             with suppress(Exception):
                 await ws_conn.__aexit__(None, None, None)
             # If this looks like a modality rejection message, loop to retry with other options
-            if isinstance(exc, RuntimeError) and (
-                "response modalities" in str(exc) or "requested combination" in str(exc)
-            ):
+            if "response modalities" in str(exc) or "requested combination" in str(exc):
+                # The websocket library may raise a ConnectionClosedError (or similar)
+                # whose string contains the provider's 1007 reason. Treat those as
+                # modality rejections and continue to try other modality sets.
                 continue
             # For other errors (e.g. connection, timeout, auth), fail fast instead of retrying
             break

@@ -10,8 +10,6 @@ services:
     env_file:
       - path: .env
         required: false
-      - path: .env.production
-        required: false
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://lifestack:lifestack@postgres:5432/lifestack}
@@ -53,15 +51,6 @@ services:
       timeout: 3s
       retries: 10
 
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    command: tunnel --no-autoupdate --protocol http2 run
-    environment:
-      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
-    restart: unless-stopped
-    depends_on:
-      api:
-        condition: service_healthy
 
 volumes:
   pg-data:

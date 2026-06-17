@@ -5,3 +5,13 @@ services:
       - path: .env.production
         required: true
     environment: !reset {}
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate --protocol http2 run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
