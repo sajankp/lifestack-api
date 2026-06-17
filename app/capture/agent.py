@@ -344,11 +344,23 @@ async def _connect_gemini(gemini_url: str) -> tuple:
             last_err = exc
             with suppress(Exception):
                 await ws_conn.__aexit__(None, None, None)
-            # If this looks like a modality rejection message, loop to retry with other options
+            # If the websocket closed with a 1007 close code and includes the
+            # modality-rejection text, treat as modalilty rejection and retry.
+            try:
+                # Some websocket implementations expose a `close_code` attribute
+                # on the exception or on the underlying close event. Check common
+                # places safely.
+                close_code = getattr(exc, "code", None) or getattr(exc, "close_code", None)
+                close_reason = getattr(exc, "reason", None) or str(exc)
+                if close_code == 1007 and (
+                    "response modalities" in str(close_reason)
+                    or "requested combination" in str(close_reason)
+                ):
+                    continue
+            except Exception:
+                pass
+            # Fall back to checking the message text if structured attributes are unavailable.
             if "response modalities" in str(exc) or "requested combination" in str(exc):
-                # The websocket library may raise a ConnectionClosedError (or similar)
-                # whose string contains the provider's 1007 reason. Treat those as
-                # modality rejections and continue to try other modality sets.
                 continue
             # For other errors (e.g. connection, timeout, auth), fail fast instead of retrying
             break
