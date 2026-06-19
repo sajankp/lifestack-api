@@ -110,6 +110,7 @@ class TransactionRepository:
         self,
         workspace_id: int,
         category_id: int | None = None,
+        account_id: int | None = None,
         type_filter: str | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
@@ -119,6 +120,8 @@ class TransactionRepository:
         base = select(SpendingTransaction).where(SpendingTransaction.workspace_id == workspace_id)
         if category_id is not None:
             base = base.where(SpendingTransaction.category_id == category_id)
+        if account_id is not None:
+            base = base.where(SpendingTransaction.account_id == account_id)
         if type_filter is not None:
             base = base.where(SpendingTransaction.type == type_filter)
         if from_date is not None:
@@ -140,6 +143,7 @@ class TransactionRepository:
         from_date: datetime,
         to_date: datetime,
         category_id: int | None = None,
+        account_id: int | None = None,
     ) -> Decimal:
         query = select(func.sum(SpendingTransaction.amount)).where(
             SpendingTransaction.workspace_id == workspace_id,
@@ -149,6 +153,8 @@ class TransactionRepository:
         )
         if category_id is not None:
             query = query.where(SpendingTransaction.category_id == category_id)
+        if account_id is not None:
+            query = query.where(SpendingTransaction.account_id == account_id)
         result = await self.session.execute(query)
         val = result.scalar_one_or_none()
         return Decimal(val or 0)
@@ -159,6 +165,7 @@ class TransactionRepository:
         from_date: datetime,
         to_date: datetime,
         type_filter: str | None = None,
+        account_id: int | None = None,
     ) -> Sequence[tuple[int, Decimal]]:
         query = (
             select(
@@ -174,6 +181,8 @@ class TransactionRepository:
         )
         if type_filter is not None:
             query = query.where(SpendingTransaction.type == type_filter)
+        if account_id is not None:
+            query = query.where(SpendingTransaction.account_id == account_id)
         result = await self.session.execute(query)
         rows = result.all()
         return [(category_id, Decimal(total or 0)) for category_id, total in rows]

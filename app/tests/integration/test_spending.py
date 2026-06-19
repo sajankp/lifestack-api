@@ -195,6 +195,64 @@ async def test_manual_transaction_exposes_manual_source_metadata(client: AsyncCl
     }
 
 
+@pytest.mark.asyncio
+async def test_transactions_and_summary_filter_by_account(client: AsyncClient):
+    creds = await _register_and_login(client, "accountfilter")
+    cookies = creds["cookies"]
+    categories = await client.get("/v1/spending/categories", cookies=cookies)
+    category_id = categories.json()["items"][0]["public_id"]
+
+    account_ids: list[str] = []
+    for name in ("Daily Wallet", "Travel Card"):
+        response = await client.post(
+            "/v1/finance/accounts",
+            json={
+                "name": name,
+                "account_type": "wallet",
+                "default_currency_code": "USD",
+            },
+            cookies=cookies,
+        )
+        assert response.status_code == 201, response.text
+        account_ids.append(response.json()["public_id"])
+
+    occurred_at = datetime.now(UTC).isoformat()
+    for account_id, amount in zip(account_ids, ("25.00", "75.00"), strict=True):
+        response = await client.post(
+            "/v1/spending/transactions",
+            json={
+                "category_id": category_id,
+                "account_id": account_id,
+                "amount": amount,
+                "type": "expense",
+                "occurred_at": occurred_at,
+            },
+            cookies=cookies,
+        )
+        assert response.status_code == 201, response.text
+
+    filtered = await client.get(
+        "/v1/spending/transactions",
+        params={"account_id": account_ids[0]},
+        cookies=cookies,
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert filtered.json()["total"] == 1
+    assert filtered.json()["items"][0]["account_id"] == account_ids[0]
+
+    summary = await client.get(
+        "/v1/spending/transactions/summary",
+        params={
+            "account_id": account_ids[0],
+            "from_date": "2020-01-01T00:00:00Z",
+            "to_date": "2030-01-01T00:00:00Z",
+        },
+        cookies=cookies,
+    )
+    assert summary.status_code == 200, summary.text
+    assert summary.json()["expense_total"] == "25.00"
+
+
 # ---------------------------------------------------------------------------
 # 8.3 — Budget uniqueness constraint
 # ---------------------------------------------------------------------------

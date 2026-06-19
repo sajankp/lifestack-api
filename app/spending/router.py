@@ -283,6 +283,7 @@ async def list_transactions(
     _user: Annotated[dict, Depends(get_current_user)],
     pagination: Annotated[PaginationParams, Depends()],
     category_id: uuid.UUID | None = Query(None),
+    account_id: uuid.UUID | None = Query(None),
     type: TransactionType | None = Query(None),
     from_date: datetime | None = Query(None),
     to_date: datetime | None = Query(None),
@@ -290,6 +291,7 @@ async def list_transactions(
     txs, total = await transaction_service.list_transactions(
         workspace_id,
         category_public_id=category_id,
+        account_public_id=account_id,
         type_filter=type,
         from_date=from_date,
         to_date=to_date,
@@ -326,6 +328,7 @@ async def get_transaction_summary(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     category_id: uuid.UUID | None = Query(None),
+    account_id: uuid.UUID | None = Query(None),
     from_date: datetime = Query(...),
     to_date: datetime = Query(...),
 ):
@@ -335,6 +338,7 @@ async def get_transaction_summary(
         from_date=from_date,
         to_date=to_date,
         category_public_id=category_id,
+        account_public_id=account_id,
     )
     if category_id is not None:
         expense_total = await transaction_service.get_sum_by_type(
@@ -343,6 +347,7 @@ async def get_transaction_summary(
             from_date=from_date,
             to_date=to_date,
             category_public_id=category_id,
+            account_public_id=account_id,
         )
         category_totals = [CategorySpendTotal(category_id=category_id, total=expense_total)]
     else:
@@ -351,6 +356,7 @@ async def get_transaction_summary(
             from_date=from_date,
             to_date=to_date,
             type_filter=TransactionType.expense,
+            account_public_id=account_id,
         )
         expense_total = sum(raw_totals.values())
         cat_cache = await _build_category_cache(category_service, workspace_id)

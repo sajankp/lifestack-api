@@ -275,10 +275,23 @@ class TransactionService:
             )
         return category
 
+    async def _resolve_account_id(
+        self, workspace_id: int, account_public_id: uuid.UUID | None
+    ) -> int | None:
+        if account_public_id is None:
+            return None
+        account = await self.account_repo.get_by_public_id(workspace_id, account_public_id)
+        if not account:
+            raise NotFoundError(
+                detail=f"Account with id {account_public_id} not found in this workspace"
+            )
+        return account.id
+
     async def list_transactions(
         self,
         workspace_id: int,
         category_public_id: uuid.UUID | None = None,
+        account_public_id: uuid.UUID | None = None,
         type_filter: TransactionType | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
@@ -289,10 +302,12 @@ class TransactionService:
         if category_public_id is not None:
             cat = await self._resolve_category(workspace_id, category_public_id)
             category_id = cat.id  # type: ignore[assignment]
+        account_id = await self._resolve_account_id(workspace_id, account_public_id)
 
         return await self.transaction_repo.get_all(
             workspace_id,
             category_id=category_id,
+            account_id=account_id,
             type_filter=type_filter,
             from_date=from_date,
             to_date=to_date,
@@ -307,13 +322,20 @@ class TransactionService:
         from_date: datetime,
         to_date: datetime,
         category_public_id: uuid.UUID | None = None,
+        account_public_id: uuid.UUID | None = None,
     ) -> Decimal:
         category_id: int | None = None
         if category_public_id is not None:
             cat = await self._resolve_category(workspace_id, category_public_id)
             category_id = cat.id  # type: ignore[assignment]
+        account_id = await self._resolve_account_id(workspace_id, account_public_id)
         return await self.transaction_repo.get_sum_by_type(
-            workspace_id, type_filter, from_date, to_date, category_id=category_id
+            workspace_id,
+            type_filter,
+            from_date,
+            to_date,
+            category_id=category_id,
+            account_id=account_id,
         )
 
     async def get_category_totals(
@@ -322,9 +344,15 @@ class TransactionService:
         from_date: datetime,
         to_date: datetime,
         type_filter: TransactionType | None = None,
+        account_public_id: uuid.UUID | None = None,
     ) -> dict[int, Decimal]:
+        account_id = await self._resolve_account_id(workspace_id, account_public_id)
         rows = await self.transaction_repo.get_category_totals(
-            workspace_id, from_date, to_date, type_filter=type_filter
+            workspace_id,
+            from_date,
+            to_date,
+            type_filter=type_filter,
+            account_id=account_id,
         )
         return dict(rows)
 
