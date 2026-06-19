@@ -140,7 +140,9 @@ async def test_import_template_download_as_attachment(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_import_investing_template_includes_optional_instrument_type(client: AsyncClient):
+async def test_import_investing_template_includes_account_and_optional_instrument_type(
+    client: AsyncClient,
+):
     creds = await _register_and_login(client, uuid.uuid4().hex[:8])
 
     response = await client.get(
@@ -148,7 +150,10 @@ async def test_import_investing_template_includes_optional_instrument_type(clien
     )
 
     assert response.status_code == 200
-    assert "symbol,account_name,quantity,avg_cost,currency,instrument_type" in response.text
+    assert response.text == (
+        "symbol,account_name,quantity,avg_cost,currency,instrument_type\n"
+        "AAPL,Primary Brokerage,10,150.25,USD,stock\n"
+    )
 
 
 @pytest.mark.asyncio

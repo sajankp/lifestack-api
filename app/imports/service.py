@@ -59,7 +59,7 @@ class ImportService:
         elif module == ImportModule.investing_constituents:
             lines.append("UMMA,Apple Inc,AAPL,0.082,2026-06-14")
         else:
-            lines.append("AAPL,brokerage,10,150.25,USD,stock")
+            lines.append("AAPL,Primary Brokerage,10,150.25,USD,stock")
         return "\n".join(lines) + "\n"
 
     async def _hash_file(self, upload: UploadFile) -> tuple[str, int]:
