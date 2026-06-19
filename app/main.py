@@ -12,7 +12,6 @@ from sqlalchemy import text
 
 from app.application.jobs import (
     budget_guardrails_job,
-    constituent_ingestion_job,
     export_cleanup_job,
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
@@ -117,13 +116,6 @@ async def lifespan(_app: FastAPI):
             job_id="import_preview_cleanup",
             hour_utc=5,
         )
-        if settings.CONSTITUENT_INGESTION_ENABLED:
-            register_daily_job(
-                constituent_ingestion_job,
-                job_id="constituent_ingestion",
-                hour_utc=settings.CONSTITUENT_INGESTION_HOUR_UTC,
-            )
-
         scheduler.add_job(
             weekly_summary_job,
             "cron",

@@ -8,10 +8,6 @@ import structlog
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.constituent_provider import (
-    ConstituentProvider,
-    YahooFinanceConstituentProvider,
-)
 from app.auth.repository import AuthSessionRepository
 from app.auth.schemas import UserCreate
 from app.auth.service import AuthService
@@ -31,14 +27,7 @@ from app.finance.repository import CurrencyRepository, FxRateRepository
 from app.finance.schemas import FxRateUpsert
 from app.finance.service import FxRateService
 from app.imports.models import ImportBatch, ImportPreviewRow
-from app.investing.models import Instrument, InstrumentType
-from app.investing.repository import (
-    CompanyRepository,
-    InstrumentConstituentRepository,
-    InstrumentRepository,
-)
-from app.investing.schemas import InstrumentConstituentCreate, InstrumentConstituentUpsert
-from app.investing.service import ConstituentService, InvestingSummaryService
+from app.investing.service import InvestingSummaryService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.platform.service import WorkspaceService
 from app.spending.models import (
@@ -59,7 +48,6 @@ from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
 
 logger = structlog.get_logger(__name__)
-CONSTITUENT_WEIGHT_QUANT = Decimal("0.00000001")
 
 
 # ---------------------------------------------------------------------------
@@ -743,115 +731,6 @@ async def ingest_fx_rates(session: AsyncSession) -> None:
         await fx_service.upsert(payload)
 
     logger.info("ingesting_fx_rates_success", count=len(rates_to_upsert))
-
-
-async def ingest_constituents(
-    session: AsyncSession,
-    provider: ConstituentProvider | None = None,
-    staleness_days: int | None = None,
-) -> dict[str, str]:
-    """
-    Fetch and persist ETF/MF constituent snapshots for all workspace-scoped pooled instruments.
-    Stocks are intentionally excluded because they are already direct exposure.
-    """
-    provider = provider or YahooFinanceConstituentProvider()
-    staleness_days = (
-        settings.CONSTITUENT_INGESTION_STALENESS_DAYS if staleness_days is None else staleness_days
-    )
-    today = datetime.now(UTC).date()
-    stale_before = today - timedelta(days=staleness_days)
-
-    instruments = (
-        (
-            await session.execute(
-                select(Instrument)
-                .where(Instrument.is_active)
-                .where(
-                    Instrument.instrument_type.in_([
-                        InstrumentType.etf.value,
-                        InstrumentType.mutual_fund.value,
-                    ])
-                )
-                .order_by(Instrument.workspace_id.asc(), Instrument.symbol.asc())
-            )
-        )
-        .scalars()
-        .all()
-    )
-    await session.commit()
-
-    instrument_repo = InstrumentRepository(session)
-    company_repo = CompanyRepository(session)
-    constituent_repo = InstrumentConstituentRepository(session)
-    constituent_service = ConstituentService(instrument_repo, company_repo, constituent_repo)
-
-    instrument_ids = [instrument.id for instrument in instruments if instrument.id is not None]
-    latest_by_instrument = await constituent_repo.get_latest_on_or_before_many(
-        instrument_ids, today
-    )
-    await session.commit()
-
-    result: dict[str, str] = {}
-    for instrument in instruments:
-        key = f"{instrument.workspace_id}:{instrument.symbol}"
-        if instrument.id is None:
-            result[key] = "failed"
-            continue
-
-        latest = latest_by_instrument.get(instrument.id, [])
-        if latest and latest[0].as_of_date >= stale_before:
-            result[key] = "skipped"
-            continue
-
-        fetched = await provider.fetch(instrument.symbol)
-        if fetched is None or not fetched.constituents:
-            result[key] = "failed"
-            continue
-
-        total_weight = sum((entry.raw_weight for entry in fetched.constituents), Decimal("0"))
-        if total_weight <= 0:
-            result[key] = "failed"
-            continue
-
-        normalised_constituents: list[InstrumentConstituentCreate] = []
-        running_weight = Decimal("0")
-        for index, entry in enumerate(fetched.constituents):
-            if index == len(fetched.constituents) - 1:
-                weight = Decimal("1") - running_weight
-            else:
-                weight = (entry.raw_weight / total_weight).quantize(CONSTITUENT_WEIGHT_QUANT)
-                running_weight += weight
-            normalised_constituents.append(
-                InstrumentConstituentCreate(
-                    company_name=entry.company_name,
-                    company_ticker=entry.company_ticker,
-                    weight=weight,
-                )
-            )
-
-        payload = InstrumentConstituentUpsert(
-            as_of_date=today,
-            source=fetched.provider_key,
-            fetched_at=fetched.fetched_at,
-            constituents=normalised_constituents,
-        )
-        try:
-            async with session.begin():
-                await constituent_service.upsert_constituents(
-                    instrument.workspace_id, instrument.public_id, payload
-                )
-            result[key] = "ok"
-        except Exception as exc:
-            logger.warning(
-                "constituent_ingestion_symbol_failed",
-                workspace_id=instrument.workspace_id,
-                symbol=instrument.symbol,
-                error=str(exc),
-            )
-            result[key] = "failed"
-
-    logger.info("ingesting_constituents_completed", result=result)
-    return result
 
 
 async def cleanup_expired_exports(session: AsyncSession) -> int:

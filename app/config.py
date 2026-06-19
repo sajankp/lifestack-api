@@ -169,9 +169,6 @@ class Settings(BaseSettings):
     CAPTURE_MAX_SESSION_SECONDS: int = 5 * 60
     CAPTURE_MAX_TEXT_CHARS: int = 4000
     EXCHANGERATE_API_KEY: str | None = None
-    CONSTITUENT_INGESTION_ENABLED: bool = True
-    CONSTITUENT_INGESTION_HOUR_UTC: int = 6
-    CONSTITUENT_INGESTION_STALENESS_DAYS: int = 7
     IMPORT_S3_ENDPOINT: str | None = Field(
         default=None,
         validation_alias=AliasChoices("IMPORT_S3_ENDPOINT", "CLOUDFLARE_R2_ENDPOINT"),

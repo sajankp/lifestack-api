@@ -47,7 +47,7 @@ for future sequencing; individual specs are implementation contracts or historic
 | [Spec 029: Gate 0 Demo Readiness](./spec-029-current-product-demo-readiness-roadmap.md) | Archived - implemented | Historical Gate 0 closure record. |
 | [Spec 030: CLI Management Commands](./spec-030-cli-management-commands.md) | Proposed/current | CLI runner for background jobs and production-safe E2E route gating checks. |
 | [Spec 031: Automated Price Updates and Investing UI Enhancements](./spec-031-automated-price-updates-and-ui.md) | Implemented | On-demand price refresh, current valuation fields, and investing holdings UI enhancements. |
-| [Spec 032: Automated Constituent Ingestion](./spec-032-automated-constituent-ingestion.md) | Implemented | ETF/MF classification, Yahoo constituent ingestion, CLI job support, and analytics UI correction flow. |
+| [Spec 032: Automated Constituent Ingestion](./spec-032-automated-constituent-ingestion.md) | Archived - retired | Historical Yahoo ingestion implementation; automated ingestion was removed in favor of CSV constituent import. |
 | [Spec 033: Hybrid Instrument Catalog with Tenant Overrides](./spec-033-hybrid-instrument-catalog.md) | Deferred | Future global public instrument/company catalog with workspace-scoped overrides. |
 | [Spec 034: Investing Constituent CSV Import](./spec-034-constituent-csv-import.md) | Implemented | Workspace-facing constituent CSV import for ETF/MF look-through data. |
 | [Spec 035: Platform Market Data Curation](./spec-035-platform-market-data-curation.md) | Deferred | Future platform-admin curation for shared/global constituents, instrument prices, provenance, and rollback. |

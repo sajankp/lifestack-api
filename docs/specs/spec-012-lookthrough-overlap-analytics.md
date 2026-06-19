@@ -31,6 +31,11 @@
   - `constituent_ingestion_job` fetches and normalizes ETF/MF top holdings into day-level snapshots
   - the analytics UI includes an instrument correction panel for existing holdings
 
+## Constituent Source Update (2026-06-19)
+
+- The unreliable Yahoo automated-ingestion path from Spec 032 has been retired.
+- Constituent snapshots remain supported through the CSV import workflow in Spec 034.
+
 ## 1. Overview
 Users often hold a mix of direct stocks and pooled vehicles (ETFs, mutual funds). Portfolio totals alone hide concentration and duplicate exposure created by overlapping fund constituents.
 

@@ -6,7 +6,9 @@
 ---
 
 ## 1. Overview
-Currently, `investing_instruments` and `investing_companies` are strictly workspace-scoped. This creates data duplication and triggers redundant requests to Yahoo Finance for common public securities (like `SPY` or `UMMA`), causing `429 Too Many Requests` errors during automated constituent ingestion.
+Historically, workspace-scoped instruments caused redundant Yahoo Finance requests for common public
+securities. That unreliable automated constituent runtime was retired on 2026-06-19; this deferred
+proposal is retained only as design history.
 
 This spec proposes transitioning to a **Hybrid Catalog Model** where:
 * Public reference data is stored globally (`workspace_id IS NULL`).
