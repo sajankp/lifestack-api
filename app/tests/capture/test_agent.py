@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import select
 
@@ -6,6 +8,7 @@ from app.capture.agent import (
     CAPTURE_PROVIDER_ERROR,
     CaptureSessionLimiter,
     CaptureSessionLimitExceededError,
+    _build_setup_message,
     _handle_gemini_message,
     execute_agent_tool,
 )
@@ -77,7 +80,11 @@ async def seed_agent_test_data(override_database_url):
 async def test_execute_agent_tool_create_todo(seed_agent_test_data):
     res = await execute_agent_tool(
         name="create_todo_task",
-        args={"title": "Buy groceries tomorrow", "due_date": "2026-05-29", "priority": "high"},
+        args={
+            "title": "Buy groceries tomorrow",
+            "due_date": "2026-05-29T16:00:00+05:30",
+            "priority": "high",
+        },
         user_id=10,
         workspace_id=20,
     )
@@ -85,7 +92,7 @@ async def test_execute_agent_tool_create_todo(seed_agent_test_data):
     assert res["status"] == "success"
     assert res["entity_type"] == "todo"
     assert res["title"] == "Buy groceries tomorrow"
-    assert res["due_date"].startswith("2026-05")
+    assert res["due_date"] == "2026-05-29T10:30:00+00:00"
     assert res["priority"] == "high"
 
     # Query DB to verify
@@ -94,6 +101,7 @@ async def test_execute_agent_tool_create_todo(seed_agent_test_data):
         assert len(todos) == 1
         assert todos[0].title == "Buy groceries tomorrow"
         assert todos[0].priority == "high"
+        assert todos[0].due_date == datetime(2026, 5, 29, 10, 30, tzinfo=UTC)
 
         # Verify audit logs
         logs = (
@@ -126,7 +134,12 @@ async def test_execute_agent_tool_log_spending(seed_agent_test_data):
 
     res = await execute_agent_tool(
         name="log_spending_transaction",
-        args={"amount": "15.50", "category_name": "food", "description": "Lunch at restaurant"},
+        args={
+            "amount": "15.50",
+            "category_name": "food",
+            "description": "Lunch at restaurant",
+            "account_name": "Chase Brokerage",
+        },
         user_id=10,
         workspace_id=20,
     )
@@ -138,6 +151,7 @@ async def test_execute_agent_tool_log_spending(seed_agent_test_data):
     assert res["amount"] == "15.50"
     assert res["category"].lower() == "food"
     assert res["description"] == "Lunch at restaurant"
+    assert res["account_name"] == "Chase Brokerage"
 
     # Query DB to verify
     async with postgres.async_session_maker() as session:
@@ -153,6 +167,7 @@ async def test_execute_agent_tool_log_spending(seed_agent_test_data):
         assert len(txs) == 1
         assert txs[0].amount == 15.50
         assert txs[0].description == "Lunch at restaurant"
+        assert txs[0].account_id is not None
 
         # Verify audit logs
         logs = (
@@ -216,6 +231,21 @@ async def test_execute_agent_tool_error_handling(seed_agent_test_data):
     res = await execute_agent_tool(name="unknown_tool", args={}, user_id=10, workspace_id=20)
     assert res["status"] == "error"
     assert "Unknown function" in res["message"]
+
+
+def test_voice_agent_declares_timed_todos_and_spending_accounts():
+    setup = _build_setup_message(["TEXT"])
+    declarations = setup["setup"]["tools"][0]["functionDeclarations"]
+    by_name = {item["name"]: item for item in declarations}
+
+    due_description = by_name["create_todo_task"]["parameters"]["properties"]["due_date"][
+        "description"
+    ]
+    spending_properties = by_name["log_spending_transaction"]["parameters"]["properties"]
+
+    assert "ISO 8601" in due_description
+    assert "UTC offset" in due_description
+    assert "account_name" in spending_properties
 
 
 def test_capture_session_limiter_rejects_oversized_audio_frame():

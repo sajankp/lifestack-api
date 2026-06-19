@@ -5,6 +5,7 @@ import json
 import time
 from contextlib import suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import structlog
 import websockets
@@ -195,6 +196,7 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
     """
     if response_modalities is None:
         response_modalities = ["TEXT", "AUDIO"]
+    current_utc = datetime.now(UTC).isoformat()
 
     return {
         "setup": {
@@ -214,6 +216,10 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                             "cash balances. When a user asks to manage todos, prefer the todo functions "
                             "and return concise, factual results. Always call the matching function when "
                             "the user requests an action (creating, listing, retrieving, updating, or deleting a todo). "
+                            f"The current UTC date and time is {current_utc}. For timed todos, convert phrases "
+                            "such as 'today at 4 PM' into a complete ISO 8601 date-time with a UTC offset. "
+                            "If the user's timezone cannot be inferred, ask one short clarification question. "
+                            "When logging spending, include `account_name` whenever the user names an account. "
                             "For informational queries, use `list_todos` or `list_next_due_items`. Keep spoken responses "
                             "short and avoid repeating structured data — let the tools provide authoritative outputs."
                         )
@@ -235,7 +241,7 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                                     },
                                     "due_date": {
                                         "type": "STRING",
-                                        "description": "Optional due date in YYYY-MM-DD format (e.g. '2026-05-29').",
+                                        "description": "Optional ISO 8601 due date or date-time, including UTC offset when a time is supplied (e.g. '2026-05-29T16:00:00+05:30').",
                                     },
                                     "priority": {
                                         "type": "STRING",
@@ -262,6 +268,10 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                                     "description": {
                                         "type": "STRING",
                                         "description": "Description of what the money was spent on.",
+                                    },
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional exact workspace account name for the transaction.",
                                     },
                                 },
                                 "required": ["amount", "category_name", "description"],
@@ -344,7 +354,7 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                                     },
                                     "due_date": {
                                         "type": "STRING",
-                                        "description": "Due date in YYYY-MM-DD.",
+                                        "description": "ISO 8601 due date or date-time, including UTC offset when a time is supplied.",
                                     },
                                     "priority": {
                                         "type": "STRING",
