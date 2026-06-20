@@ -186,10 +186,7 @@ class HoldingService:
             return None
         instrument = await self.instrument_repo.get_by_symbol(workspace_id, symbol)
         if instrument is not None:
-            if (
-                instrument_type != InstrumentType.stock
-                and instrument.instrument_type != instrument_type.value
-            ):
+            if instrument.instrument_type != instrument_type.value:
                 instrument.instrument_type = instrument_type.value
                 instrument.updated_at = datetime.now(UTC)
                 instrument = await self.instrument_repo.save(instrument)
@@ -313,6 +310,31 @@ class HoldingService:
         update_data = holding_in.model_dump(exclude_unset=True)
         if not update_data:
             return holding
+
+        requested_type = update_data.pop("instrument_type", None)
+        next_symbol = update_data.get("symbol") or holding.symbol
+        if next_symbol != holding.symbol:
+            duplicate = await self.repository.get_by_unique_key(
+                workspace_id, next_symbol, holding.account_id
+            )
+            if duplicate is not None and duplicate.id != holding.id:
+                raise ConflictError(
+                    detail="A holding already exists for this symbol/account in this workspace"
+                )
+
+        if requested_type is None and holding.instrument_id is not None and self.instrument_repo:
+            current = (await self.instrument_repo.get_by_ids([holding.instrument_id])).get(
+                holding.instrument_id
+            )
+            requested_type = (
+                InstrumentType(current.instrument_type) if current else InstrumentType.stock
+            )
+        requested_type = requested_type or InstrumentType.stock
+        if next_symbol != holding.symbol or requested_type is not None:
+            instrument = await self._resolve_or_create_instrument(
+                workspace_id, next_symbol, requested_type
+            )
+            holding.instrument_id = instrument.id if instrument else None
 
         next_currency = holding.currency
         if "currency" in update_data and update_data["currency"] is not None:
@@ -594,6 +616,27 @@ async def _fetch_stock_price(
     return None
 
 
+async def _fetch_amfi_nav(
+    client: httpx.AsyncClient, scheme_code: str
+) -> tuple[date, Decimal] | None:
+    code = scheme_code.strip()
+    if not code.isdigit():
+        return None
+    try:
+        response = await client.get("https://portal.amfiindia.com/spages/NAVAll.txt")
+        response.raise_for_status()
+        for line in response.text.splitlines():
+            fields = line.split(";")
+            if len(fields) < 6 or fields[0].strip() != code:
+                continue
+            nav = Decimal(fields[4].strip())
+            nav_date = datetime.strptime(fields[5].strip(), "%d-%b-%Y").date()
+            return nav_date, nav
+    except (httpx.HTTPError, ValueError, ArithmeticError):
+        return None
+    return None
+
+
 class PerformanceService:
     def __init__(
         self,
@@ -603,6 +646,7 @@ class PerformanceService:
         snapshot_repo: PortfolioSnapshotRepository,
         finance_setting_repo: FinanceSettingRepository | None = None,
         fx_rate_repo: FxRateRepository | None = None,
+        instrument_repo: InstrumentRepository | None = None,
     ):
         self.holding_repo = holding_repo
         self.cash_repo = cash_repo
@@ -610,6 +654,7 @@ class PerformanceService:
         self.snapshot_repo = snapshot_repo
         self.finance_setting_repo = finance_setting_repo
         self.fx_rate_repo = fx_rate_repo
+        self.instrument_repo = instrument_repo
 
     async def refresh_workspace_prices(self, workspace_id: int) -> dict[str, Decimal]:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -641,23 +686,41 @@ class PerformanceService:
         if not holdings_to_fetch:
             return {}
 
+        instruments = (
+            await self.instrument_repo.get_by_ids([
+                holding.instrument_id for holding in holdings_to_fetch if holding.instrument_id
+            ])
+            if self.instrument_repo is not None
+            else {}
+        )
         unique_keys = sorted({
-            (h.symbol.upper().strip(), h.currency.upper().strip()) for h in holdings_to_fetch
+            (
+                h.symbol.upper().strip(),
+                h.currency.upper().strip(),
+                instruments[h.instrument_id].instrument_type
+                if h.instrument_id in instruments
+                else InstrumentType.stock.value,
+            )
+            for h in holdings_to_fetch
         })
         sem = asyncio.Semaphore(5)
 
         async with httpx.AsyncClient(timeout=10.0) as client:
 
-            async def throttled_fetch(sym: str, curr: str) -> tuple[date, Decimal] | None:
+            async def throttled_fetch(
+                sym: str, curr: str, instrument_type: str
+            ) -> tuple[date, Decimal] | None:
                 async with sem:
+                    if instrument_type == InstrumentType.mutual_fund.value and curr == "INR":
+                        return await _fetch_amfi_nav(client, sym)
                     return await _fetch_stock_price(client, sym, curr)
 
-            tasks = [throttled_fetch(sym, curr) for sym, curr in unique_keys]
+            tasks = [throttled_fetch(sym, curr, kind) for sym, curr, kind in unique_keys]
             results = await asyncio.gather(*tasks)
 
         price_map = {
-            (sym, curr): close
-            for (sym, curr), close in zip(unique_keys, results, strict=False)
+            (sym, curr, kind): close
+            for (sym, curr, kind), close in zip(unique_keys, results, strict=False)
             if close is not None
         }
 
@@ -667,7 +730,12 @@ class PerformanceService:
                 if h.id is not None:
                     sym = h.symbol.upper().strip()
                     curr = h.currency.upper().strip()
-                    close = price_map.get((sym, curr))
+                    kind = (
+                        instruments[h.instrument_id].instrument_type
+                        if h.instrument_id in instruments
+                        else InstrumentType.stock.value
+                    )
+                    close = price_map.get((sym, curr, kind))
                     if close is not None:
                         if isinstance(close, tuple):
                             price_date, price = close

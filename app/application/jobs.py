@@ -40,6 +40,7 @@ from app.investing.repository import (
     CashBalanceRepository,
     HoldingPriceRepository,
     HoldingRepository,
+    InstrumentRepository,
     PortfolioSnapshotRepository,
 )
 from app.investing.service import PerformanceService
@@ -77,6 +78,7 @@ async def investment_closing_prices_job() -> None:
                     PortfolioSnapshotRepository(session),
                     FinanceSettingRepository(session),
                     FxRateRepository(session),
+                    InstrumentRepository(session),
                 )
                 updated = await service.refresh_workspace_prices(workspace_id)
                 logger.info(
