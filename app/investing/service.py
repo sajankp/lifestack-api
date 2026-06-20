@@ -317,25 +317,32 @@ class HoldingService:
             return holding
 
         requested_type = update_data.pop("instrument_type", None)
-        next_symbol = update_data.get("symbol") or holding.symbol
-        if next_symbol != holding.symbol:
-            duplicate = await self.repository.get_by_unique_key(
-                workspace_id, next_symbol, holding.account_id
-            )
-            if duplicate is not None and duplicate.id != holding.id:
-                raise ConflictError(
-                    detail="A holding already exists for this symbol/account in this workspace"
-                )
+        symbol_changed = "symbol" in update_data and update_data["symbol"] != holding.symbol
+        type_changed = requested_type is not None
 
-        if requested_type is None and holding.instrument_id is not None and self.instrument_repo:
-            current = (await self.instrument_repo.get_by_ids([holding.instrument_id])).get(
-                holding.instrument_id
-            )
-            requested_type = (
-                InstrumentType(current.instrument_type) if current else InstrumentType.stock
-            )
-        requested_type = requested_type or InstrumentType.stock
-        if next_symbol != holding.symbol or requested_type is not None:
+        if symbol_changed or type_changed:
+            next_symbol = update_data.get("symbol") or holding.symbol
+            if symbol_changed:
+                duplicate = await self.repository.get_by_unique_key(
+                    workspace_id, next_symbol, holding.account_id
+                )
+                if duplicate is not None and duplicate.id != holding.id:
+                    raise ConflictError(
+                        detail="A holding already exists for this symbol/account in this workspace"
+                    )
+
+            if (
+                requested_type is None
+                and holding.instrument_id is not None
+                and self.instrument_repo
+            ):
+                current = (await self.instrument_repo.get_by_ids([holding.instrument_id])).get(
+                    holding.instrument_id
+                )
+                requested_type = (
+                    InstrumentType(current.instrument_type) if current else InstrumentType.stock
+                )
+            requested_type = requested_type or InstrumentType.stock
             instrument = await self._resolve_or_create_instrument(
                 workspace_id, next_symbol, requested_type, allow_type_change=True
             )
@@ -621,25 +628,38 @@ async def _fetch_stock_price(
     return None
 
 
-async def _fetch_amfi_nav(
-    client: httpx.AsyncClient, scheme_code: str
-) -> tuple[date, Decimal] | None:
-    code = scheme_code.strip()
-    if not code.isdigit():
-        return None
+async def _fetch_all_amfi_navs(
+    client: httpx.AsyncClient,
+) -> dict[str, tuple[date, Decimal]]:
+    navs: dict[str, tuple[date, Decimal]] = {}
     try:
         response = await client.get("https://portal.amfiindia.com/spages/NAVAll.txt")
         response.raise_for_status()
         for line in response.text.splitlines():
             fields = line.split(";")
-            if len(fields) < 6 or fields[0].strip() != code:
+            if len(fields) < 6:
                 continue
-            nav = Decimal(fields[4].strip())
-            nav_date = datetime.strptime(fields[5].strip(), "%d-%b-%Y").date()
-            return nav_date, nav
-    except (httpx.HTTPError, ValueError, ArithmeticError):
+            code = fields[0].strip()
+            if not code.isdigit():
+                continue
+            try:
+                nav = Decimal(fields[4].strip())
+                nav_date = datetime.strptime(fields[5].strip(), "%d-%b-%Y").date()
+                navs[code] = (nav_date, nav)
+            except (ValueError, ArithmeticError):
+                continue
+    except httpx.HTTPError:
+        return {}
+    return navs
+
+
+def _get_amfi_nav(
+    scheme_code: str, navs: dict[str, tuple[date, Decimal]]
+) -> tuple[date, Decimal] | None:
+    code = scheme_code.strip()
+    if not code.isdigit():
         return None
-    return None
+    return navs.get(code)
 
 
 class PerformanceService:
@@ -711,13 +731,21 @@ class PerformanceService:
         sem = asyncio.Semaphore(5)
 
         async with httpx.AsyncClient(timeout=10.0) as client:
+            amfi_navs = (
+                await _fetch_all_amfi_navs(client)
+                if any(
+                    kind == InstrumentType.mutual_fund.value and curr == "INR"
+                    for _, curr, kind in unique_keys
+                )
+                else {}
+            )
 
             async def throttled_fetch(
                 sym: str, curr: str, instrument_type: str
             ) -> tuple[date, Decimal] | None:
                 async with sem:
                     if instrument_type == InstrumentType.mutual_fund.value and curr == "INR":
-                        return await _fetch_amfi_nav(client, sym)
+                        return _get_amfi_nav(sym, amfi_navs)
                     return await _fetch_stock_price(client, sym, curr)
 
             tasks = [throttled_fetch(sym, curr, kind) for sym, curr, kind in unique_keys]

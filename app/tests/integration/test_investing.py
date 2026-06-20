@@ -1139,17 +1139,15 @@ async def test_investing_prices_refresh_indian_mutual_fund_uses_amfi(client: Asy
 
     with (
         patch("app.investing.service._fetch_stock_price", new_callable=AsyncMock) as stock_fetch,
-        patch("app.investing.service._fetch_amfi_nav", new_callable=AsyncMock) as amfi_fetch,
+        patch("app.investing.service._fetch_all_amfi_navs", new_callable=AsyncMock) as amfi_fetch,
     ):
-        amfi_fetch.return_value = (date(2026, 6, 19), Decimal("90.1404"))
+        amfi_fetch.return_value = {"122639": (date(2026, 6, 19), Decimal("90.1404"))}
         refresh_res = await client.post("/v1/investing/prices/refresh")
 
     assert refresh_res.status_code == 200
     assert refresh_res.json()["updated"] == ["122639"]
     stock_fetch.assert_not_called()
     amfi_fetch.assert_awaited_once()
-    _, scheme_code = amfi_fetch.call_args.args
-    assert scheme_code == "122639"
 
 
 @pytest.mark.asyncio
