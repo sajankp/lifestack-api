@@ -55,6 +55,12 @@ from app.investing.schemas import (
 MONEY_QUANT = Decimal("0.01")
 
 
+def _value_change(current: Decimal, baseline: Decimal) -> tuple[Decimal, Decimal | None]:
+    change = current - baseline
+    percentage = change / baseline * Decimal("100") if baseline else None
+    return change, percentage
+
+
 def _build_required_pairs(
     used_currencies: list[str], reporting_currency: str
 ) -> set[tuple[str, str]]:
@@ -758,15 +764,50 @@ class PerformanceService:
             snapshot = await self.snapshot_repo.latest(workspace_id)
         if snapshot is None:
             raise ValidationError(detail="Failed to generate portfolio snapshot")
-        gain = snapshot.total_value - snapshot.total_cost
-        pct = (gain / snapshot.total_cost * Decimal("100")) if snapshot.total_cost else None
+        holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
+        holding_ids = [holding.id for holding in holdings if holding.id is not None]
+        latest_prices = await self.holding_price_repo.latest_prices_on_or_before_bulk(
+            workspace_id, holding_ids, snapshot.snapshot_date
+        )
+        if not holdings:
+            valuation_status = "empty"
+        elif all(
+            holding.id in latest_prices
+            and latest_prices[holding.id].price_date == snapshot.snapshot_date
+            for holding in holdings
+            if holding.id is not None
+        ):
+            valuation_status = "current"
+        else:
+            valuation_status = "estimated"
+
+        previous = await self.snapshot_repo.latest_before(workspace_id, snapshot.snapshot_date)
+        if previous is not None and previous.currency_code == snapshot.currency_code:
+            daily_change, daily_change_pct = _value_change(
+                snapshot.holdings_value, previous.holdings_value
+            )
+            previous_snapshot_date = previous.snapshot_date
+        else:
+            daily_change = None
+            daily_change_pct = None
+            previous_snapshot_date = None
+
+        gain, pct = _value_change(snapshot.holdings_value, snapshot.total_cost)
         return PerformanceSummaryResponse(
-            total_value=snapshot.total_value,
+            total_value=snapshot.holdings_value,
             total_cost=snapshot.total_cost,
+            portfolio_value=snapshot.holdings_value,
+            invested_value=snapshot.total_cost,
+            cash_total=snapshot.cash_value,
             total_gain_loss=gain,
             total_gain_loss_pct=pct,
+            daily_change=daily_change,
+            daily_change_pct=daily_change_pct,
             snapshot_date=snapshot.snapshot_date,
+            previous_snapshot_date=previous_snapshot_date,
             currency=snapshot.currency_code,
+            valuation_status=valuation_status,
+            holdings_count=len(holdings),
             fx_rates_used=snapshot.fx_rates_used or {},
         )
 

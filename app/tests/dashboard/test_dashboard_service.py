@@ -36,7 +36,7 @@ def service(
         todo_service=mock_todo_service,
         transaction_service=mock_transaction_service,
         budget_service=mock_budget_service,
-        investing_summary_service=mock_investing_service,
+        investing_performance_service=mock_investing_service,
     )
 
 
@@ -77,11 +77,20 @@ async def test_get_summary_success(
     mock_budget_service.list_budgets.return_value = ([budget1, budget2, budget3], 3)
 
     # 3. Setup Investing mock returns
-    mock_investing_summary = MagicMock()
-    mock_investing_summary.portfolio_value = Decimal("50000.00")
-    mock_investing_summary.daily_change = Decimal("-150.25")
-    mock_investing_summary.holdings_count = 8
-    mock_investing_service.get_summary.return_value = mock_investing_summary
+    mock_investing_summary = MagicMock(
+        portfolio_value=Decimal("50000.00"),
+        invested_value=Decimal("42000.00"),
+        total_gain_loss=Decimal("8000.00"),
+        total_gain_loss_pct=Decimal("19.05"),
+        daily_change=Decimal("-150.25"),
+        daily_change_pct=Decimal("-0.30"),
+        snapshot_date=datetime(2026, 5, 26, tzinfo=UTC).date(),
+        previous_snapshot_date=datetime(2026, 5, 25, tzinfo=UTC).date(),
+        valuation_status="current",
+        holdings_count=8,
+        cash_total=Decimal("1000.00"),
+    )
+    mock_investing_service.summary.return_value = mock_investing_summary
 
     # Run service method
     summary = await service.get_summary(workspace_id)
@@ -115,7 +124,10 @@ async def test_get_summary_success(
     # Investing Summary
     assert summary.investing.status == "available"
     assert summary.investing.portfolio_value == Decimal("50000.00")
+    assert summary.investing.invested_value == Decimal("42000.00")
+    assert summary.investing.total_gain_loss == Decimal("8000.00")
     assert summary.investing.daily_change == Decimal("-150.25")
+    assert summary.investing.cash_total == Decimal("1000.00")
     assert summary.investing.holdings_count == 8
 
 
@@ -133,8 +145,18 @@ async def test_get_summary_graceful_failures(
     mock_todo_service.get_summary_counts.side_effect = RuntimeError("Todo Service Failed")
     mock_transaction_service.get_category_totals.return_value = {}
     mock_budget_service.list_budgets.return_value = ([], 0)
-    mock_investing_service.get_summary.return_value = MagicMock(
-        portfolio_value=Decimal("1.0"), daily_change=Decimal("0.0"), holdings_count=1
+    mock_investing_service.summary.return_value = MagicMock(
+        portfolio_value=Decimal("1.0"),
+        invested_value=Decimal("1.0"),
+        total_gain_loss=Decimal("0.0"),
+        total_gain_loss_pct=Decimal("0.0"),
+        daily_change=Decimal("0.0"),
+        daily_change_pct=Decimal("0.0"),
+        snapshot_date=datetime(2026, 5, 26, tzinfo=UTC).date(),
+        previous_snapshot_date=datetime(2026, 5, 25, tzinfo=UTC).date(),
+        valuation_status="current",
+        holdings_count=1,
+        cash_total=Decimal("0.0"),
     )
 
     summary = await service.get_summary(workspace_id)
@@ -159,7 +181,7 @@ async def test_get_summary_graceful_failures(
 
     # Case C: Investing service fails, others succeed
     mock_transaction_service.get_category_totals.side_effect = None
-    mock_investing_service.get_summary.side_effect = Exception("Investing service down")
+    mock_investing_service.summary.side_effect = Exception("Investing service down")
 
     summary = await service.get_summary(workspace_id)
     assert summary.todos.status == "available"

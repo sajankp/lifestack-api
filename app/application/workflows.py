@@ -27,7 +27,7 @@ from app.finance.repository import CurrencyRepository, FxRateRepository
 from app.finance.schemas import FxRateUpsert
 from app.finance.service import FxRateService
 from app.imports.models import ImportBatch, ImportPreviewRow
-from app.investing.service import InvestingSummaryService
+from app.investing.service import PerformanceService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.platform.service import WorkspaceService
 from app.spending.models import (
@@ -87,12 +87,12 @@ class DashboardSummaryWorkflow:
         todo_service: TodoService,
         transaction_service: TransactionService,
         budget_service: BudgetService,
-        investing_summary_service: InvestingSummaryService,
+        investing_performance_service: PerformanceService,
     ):
         self.todo_service = todo_service
         self.transaction_service = transaction_service
         self.budget_service = budget_service
-        self.investing_summary_service = investing_summary_service
+        self.investing_performance_service = investing_performance_service
 
     async def get_summary(self, workspace_id: int) -> DashboardSummary:
         now = datetime.now(UTC)
@@ -172,12 +172,20 @@ class DashboardSummaryWorkflow:
 
         investing_res = InvestingSummary()
         try:
-            investing_summary = await self.investing_summary_service.get_summary(workspace_id)
+            performance = await self.investing_performance_service.summary(workspace_id)
             investing_res = InvestingSummary(
                 status="available",
-                portfolio_value=investing_summary.portfolio_value,
-                daily_change=investing_summary.daily_change,
-                holdings_count=investing_summary.holdings_count,
+                portfolio_value=performance.portfolio_value,
+                invested_value=performance.invested_value,
+                total_gain_loss=performance.total_gain_loss,
+                total_gain_loss_pct=performance.total_gain_loss_pct,
+                daily_change=performance.daily_change,
+                daily_change_pct=performance.daily_change_pct,
+                snapshot_date=performance.snapshot_date,
+                previous_snapshot_date=performance.previous_snapshot_date,
+                valuation_status=performance.valuation_status,
+                holdings_count=performance.holdings_count,
+                cash_total=performance.cash_total,
             )
         except Exception:
             logger.exception("dashboard_investing_fetch_failed", workspace_id=workspace_id)

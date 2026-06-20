@@ -261,10 +261,18 @@ class HoldingPriceBulkCreate(BaseModel):
 class PerformanceSummaryResponse(BaseModel):
     total_value: Decimal
     total_cost: Decimal
+    portfolio_value: Decimal
+    invested_value: Decimal
+    cash_total: Decimal
     total_gain_loss: Decimal
     total_gain_loss_pct: Decimal | None
+    daily_change: Decimal | None
+    daily_change_pct: Decimal | None
     snapshot_date: date
+    previous_snapshot_date: date | None
     currency: str
+    valuation_status: str
+    holdings_count: int
     fx_rates_used: dict[str, Decimal] = Field(default_factory=dict)
 
     model_config = ConfigDict(json_encoders={Decimal: str})

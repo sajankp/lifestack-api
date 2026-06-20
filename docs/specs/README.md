@@ -53,6 +53,7 @@ for future sequencing; individual specs are implementation contracts or historic
 | [Spec 035: Platform Market Data Curation](./spec-035-platform-market-data-curation.md) | Deferred | Future platform-admin curation for shared/global constituents, instrument prices, provenance, and rollback. |
 | [Spec 036: Password Reset](./spec-036-password-reset.md) | Implemented | Email-based password reset request and confirmation workflow. |
 | [Spec 037: Remote Database Backups](./spec-037-remote-database-backups.md) | Implemented | Daily encrypted PostgreSQL SQL backups to Cloudflare R2 or OCI Object Storage with guarded restore tooling. |
+| [Spec 038: Canonical Portfolio Performance](./spec-038-canonical-portfolio-performance.md) | Implemented | Shared holdings valuation, invested value, gain/loss, daily change, and separate investment cash across Investing and Dashboard. |
 
 ## Historical Bundles
 

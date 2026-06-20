@@ -501,3 +501,18 @@ class PortfolioSnapshotRepository:
                 .limit(1)
             )
         ).scalar_one_or_none()
+
+    async def latest_before(
+        self, workspace_id: int, snapshot_date: date
+    ) -> PortfolioSnapshot | None:
+        return (
+            await self.session.execute(
+                select(PortfolioSnapshot)
+                .where(
+                    PortfolioSnapshot.workspace_id == workspace_id,
+                    PortfolioSnapshot.snapshot_date < snapshot_date,
+                )
+                .order_by(PortfolioSnapshot.snapshot_date.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()

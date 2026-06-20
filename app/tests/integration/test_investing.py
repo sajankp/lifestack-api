@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
@@ -725,6 +725,16 @@ async def test_performance_summary_converts_multi_currency_snapshot(client: Asyn
                 fetched_at=now,
                 source="test",
             ),
+            PortfolioSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=price_date - timedelta(days=1),
+                total_value=Decimal("250.00"),
+                total_cost=Decimal("200.00"),
+                holdings_value=Decimal("200.00"),
+                cash_value=Decimal("50.00"),
+                currency_code="USD",
+                fx_rates_used={},
+            ),
         ])
         await session.commit()
 
@@ -733,9 +743,17 @@ async def test_performance_summary_converts_multi_currency_snapshot(client: Asyn
     perf = perf_res.json()
 
     assert perf["currency"] == "USD"
-    assert Decimal(perf["total_value"]) == Decimal("373.50")
+    assert Decimal(perf["portfolio_value"]) == Decimal("265.00")
+    assert Decimal(perf["cash_total"]) == Decimal("108.50")
+    assert Decimal(perf["total_value"]) == Decimal("265.00")
     assert Decimal(perf["total_cost"]) == Decimal("237.50")
-    assert Decimal(perf["total_gain_loss"]) == Decimal("136.00")
+    assert Decimal(perf["invested_value"]) == Decimal("237.50")
+    assert Decimal(perf["total_gain_loss"]) == Decimal("27.50")
+    assert Decimal(perf["total_gain_loss_pct"]) == Decimal("11.57894736842105263157894737")
+    assert Decimal(perf["daily_change"]) == Decimal("65.00")
+    assert Decimal(perf["daily_change_pct"]) == Decimal("32.500")
+    assert perf["previous_snapshot_date"] == (price_date - timedelta(days=1)).isoformat()
+    assert perf["valuation_status"] == "current"
     assert Decimal(perf["fx_rates_used"]["GBP"]) == Decimal("1.2500000000")
     assert Decimal(perf["fx_rates_used"]["EUR"]) == Decimal("1.0850000000")
 
@@ -745,6 +763,7 @@ async def test_performance_summary_converts_multi_currency_snapshot(client: Asyn
                 select(PortfolioSnapshot).where(
                     PortfolioSnapshot.workspace_id == workspace_id,
                     PortfolioSnapshot.currency_code == "USD",
+                    PortfolioSnapshot.snapshot_date == price_date,
                 )
             )
         ).scalar_one()
@@ -766,9 +785,11 @@ async def test_performance_summary_converts_multi_currency_snapshot(client: Asyn
     perf_eur = perf_eur_res.json()
 
     assert perf_eur["currency"] == "EUR"
-    assert Decimal(perf_eur["total_value"]) == Decimal("344.24")
+    assert Decimal(perf_eur["portfolio_value"]) == Decimal("244.24")
+    assert Decimal(perf_eur["cash_total"]) == Decimal("100.00")
+    assert Decimal(perf_eur["total_value"]) == Decimal("244.24")
     assert Decimal(perf_eur["total_cost"]) == Decimal("218.89")
-    assert Decimal(perf_eur["total_gain_loss"]) == Decimal("125.35")
+    assert Decimal(perf_eur["total_gain_loss"]) == Decimal("25.35")
     assert Decimal(perf_eur["fx_rates_used"]["USD"]).quantize(Decimal("0.0000000001")) == Decimal(
         "0.9216589862"
     )

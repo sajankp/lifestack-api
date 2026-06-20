@@ -28,7 +28,11 @@ async def test_dashboard_summary_empty_workspace(client: AsyncClient):
     assert summary["spending"]["month_spent"] == "0"
 
     assert "investing" in summary
-    assert summary["investing"]["portfolio_value"] == "0"
+    assert summary["investing"]["portfolio_value"] == "0.00"
+    assert summary["investing"]["invested_value"] == "0.00"
+    assert summary["investing"]["cash_total"] == "0.00"
+    assert summary["investing"]["total_gain_loss"] == "0.00"
+    assert summary["investing"]["daily_change"] is None
 
     assert "system" in summary
     assert "generated_at" in summary["system"]

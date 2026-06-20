@@ -564,11 +564,11 @@ async def get_dashboard_summary_workflow(
     todo_service: TodoService = Depends(get_todo_service),
     transaction_service: TransactionService = Depends(get_spending_transaction_service),
     budget_service: BudgetService = Depends(get_spending_budget_service),
-    investing_summary_service: InvestingSummaryService = Depends(get_investing_summary_service),
+    investing_performance_service: PerformanceService = Depends(get_investing_performance_service),
 ) -> DashboardSummaryWorkflow:
     return DashboardSummaryWorkflow(
         todo_service=todo_service,
         transaction_service=transaction_service,
         budget_service=budget_service,
-        investing_summary_service=investing_summary_service,
+        investing_performance_service=investing_performance_service,
     )
