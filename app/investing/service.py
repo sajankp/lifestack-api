@@ -180,13 +180,18 @@ class HoldingService:
         self.currency_repo = currency_repo
 
     async def _resolve_or_create_instrument(
-        self, workspace_id: int, symbol: str, instrument_type: InstrumentType
+        self,
+        workspace_id: int,
+        symbol: str,
+        instrument_type: InstrumentType,
+        *,
+        allow_type_change: bool = False,
     ) -> Instrument | None:
         if self.instrument_repo is None:
             return None
         instrument = await self.instrument_repo.get_by_symbol(workspace_id, symbol)
         if instrument is not None:
-            if instrument.instrument_type != instrument_type.value:
+            if allow_type_change and instrument.instrument_type != instrument_type.value:
                 instrument.instrument_type = instrument_type.value
                 instrument.updated_at = datetime.now(UTC)
                 instrument = await self.instrument_repo.save(instrument)
@@ -332,7 +337,7 @@ class HoldingService:
         requested_type = requested_type or InstrumentType.stock
         if next_symbol != holding.symbol or requested_type is not None:
             instrument = await self._resolve_or_create_instrument(
-                workspace_id, next_symbol, requested_type
+                workspace_id, next_symbol, requested_type, allow_type_change=True
             )
             holding.instrument_id = instrument.id if instrument else None
 
