@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
@@ -1114,3 +1114,75 @@ async def test_investing_prices_refresh_indian_stock_appends_ns(client: AsyncCli
         _, symbol, currency = mock_fetch.call_args.args
         assert symbol == "TATSILV"
         assert currency == "INR"
+
+
+@pytest.mark.asyncio
+async def test_investing_prices_refresh_indian_mutual_fund_uses_amfi(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="amfi-refresh@example.com",
+        username="amfi-refresh",
+        password="TestPass123!",
+    )
+    holding_res = await client.post(
+        "/v1/investing/holdings",
+        json={
+            "symbol": "122639",
+            "account_id": account_map["brokerage"],
+            "quantity": "10.00000000",
+            "avg_cost": "80.00",
+            "currency": "INR",
+            "instrument_type": "mutual_fund",
+        },
+    )
+    assert holding_res.status_code == 201
+
+    with (
+        patch("app.investing.service._fetch_stock_price", new_callable=AsyncMock) as stock_fetch,
+        patch("app.investing.service._fetch_amfi_nav", new_callable=AsyncMock) as amfi_fetch,
+    ):
+        amfi_fetch.return_value = (date(2026, 6, 19), Decimal("90.1404"))
+        refresh_res = await client.post("/v1/investing/prices/refresh")
+
+    assert refresh_res.status_code == 200
+    assert refresh_res.json()["updated"] == ["122639"]
+    stock_fetch.assert_not_called()
+    amfi_fetch.assert_awaited_once()
+    _, scheme_code = amfi_fetch.call_args.args
+    assert scheme_code == "122639"
+
+
+@pytest.mark.asyncio
+async def test_update_holding_symbol_relinks_instrument_and_preserves_fields(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="symbol-edit@example.com",
+        username="symbol-edit",
+        password="TestPass123!",
+    )
+    created = (
+        await client.post(
+            "/v1/investing/holdings",
+            json={
+                "symbol": "NEFTPHARMA",
+                "account_id": account_map["brokerage"],
+                "quantity": "12.00000000",
+                "avg_cost": "25.00",
+                "currency": "INR",
+                "instrument_type": "etf",
+            },
+        )
+    ).json()
+
+    response = await client.patch(
+        f"/v1/investing/holdings/{created['public_id']}",
+        json={"symbol": "PHARMABEES", "instrument_type": "etf"},
+    )
+
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["symbol"] == "PHARMABEES"
+    assert updated["instrument_type"] == "etf"
+    assert Decimal(updated["quantity"]) == Decimal("12.00000000")
+    assert Decimal(updated["avg_cost"]) == Decimal("25.00")
+    assert updated["currency"] == "INR"
