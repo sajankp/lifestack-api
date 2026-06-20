@@ -1,5 +1,5 @@
 # Feature Spec: Automated Price Updates & Investing UI Enhancements
-**Status:** Approved
+**Status:** Implemented
 **Spec ID:** 031
 
 ## Implementation Notes (2026-06-13)
