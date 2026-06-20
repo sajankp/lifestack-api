@@ -2,7 +2,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
-from app.main import app
+from app.main import app, create_app
 
 
 @pytest.mark.asyncio
@@ -28,6 +28,28 @@ async def test_versioned_openapi_reachable():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get(f"{settings.API_V1_STR}/openapi.json")
         assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_redoc_reachable_outside_production():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/redoc")
+        assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_api_documentation_is_disabled_in_production(monkeypatch):
+    monkeypatch.setattr(settings, "ENV", "production")
+    production_app = create_app()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=production_app),
+        base_url="http://test",
+    ) as client:
+        assert (await client.get("/docs")).status_code == 404
+        assert (await client.get("/redoc")).status_code == 404
+        assert (await client.get(f"{settings.API_V1_STR}/openapi.json")).status_code == 404
+        assert (await client.get("/health")).status_code == 200
 
 
 @pytest.mark.asyncio
