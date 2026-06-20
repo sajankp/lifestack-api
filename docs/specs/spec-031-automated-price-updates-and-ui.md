@@ -1,5 +1,5 @@
 # Feature Spec: Automated Price Updates & Investing UI Enhancements
-**Status:** Implemented
+**Status:** Approved
 **Spec ID:** 031
 
 ## Implementation Notes (2026-06-13)
@@ -13,6 +13,41 @@
   refresh action, and inline manual price editing.
 - Remaining future work belongs in the roadmap as scheduled/background price cadence, richer return
   math, benchmarks, dividends, and deeper performance visualization.
+
+## Extension: Indian Instruments (2026-06-20)
+
+The refresh service routes by instrument type:
+
+| Instrument type | Symbol input | Provider | Example |
+|---|---|---|---|
+| Stock | Exchange ticker, without Yahoo suffix for INR/NSE holdings | Yahoo chart API | `DRREDDY` becomes `DRREDDY.NS` |
+| ETF | Exchange ticker, without Yahoo suffix for INR/NSE holdings | Yahoo chart API | `PHARMABEES` becomes `PHARMABEES.NS` |
+| Indian mutual fund | Numeric AMFI scheme code | Official AMFI daily NAV feed | `122639` |
+
+For mutual funds, users must enter the **AMFI scheme code** in the holding `symbol` field. They
+must not enter the scheme name or ISIN. For example:
+
+- Symbol: `122639`
+- Type: `mutual_fund`
+- Currency: `INR`
+- Scheme: Parag Parikh Flexi Cap Fund - Direct Plan - Growth
+- ISIN reference: `INF879O01027`
+
+The official feed is `https://portal.amfiindia.com/spages/NAVAll.txt`. Its semicolon-delimited rows
+contain scheme code, ISINs, scheme name, NAV, and NAV date. The refresh service matches the first
+column exactly and stores the returned NAV/date as the holding price. The optional MFAPI endpoint
+`https://api.mfapi.in/mf/{schemeCode}` is useful for discovery/history but is not the authoritative
+refresh source.
+
+Holding symbols are editable. A symbol correction must:
+
+1. preserve quantity, average cost, currency, and account;
+2. reject a duplicate `(workspace, symbol, account)` holding;
+3. relink the holding to an instrument matching the corrected symbol and selected type;
+4. leave historical holding-price rows attached to the holding while future refreshes use the new
+   identifier.
+
+Name/symbol validation and provider-side search suggestions are intentionally deferred.
 
 ## 1. Overview
 Before this slice, the investing module tracked holdings, cash balances, and historical book cost. While a performance snapshot system existed on the backend to compute valuation, the holdings list UI only showed historical **Book Value** (`quantity * avg_cost`).
@@ -54,7 +89,9 @@ To keep DB models clean, these will be computed fields populated in the router b
 - **Endpoint:** `POST /v1/investing/prices/refresh`
 - **Behavior:**
   1. Identifies all unique symbols among active holdings in the workspace.
-  2. Queries Yahoo Finance unofficial API: `https://query1.finance.yahoo.com/v8/finance/chart/{symbol}`
+  2. Routes listed stocks/ETFs to Yahoo Finance
+     (`https://query1.finance.yahoo.com/v8/finance/chart/{symbol}`) and Indian mutual funds to the
+     official AMFI daily NAV feed.
   3. Extracts the latest `regularMarketPrice` from the response.
   4. Upserts the retrieved price into the `HoldingPrice` table for the current date.
   5. Forces a recreation of today's `PortfolioSnapshot` so the dashboard and performance cards are updated instantly.
