@@ -284,8 +284,16 @@ async def get_investing_holding_service(
     company_repo: CompanyRepository = Depends(get_investing_company_repo),
     account_repo: AccountRepository = Depends(get_finance_account_repo),
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+    holding_price_repo: HoldingPriceRepository = Depends(get_investing_holding_price_repo),
 ) -> HoldingService:
-    return HoldingService(repo, instrument_repo, company_repo, account_repo, currency_repo)
+    return HoldingService(
+        repo,
+        instrument_repo,
+        company_repo,
+        account_repo,
+        currency_repo,
+        holding_price_repo,
+    )
 
 
 async def get_investing_cash_balance_service(

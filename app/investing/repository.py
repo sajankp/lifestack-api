@@ -413,6 +413,17 @@ class HoldingPriceRepository:
             .all()
         )
 
+    async def delete_for_holding(self, workspace_id: int, holding_id: int) -> None:
+        if workspace_id is None or holding_id is None:
+            raise ValueError("workspace_id and holding_id must not be None")
+        await self.session.execute(
+            delete(HoldingPrice).where(
+                HoldingPrice.workspace_id == workspace_id,
+                HoldingPrice.holding_id == holding_id,
+            )
+        )
+        await self.session.flush()
+
     async def latest_price_on_or_before(
         self, workspace_id: int, holding_id: int, as_of: date
     ) -> HoldingPrice | None:

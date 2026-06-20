@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account, Currency, FxRate, WorkspaceCurrency
-from app.investing.models import CashBalance, Holding, Instrument, PortfolioSnapshot
+from app.investing.models import CashBalance, Holding, HoldingPrice, Instrument, PortfolioSnapshot
 
 
 async def _register_and_login(
@@ -1184,3 +1184,113 @@ async def test_update_holding_symbol_relinks_instrument_and_preserves_fields(cli
     assert Decimal(updated["quantity"]) == Decimal("12.00000000")
     assert Decimal(updated["avg_cost"]) == Decimal("25.00")
     assert updated["currency"] == "INR"
+
+
+@pytest.mark.asyncio
+async def test_update_holding_symbol_deletes_existing_price_history(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="symbol-price-reset@example.com",
+        username="symbol-price-reset",
+        password="TestPass123!",
+    )
+    created = (
+        await client.post(
+            "/v1/investing/holdings",
+            json={
+                "symbol": "122639",
+                "account_id": account_map["brokerage"],
+                "quantity": "10.00000000",
+                "avg_cost": "80.00",
+                "currency": "INR",
+                "instrument_type": "mutual_fund",
+            },
+        )
+    ).json()
+    price_date = datetime.now(UTC).date().isoformat()
+    assert (
+        await client.post(
+            "/v1/investing/prices",
+            json={
+                "price_date": price_date,
+                "prices": [
+                    {
+                        "holding_public_id": created["public_id"],
+                        "unit_price": "90.1404",
+                    }
+                ],
+            },
+        )
+    ).status_code == 201
+
+    response = await client.patch(
+        f"/v1/investing/holdings/{created['public_id']}",
+        json={"symbol": "122640", "instrument_type": "mutual_fund"},
+    )
+
+    assert response.status_code == 200
+    async with postgres.async_session_maker() as session:
+        holding = (
+            await session.execute(
+                select(Holding).where(Holding.public_id == uuid.UUID(created["public_id"]))
+            )
+        ).scalar_one()
+        prices = (
+            (
+                await session.execute(
+                    select(HoldingPrice).where(HoldingPrice.holding_id == holding.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert prices == []
+
+
+@pytest.mark.asyncio
+async def test_delete_holding_cascades_existing_price_history(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="holding-delete-prices@example.com",
+        username="holding-delete-prices",
+        password="TestPass123!",
+    )
+    created = (
+        await client.post(
+            "/v1/investing/holdings",
+            json={
+                "symbol": "AAPL",
+                "account_id": account_map["brokerage"],
+                "quantity": "2.00000000",
+                "avg_cost": "150.00",
+                "currency": "USD",
+            },
+        )
+    ).json()
+    assert (
+        await client.post(
+            "/v1/investing/prices",
+            json={
+                "price_date": datetime.now(UTC).date().isoformat(),
+                "prices": [
+                    {
+                        "holding_public_id": created["public_id"],
+                        "unit_price": "180.00",
+                    }
+                ],
+            },
+        )
+    ).status_code == 201
+
+    response = await client.delete(f"/v1/investing/holdings/{created['public_id']}")
+
+    assert response.status_code == 204
+    async with postgres.async_session_maker() as session:
+        holding = (
+            await session.execute(
+                select(Holding).where(Holding.public_id == uuid.UUID(created["public_id"]))
+            )
+        ).scalar_one_or_none()
+        prices = (await session.execute(select(HoldingPrice))).scalars().all()
+        assert holding is None
+        assert prices == []

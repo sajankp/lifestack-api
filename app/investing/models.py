@@ -178,7 +178,7 @@ class HoldingPrice(SQLModel, table=True):
     __tablename__ = "holding_prices"
     id: int | None = Field(default=None, primary_key=True)
     workspace_id: int = Field(foreign_key="workspaces.id", index=True)
-    holding_id: int = Field(foreign_key="investing_holdings.id", index=True)
+    holding_id: int = Field(index=True)
     price_date: date = Field(sa_type=sa.Date())
     unit_price: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=6))
     source: str = Field(default="manual", max_length=16)
@@ -186,7 +186,15 @@ class HoldingPrice(SQLModel, table=True):
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
 
-    __table_args__ = (sa.UniqueConstraint("holding_id", "price_date", name="uq_holding_price_day"),)
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["holding_id"],
+            ["investing_holdings.id"],
+            name="fk_holding_prices_holding",
+            ondelete="CASCADE",
+        ),
+        sa.UniqueConstraint("holding_id", "price_date", name="uq_holding_price_day"),
+    )
 
 
 class PortfolioSnapshot(SQLModel, table=True):
