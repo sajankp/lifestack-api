@@ -624,6 +624,10 @@ async def test_performance_summary_converts_multi_currency_snapshot(client: Asyn
     )
     assert settings_res.status_code == 200, settings_res.text
 
+    empty_performance_res = await client.get("/v1/investing/performance/summary")
+    assert empty_performance_res.status_code == 200, empty_performance_res.text
+    assert Decimal(empty_performance_res.json()["total_value"]) == Decimal("0.00")
+
     async with postgres.async_session_maker() as session:
         account = (
             await session.execute(

@@ -744,12 +744,16 @@ class PerformanceService:
             if settings and settings.reporting_currency_code:
                 configured_reporting_currency = settings.reporting_currency_code.upper()
 
+        today = datetime.now(UTC).date()
         snapshot = await self.snapshot_repo.latest(workspace_id)
-        if snapshot is None or (
-            configured_reporting_currency is not None
-            and snapshot.currency_code != configured_reporting_currency
+        if (
+            snapshot is None
+            or snapshot.snapshot_date == today
+            or (
+                configured_reporting_currency is not None
+                and snapshot.currency_code != configured_reporting_currency
+            )
         ):
-            today = datetime.now(UTC).date()
             await self.create_snapshot(workspace_id, today)
             snapshot = await self.snapshot_repo.latest(workspace_id)
         if snapshot is None:
