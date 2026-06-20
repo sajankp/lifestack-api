@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
@@ -22,8 +22,16 @@ class SpendingSummary(BaseModel):
 class InvestingSummary(BaseModel):
     status: str = "available"
     portfolio_value: Decimal | None = Decimal("0")
+    invested_value: Decimal | None = Decimal("0")
+    total_gain_loss: Decimal | None = Decimal("0")
+    total_gain_loss_pct: Decimal | None = None
     daily_change: Decimal | None = None
+    daily_change_pct: Decimal | None = None
+    snapshot_date: date | None = None
+    previous_snapshot_date: date | None = None
+    valuation_status: str = "unavailable"
     holdings_count: int = 0
+    cash_total: Decimal | None = Decimal("0")
 
 
 class SystemSummary(BaseModel):

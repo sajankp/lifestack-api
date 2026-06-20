@@ -352,7 +352,6 @@ Supported job names:
 - `budget_guardrails`
 - `recurring_transactions`
 - `fx_rate_ingestion`
-- `constituent_ingestion`
 - `export_cleanup`
 - `session_cleanup`
 - `import_preview_cleanup`

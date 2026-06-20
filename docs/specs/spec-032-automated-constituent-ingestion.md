@@ -1,6 +1,18 @@
 # Feature Spec: Automated Constituent Ingestion for Look-Through Analytics
-**Status:** Implemented
+**Status:** Archived - retired
 **Spec ID:** 032
+
+---
+
+## Retirement Note (2026-06-19)
+
+The Yahoo Finance constituent provider, its local session-cache JSON file, scheduler job, CLI entry,
+configuration, and automated-ingestion tests have been removed. The unofficial provider was not
+reliable enough for product use and generated runtime residue in the repository.
+
+Constituent data remains supported through the workspace-facing CSV workflow in
+[Spec 034](./spec-034-constituent-csv-import.md). This document is retained only as a historical
+implementation record and must not be used as an active runtime contract.
 
 ---
 

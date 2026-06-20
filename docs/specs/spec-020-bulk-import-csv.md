@@ -157,6 +157,11 @@ Columns:
 - `quantity`
 - `avg_cost`
 - `currency`
+- `instrument_type` (optional: `stock|etf|mutual_fund`; defaults to `stock`)
+
+`account_name` is required and must exactly match an active account in the current workspace. The
+downloaded template uses `Primary Brokerage` as an example; users should replace it with their own
+workspace account name before upload.
 
 ## 9. Validation Rules
 - Required columns must exist exactly.

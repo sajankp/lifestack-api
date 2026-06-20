@@ -24,7 +24,8 @@ eventually, but they are overkill for the current product stage.
 
 - **Spec 031:** implemented on-demand price refresh and manual holding price edits, currently
   workspace/holding-oriented.
-- **Spec 032:** implemented automated constituent ingestion for ETF/MF instruments.
+- **Spec 032:** historically implemented automated constituent ingestion for ETF/MF instruments; the
+  unreliable Yahoo runtime was retired on 2026-06-19.
 - **Spec 033:** defers the hybrid/global instrument catalog with tenant overrides.
 - **Spec 034:** active/proposed workspace-facing constituent CSV import.
 - **Spec 035:** defers platform-admin/global market-data curation until the catalog and permission

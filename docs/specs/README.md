@@ -1,6 +1,6 @@
 # Spec Index
 
-Last updated: 2026-06-14
+Last updated: 2026-06-20
 
 This index lists the current spec set and its roadmap status. The product roadmap is the living home
 for future sequencing; individual specs are implementation contracts or historical records.
@@ -47,10 +47,13 @@ for future sequencing; individual specs are implementation contracts or historic
 | [Spec 029: Gate 0 Demo Readiness](./spec-029-current-product-demo-readiness-roadmap.md) | Archived - implemented | Historical Gate 0 closure record. |
 | [Spec 030: CLI Management Commands](./spec-030-cli-management-commands.md) | Proposed/current | CLI runner for background jobs and production-safe E2E route gating checks. |
 | [Spec 031: Automated Price Updates and Investing UI Enhancements](./spec-031-automated-price-updates-and-ui.md) | Implemented | On-demand price refresh, current valuation fields, and investing holdings UI enhancements. |
-| [Spec 032: Automated Constituent Ingestion](./spec-032-automated-constituent-ingestion.md) | Implemented | ETF/MF classification, Yahoo constituent ingestion, CLI job support, and analytics UI correction flow. |
+| [Spec 032: Automated Constituent Ingestion](./spec-032-automated-constituent-ingestion.md) | Archived - retired | Historical Yahoo ingestion implementation; automated ingestion was removed in favor of CSV constituent import. |
 | [Spec 033: Hybrid Instrument Catalog with Tenant Overrides](./spec-033-hybrid-instrument-catalog.md) | Deferred | Future global public instrument/company catalog with workspace-scoped overrides. |
 | [Spec 034: Investing Constituent CSV Import](./spec-034-constituent-csv-import.md) | Implemented | Workspace-facing constituent CSV import for ETF/MF look-through data. |
 | [Spec 035: Platform Market Data Curation](./spec-035-platform-market-data-curation.md) | Deferred | Future platform-admin curation for shared/global constituents, instrument prices, provenance, and rollback. |
+| [Spec 036: Password Reset](./spec-036-password-reset.md) | Implemented | Email-based password reset request and confirmation workflow. |
+| [Spec 037: Remote Database Backups](./spec-037-remote-database-backups.md) | Implemented | Daily encrypted PostgreSQL SQL backups to Cloudflare R2 or OCI Object Storage with guarded restore tooling. |
+| [Spec 038: Canonical Portfolio Performance](./spec-038-canonical-portfolio-performance.md) | Implemented | Shared holdings valuation, invested value, gain/loss, daily change, and separate investment cash across Investing and Dashboard. |
 
 ## Historical Bundles
 

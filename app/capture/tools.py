@@ -18,6 +18,16 @@ from app.todo.schemas import TodoCreate, TodoUpdate
 from app.todo.service import TodoService
 
 
+def _parse_due_datetime(value: str) -> datetime:
+    normalized = value.strip()
+    if len(normalized) == 10:
+        return datetime.strptime(normalized, "%Y-%m-%d").replace(tzinfo=UTC)
+    parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
 class AgentTools:
     def __init__(self, session: AsyncSession, user_id: int, workspace_id: int):
         self.session = session
@@ -49,15 +59,18 @@ class AgentTools:
 
         Args:
             title: The title or text of the todo task.
-            due_date: Optional due date in YYYY-MM-DD format (e.g. '2026-05-29').
+            due_date: Optional ISO 8601 due date/time (e.g. '2026-05-29T16:00:00+05:30').
             priority: The priority, one of 'low', 'medium', or 'high'.
         """
         parsed_due = None
         if due_date:
             try:
-                parsed_due = datetime.strptime(due_date.strip(), "%Y-%m-%d").date()
+                parsed_due = _parse_due_datetime(due_date)
             except ValueError:
-                return {"status": "error", "message": "Invalid due_date format. Use YYYY-MM-DD."}
+                return {
+                    "status": "error",
+                    "message": "Invalid due_date format. Use an ISO 8601 date or date-time.",
+                }
 
         payload = TodoCreate(
             title=title,
@@ -146,7 +159,7 @@ class AgentTools:
         priority: str | None = None,
         completed: bool | None = None,
     ) -> dict:
-        """Update fields on an existing todo. due_date should be YYYY-MM-DD if provided."""
+        """Update fields on an existing todo. due_date should be ISO 8601 if provided."""
         try:
             pid = uuid.UUID(public_id)
         except Exception:
@@ -155,11 +168,11 @@ class AgentTools:
         parsed_due = None
         if due_date:
             try:
-                parsed_due = datetime.strptime(due_date.strip(), "%Y-%m-%d")
-            except Exception:
+                parsed_due = _parse_due_datetime(due_date)
+            except ValueError:
                 return {
                     "status": "error",
-                    "message": "Invalid due_date format. Use YYYY-MM-DD.",
+                    "message": "Invalid due_date format. Use an ISO 8601 date or date-time.",
                 }
 
         update_payload = TodoUpdate(
@@ -208,7 +221,11 @@ class AgentTools:
         return {"status": "success", "entity_public_id": public_id}
 
     async def log_spending_transaction(
-        self, amount: str, category_name: str, description: str
+        self,
+        amount: str,
+        category_name: str,
+        description: str,
+        account_name: str | None = None,
     ) -> dict:
         """Record/log a new spending transaction (expense).
 
@@ -216,6 +233,7 @@ class AgentTools:
             amount: The transaction amount as a string (e.g., '14.99').
             category_name: The name of the spending category (e.g., 'food', 'utilities', 'shopping').
             description: Description of what the money was spent on.
+            account_name: Optional account name to attach to the transaction.
         """
         try:
             amt = Decimal(amount)
@@ -239,8 +257,21 @@ class AgentTools:
                 "message": "No suitable spending category found in this workspace.",
             }
 
+        account_public_id = None
+        resolved_account_name = None
+        if account_name:
+            account = await self.account_repo.get_by_name(self.workspace_id, account_name)
+            if not account or not account.is_active:
+                return {
+                    "status": "error",
+                    "message": f"Account '{account_name}' is not found or is inactive in this workspace",
+                }
+            account_public_id = account.public_id
+            resolved_account_name = account.name
+
         payload = TransactionCreate(
             category_id=category.public_id,
+            account_id=account_public_id,
             amount=amt,
             type=TransactionType.expense,
             occurred_at=datetime.now(UTC),
@@ -259,6 +290,7 @@ class AgentTools:
             "amount": str(tx.amount),
             "category": category.name,
             "description": tx.description,
+            "account_name": resolved_account_name,
         }
 
     async def log_cash_balance(self, account_name: str, balance: str, currency: str) -> dict:
