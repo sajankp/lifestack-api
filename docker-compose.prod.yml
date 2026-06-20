@@ -16,3 +16,18 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  database-backup:
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    env_file:
+      - path: .env.production
+        required: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/database-backup-last-success"]
+      interval: 1h
+      timeout: 5s
+      retries: 48
+      start_period: 24h

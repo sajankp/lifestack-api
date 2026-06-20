@@ -1,0 +1,11 @@
+FROM postgres:18-alpine
+
+RUN apk add --no-cache aws-cli bash coreutils gzip openssl python3
+
+COPY scripts/database-backup.sh /usr/local/bin/database-backup
+COPY scripts/database-backup-loop.sh /usr/local/bin/database-backup-loop
+COPY scripts/database-restore.sh /usr/local/bin/database-restore
+RUN chmod +x /usr/local/bin/database-backup /usr/local/bin/database-backup-loop \
+    /usr/local/bin/database-restore
+
+ENTRYPOINT ["/usr/local/bin/database-backup-loop"]

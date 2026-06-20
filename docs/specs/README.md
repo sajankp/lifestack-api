@@ -1,6 +1,6 @@
 # Spec Index
 
-Last updated: 2026-06-14
+Last updated: 2026-06-20
 
 This index lists the current spec set and its roadmap status. The product roadmap is the living home
 for future sequencing; individual specs are implementation contracts or historical records.
@@ -51,6 +51,8 @@ for future sequencing; individual specs are implementation contracts or historic
 | [Spec 033: Hybrid Instrument Catalog with Tenant Overrides](./spec-033-hybrid-instrument-catalog.md) | Deferred | Future global public instrument/company catalog with workspace-scoped overrides. |
 | [Spec 034: Investing Constituent CSV Import](./spec-034-constituent-csv-import.md) | Implemented | Workspace-facing constituent CSV import for ETF/MF look-through data. |
 | [Spec 035: Platform Market Data Curation](./spec-035-platform-market-data-curation.md) | Deferred | Future platform-admin curation for shared/global constituents, instrument prices, provenance, and rollback. |
+| [Spec 036: Password Reset](./spec-036-password-reset.md) | Implemented | Email-based password reset request and confirmation workflow. |
+| [Spec 037: Remote Database Backups](./spec-037-remote-database-backups.md) | Implemented | Daily encrypted PostgreSQL SQL backups to Cloudflare R2 or OCI Object Storage with guarded restore tooling. |
 
 ## Historical Bundles
 
