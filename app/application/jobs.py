@@ -35,6 +35,14 @@ from app.core.constants import (
     ADVISORY_LOCK_WEEKLY_SUMMARY,
 )
 from app.core.database import postgres
+from app.finance.repository import FinanceSettingRepository, FxRateRepository
+from app.investing.repository import (
+    CashBalanceRepository,
+    HoldingPriceRepository,
+    HoldingRepository,
+    PortfolioSnapshotRepository,
+)
+from app.investing.service import PerformanceService
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole
@@ -50,6 +58,38 @@ BUDGET_GUARDRAILS_LOCK_KEY = ADVISORY_LOCK_BUDGET_GUARDRAILS
 # Maximum seconds allowed for a single workspace evaluation before it is
 # abandoned. Prevents a stuck workspace from blocking scheduler shutdown.
 WORKSPACE_EVALUATION_TIMEOUT_SECONDS = 300.0
+
+
+async def investment_closing_prices_job() -> None:
+    """Cache each workspace's latest completed market close once per day."""
+    async with postgres.async_session_maker() as session:
+        workspace_ids = (
+            (await session.execute(select(Workspace.id).where(Workspace.is_active))).scalars().all()
+        )
+
+    for workspace_id in workspace_ids:
+        try:
+            async with postgres.async_session_maker() as session, session.begin():
+                service = PerformanceService(
+                    HoldingRepository(session),
+                    CashBalanceRepository(session),
+                    HoldingPriceRepository(session),
+                    PortfolioSnapshotRepository(session),
+                    FinanceSettingRepository(session),
+                    FxRateRepository(session),
+                )
+                updated = await service.refresh_workspace_prices(workspace_id)
+                logger.info(
+                    "investment_closing_prices_workspace_completed",
+                    workspace_id=workspace_id,
+                    updated_symbols=sorted(updated),
+                )
+        except Exception:
+            logger.error(
+                "investment_closing_prices_workspace_failed",
+                workspace_id=workspace_id,
+                exc_info=True,
+            )
 
 
 async def budget_guardrails_job(workspace_id: int | None = None) -> None:

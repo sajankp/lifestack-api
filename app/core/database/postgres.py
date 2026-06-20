@@ -4,6 +4,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
+from app.core.exceptions import APIError
 
 logger = structlog.get_logger()
 
@@ -54,8 +55,15 @@ async def get_db_session() -> AsyncGenerator[AsyncSession]:
             yield session
             await session.commit()
         except Exception as e:
-            logger.error("db_session_rollback", exc_info=True)
             await session.rollback()
-            raise e
+            if isinstance(e, APIError) and e.status_code < 500:
+                logger.debug(
+                    "db_session_rollback_expected",
+                    exception_type=type(e).__name__,
+                    status_code=e.status_code,
+                )
+            else:
+                logger.error("db_session_rollback", exc_info=True)
+            raise
         finally:
             await session.close()

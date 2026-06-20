@@ -1,7 +1,8 @@
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import structlog
@@ -615,7 +616,21 @@ async def process_workspace_recurring_todos(session: AsyncSession, workspace: Wo
             if rule.end_date and rule.next_due_date > rule.end_date:
                 rule.is_active = False
                 break
-            due_dt = datetime.combine(rule.next_due_date, datetime.min.time()).replace(tzinfo=UTC)
+            try:
+                rule_timezone = ZoneInfo(rule.timezone or "UTC")
+            except ZoneInfoNotFoundError:
+                logger.warning(
+                    "recurring_todo_invalid_timezone",
+                    workspace_id=workspace.id,
+                    rule_id=rule.id,
+                    timezone=rule.timezone,
+                )
+                rule_timezone = UTC
+            due_dt = datetime.combine(
+                rule.next_due_date,
+                rule.due_time or time.min,
+                tzinfo=rule_timezone,
+            ).astimezone(UTC)
             session.add(
                 Todo(
                     workspace_id=workspace.id,

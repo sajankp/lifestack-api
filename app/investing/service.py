@@ -1,7 +1,7 @@
 import asyncio
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import httpx
@@ -550,9 +550,16 @@ class CashBalanceService:
             )
 
 
+def _previous_weekday(value: date) -> date:
+    candidate = value - timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate
+
+
 async def _fetch_stock_price(
     client: httpx.AsyncClient, symbol: str, currency: str | None = None
-) -> Decimal | None:
+) -> tuple[date, Decimal] | None:
     sym = symbol.upper().strip()
     if currency and currency.upper() == "INR" and "." not in sym:
         sym = f"{sym}.NS"
@@ -562,15 +569,26 @@ async def _fetch_stock_price(
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     }
     try:
-        resp = await client.get(url, headers=headers)
+        resp = await client.get(
+            url,
+            headers=headers,
+            params={"interval": "1d", "range": "10d", "events": "history"},
+        )
         resp.raise_for_status()
         data = resp.json()
         result = data.get("chart", {}).get("result")
         if result and len(result) > 0:
-            meta = result[0].get("meta", {})
-            price = meta.get("regularMarketPrice")
-            if price is not None:
-                return Decimal(str(price))
+            chart = result[0]
+            timestamps = chart.get("timestamp") or []
+            closes = ((chart.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+            today = datetime.now(UTC).date()
+            completed = [
+                (datetime.fromtimestamp(timestamp, UTC).date(), Decimal(str(close)))
+                for timestamp, close in zip(timestamps, closes, strict=False)
+                if close is not None and datetime.fromtimestamp(timestamp, UTC).date() < today
+            ]
+            if completed:
+                return max(completed, key=lambda item: item[0])
     except Exception:
         pass
     return None
@@ -598,14 +616,39 @@ class PerformanceService:
         if not holdings:
             return {}
 
+        today = datetime.now(UTC).date()
+        expected_close_date = _previous_weekday(today)
+        holding_ids = [holding.id for holding in holdings if holding.id is not None]
+        if not holding_ids:
+            return {}
+        latest_prices = await self.holding_price_repo.latest_prices_on_or_before_bulk(
+            workspace_id, holding_ids, expected_close_date
+        )
+        holdings_to_fetch = [
+            holding
+            for holding in holdings
+            if holding.id is not None
+            and not (
+                (latest := latest_prices.get(holding.id))
+                and (
+                    latest.price_date == expected_close_date
+                    or (
+                        latest.source == "api" and latest.created_at.astimezone(UTC).date() == today
+                    )
+                )
+            )
+        ]
+        if not holdings_to_fetch:
+            return {}
+
         unique_keys = sorted({
-            (h.symbol.upper().strip(), h.currency.upper().strip()) for h in holdings
+            (h.symbol.upper().strip(), h.currency.upper().strip()) for h in holdings_to_fetch
         })
         sem = asyncio.Semaphore(5)
 
         async with httpx.AsyncClient(timeout=10.0) as client:
 
-            async def throttled_fetch(sym: str, curr: str) -> Decimal | None:
+            async def throttled_fetch(sym: str, curr: str) -> tuple[date, Decimal] | None:
                 async with sem:
                     return await _fetch_stock_price(client, sym, curr)
 
@@ -613,29 +656,33 @@ class PerformanceService:
             results = await asyncio.gather(*tasks)
 
         price_map = {
-            (sym, curr): price
-            for (sym, curr), price in zip(unique_keys, results, strict=False)
-            if price is not None
+            (sym, curr): close
+            for (sym, curr), close in zip(unique_keys, results, strict=False)
+            if close is not None
         }
 
         prices_updated = {}
         if price_map:
-            today = datetime.now(UTC).date()
-            for h in holdings:
+            for h in holdings_to_fetch:
                 if h.id is not None:
                     sym = h.symbol.upper().strip()
                     curr = h.currency.upper().strip()
-                    price = price_map.get((sym, curr))
-                    if price is not None:
+                    close = price_map.get((sym, curr))
+                    if close is not None:
+                        if isinstance(close, tuple):
+                            price_date, price = close
+                        else:
+                            # Compatibility for injected providers that return only a price.
+                            price_date, price = expected_close_date, close
                         await self.holding_price_repo.upsert_price(
                             workspace_id=workspace_id,
                             holding_id=h.id,
-                            price_date=today,
+                            price_date=price_date,
                             unit_price=price,
                             source="api",
                         )
                         prices_updated[sym] = price
-            await self.create_snapshot(workspace_id, today)
+            await self.snapshot_repo.delete_for_date(workspace_id, today)
 
         return prices_updated
 

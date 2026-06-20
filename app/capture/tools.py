@@ -29,10 +29,17 @@ def _parse_due_datetime(value: str) -> datetime:
 
 
 class AgentTools:
-    def __init__(self, session: AsyncSession, user_id: int, workspace_id: int):
+    def __init__(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        workspace_id: int,
+        user_timezone: str = "UTC",
+    ):
         self.session = session
         self.user_id = user_id
         self.workspace_id = workspace_id
+        self.user_timezone = user_timezone
 
         # Instantiate repositories and services directly with session
         self.todo_repo = TodoRepository(session)
@@ -175,13 +182,18 @@ class AgentTools:
                     "message": "Invalid due_date format. Use an ISO 8601 date or date-time.",
                 }
 
-        update_payload = TodoUpdate(
-            title=title,
-            description=description,
-            due_date=parsed_due,
-            priority=priority,
-            completed=completed,
-        )
+        supplied_fields = {
+            key: value
+            for key, value in {
+                "title": title,
+                "description": description,
+                "due_date": parsed_due if due_date is not None else None,
+                "priority": priority,
+                "completed": completed,
+            }.items()
+            if value is not None
+        }
+        update_payload = TodoUpdate.model_validate(supplied_fields)
 
         try:
             todo = await self.todo_service.update_todo(
@@ -192,6 +204,7 @@ class AgentTools:
                 audit_logger=self.audit_logger,
             )
         except Exception as e:
+            await self.session.rollback()
             return {"status": "error", "message": str(e)}
 
         return {

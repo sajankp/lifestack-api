@@ -15,6 +15,7 @@ from app.application.jobs import (
     export_cleanup_job,
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
+    investment_closing_prices_job,
     recurring_transactions_job,
     session_cleanup_job,
     weekly_summary_job,
@@ -100,6 +101,12 @@ async def lifespan(_app: FastAPI):
             fx_rate_ingestion_job,
             job_id="fx_rate_ingestion",
             hour_utc=2,
+        )
+        register_daily_job(
+            investment_closing_prices_job,
+            job_id="investment_closing_prices",
+            hour_utc=2,
+            minute_utc=30,
         )
         register_daily_job(
             export_cleanup_job,

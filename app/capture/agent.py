@@ -146,10 +146,21 @@ class AudioDecoder:
                 pass
 
 
-async def execute_agent_tool(name: str, args: dict, user_id: int, workspace_id: int) -> dict:
+async def execute_agent_tool(
+    name: str,
+    args: dict,
+    user_id: int,
+    workspace_id: int,
+    user_timezone: str = "UTC",
+) -> dict:
     async with postgres.async_session_maker() as session:
         try:
-            tools = AgentTools(session=session, user_id=user_id, workspace_id=workspace_id)
+            tools = AgentTools(
+                session=session,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                user_timezone=user_timezone,
+            )
             dispatch = {
                 "create_todo_task": tools.create_todo_task,
                 "log_spending_transaction": tools.log_spending_transaction,
@@ -180,7 +191,10 @@ async def execute_agent_tool(name: str, args: dict, user_id: int, workspace_id: 
             return {"status": "error", "message": str(e)}
 
 
-def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
+def _build_setup_message(
+    response_modalities: list[str] | None = None,
+    user_timezone: str = "UTC",
+) -> dict:
     """
     Build the Gemini Live API setup payload for Gemini 2.5 Flash Native Audio.
 
@@ -216,7 +230,17 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                             "cash balances. When a user asks to manage todos, prefer the todo functions "
                             "and return concise, factual results. Always call the matching function when "
                             "the user requests an action (creating, listing, retrieving, updating, or deleting a todo). "
-                            f"The current UTC date and time is {current_utc}. For timed todos, convert phrases "
+                            "Treat reminders and todos as the same persisted concept: whenever the user asks "
+                            "to be reminded of something, create a todo with the requested due date/time. "
+                            "Do not claim that a reminder was set unless `create_todo_task` succeeds. "
+                            "The user may speak in any language. You may answer in the user's language, but "
+                            "before calling any mutation tool, translate all new user-authored text that will "
+                            "be stored (titles, descriptions, category names, labels, and similar free text) "
+                            "into clear English. Keep numbers, currency codes, UUIDs, symbols, and exact names "
+                            "of existing accounts or records unchanged so lookups continue to work. "
+                            f"The current UTC date and time is {current_utc}. The user's timezone is "
+                            f"{user_timezone}. Interpret unqualified times such as '4 PM' in the user's "
+                            "timezone. For timed todos, convert phrases "
                             "such as 'today at 4 PM' into a complete ISO 8601 date-time with a UTC offset. "
                             "If the user's timezone cannot be inferred, ask one short clarification question. "
                             "When logging spending, include `account_name` whenever the user names an account. "
@@ -231,13 +255,13 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                     "functionDeclarations": [
                         {
                             "name": "create_todo_task",
-                            "description": "Create a new todo task/item for the user.",
+                            "description": "Create a new todo or reminder for the user. Store the title in English.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
                                     "title": {
                                         "type": "STRING",
-                                        "description": "The title or text of the todo task.",
+                                        "description": "English title for the todo or reminder, translated from the user's language when needed.",
                                     },
                                     "due_date": {
                                         "type": "STRING",
@@ -253,7 +277,7 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                         },
                         {
                             "name": "log_spending_transaction",
-                            "description": "Record/log a new spending transaction (expense).",
+                            "description": "Record/log a new spending transaction (expense), storing user-authored text in English.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
@@ -263,11 +287,11 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                                     },
                                     "category_name": {
                                         "type": "STRING",
-                                        "description": "The name of the spending category (e.g., 'food', 'utilities', 'shopping').",
+                                        "description": "English spending category name (e.g., 'food', 'utilities', 'shopping').",
                                     },
                                     "description": {
                                         "type": "STRING",
-                                        "description": "Description of what the money was spent on.",
+                                        "description": "English description of what the money was spent on.",
                                     },
                                     "account_name": {
                                         "type": "STRING",
@@ -336,7 +360,7 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                         },
                         {
                             "name": "update_todo",
-                            "description": "Update fields on an existing todo.",
+                            "description": "Update fields on an existing todo or reminder. Store changed free-text fields in English.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
@@ -346,11 +370,11 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
                                     },
                                     "title": {
                                         "type": "STRING",
-                                        "description": "New title.",
+                                        "description": "New English title, translated when needed.",
                                     },
                                     "description": {
                                         "type": "STRING",
-                                        "description": "New description.",
+                                        "description": "New English description, translated when needed.",
                                     },
                                     "due_date": {
                                         "type": "STRING",
@@ -402,7 +426,7 @@ def _build_setup_message(response_modalities: list[str] | None = None) -> dict:
     }
 
 
-async def _connect_gemini(gemini_url: str) -> tuple:
+async def _connect_gemini(gemini_url: str, user_timezone: str = "UTC") -> tuple:
     """
     Connect to the Gemini Live API using GEMINI_MODEL.
     Returns (websocket, context_manager) on success.
@@ -422,7 +446,10 @@ async def _connect_gemini(gemini_url: str) -> tuple:
         ws_conn = websockets.connect(gemini_url)
         ws = await ws_conn.__aenter__()
         try:
-            setup_message = _build_setup_message(response_modalities=modalities)
+            setup_message = _build_setup_message(
+                response_modalities=modalities,
+                user_timezone=user_timezone,
+            )
             await ws.send(json.dumps(setup_message))
 
             first_msg_raw = await asyncio.wait_for(ws.recv(), timeout=8.0)
@@ -485,7 +512,12 @@ async def _connect_gemini(gemini_url: str) -> tuple:
 
 
 async def _handle_gemini_message(
-    msg: dict, client_ws: WebSocket, gemini_ws, user_id: int, workspace_id: int
+    msg: dict,
+    client_ws: WebSocket,
+    gemini_ws,
+    user_id: int,
+    workspace_id: int,
+    user_timezone: str = "UTC",
 ):
     """
     Parse a single message from Gemini and forward content to the client.
@@ -533,7 +565,13 @@ async def _handle_gemini_message(
 
             await client_ws.send_json({"type": "tool_call", "name": name, "arguments": args})
 
-            result = await execute_agent_tool(name, args, user_id, workspace_id)
+            result = await execute_agent_tool(
+                name,
+                args,
+                user_id,
+                workspace_id,
+                user_timezone,
+            )
 
             await client_ws.send_json({
                 "type": "tool_response",
@@ -558,7 +596,12 @@ async def _handle_gemini_message(
             await gemini_ws.send(json.dumps(tool_response_payload))
 
 
-async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: int):
+async def run_agent_session(
+    client_ws: WebSocket,
+    user_id: int,
+    workspace_id: int,
+    user_timezone: str = "UTC",
+):
     api_key = settings.GEMINI_API_KEY
     if not api_key:
         logger.error("gemini_api_key_missing")
@@ -578,7 +621,7 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
     ws_context_manager = None
 
     try:
-        gemini_ws, ws_context_manager = await _connect_gemini(gemini_url)
+        gemini_ws, ws_context_manager = await _connect_gemini(gemini_url, user_timezone)
         logger.info("gemini_session_active", model=settings.GEMINI_MODEL)
 
         # ── Background: stream decoded PCM → Gemini ───────────────────────────
@@ -613,7 +656,14 @@ async def run_agent_session(client_ws: WebSocket, user_id: int, workspace_id: in
                     # Log every Gemini message at debug level to trace empty-output issues.
                     # Keys only (no audio data) to keep logs readable.
                     logger.debug("gemini_raw_message", keys=list(msg.keys()))
-                    await _handle_gemini_message(msg, client_ws, gemini_ws, user_id, workspace_id)
+                    await _handle_gemini_message(
+                        msg,
+                        client_ws,
+                        gemini_ws,
+                        user_id,
+                        workspace_id,
+                        user_timezone,
+                    )
             except asyncio.CancelledError:
                 pass
             except Exception as e:
