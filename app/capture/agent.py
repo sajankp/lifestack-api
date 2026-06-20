@@ -230,6 +230,14 @@ def _build_setup_message(
                             "cash balances. When a user asks to manage todos, prefer the todo functions "
                             "and return concise, factual results. Always call the matching function when "
                             "the user requests an action (creating, listing, retrieving, updating, or deleting a todo). "
+                            "Treat reminders and todos as the same persisted concept: whenever the user asks "
+                            "to be reminded of something, create a todo with the requested due date/time. "
+                            "Do not claim that a reminder was set unless `create_todo_task` succeeds. "
+                            "The user may speak in any language. You may answer in the user's language, but "
+                            "before calling any mutation tool, translate all new user-authored text that will "
+                            "be stored (titles, descriptions, category names, labels, and similar free text) "
+                            "into clear English. Keep numbers, currency codes, UUIDs, symbols, and exact names "
+                            "of existing accounts or records unchanged so lookups continue to work. "
                             f"The current UTC date and time is {current_utc}. The user's timezone is "
                             f"{user_timezone}. Interpret unqualified times such as '4 PM' in the user's "
                             "timezone. For timed todos, convert phrases "
@@ -247,13 +255,13 @@ def _build_setup_message(
                     "functionDeclarations": [
                         {
                             "name": "create_todo_task",
-                            "description": "Create a new todo task/item for the user.",
+                            "description": "Create a new todo or reminder for the user. Store the title in English.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
                                     "title": {
                                         "type": "STRING",
-                                        "description": "The title or text of the todo task.",
+                                        "description": "English title for the todo or reminder, translated from the user's language when needed.",
                                     },
                                     "due_date": {
                                         "type": "STRING",
@@ -269,7 +277,7 @@ def _build_setup_message(
                         },
                         {
                             "name": "log_spending_transaction",
-                            "description": "Record/log a new spending transaction (expense).",
+                            "description": "Record/log a new spending transaction (expense), storing user-authored text in English.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
@@ -279,11 +287,11 @@ def _build_setup_message(
                                     },
                                     "category_name": {
                                         "type": "STRING",
-                                        "description": "The name of the spending category (e.g., 'food', 'utilities', 'shopping').",
+                                        "description": "English spending category name (e.g., 'food', 'utilities', 'shopping').",
                                     },
                                     "description": {
                                         "type": "STRING",
-                                        "description": "Description of what the money was spent on.",
+                                        "description": "English description of what the money was spent on.",
                                     },
                                     "account_name": {
                                         "type": "STRING",
@@ -352,7 +360,7 @@ def _build_setup_message(
                         },
                         {
                             "name": "update_todo",
-                            "description": "Update fields on an existing todo.",
+                            "description": "Update fields on an existing todo or reminder. Store changed free-text fields in English.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
@@ -362,11 +370,11 @@ def _build_setup_message(
                                     },
                                     "title": {
                                         "type": "STRING",
-                                        "description": "New title.",
+                                        "description": "New English title, translated when needed.",
                                     },
                                     "description": {
                                         "type": "STRING",
-                                        "description": "New description.",
+                                        "description": "New English description, translated when needed.",
                                     },
                                     "due_date": {
                                         "type": "STRING",
