@@ -172,12 +172,14 @@ class HoldingService:
         company_repo: CompanyRepository | None = None,
         account_repo: AccountRepository | None = None,
         currency_repo: CurrencyRepository | None = None,
+        holding_price_repo: HoldingPriceRepository | None = None,
     ):
         self.repository = repository
         self.instrument_repo = instrument_repo
         self.company_repo = company_repo
         self.account_repo = account_repo
         self.currency_repo = currency_repo
+        self.holding_price_repo = holding_price_repo
 
     async def _resolve_or_create_instrument(
         self,
@@ -347,6 +349,9 @@ class HoldingService:
                 workspace_id, next_symbol, requested_type, allow_type_change=True
             )
             holding.instrument_id = instrument.id if instrument else None
+
+        if symbol_changed and holding.id is not None and self.holding_price_repo is not None:
+            await self.holding_price_repo.delete_for_holding(workspace_id, holding.id)
 
         next_currency = holding.currency
         if "currency" in update_data and update_data["currency"] is not None:
