@@ -28,9 +28,18 @@ class HoldingCreate(BaseModel):
 
 
 class HoldingUpdate(BaseModel):
+    symbol: str | None = Field(default=None, min_length=1, max_length=20)
     quantity: Decimal | None = Field(default=None, gt=0, decimal_places=8)
     avg_cost: Decimal | None = Field(default=None, ge=0, decimal_places=2)
     currency: str | None = Field(default=None, min_length=1, max_length=10)
+    instrument_type: InstrumentType | None = None
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip().upper()
 
     @field_validator("currency")
     @classmethod
