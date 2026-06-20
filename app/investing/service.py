@@ -619,6 +619,8 @@ class PerformanceService:
         today = datetime.now(UTC).date()
         expected_close_date = _previous_weekday(today)
         holding_ids = [holding.id for holding in holdings if holding.id is not None]
+        if not holding_ids:
+            return {}
         latest_prices = await self.holding_price_repo.latest_prices_on_or_before_bulk(
             workspace_id, holding_ids, expected_close_date
         )

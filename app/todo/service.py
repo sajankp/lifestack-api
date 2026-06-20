@@ -338,9 +338,11 @@ class TodoService:
         for key, value in update_data.items():
             setattr(rule, key, value)
 
+        if rule.timezone is None:
+            raise ValidationError(detail="Timezone cannot be null")
         try:
             ZoneInfo(rule.timezone)
-        except ZoneInfoNotFoundError as exc:
+        except (ZoneInfoNotFoundError, TypeError) as exc:
             raise ValidationError(detail=f"Unknown timezone: {rule.timezone}") from exc
         if rule.end_date and rule.anchor_date > rule.end_date:
             raise ValidationError(detail="anchor_date cannot be after end_date")
