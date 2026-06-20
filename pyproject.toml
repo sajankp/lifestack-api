@@ -107,3 +107,10 @@ testpaths = ["app"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+filterwarnings = [
+    "ignore:The @wait_container_is_ready decorator is deprecated.*:DeprecationWarning:testcontainers\\.redis",
+    "ignore:`json_encoders` is deprecated.*:pydantic.warnings.PydanticDeprecatedSince20",
+    "ignore:'asyncio\\.iscoroutinefunction' is deprecated.*:DeprecationWarning:slowapi\\.extension",
+    "ignore:Setting per-request cookies=.*:DeprecationWarning:httpx\\._client",
+    "ignore:Pydantic serializer warnings.*:UserWarning:pydantic\\.main",
+]
