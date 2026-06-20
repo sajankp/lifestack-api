@@ -153,11 +153,12 @@ class StructlogMiddleware(BaseHTTPMiddleware):
         else:
             log_fn = logger.info
 
-        log_fn(
-            "Request finished",
-            status_code=status_code,
-            duration=process_time,
-        )
+        if request.url.path.rstrip("/") != "/health" or status_code >= 400:
+            log_fn(
+                "Request finished",
+                status_code=status_code,
+                duration=process_time,
+            )
 
         response.headers["X-Request-ID"] = request_id
         return response

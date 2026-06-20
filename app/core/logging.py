@@ -6,6 +6,19 @@ import structlog
 from app.config import settings
 
 
+class HealthAccessFilter(logging.Filter):
+    """Drop successful health-probe entries from Uvicorn's access log."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            _client, _method, path, _http_version, status_code = record.args
+        except (TypeError, ValueError):
+            return True
+
+        normalized_path = str(path).partition("?")[0].rstrip("/") or "/"
+        return normalized_path != "/health" or int(status_code) >= 400
+
+
 def setup_logging():
     """Configure structlog for consistent structured logging."""
 
@@ -15,6 +28,9 @@ def setup_logging():
         stream=sys.stdout,
         level=settings.LOG_LEVEL,
     )
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, HealthAccessFilter) for item in access_logger.filters):
+        access_logger.addFilter(HealthAccessFilter())
 
     processors = [
         structlog.contextvars.merge_contextvars,
