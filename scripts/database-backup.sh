@@ -77,8 +77,11 @@ import sys
 
 cutoff = int(sys.argv[1])
 bucket, endpoint, region = sys.argv[2:5]
-with open(sys.argv[5], encoding="utf-8") as handle:
-    payload = json.load(handle)
+try:
+    with open(sys.argv[5], encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, json.JSONDecodeError):
+    payload = {}
 for item in payload.get("Contents", []):
     modified = item.get("LastModified")
     key = item.get("Key")

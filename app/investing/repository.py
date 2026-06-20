@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from datetime import date
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -491,6 +491,15 @@ class PortfolioSnapshotRepository:
         self.session.add(snapshot)
         await self.session.flush()
         return snapshot
+
+    async def delete_for_date(self, workspace_id: int, snapshot_date: date) -> None:
+        await self.session.execute(
+            delete(PortfolioSnapshot).where(
+                PortfolioSnapshot.workspace_id == workspace_id,
+                PortfolioSnapshot.snapshot_date == snapshot_date,
+            )
+        )
+        await self.session.flush()
 
     async def latest(self, workspace_id: int) -> PortfolioSnapshot | None:
         return (

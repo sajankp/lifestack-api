@@ -19,13 +19,14 @@ from app.core.dependencies import (
     get_investing_holding_service,
     get_investing_instrument_service,
     get_investing_performance_service,
+    get_investing_snapshot_repo,
     get_investing_summary_service,
     require_min_role,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.finance.service import AccountService
 from app.imports.repository import ImportRepository
-from app.investing.repository import HoldingPriceRepository
+from app.investing.repository import HoldingPriceRepository, PortfolioSnapshotRepository
 from app.investing.schemas import (
     CashBalanceCreate,
     CashBalanceResponse,
@@ -180,6 +181,7 @@ async def create_holding(
     holding_service: Annotated[HoldingService, Depends(get_investing_holding_service)],
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     price_repo: Annotated[HoldingPriceRepository, Depends(get_investing_holding_price_repo)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -188,6 +190,7 @@ async def create_holding(
     holding = await holding_service.create_holding(
         user["id"], workspace_id, holding_in, audit_logger=audit_logger
     )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
     account = await account_service.account_repository.get_by_id(workspace_id, holding.account_id)
     data = holding.model_dump()
     data["instrument_type"] = holding_in.instrument_type.value
@@ -216,6 +219,7 @@ async def update_holding(
     holding_service: Annotated[HoldingService, Depends(get_investing_holding_service)],
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     price_repo: Annotated[HoldingPriceRepository, Depends(get_investing_holding_price_repo)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -228,6 +232,7 @@ async def update_holding(
         actor_id=user["id"],
         audit_logger=audit_logger,
     )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
     account = await account_service.account_repository.get_by_id(workspace_id, holding.account_id)
     data = holding.model_dump()
     instrument_type_cache = await _build_instrument_type_cache(
@@ -260,6 +265,7 @@ async def update_holding(
 async def delete_holding(
     holding_id: uuid.UUID,
     holding_service: Annotated[HoldingService, Depends(get_investing_holding_service)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -268,6 +274,7 @@ async def delete_holding(
     await holding_service.delete_holding(
         workspace_id, holding_id, actor_id=user["id"], audit_logger=audit_logger
     )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
 
 
 @router.get("/cash-balances", response_model=PaginatedResponse[CashBalanceResponse])
@@ -312,6 +319,7 @@ async def create_cash_balance(
     cash_in: CashBalanceCreate,
     cash_service: Annotated[CashBalanceService, Depends(get_investing_cash_balance_service)],
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -320,6 +328,7 @@ async def create_cash_balance(
     cash = await cash_service.create_cash_balance(
         user["id"], workspace_id, cash_in, audit_logger=audit_logger
     )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
     account = await account_service.account_repository.get_by_id(workspace_id, cash.account_id)
     data = cash.model_dump()
     data["account_id"] = account.public_id if account else None
@@ -333,6 +342,7 @@ async def update_cash_balance(
     cash_in: CashBalanceUpdate,
     cash_service: Annotated[CashBalanceService, Depends(get_investing_cash_balance_service)],
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -345,6 +355,7 @@ async def update_cash_balance(
         actor_id=user["id"],
         audit_logger=audit_logger,
     )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
     account = await account_service.account_repository.get_by_id(workspace_id, cash.account_id)
     data = cash.model_dump()
     data["account_id"] = account.public_id if account else None
@@ -356,6 +367,7 @@ async def update_cash_balance(
 async def delete_cash_balance(
     cash_balance_id: uuid.UUID,
     cash_service: Annotated[CashBalanceService, Depends(get_investing_cash_balance_service)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -364,6 +376,7 @@ async def delete_cash_balance(
     await cash_service.delete_cash_balance(
         workspace_id, cash_balance_id, actor_id=user["id"], audit_logger=audit_logger
     )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
 
 
 @router.get("/summary", response_model=InvestingSummaryResponse)

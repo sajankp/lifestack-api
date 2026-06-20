@@ -12,11 +12,12 @@ class HealthAccessFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             _client, _method, path, _http_version, status_code = record.args
+            status_code_int = int(status_code)
         except (TypeError, ValueError):
             return True
 
         normalized_path = str(path).partition("?")[0].rstrip("/") or "/"
-        return normalized_path != "/health" or int(status_code) >= 400
+        return normalized_path != "/health" or status_code_int >= 400
 
 
 def setup_logging():

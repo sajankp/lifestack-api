@@ -3,7 +3,7 @@ import logging
 from app.core.logging import HealthAccessFilter, setup_logging
 
 
-def _access_record(path: str, status_code: int) -> logging.LogRecord:
+def _access_record(path: str, status_code: int | str) -> logging.LogRecord:
     return logging.LogRecord(
         name="uvicorn.access",
         level=logging.INFO,
@@ -28,6 +28,7 @@ def test_health_access_filter_keeps_failures_and_other_requests():
 
     assert log_filter.filter(_access_record("/health", 503))
     assert log_filter.filter(_access_record("/v1/todos", 200))
+    assert log_filter.filter(_access_record("/health", "not-a-status"))
 
 
 def test_setup_logging_does_not_duplicate_health_filter():

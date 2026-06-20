@@ -654,6 +654,8 @@ class PerformanceService:
             prices=prices_to_upsert,
             source="manual",
         )
+        if payload.price_date == datetime.now(UTC).date():
+            await self.snapshot_repo.delete_for_date(workspace_id, payload.price_date)
 
     async def create_snapshot(self, workspace_id: int, snapshot_date: date) -> None:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -754,7 +756,7 @@ class PerformanceService:
         snapshot = await self.snapshot_repo.latest(workspace_id)
         if (
             snapshot is None
-            or snapshot.snapshot_date == today
+            or snapshot.snapshot_date != today
             or (
                 configured_reporting_currency is not None
                 and snapshot.currency_code != configured_reporting_currency
