@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from enum import StrEnum
 
 import sqlalchemy as sa
@@ -55,6 +55,8 @@ class RecurringTodoRule(SQLModel, table=True):
     frequency: str = Field(default="weekly", max_length=16)
     interval: int = Field(default=1, ge=1)
     anchor_date: date = Field(sa_type=sa.Date())
+    due_time: time | None = Field(default=None, sa_type=sa.Time())
+    timezone: str = Field(default="UTC", max_length=64)
     next_due_date: date = Field(sa_type=sa.Date())
     end_date: date | None = Field(default=None, sa_type=sa.Date())
     is_active: bool = Field(default=True)

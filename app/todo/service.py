@@ -2,6 +2,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.core.audit import AuditLogger
 from app.core.exceptions import NotFoundError, ValidationError
@@ -34,6 +35,8 @@ def _snapshot_recurring_rule(rule: RecurringTodoRule) -> dict:
         "frequency": rule.frequency,
         "interval": rule.interval,
         "anchor_date": rule.anchor_date.isoformat() if rule.anchor_date else None,
+        "due_time": rule.due_time.isoformat() if rule.due_time else None,
+        "timezone": rule.timezone,
         "next_due_date": rule.next_due_date.isoformat() if rule.next_due_date else None,
         "end_date": rule.end_date.isoformat() if rule.end_date else None,
         "is_active": rule.is_active,
@@ -279,6 +282,10 @@ class TodoService:
         audit_logger: AuditLogger | None = None,
     ) -> RecurringTodoRule:
         next_due = rule_in.anchor_date
+        try:
+            ZoneInfo(rule_in.timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValidationError(detail=f"Unknown timezone: {rule_in.timezone}") from exc
         if rule_in.end_date and next_due > rule_in.end_date:
             raise ValidationError(detail="anchor_date cannot be after end_date")
         rule = RecurringTodoRule(
@@ -290,6 +297,8 @@ class TodoService:
             frequency=rule_in.frequency,
             interval=rule_in.interval,
             anchor_date=rule_in.anchor_date,
+            due_time=rule_in.due_time,
+            timezone=rule_in.timezone,
             next_due_date=next_due,
             end_date=rule_in.end_date,
         )
@@ -329,6 +338,10 @@ class TodoService:
         for key, value in update_data.items():
             setattr(rule, key, value)
 
+        try:
+            ZoneInfo(rule.timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValidationError(detail=f"Unknown timezone: {rule.timezone}") from exc
         if rule.end_date and rule.anchor_date > rule.end_date:
             raise ValidationError(detail="anchor_date cannot be after end_date")
 

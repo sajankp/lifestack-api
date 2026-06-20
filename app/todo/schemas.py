@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -42,6 +42,8 @@ class RecurringTodoRuleCreate(BaseModel):
     frequency: Literal["daily", "weekly", "monthly", "yearly"] = Field(default="weekly")
     interval: int = Field(default=1, ge=1)
     anchor_date: date
+    due_time: time | None = None
+    timezone: str = Field(default="UTC", min_length=1, max_length=64)
     end_date: date | None = None
 
 
@@ -51,6 +53,8 @@ class RecurringTodoRuleUpdate(BaseModel):
     priority: PriorityEnum | None = Field(default=None)
     frequency: Literal["daily", "weekly", "monthly", "yearly"] | None = Field(default=None)
     interval: int | None = Field(default=None, ge=1)
+    due_time: time | None = None
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
     end_date: date | None = None
     is_active: bool | None = None
 
@@ -63,6 +67,8 @@ class RecurringTodoRuleResponse(BaseModel):
     frequency: str
     interval: int
     anchor_date: date
+    due_time: time | None
+    timezone: str
     next_due_date: date
     end_date: date | None
     is_active: bool

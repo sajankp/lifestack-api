@@ -91,4 +91,9 @@ async def websocket_agent_endpoint(websocket: WebSocket):
             await websocket.close(code=4001)
         return
     await websocket.accept()
-    await run_agent_session(websocket, user_id, workspace_id)
+    await run_agent_session(
+        websocket,
+        user_id,
+        workspace_id,
+        websocket.query_params.get("timezone", "UTC"),
+    )
