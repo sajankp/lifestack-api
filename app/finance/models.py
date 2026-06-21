@@ -98,6 +98,7 @@ class WorkspaceFinanceSetting(SQLModel, table=True):
         default=CurrencyDisplayPreference.symbol,
         sa_type=sa.String(length=24),
     )
+    lookthrough_min_weight_pct: Decimal = Field(default=Decimal("0.5"), sa_type=sa.Numeric(7, 4))
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

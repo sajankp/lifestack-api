@@ -881,6 +881,33 @@ async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
     assert len(overlap["overlaps"]) >= 2
     assert overlap["overlaps"][0]["company_ticker"] in {"AAPL", "MSFT"}
 
+    threshold_res = await client.patch(
+        "/v1/finance/settings",
+        json={"lookthrough_min_weight_pct": "25"},
+    )
+    assert threshold_res.status_code == 200
+
+    filtered_res = await client.get("/v1/investing/analytics/exposure", params={"as_of": today})
+    assert filtered_res.status_code == 200
+    filtered = filtered_res.json()
+    assert filtered["display_threshold_pct"] == "25.0000"
+    assert filtered["hidden_exposure_count"] > 0
+    assert len(filtered["exposure"]) + filtered["hidden_exposure_count"] == len(
+        exposure["exposure"]
+    )
+    assert filtered["total_lookthrough_exposure"] == exposure["total_lookthrough_exposure"]
+
+    filtered_overlap_res = await client.get(
+        "/v1/investing/analytics/overlap", params={"as_of": today}
+    )
+    assert filtered_overlap_res.status_code == 200
+    filtered_overlap = filtered_overlap_res.json()
+    assert filtered_overlap["hidden_overlap_count"] > 0
+    assert len(filtered_overlap["overlaps"]) + filtered_overlap["hidden_overlap_count"] == len(
+        overlap["overlaps"]
+    )
+    assert filtered_overlap["top_5_concentration_pct"] == overlap["top_5_concentration_pct"]
+
 
 @pytest.mark.asyncio
 async def test_investing_lookthrough_converts_holdings_to_reporting_currency(client: AsyncClient):

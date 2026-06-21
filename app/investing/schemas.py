@@ -210,6 +210,8 @@ class ExposureAnalyticsResponse(BaseModel):
     snapshot_coverage: Decimal
     staleness_days: int | None = None
     warnings: list[str]
+    display_threshold_pct: Decimal = Decimal("0.5")
+    hidden_exposure_count: int = 0
     exposure: list[ExposureCompanyRow]
     total_direct_exposure: Decimal | None
     total_lookthrough_exposure: Decimal | None
@@ -235,6 +237,8 @@ class OverlapAnalyticsResponse(BaseModel):
     fx_rates_used: dict[str, Decimal] = Field(default_factory=dict)
     snapshot_coverage: Decimal
     warnings: list[str]
+    display_threshold_pct: Decimal = Decimal("0.5")
+    hidden_overlap_count: int = 0
     top_5_concentration_pct: Decimal
     top_10_concentration_pct: Decimal
     duplicate_exposure_index: Decimal

@@ -6,6 +6,7 @@ from decimal import Decimal
 
 import httpx
 
+from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
@@ -1155,14 +1156,23 @@ class ExposureAnalyticsService:
         self.fx_rate_repo = fx_rate_repo
         self.staleness_window_days = staleness_window_days
 
-    async def exposure(self, workspace_id: int, as_of: date) -> ExposureAnalyticsResponse:
+    async def exposure(
+        self, workspace_id: int, as_of: date, *, apply_display_threshold: bool = True
+    ) -> ExposureAnalyticsResponse:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
         used_currencies = sorted({holding.currency.upper() for holding in holdings})
         reporting_currency: str | None = None
+        display_threshold_pct = settings.LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT
         if self.finance_setting_repo is not None:
-            settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
-            if settings and settings.reporting_currency_code:
-                reporting_currency = settings.reporting_currency_code.upper()
+            workspace_settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
+            if workspace_settings:
+                display_threshold_pct = getattr(
+                    workspace_settings,
+                    "lookthrough_min_weight_pct",
+                    settings.LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT,
+                )
+                if workspace_settings.reporting_currency_code:
+                    reporting_currency = workspace_settings.reporting_currency_code.upper()
         if reporting_currency is None and len(used_currencies) == 1:
             reporting_currency = used_currencies[0]
         if reporting_currency is None and len(used_currencies) > 1:
@@ -1174,6 +1184,7 @@ class ExposureAnalyticsService:
                 snapshot_coverage=Decimal("0"),
                 staleness_days=self.staleness_window_days,
                 warnings=[warning],
+                display_threshold_pct=display_threshold_pct,
                 exposure=[],
                 total_direct_exposure=None,
                 total_lookthrough_exposure=None,
@@ -1290,6 +1301,14 @@ class ExposureAnalyticsService:
         if decomposable > 0:
             coverage = Decimal(decomposed) / Decimal(decomposable)
         analysis_status = "complete" if not warnings else "partial"
+        total_direct = sum((r.direct_exposure for r in rows), Decimal("0"))
+        total_lookthrough = sum((r.lookthrough_exposure for r in rows), Decimal("0"))
+        visible_rows = rows
+        if apply_display_threshold and total_lookthrough > 0:
+            minimum_share = display_threshold_pct / Decimal("100")
+            visible_rows = [
+                row for row in rows if row.lookthrough_exposure / total_lookthrough >= minimum_share
+            ]
         return ExposureAnalyticsResponse(
             as_of_date=as_of,
             analysis_status=analysis_status,
@@ -1306,13 +1325,15 @@ class ExposureAnalyticsService:
             snapshot_coverage=coverage,
             staleness_days=self.staleness_window_days,
             warnings=warnings,
-            exposure=rows,
-            total_direct_exposure=sum((r.direct_exposure for r in rows), Decimal("0")),
-            total_lookthrough_exposure=sum((r.lookthrough_exposure for r in rows), Decimal("0")),
+            display_threshold_pct=display_threshold_pct,
+            hidden_exposure_count=len(rows) - len(visible_rows),
+            exposure=visible_rows,
+            total_direct_exposure=total_direct,
+            total_lookthrough_exposure=total_lookthrough,
         )
 
     async def overlap(self, workspace_id: int, as_of: date) -> OverlapAnalyticsResponse:
-        exposure = await self.exposure(workspace_id, as_of)
+        exposure = await self.exposure(workspace_id, as_of, apply_display_threshold=False)
         sorted_rows = sorted(exposure.exposure, key=lambda r: r.lookthrough_exposure, reverse=True)
         total = sum((r.lookthrough_exposure for r in sorted_rows), Decimal("0"))
 
@@ -1339,6 +1360,8 @@ class ExposureAnalyticsService:
         )
         duplicate = duplicate / total if total > 0 else Decimal("0")
 
+        minimum_share = exposure.display_threshold_pct / Decimal("100")
+        visible_overlaps = [row for row in overlaps if row.portfolio_share >= minimum_share]
         return OverlapAnalyticsResponse(
             as_of_date=as_of,
             analysis_status=exposure.analysis_status,
@@ -1347,10 +1370,12 @@ class ExposureAnalyticsService:
             fx_rates_used=exposure.fx_rates_used,
             snapshot_coverage=exposure.snapshot_coverage,
             warnings=exposure.warnings,
+            display_threshold_pct=exposure.display_threshold_pct,
+            hidden_overlap_count=len(overlaps) - len(visible_overlaps),
             top_5_concentration_pct=top5,
             top_10_concentration_pct=top10,
             duplicate_exposure_index=duplicate,
-            overlaps=overlaps,
+            overlaps=visible_overlaps,
         )
 
 

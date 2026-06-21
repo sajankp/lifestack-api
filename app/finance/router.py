@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
+from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.dependencies import (
     get_audit_logger,
@@ -125,6 +126,7 @@ async def get_workspace_finance_settings(
         return WorkspaceFinanceSettingResponse(
             reporting_currency_code=None,
             currency_display_preference=CurrencyDisplayPreference.symbol,
+            lookthrough_min_weight_pct=settings.LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT,
             updated_at=datetime.now(UTC),
         )
     return WorkspaceFinanceSettingResponse.model_validate(row)

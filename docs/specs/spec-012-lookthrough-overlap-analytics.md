@@ -268,3 +268,14 @@ Verdict: Future optimization after V1 correctness.
 - Overlap endpoint highlights top duplicate company exposures and concentration metrics.
 - Partial-data scenarios are explicitly marked with warning metadata.
 - Full path has integration and e2e coverage for direct + pooled + mixed portfolios.
+
+## 12. Constituent Display Threshold
+
+The workspace finance setting `lookthrough_min_weight_pct` controls how much detail is
+returned to the UI. `LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT` provides the environment default
+and defaults to `0.5`.
+
+Companies below the configured percentage of total portfolio look-through exposure are
+omitted from exposure and overlap detail lists. Responses include the effective threshold
+and hidden-row count. This is presentation-only: totals, concentration, duplicate exposure,
+overlap, and all other analytics calculations continue to use the complete constituent set.
