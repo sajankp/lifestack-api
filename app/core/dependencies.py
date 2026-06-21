@@ -333,8 +333,17 @@ async def get_investing_analytics_service(
     instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
     company_repo: CompanyRepository = Depends(get_investing_company_repo),
     constituent_repo: InstrumentConstituentRepository = Depends(get_investing_constituent_repo),
+    finance_setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
+    fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
 ) -> ExposureAnalyticsService:
-    return ExposureAnalyticsService(holding_repo, instrument_repo, company_repo, constituent_repo)
+    return ExposureAnalyticsService(
+        holding_repo,
+        instrument_repo,
+        company_repo,
+        constituent_repo,
+        finance_setting_repo,
+        fx_rate_repo,
+    )
 
 
 async def get_investing_performance_service(

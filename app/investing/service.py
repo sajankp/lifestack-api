@@ -1143,16 +1143,57 @@ class ExposureAnalyticsService:
         instrument_repo: InstrumentRepository,
         company_repo: CompanyRepository,
         constituent_repo: InstrumentConstituentRepository,
+        finance_setting_repo: FinanceSettingRepository | None = None,
+        fx_rate_repo: FxRateRepository | None = None,
         staleness_window_days: int = 30,
     ):
         self.holding_repo = holding_repo
         self.instrument_repo = instrument_repo
         self.company_repo = company_repo
         self.constituent_repo = constituent_repo
+        self.finance_setting_repo = finance_setting_repo
+        self.fx_rate_repo = fx_rate_repo
         self.staleness_window_days = staleness_window_days
 
     async def exposure(self, workspace_id: int, as_of: date) -> ExposureAnalyticsResponse:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
+        used_currencies = sorted({holding.currency.upper() for holding in holdings})
+        reporting_currency: str | None = None
+        if self.finance_setting_repo is not None:
+            settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
+            if settings and settings.reporting_currency_code:
+                reporting_currency = settings.reporting_currency_code.upper()
+        if reporting_currency is None and len(used_currencies) == 1:
+            reporting_currency = used_currencies[0]
+        if reporting_currency is None and len(used_currencies) > 1:
+            warning = "Reporting currency is required for multi-currency look-through analytics"
+            return ExposureAnalyticsResponse(
+                as_of_date=as_of,
+                analysis_status="unavailable",
+                currency=None,
+                snapshot_coverage=Decimal("0"),
+                staleness_days=self.staleness_window_days,
+                warnings=[warning],
+                exposure=[],
+                total_direct_exposure=None,
+                total_lookthrough_exposure=None,
+            )
+
+        fx_lookup: dict[tuple[str, str], FxRate] = {}
+        fx_as_of: datetime | None = None
+        if (
+            reporting_currency
+            and any(curr != reporting_currency for curr in used_currencies)
+            and self.fx_rate_repo is not None
+        ):
+            required_pairs = _build_required_pairs(used_currencies, reporting_currency)
+            fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
+                required_pairs,
+                datetime.combine(as_of, datetime.max.time(), tzinfo=UTC),
+            )
+            if fx_lookup:
+                fx_as_of = max(rate.as_of for rate in fx_lookup.values())
+
         direct: dict[int, Decimal] = {}
         lookthrough: dict[int, Decimal] = {}
         warnings: list[str] = []
@@ -1173,7 +1214,23 @@ class ExposureAnalyticsService:
         )
 
         for h in holdings:
-            value = h.quantity * h.avg_cost
+            native_value = h.quantity * h.avg_cost
+            value = (
+                _convert_amount(
+                    native_value,
+                    h.currency.upper(),
+                    reporting_currency,
+                    fx_lookup,
+                )
+                if reporting_currency
+                else native_value
+            )
+            if value is None:
+                warnings.append(
+                    f"FX rate from {h.currency.upper()} to {reporting_currency} is required "
+                    f"for {h.symbol}"
+                )
+                continue
             instrument = None
             if h.instrument_id is not None:
                 instrument = instruments_by_id.get(h.instrument_id)
@@ -1236,6 +1293,16 @@ class ExposureAnalyticsService:
         return ExposureAnalyticsResponse(
             as_of_date=as_of,
             analysis_status=analysis_status,
+            currency=reporting_currency,
+            fx_as_of=fx_as_of,
+            fx_rates_used={
+                key: Decimal(value)
+                for key, value in _fx_rates_used(
+                    used_currencies, reporting_currency, fx_lookup
+                ).items()
+            }
+            if reporting_currency
+            else {},
             snapshot_coverage=coverage,
             staleness_days=self.staleness_window_days,
             warnings=warnings,
@@ -1275,6 +1342,9 @@ class ExposureAnalyticsService:
         return OverlapAnalyticsResponse(
             as_of_date=as_of,
             analysis_status=exposure.analysis_status,
+            currency=exposure.currency,
+            fx_as_of=exposure.fx_as_of,
+            fx_rates_used=exposure.fx_rates_used,
             snapshot_coverage=exposure.snapshot_coverage,
             warnings=exposure.warnings,
             top_5_concentration_pct=top5,
