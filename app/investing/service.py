@@ -1199,7 +1199,7 @@ class ExposureAnalyticsService:
         ):
             required_pairs = _build_required_pairs(used_currencies, reporting_currency)
             fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
-                required_pairs,
+                list(required_pairs),
                 datetime.combine(as_of, datetime.max.time(), tzinfo=UTC),
             )
             if fx_lookup:
