@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
@@ -199,6 +200,11 @@ class FinanceSettingService:
         currency_display_preference = (
             existing.currency_display_preference if existing else CurrencyDisplayPreference.symbol
         )
+        lookthrough_min_weight_pct = (
+            existing.lookthrough_min_weight_pct
+            if existing
+            else settings.LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT
+        )
 
         if "reporting_currency_code" in updates:
             reporting_currency_code = updates["reporting_currency_code"]
@@ -213,11 +219,14 @@ class FinanceSettingService:
             currency_display_preference = (
                 updates["currency_display_preference"] or CurrencyDisplayPreference.symbol
             )
+        if updates.get("lookthrough_min_weight_pct") is not None:
+            lookthrough_min_weight_pct = updates["lookthrough_min_weight_pct"]
 
         return await self.setting_repository.upsert_workspace_settings(
             workspace_id,
             reporting_currency_code=reporting_currency_code,
             currency_display_preference=currency_display_preference,
+            lookthrough_min_weight_pct=lookthrough_min_weight_pct,
         )
 
     async def get_user_settings(self, workspace_id: int, user_id: int) -> dict:

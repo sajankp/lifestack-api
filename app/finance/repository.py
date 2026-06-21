@@ -233,6 +233,7 @@ class FinanceSettingRepository:
         *,
         reporting_currency_code: str | None,
         currency_display_preference: CurrencyDisplayPreference | None,
+        lookthrough_min_weight_pct: Decimal = Decimal("0.5"),
     ) -> WorkspaceFinanceSetting:
         existing = await self.get_by_workspace(workspace_id)
         now = datetime.now(UTC)
@@ -240,6 +241,7 @@ class FinanceSettingRepository:
             existing.reporting_currency_code = reporting_currency_code
             if currency_display_preference is not None:
                 existing.currency_display_preference = currency_display_preference
+            existing.lookthrough_min_weight_pct = lookthrough_min_weight_pct
             existing.updated_at = now
             self.session.add(existing)
             await self.session.flush()
@@ -252,6 +254,7 @@ class FinanceSettingRepository:
             currency_display_preference=(
                 currency_display_preference or CurrencyDisplayPreference.symbol
             ),
+            lookthrough_min_weight_pct=lookthrough_min_weight_pct,
         )
         self.session.add(row)
         await self.session.flush()

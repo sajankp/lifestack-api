@@ -1,5 +1,6 @@
 import json
 import secrets
+from decimal import Decimal
 from urllib.parse import urlparse
 
 import structlog
@@ -169,6 +170,7 @@ class Settings(BaseSettings):
     CAPTURE_MAX_SESSION_SECONDS: int = 5 * 60
     CAPTURE_MAX_TEXT_CHARS: int = 4000
     EXCHANGERATE_API_KEY: str | None = None
+    LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT: Decimal = Decimal("0.5")
     IMPORT_S3_ENDPOINT: str | None = Field(
         default=None,
         validation_alias=AliasChoices("IMPORT_S3_ENDPOINT", "CLOUDFLARE_R2_ENDPOINT"),

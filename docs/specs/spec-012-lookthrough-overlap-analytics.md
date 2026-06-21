@@ -36,6 +36,18 @@
 - The unreliable Yahoo automated-ingestion path from Spec 032 has been retired.
 - Constituent snapshots remain supported through the CSV import workflow in Spec 034.
 
+## Multi-Currency Valuation Correction (2026-06-21)
+
+- Exposure and overlap values are converted into the workspace reporting currency before aggregation.
+- A single-currency workspace without an explicit reporting currency uses its native currency.
+- A multi-currency workspace without a reporting currency returns `analysis_status="unavailable"`
+  with nullable totals instead of adding incomparable native amounts.
+- Holdings without a usable FX conversion are excluded with an explicit warning and produce a
+  partial analysis; native values are never silently mixed.
+- Responses include `currency`, `fx_as_of`, and `fx_rates_used`.
+- Concentration percentages and duplicate-exposure metrics are calculated only from values expressed
+  in the common response currency.
+
 ## 1. Overview
 Users often hold a mix of direct stocks and pooled vehicles (ETFs, mutual funds). Portfolio totals alone hide concentration and duplicate exposure created by overlapping fund constituents.
 
@@ -256,3 +268,14 @@ Verdict: Future optimization after V1 correctness.
 - Overlap endpoint highlights top duplicate company exposures and concentration metrics.
 - Partial-data scenarios are explicitly marked with warning metadata.
 - Full path has integration and e2e coverage for direct + pooled + mixed portfolios.
+
+## 12. Constituent Display Threshold
+
+The workspace finance setting `lookthrough_min_weight_pct` controls how much detail is
+returned to the UI. `LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT` provides the environment default
+and defaults to `0.5`.
+
+Companies below the configured percentage of total portfolio look-through exposure are
+omitted from exposure and overlap detail lists. Responses include the effective threshold
+and hidden-row count. This is presentation-only: totals, concentration, duplicate exposure,
+overlap, and all other analytics calculations continue to use the complete constituent set.
