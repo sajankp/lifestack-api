@@ -1,7 +1,9 @@
 from datetime import date, timedelta
+from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 
 from app.application.jobs import weekly_summary_job
 from app.auth.repository import UserRepository
@@ -80,6 +82,25 @@ async def test_weekly_summary_service_endpoints_and_job(client: AsyncClient):
             "start_snapshot_date": (week_start - timedelta(days=1)).isoformat(),
             "end_snapshot_date": (week_start + timedelta(days=6)).isoformat(),
         }
+        assert summary.todo_summary["tasks_overdue"] == 0
+        assert summary.todo_summary["open_count_end"] == 0
+        assert summary.spending_summary["status"] == "complete"
+        assert summary.spending_summary["has_multiple_currencies"] is False
+        summary_public_id = summary.public_id
+
+        end_snapshot = (
+            await session.execute(
+                select(PortfolioSnapshot).where(
+                    PortfolioSnapshot.workspace_id == workspace_id,
+                    PortfolioSnapshot.snapshot_date == week_start + timedelta(days=6),
+                )
+            )
+        ).scalar_one()
+        end_snapshot.holdings_value = Decimal("1250.00")
+        end_snapshot.total_value = Decimal("1330.00")
+        regenerated = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        assert regenerated.public_id == summary_public_id
+        assert regenerated.investing_summary["portfolio_value_end"] == "1250.00"
         await session.commit()
 
     # 2. Test list weekly summaries endpoint

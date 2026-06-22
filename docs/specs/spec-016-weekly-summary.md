@@ -63,9 +63,12 @@ Constraints:
 ### 4.2 spending_summary Shape
 ```json
 {
+  "status": "complete",
   "total_income": "5000.00",
   "total_expense": "3200.00",
   "net": "1800.00",
+  "currency": "USD",
+  "has_multiple_currencies": false,
   "top_categories": [
     { "name": "Food & Dining", "amount": "800.00", "pct_of_total": 25.0 }
   ],
@@ -74,6 +77,11 @@ Constraints:
   "recurring_generated_count": 4
 }
 ```
+
+Spending totals are only aggregated when all transactions resolve to one account currency.
+Mixed- or unknown-currency weeks return `status: unavailable`, preserve a currency breakdown,
+and do not publish misleading combined totals. Top categories and budget utilization follow
+the same single-currency rule.
 
 ### 4.3 investing_summary Shape
 ```json
@@ -107,6 +115,9 @@ metrics rather than substituting cost basis, current holdings, or zero.
   ]
 }
 ```
+
+V1 implemented flags are high/low completion and budget breach. Other proposed rules remain
+future work until their historical inputs are available.
 
 ## 5. API Surface
 
@@ -165,8 +176,11 @@ Per workspace:
 8. Emit audit event.
 
 ### Idempotency
-- If a summary for `(workspace_id, week_start)` already exists, the job skips that workspace (no overwrite).
-- To regenerate, an admin endpoint or manual DB correction is needed (future concern).
+- If a summary for `(workspace_id, week_start)` already exists, generation updates that row
+  in place and preserves its public id. This is the supported correction path for summaries
+  generated under older contracts.
+- Run `python -m app.cli.run weekly_summary --workspace-id <id> --week-start YYYY-MM-DD`
+  to regenerate a specific historical week safely.
 
 ### Partial Data Handling
 - If a module has no data for the week, its summary section is populated with zeros/nulls, not omitted.
