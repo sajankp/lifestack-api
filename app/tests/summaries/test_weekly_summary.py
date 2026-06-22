@@ -6,6 +6,7 @@ from httpx import AsyncClient
 from app.application.jobs import weekly_summary_job
 from app.auth.repository import UserRepository
 from app.core.database import postgres
+from app.investing.models import PortfolioSnapshot
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.platform.repository import WorkspaceRepository
@@ -41,11 +42,44 @@ async def test_weekly_summary_service_endpoints_and_job(client: AsyncClient):
         # Let's generate for today's week
         today = date.today()
         week_start = today - timedelta(days=today.weekday())
+        session.add_all([
+            PortfolioSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                total_value="1050.00",
+                total_cost="800.00",
+                holdings_value="1000.00",
+                cash_value="50.00",
+                currency_code="INR",
+            ),
+            PortfolioSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=6),
+                total_value="1280.00",
+                total_cost="800.00",
+                holdings_value="1200.00",
+                cash_value="80.00",
+                currency_code="INR",
+            ),
+        ])
+        await session.flush()
 
         summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
         assert summary is not None
         assert summary.workspace_id == workspace_id
         assert summary.week_start == week_start
+        assert summary.investing_summary == {
+            "status": "complete",
+            "portfolio_value_start": "1000.00",
+            "portfolio_value_end": "1200.00",
+            "cash_start": "50.00",
+            "cash_end": "80.00",
+            "week_change": "200.00",
+            "week_change_pct": "20.00",
+            "currency": "INR",
+            "start_snapshot_date": (week_start - timedelta(days=1)).isoformat(),
+            "end_snapshot_date": (week_start + timedelta(days=6)).isoformat(),
+        }
         await session.commit()
 
     # 2. Test list weekly summaries endpoint

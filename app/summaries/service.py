@@ -1,11 +1,12 @@
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
-from app.investing.models import CashBalance, Holding
+from app.investing.models import PortfolioSnapshot
 from app.notifications.service import NotificationService
 from app.spending.models import SpendingTransaction, TransactionType
 from app.summaries.models import WeeklySummary
@@ -98,20 +99,7 @@ class WeeklySummaryService:
         income = spending_by_type.get(TransactionType.income.value, 0)
         expense = spending_by_type.get(TransactionType.expense.value, 0)
 
-        holdings_subquery = select(
-            func.coalesce(func.sum(Holding.quantity * Holding.avg_cost), 0)
-        ).where(Holding.workspace_id == workspace_id)
-        cash_subquery = select(func.coalesce(func.sum(CashBalance.balance), 0)).where(
-            CashBalance.workspace_id == workspace_id
-        )
-        holdings_value, cash_value = (
-            await self.session.execute(
-                select(
-                    holdings_subquery.scalar_subquery(),
-                    cash_subquery.scalar_subquery(),
-                )
-            )
-        ).one()
+        investing_summary = await self._investing_summary(workspace_id, week_start, week_end)
 
         existing = (
             await self.session.execute(
@@ -132,10 +120,7 @@ class WeeklySummaryService:
                 "total_expense": str(expense),
                 "net": str(income - expense),
             }
-            existing.investing_summary = {
-                "portfolio_value_end": str(holdings_value + cash_value),
-                "currency": "USD",
-            }
+            existing.investing_summary = investing_summary
             existing.generated_at = datetime.now(UTC)
             summary = existing
         else:
@@ -149,10 +134,7 @@ class WeeklySummaryService:
                     "total_expense": str(expense),
                     "net": str(income - expense),
                 },
-                investing_summary={
-                    "portfolio_value_end": str(holdings_value + cash_value),
-                    "currency": "USD",
-                },
+                investing_summary=investing_summary,
                 highlights={"flags": []},
             )
             self.session.add(summary)
@@ -166,3 +148,74 @@ class WeeklySummaryService:
             module="application",
         )
         return summary
+
+    async def _investing_summary(
+        self, workspace_id: int, week_start: date, week_end: date
+    ) -> dict[str, str | None]:
+        start_snapshot = (
+            await self.session.execute(
+                select(PortfolioSnapshot)
+                .where(
+                    PortfolioSnapshot.workspace_id == workspace_id,
+                    PortfolioSnapshot.snapshot_date < week_start,
+                )
+                .order_by(PortfolioSnapshot.snapshot_date.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        end_snapshot = (
+            await self.session.execute(
+                select(PortfolioSnapshot)
+                .where(
+                    PortfolioSnapshot.workspace_id == workspace_id,
+                    PortfolioSnapshot.snapshot_date <= week_end,
+                )
+                .order_by(PortfolioSnapshot.snapshot_date.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        if (
+            start_snapshot is None
+            or end_snapshot is None
+            or end_snapshot.snapshot_date < week_start
+            or start_snapshot.currency_code != end_snapshot.currency_code
+        ):
+            return {
+                "status": "unavailable",
+                "portfolio_value_start": None,
+                "portfolio_value_end": None,
+                "cash_start": None,
+                "cash_end": None,
+                "week_change": None,
+                "week_change_pct": None,
+                "currency": None,
+                "start_snapshot_date": (
+                    start_snapshot.snapshot_date.isoformat() if start_snapshot else None
+                ),
+                "end_snapshot_date": (
+                    end_snapshot.snapshot_date.isoformat() if end_snapshot else None
+                ),
+            }
+
+        week_change = end_snapshot.holdings_value - start_snapshot.holdings_value
+        week_change_pct = (
+            (week_change / start_snapshot.holdings_value) * Decimal("100")
+            if start_snapshot.holdings_value != 0
+            else None
+        )
+        money = Decimal("0.01")
+        return {
+            "status": "complete",
+            "portfolio_value_start": str(start_snapshot.holdings_value.quantize(money)),
+            "portfolio_value_end": str(end_snapshot.holdings_value.quantize(money)),
+            "cash_start": str(start_snapshot.cash_value.quantize(money)),
+            "cash_end": str(end_snapshot.cash_value.quantize(money)),
+            "week_change": str(week_change.quantize(money)),
+            "week_change_pct": (
+                str(week_change_pct.quantize(money)) if week_change_pct is not None else None
+            ),
+            "currency": end_snapshot.currency_code,
+            "start_snapshot_date": start_snapshot.snapshot_date.isoformat(),
+            "end_snapshot_date": end_snapshot.snapshot_date.isoformat(),
+        }

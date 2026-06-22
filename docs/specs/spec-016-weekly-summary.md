@@ -2,7 +2,10 @@
 **Status:** Implemented
 **Spec ID:** 016
 
-Implementation note (2026-06-11): weekly summary persistence, list/latest/detail APIs, scheduler job registration, dashboard integration, notification dispatch, idempotency, and tests are implemented in `app/summaries`, `app/application/jobs.py`, and `app/dashboard`. Cadence/regeneration notes below are non-goal context, not active backlog.
+Implementation note (2026-06-22): weekly investing metrics use compatible portfolio
+snapshots in their stored reporting currency, keep cash separate, and return unavailable
+states when a valid comparison cannot be made. The web client renders typed metrics rather
+than raw JSON.
 
 ## 1. Overview
 The README identifies cross-module workflows as a key differentiator: "weekly summaries can combine productivity and finance data." This spec defines the second major scheduler workflow — a periodic summary that aggregates activity across todo, spending, and investing into a single digest available via API and optionally delivered as a notification.
@@ -75,13 +78,24 @@ Constraints:
 ### 4.3 investing_summary Shape
 ```json
 {
+  "status": "complete",
   "portfolio_value_start": "120000.00",
   "portfolio_value_end": "122500.00",
+  "cash_start": "5000.00",
+  "cash_end": "5200.00",
   "week_change": "2500.00",
   "week_change_pct": "2.08",
-  "currency": "USD"
+  "currency": "USD",
+  "start_snapshot_date": "2026-05-19",
+  "end_snapshot_date": "2026-05-25"
 }
 ```
+
+Portfolio value means holdings market value only. Cash is reported separately and never
+contributes to portfolio gain/loss. Values come from persisted portfolio snapshots at the
+week boundaries, including their reporting-currency FX conversions. If compatible start
+and end snapshots do not exist, the section returns `status: unavailable` with nullable
+metrics rather than substituting cost basis, current holdings, or zero.
 
 ### 4.4 highlights Shape
 ```json
@@ -139,7 +153,10 @@ Per workspace:
    - Calculate budget utilization (actual vs. budgeted across all categories).
    - Count recurring transactions generated.
 4. **Investing aggregation:**
-   - Compare portfolio snapshot from start-of-week to end-of-week (from Spec 014).
+   - Compare the latest snapshot before the week with the latest snapshot on or before
+     week end (from Spec 014).
+   - Require matching snapshot currencies.
+   - Keep cash separate from holdings value and weekly return.
    - If no snapshots available, mark section as `unavailable`.
 5. **Highlight generation:**
    - Apply rule-based flags (budget breach, high completion, portfolio milestones).
