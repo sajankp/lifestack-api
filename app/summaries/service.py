@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
@@ -116,9 +116,28 @@ class WeeklySummaryService:
                     .select_from(Todo)
                     .where(
                         Todo.workspace_id == workspace_id,
-                        Todo.completed.is_(False),
                         Todo.due_date.is_not(None),
                         Todo.due_date < end_dt,
+                        or_(
+                            Todo.completed.is_(False),
+                            Todo.updated_at >= end_dt,
+                        ),
+                    )
+                )
+            ).scalar_one()
+        )
+        open_count_start = int(
+            (
+                await self.session.execute(
+                    select(func.count())
+                    .select_from(Todo)
+                    .where(
+                        Todo.workspace_id == workspace_id,
+                        Todo.created_at < start_dt,
+                        or_(
+                            Todo.completed.is_(False),
+                            Todo.updated_at >= start_dt,
+                        ),
                     )
                 )
             ).scalar_one()
@@ -131,7 +150,10 @@ class WeeklySummaryService:
                     .where(
                         Todo.workspace_id == workspace_id,
                         Todo.created_at < end_dt,
-                        Todo.completed.is_(False),
+                        or_(
+                            Todo.completed.is_(False),
+                            Todo.updated_at >= end_dt,
+                        ),
                     )
                 )
             ).scalar_one()
@@ -150,6 +172,7 @@ class WeeklySummaryService:
                 if completion_rate is not None
                 else None
             ),
+            "open_count_start": open_count_start,
             "open_count_end": open_count_end,
         }
 

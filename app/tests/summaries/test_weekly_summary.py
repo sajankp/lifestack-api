@@ -83,6 +83,7 @@ async def test_weekly_summary_service_endpoints_and_job(client: AsyncClient):
             "end_snapshot_date": (week_start + timedelta(days=6)).isoformat(),
         }
         assert summary.todo_summary["tasks_overdue"] == 0
+        assert summary.todo_summary["open_count_start"] == 0
         assert summary.todo_summary["open_count_end"] == 0
         assert summary.spending_summary["status"] == "complete"
         assert summary.spending_summary["has_multiple_currencies"] is False
