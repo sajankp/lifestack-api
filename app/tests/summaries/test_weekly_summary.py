@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -15,6 +15,7 @@ from app.platform.repository import WorkspaceRepository
 from app.summaries.repository import WeeklySummaryRepository
 from app.summaries.service import WeeklySummaryService
 from app.tests.integration.test_spending import _register_and_login
+from app.todo.models import Todo
 
 
 @pytest.mark.asyncio
@@ -44,6 +45,9 @@ async def test_weekly_summary_service_endpoints_and_job(client: AsyncClient):
         # Let's generate for today's week
         today = date.today()
         week_start = today - timedelta(days=today.weekday())
+        start_dt = datetime.combine(week_start, datetime.min.time(), tzinfo=UTC)
+        end_dt = start_dt + timedelta(days=7)
+
         session.add_all([
             PortfolioSnapshot(
                 workspace_id=workspace_id,
@@ -62,6 +66,52 @@ async def test_weekly_summary_service_endpoints_and_job(client: AsyncClient):
                 holdings_value="1200.00",
                 cash_value="80.00",
                 currency_code="INR",
+            ),
+            # Add test Todo records to verify historical reconstruction logic
+            Todo(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                title="Todo 1",
+                completed=True,
+                created_at=start_dt - timedelta(days=5),
+                updated_at=start_dt - timedelta(days=2),
+                due_date=start_dt - timedelta(days=3),
+            ),
+            Todo(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                title="Todo 2",
+                completed=True,
+                created_at=start_dt - timedelta(days=2),
+                updated_at=start_dt + timedelta(days=2),
+                due_date=start_dt - timedelta(days=1),
+            ),
+            Todo(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                title="Todo 3",
+                completed=False,
+                created_at=start_dt - timedelta(days=3),
+                updated_at=start_dt - timedelta(days=3),
+                due_date=start_dt + timedelta(days=2),
+            ),
+            Todo(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                title="Todo 4",
+                completed=True,
+                created_at=start_dt + timedelta(days=1),
+                updated_at=end_dt + timedelta(days=1),
+                due_date=start_dt + timedelta(days=3),
+            ),
+            Todo(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                title="Todo 5",
+                completed=True,
+                created_at=start_dt + timedelta(days=2),
+                updated_at=start_dt + timedelta(days=4),
+                due_date=start_dt + timedelta(days=3),
             ),
         ])
         await session.flush()
@@ -82,9 +132,12 @@ async def test_weekly_summary_service_endpoints_and_job(client: AsyncClient):
             "start_snapshot_date": (week_start - timedelta(days=1)).isoformat(),
             "end_snapshot_date": (week_start + timedelta(days=6)).isoformat(),
         }
-        assert summary.todo_summary["tasks_overdue"] == 0
-        assert summary.todo_summary["open_count_start"] == 0
-        assert summary.todo_summary["open_count_end"] == 0
+        assert summary.todo_summary["tasks_created"] == 2
+        assert summary.todo_summary["tasks_completed"] == 2
+        assert summary.todo_summary["tasks_overdue"] == 2
+        assert summary.todo_summary["open_count_start"] == 2
+        assert summary.todo_summary["open_count_end"] == 2
+        assert summary.todo_summary["completion_rate_pct"] == "100.0"
         assert summary.spending_summary["status"] == "complete"
         assert summary.spending_summary["has_multiple_currencies"] is False
         summary_public_id = summary.public_id
