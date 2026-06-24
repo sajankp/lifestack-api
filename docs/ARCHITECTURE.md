@@ -871,8 +871,10 @@ The following production-ready patterns are proven in the existing to-do app and
 | Metrics auth | Bearer token or dev-mode for `/metrics` | ✅ Carry forward |
 
 **Not carried forward:**
-- Gemini voice proxy — AI architecture to be redesigned in stage 2
 - bcrypt legacy hashing — new project, Argon2id only
+
+**Implemented in Phase 1 (not deferred):**
+- Gemini voice/capture agent (Spec 021) — WebSocket-based voice agent with tool calling is implemented in `app/capture/`. Stage 2 will add a provider-agnostic AI adapter architecture on top of the existing capture surface.
 
 **What changes in migration:**
 - Database switches from MongoDB to PostgreSQL
