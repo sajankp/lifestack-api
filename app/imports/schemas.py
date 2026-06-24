@@ -85,10 +85,18 @@ class ImportErrorSummary(BaseModel):
     by_field: dict[str, int]
 
 
+class ImportPreviewRowResponse(BaseModel):
+    row_number: int
+    payload_json: dict
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ImportValidateResponse(BaseModel):
     import_batch: ImportBatchResponse
     errors: list[ImportErrorResponse]
     error_summary: ImportErrorSummary
+    preview_rows: list[ImportPreviewRowResponse] = Field(default_factory=list)
 
 
 class ImportCommitResponse(BaseModel):

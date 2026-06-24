@@ -115,6 +115,7 @@ class Settings(BaseSettings):
     IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3
     IMPORT_LOCAL_PATH: str = "/var/lib/lifestack/imports"
     IMPORT_PREVIEW_TTL_HOURS: int = 24
+    RUN_BACKGROUND_TASKS_SYNCHRONOUSLY: bool = False
 
     # Session limits
     MAX_ACTIVE_SESSIONS_PER_USER: int = 5

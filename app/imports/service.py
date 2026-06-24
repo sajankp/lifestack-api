@@ -1,12 +1,13 @@
 import asyncio
+import contextlib
 import csv
 import hashlib
-import io
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+import openpyxl
 from fastapi import UploadFile
 from sqlalchemy import delete, select, tuple_
 from sqlalchemy.exc import IntegrityError
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.audit import AuditLogger
+from app.core.database import postgres
 from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import Account, Currency
 from app.imports.models import (
@@ -44,6 +46,96 @@ class ImportService:
     MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
     MAX_VALIDATION_ROWS = 10_000
     COMMIT_CHUNK_SIZE = 1000
+
+    FUZZY_MAPPING = {
+        "occurred_at": [
+            "occurred_at",
+            "occurred",
+            "date",
+            "time",
+            "transaction_date",
+            "datetime",
+            "timestamp",
+            "occured_at",
+            "date_time",
+        ],
+        "type": ["type", "transaction_type", "kind", "txn_type"],
+        "amount": ["amount", "value", "sum", "price", "total", "cost", "val", "amt"],
+        "category": ["category", "category_name", "group", "class", "tag", "cat"],
+        "description": ["description", "note", "memo", "comment", "details", "desc"],
+        "symbol": ["symbol", "ticker", "instrument_symbol", "sym"],
+        "instrument_symbol": ["instrument_symbol", "symbol", "ticker", "sym"],
+        "account_name": ["account_name", "account", "wallet", "brokerage", "portfolio", "acct"],
+        "quantity": ["quantity", "qty", "shares", "units", "amount_of_shares", "vol", "volume"],
+        "avg_cost": [
+            "avg_cost",
+            "average_cost",
+            "cost",
+            "avg_price",
+            "buy_price",
+            "average_price",
+            "unit_price",
+        ],
+        "currency": ["currency", "ccy", "currency_code", "curr"],
+        "instrument_type": ["instrument_type", "asset_type", "type", "inst_type"],
+        "company_name": ["company_name", "company", "issuer", "co_name"],
+        "company_ticker": ["company_ticker", "ticker_symbol", "company_symbol", "co_ticker"],
+        "weight": ["weight", "percentage", "pct", "allocation", "wt"],
+        "as_of_date": ["as_of_date", "as_of", "date_as_of", "date", "asof"],
+        "month_start": ["month_start", "month", "start_month", "date", "start_date"],
+    }
+
+    REQUIRED_HEADERS = {
+        ImportModule.spending_transactions: {"occurred_at", "type", "amount", "category"},
+        ImportModule.spending_budgets: {"month_start", "category", "amount"},
+        ImportModule.investing_holdings: {
+            "symbol",
+            "account_name",
+            "quantity",
+            "avg_cost",
+            "currency",
+        },
+        ImportModule.investing_constituents: {
+            "instrument_symbol",
+            "company_name",
+            "company_ticker",
+            "weight",
+            "as_of_date",
+        },
+    }
+
+    def _smart_match_headers(self, file_headers: list[str], module: ImportModule) -> dict[str, str]:
+        def normalize(s: str) -> str:
+            return "".join(c for c in s.lower() if c.isalnum())
+
+        expected_headers = TEMPLATE_HEADERS[module]
+        if module == ImportModule.investing_holdings:
+            expected_headers = expected_headers + ["instrument_type"]
+
+        mapping = {}
+        used_file_headers = set()
+        normalized_file_headers = {normalize(h): h for h in file_headers if h}
+
+        for exp in expected_headers:
+            exp_norm = normalize(exp)
+            if exp_norm in normalized_file_headers:
+                matching_header = normalized_file_headers[exp_norm]
+                mapping[exp] = matching_header
+                used_file_headers.add(matching_header)
+
+        for exp in expected_headers:
+            if exp in mapping:
+                continue
+            candidates = self.FUZZY_MAPPING.get(exp, [exp])
+            norm_candidates = {normalize(c) for c in candidates}
+            for fh in file_headers:
+                if fh in used_file_headers:
+                    continue
+                if normalize(fh) in norm_candidates:
+                    mapping[exp] = fh
+                    used_file_headers.add(fh)
+                    break
+        return mapping
 
     def __init__(self, repository: ImportRepository, session: AsyncSession):
         self.repository = repository
@@ -226,11 +318,13 @@ class ImportService:
         module: ImportModule,
         upload: UploadFile,
         audit_logger: AuditLogger,
-    ) -> tuple[ImportBatch, list[ImportError]]:
+    ) -> tuple[ImportBatch, str]:
         if not upload.filename:
             raise ValidationError(detail="filename is required")
-        if not upload.filename.lower().endswith(".csv"):
-            raise ValidationError(detail="Only .csv files are supported in stage 1")
+        if not (
+            upload.filename.lower().endswith(".csv") or upload.filename.lower().endswith(".xlsx")
+        ):
+            raise ValidationError(detail="Only .csv and .xlsx files are supported")
 
         file_hash, file_size = await self._hash_file(upload)
         batch = ImportBatch(
@@ -246,12 +340,38 @@ class ImportService:
         batch = await self.repository.create_batch(batch)
         await self._store_file_if_configured(batch, upload)
 
+        # Write to temp local directory for background worker
+        temp_dir = Path("imports_temp")
+        temp_dir.mkdir(exist_ok=True)
+        ext = Path(upload.filename).suffix
+        temp_filename = f"{uuid.uuid4()}{ext}"
+        temp_path = temp_dir / temp_filename
+
+        await upload.seek(0)
+        with temp_path.open("wb") as f:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+        await upload.seek(0)
+
+        return batch, str(temp_path)
+
+    async def validate_batch_file(
+        self,
+        workspace_id: int,
+        user_id: int,
+        batch: ImportBatch,
+        file_path: str,
+        audit_logger: AuditLogger,
+    ) -> tuple[ImportBatch, list[ImportError]]:
         by_name, by_public = await self._category_maps(workspace_id)
         account_map = await self._account_map(workspace_id)
         currency_set = await self._currency_set()
 
         instruments_map = {}
-        if module == ImportModule.investing_constituents:
+        if batch.module == ImportModule.investing_constituents:
             inst_rows = (
                 (
                     await self.session.execute(
@@ -263,31 +383,72 @@ class ImportService:
             )
             instruments_map = {inst.symbol.upper(): inst for inst in inst_rows}
 
-        await upload.seek(0)
-        wrapped = io.TextIOWrapper(upload.file, encoding="utf-8-sig", newline="")
+        is_xlsx = file_path.lower().endswith(".xlsx")
+        f = None
+
+        if is_xlsx:
+            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+            ws = wb.active
+            rows_gen = ws.iter_rows(values_only=True)
+            try:
+                first_row = next(rows_gen)
+                headers = [str(cell).strip() if cell is not None else "" for cell in first_row]
+            except StopIteration:
+                headers = []
+
+            def xlsx_row_reader():
+                for row_idx, r in enumerate(rows_gen, start=2):
+                    if any(cell is not None for cell in r):
+                        row_dict = {}
+                        for c_idx, cell in enumerate(r):
+                            if c_idx < len(headers):
+                                row_dict[headers[c_idx]] = cell
+                        yield row_idx, row_dict
+
+            reader = xlsx_row_reader()
+        else:
+            f = open(file_path, encoding="utf-8-sig", newline="")  # noqa: SIM115
+            csv_reader = csv.DictReader(f)
+            headers = csv_reader.fieldnames or []
+
+            def csv_row_reader():
+                yield from enumerate(csv_reader, start=2)
+
+            reader = csv_row_reader()
+
         try:
-            reader = csv.DictReader(wrapped)
-            headers = reader.fieldnames or []
+            mapping = self._smart_match_headers(headers, batch.module)
             header_mode = "default"
-            valid_headers = [TEMPLATE_HEADERS[module]]
-            if module == ImportModule.investing_holdings:
-                valid_headers.append([
-                    "symbol",
-                    "account_name",
-                    "quantity",
-                    "avg_cost",
-                    "currency",
-                ])
-            if module == ImportModule.spending_transactions:
-                valid_headers.append(SPENDEE_TRANSACTION_HEADERS)
-            if headers not in valid_headers:
+            if (
+                batch.module == ImportModule.spending_transactions
+                and headers == SPENDEE_TRANSACTION_HEADERS
+            ):
+                header_mode = "spendee"
+
+            required = self.REQUIRED_HEADERS[batch.module]
+            mapped_keys = set(mapping.keys())
+            missing_required = required - mapped_keys
+
+            if header_mode != "spendee" and missing_required:
+                valid_headers = [TEMPLATE_HEADERS[batch.module]]
+                if batch.module == ImportModule.investing_holdings:
+                    valid_headers.append([
+                        "symbol",
+                        "account_name",
+                        "quantity",
+                        "avg_cost",
+                        "currency",
+                    ])
+                if batch.module == ImportModule.spending_transactions:
+                    valid_headers.append(SPENDEE_TRANSACTION_HEADERS)
+
                 err = ImportError(
                     import_batch_id=batch.id,
                     row_number=1,
                     field_name="header",
                     error_code="invalid_header",
                     message=(
-                        "Unexpected CSV headers. Expected one of: "
+                        f"Unexpected headers. Missing required fields: {', '.join(missing_required)}. Expected format matching: "
                         + " OR ".join([str(h) for h in valid_headers])
                     ),
                     raw_value=",".join(headers),
@@ -296,13 +457,9 @@ class ImportService:
                 batch.status = ImportStatus.failed_validation
                 batch.validated_at = datetime.now(UTC)
                 batch.error_rows = 1
+                batch.updated_at = datetime.now(UTC)
                 batch = await self.repository.save_batch(batch)
                 return batch, [err]
-            if (
-                module == ImportModule.spending_transactions
-                and headers == SPENDEE_TRANSACTION_HEADERS
-            ):
-                header_mode = "spendee"
 
             errors: list[ImportError] = []
             previews: list[ImportPreviewRow] = []
@@ -310,7 +467,7 @@ class ImportService:
             valid_rows = 0
             weight_groups: dict[tuple[str, str], list[Decimal]] = {}
 
-            for row_no, row in enumerate(reader, start=2):
+            for row_no, raw_row in reader:
                 if total_rows >= self.MAX_VALIDATION_ROWS:
                     raise ValidationError(
                         detail=f"File exceeds the maximum allowed limit of {self.MAX_VALIDATION_ROWS} rows."
@@ -338,8 +495,16 @@ class ImportService:
                         )
                     )
 
+                row = {}
+                if header_mode == "spendee":
+                    row = raw_row
+                else:
+                    for exp, actual in mapping.items():
+                        cell_val = raw_row.get(actual)
+                        row[exp] = str(cell_val).strip() if cell_val is not None else None
+
                 payload: dict
-                if module == ImportModule.spending_transactions:
+                if batch.module == ImportModule.spending_transactions:
                     if header_mode == "spendee":
                         occurred_raw = self._norm(row.get("Date"))
                         raw_type = self._norm(row.get("Type"))
@@ -416,7 +581,7 @@ class ImportService:
                         "wallet_name": wallet_name_raw,
                         "labels": labels_raw,
                     }
-                elif module == ImportModule.spending_budgets:
+                elif batch.module == ImportModule.spending_budgets:
                     month_raw = self._norm(row.get("month_start"))
                     category_raw = self._norm(row.get("category"))
                     amount_raw = self._norm(row.get("amount"))
@@ -456,40 +621,33 @@ class ImportService:
                     payload = {
                         "month_start": month_start.isoformat() if month_start else None,
                         "category_id": category_id,
+                        "category_name": category_raw if category_raw else None,
                         "amount": str(amount) if amount is not None else None,
                     }
-                elif module == ImportModule.investing_holdings:
-                    symbol_raw = self._norm(row.get("symbol")).upper()
+                elif batch.module == ImportModule.investing_holdings:
+                    symbol_raw = self._norm(row.get("symbol"))
                     account_name_raw = self._norm(row.get("account_name"))
                     quantity_raw = self._norm(row.get("quantity"))
                     avg_cost_raw = self._norm(row.get("avg_cost"))
-                    currency_raw = self._norm(row.get("currency")).upper()
-                    instrument_type_raw = (
-                        self._norm(row.get("instrument_type")).lower() or InstrumentType.stock.value
-                    )
+                    currency_raw = self._norm(row.get("currency"))
+                    instrument_type_raw = self._norm(row.get("instrument_type"))
 
                     if not symbol_raw:
                         add_error("symbol", "required", "symbol is required", symbol_raw)
-                    if account_name_raw.lower() not in account_map:
+
+                    account_id = None
+                    if account_name_raw:
+                        account_id = account_map.get(account_name_raw.lower())
+                        if account_id is None:
+                            add_error(
+                                "account_name",
+                                "not_found",
+                                "account not found in workspace",
+                                account_name_raw,
+                            )
+                    else:
                         add_error(
-                            "account_name",
-                            "not_found",
-                            "account_name not found in workspace",
-                            account_name_raw,
-                        )
-                    if currency_raw not in currency_set:
-                        add_error(
-                            "currency",
-                            "invalid_currency",
-                            "currency must exist in reference table",
-                            currency_raw,
-                        )
-                    if instrument_type_raw not in {item.value for item in InstrumentType}:
-                        add_error(
-                            "instrument_type",
-                            "invalid_enum",
-                            "instrument_type must be stock, etf, or mutual_fund",
-                            instrument_type_raw,
+                            "account_name", "required", "account_name is required", account_name_raw
                         )
 
                     try:
@@ -518,31 +676,50 @@ class ImportService:
                         )
                         avg_cost = None
 
+                    currency = None
+                    if currency_raw:
+                        currency = currency_raw.upper()
+                        if currency not in currency_set:
+                            add_error(
+                                "currency",
+                                "not_found",
+                                "currency not enabled in workspace",
+                                currency_raw,
+                            )
+                    else:
+                        add_error("currency", "required", "currency is required", currency_raw)
+
+                    inst_type = None
+                    if instrument_type_raw:
+                        try:
+                            inst_type = InstrumentType(instrument_type_raw.lower())
+                        except Exception:
+                            add_error(
+                                "instrument_type",
+                                "invalid_enum",
+                                "instrument_type must be stock, etf, or mutual_fund",
+                                instrument_type_raw,
+                            )
+
                     payload = {
-                        "symbol": symbol_raw,
+                        "symbol": symbol_raw.upper() if symbol_raw else None,
                         "account_name": account_name_raw,
+                        "account_id": account_id,
                         "quantity": str(quantity) if quantity is not None else None,
                         "avg_cost": str(avg_cost) if avg_cost is not None else None,
-                        "currency": currency_raw,
-                        "instrument_type": instrument_type_raw,
+                        "currency": currency,
+                        "instrument_type": inst_type.value if inst_type else None,
                     }
                 else:
-                    instrument_symbol_raw = self._norm(row.get("instrument_symbol")).upper()
+                    instrument_symbol_raw = self._norm(row.get("instrument_symbol"))
                     company_name_raw = self._norm(row.get("company_name"))
                     company_ticker_raw = self._norm(row.get("company_ticker"))
                     weight_raw = self._norm(row.get("weight"))
                     as_of_date_raw = self._norm(row.get("as_of_date"))
 
                     inst = None
-                    if not instrument_symbol_raw:
-                        add_error(
-                            "instrument_symbol",
-                            "required",
-                            "instrument_symbol is required",
-                            instrument_symbol_raw,
-                        )
-                    else:
-                        inst = instruments_map.get(instrument_symbol_raw)
+                    if instrument_symbol_raw:
+                        inst = instruments_map.get(instrument_symbol_raw.upper())
                         if (
                             not inst
                             or not inst.is_active
@@ -555,6 +732,13 @@ class ImportService:
                                 "instrument_symbol must resolve to an active ETF/Mutual Fund instrument in the current workspace",
                                 instrument_symbol_raw,
                             )
+                    else:
+                        add_error(
+                            "instrument_symbol",
+                            "required",
+                            "instrument_symbol is required",
+                            instrument_symbol_raw,
+                        )
 
                     if not company_name_raw:
                         add_error(
@@ -564,39 +748,40 @@ class ImportService:
                             company_name_raw,
                         )
 
-                    weight = None
                     try:
                         weight = Decimal(weight_raw)
-                        if weight <= 0:
+                        if not (Decimal("0.00000001") <= weight <= Decimal("1.0")):
                             raise InvalidOperation
                     except Exception:
                         add_error(
                             "weight",
                             "invalid_decimal",
-                            "weight must be a positive decimal",
+                            "weight must be a positive decimal between 0 and 1",
                             weight_raw,
                         )
                         weight = None
 
-                    as_of_date = None
                     try:
                         as_of_date = datetime.strptime(as_of_date_raw, "%Y-%m-%d").date()
                     except Exception:
                         add_error(
                             "as_of_date",
                             "invalid_date",
-                            "as_of_date must be a valid date in YYYY-MM-DD format",
+                            "as_of_date must be YYYY-MM-DD",
                             as_of_date_raw,
                         )
                         as_of_date = None
 
                     payload = {
+                        "instrument_symbol": instrument_symbol_raw.upper()
+                        if instrument_symbol_raw
+                        else None,
                         "instrument_id": inst.id if inst else None,
-                        "instrument_symbol": instrument_symbol_raw,
                         "company_name": company_name_raw,
                         "company_ticker": company_ticker_raw or None,
                         "weight": str(weight) if weight is not None else None,
                         "as_of_date": as_of_date.isoformat() if as_of_date else None,
+                        "source": "csv_import",
                     }
 
                     if (
@@ -608,7 +793,7 @@ class ImportService:
                         and weight is not None
                         and as_of_date is not None
                     ):
-                        key = (instrument_symbol_raw, as_of_date_raw)
+                        key = (instrument_symbol_raw.upper(), as_of_date_raw)
                         weight_groups.setdefault(key, []).append(weight)
 
                 if row_errors:
@@ -649,7 +834,8 @@ class ImportService:
             if errors:
                 await self.repository.add_errors(errors)
         finally:
-            wrapped.detach()
+            if f is not None:
+                f.close()
 
         persisted_errors = await self.repository.list_errors(batch.id, limit=10000)
         batch.total_rows = total_rows
@@ -689,13 +875,11 @@ class ImportService:
 
         return batch, list(persisted_errors)[:200]
 
-    async def commit_import(
+    async def start_commit(
         self,
         workspace_id: int,
-        user_id: int,
         import_public_id: uuid.UUID,
-        audit_logger: AuditLogger,
-    ) -> tuple[ImportBatch, int, list[str]]:
+    ) -> ImportBatch:
         batch = await self.repository.get_by_public_id(workspace_id, import_public_id)
         if not batch:
             raise NotFoundError(detail=f"Import batch with id {import_public_id} not found")
@@ -710,7 +894,20 @@ class ImportService:
             raise ValidationError(detail="Import is no longer in a committable state")
         batch.status = ImportStatus.committing
         batch.updated_at = datetime.now(UTC)
-        await self.repository.save_batch(batch)
+        return await self.repository.save_batch(batch)
+
+    async def commit_batch(
+        self,
+        workspace_id: int,
+        user_id: int,
+        import_public_id: uuid.UUID,
+        audit_logger: AuditLogger,
+    ) -> tuple[ImportBatch, int, list[str]]:
+        batch = await self.repository.get_by_public_id(workspace_id, import_public_id)
+        if not batch:
+            raise NotFoundError(detail=f"Import batch with id {import_public_id} not found")
+        if batch.status != ImportStatus.committing:
+            raise ValidationError(detail="Import is not in committing state")
 
         inserted = 0
         auto_created_categories: list[str] = []
@@ -1117,3 +1314,41 @@ class ImportService:
         )
 
         await self.repository.delete_batch(batch)
+
+
+async def run_background_validate(
+    workspace_id: int,
+    user_id: int,
+    batch_public_id: uuid.UUID,
+    file_path: str,
+    audit_logger: AuditLogger,
+) -> None:
+    async with postgres.async_session_maker() as session:
+        repo = ImportRepository(session)
+        service = ImportService(repo, session)
+        batch = await repo.get_by_public_id(workspace_id, batch_public_id)
+        if batch:
+            try:
+                await service.validate_batch_file(
+                    workspace_id, user_id, batch, file_path, audit_logger
+                )
+            except Exception:
+                batch.status = ImportStatus.failed_validation
+                batch.updated_at = datetime.now(UTC)
+                await repo.save_batch(batch)
+                raise
+            finally:
+                with contextlib.suppress(Exception):
+                    Path(file_path).unlink(missing_ok=True)
+
+
+async def run_background_commit(
+    workspace_id: int,
+    user_id: int,
+    batch_public_id: uuid.UUID,
+    audit_logger: AuditLogger,
+) -> None:
+    async with postgres.async_session_maker() as session:
+        repo = ImportRepository(session)
+        service = ImportService(repo, session)
+        await service.commit_batch(workspace_id, user_id, batch_public_id, audit_logger)

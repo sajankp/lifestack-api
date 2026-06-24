@@ -37,6 +37,7 @@ def override_redis_url(redis_container):
     """Point the app rate limit settings at the Redis testcontainer and re-init storage."""
     url = f"redis://{redis_container.get_container_host_ip()}:{redis_container.get_exposed_port(6379)}"
     settings.RATE_LIMIT_STORAGE_URI = url
+    settings.RUN_BACKGROUND_TASKS_SYNCHRONOUSLY = True
 
     strategy_cls = limiter._limiter.__class__
     limiter._storage = storage_from_string(url)
