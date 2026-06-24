@@ -31,8 +31,10 @@ from app.spending.models import (
 )
 from app.spending.schemas import (
     BudgetCreate,
+    BudgetPerformanceResponse,
     BudgetResponse,
     BudgetUpdate,
+    CategoryBreakdownResponse,
     CategoryCreate,
     CategoryResponse,
     CategorySpendTotal,
@@ -40,6 +42,7 @@ from app.spending.schemas import (
     RecurringTransactionCreate,
     RecurringTransactionResponse,
     RecurringTransactionUpdate,
+    SavingsRateResponse,
     SourceMetadataResponse,
     SpendingTrendResponse,
     TransactionCreate,
@@ -384,6 +387,55 @@ async def get_spending_trends(
     start = from_month.replace(day=1)
     end = to_month.replace(day=1)
     return await transaction_service.get_monthly_trends(workspace_id, start, end)
+
+
+@router.get("/analytics/breakdown", response_model=CategoryBreakdownResponse)
+async def get_category_breakdown(
+    transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    from_date: date = Query(..., alias="from"),
+    to_date: date = Query(..., alias="to"),
+    type: TransactionType = Query(TransactionType.expense),
+    limit: int = Query(default=10, ge=1, le=100),
+):
+    return await transaction_service.get_category_breakdown(
+        workspace_id=workspace_id,
+        from_date=from_date,
+        to_date=to_date,
+        type_filter=type,
+        limit=limit,
+    )
+
+
+@router.get("/analytics/budget-performance", response_model=BudgetPerformanceResponse)
+async def get_budget_performance(
+    budget_service: Annotated[BudgetService, Depends(get_spending_budget_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    from_month: date = Query(..., alias="from"),
+    to_month: date = Query(..., alias="to"),
+):
+    return await budget_service.get_budget_performance(
+        workspace_id=workspace_id,
+        from_month=from_month,
+        to_month=to_month,
+    )
+
+
+@router.get("/analytics/savings-rate", response_model=SavingsRateResponse)
+async def get_savings_rate(
+    transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    from_month: date = Query(..., alias="from"),
+    to_month: date = Query(..., alias="to"),
+):
+    return await transaction_service.get_savings_rate(
+        workspace_id=workspace_id,
+        from_month=from_month,
+        to_month=to_month,
+    )
 
 
 @router.post(
