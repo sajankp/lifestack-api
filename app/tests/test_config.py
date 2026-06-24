@@ -18,7 +18,14 @@ def _production_settings(**overrides) -> Settings:
 
 
 def test_settings_normalizes_known_env_values():
-    settings = Settings(ENV="Staging")
+    settings = Settings(
+        ENV="Staging",
+        SECRET_KEY="staging-secret-key-changed-in-staging-12345",
+        METRICS_TOKEN="staging-metrics-token-changed-in-staging-12345",
+        COOKIE_SECURE=True,
+        COOKIE_DOMAIN=".sajankp.com",
+        RATE_LIMIT_STORAGE_URI="redis://localhost:6379/1",
+    )
 
     assert settings.ENV == "staging"
 
@@ -110,5 +117,15 @@ def test_production_settings_reject_e2e_test_hooks():
 
 
 def test_non_local_settings_reject_e2e_test_hooks():
-    with pytest.raises(ValueError, match="ENABLE_E2E_TEST_HOOKS"):
-        Settings(ENV="staging", ENABLE_E2E_TEST_HOOKS=True)
+    with pytest.raises(
+        ValueError, match="ENABLE_E2E_TEST_HOOKS must remain disabled in production"
+    ):
+        Settings(
+            ENV="staging",
+            ENABLE_E2E_TEST_HOOKS=True,
+            SECRET_KEY="staging-secret-key-changed-in-staging-12345",
+            METRICS_TOKEN="staging-metrics-token-changed-in-staging-12345",
+            COOKIE_SECURE=True,
+            COOKIE_DOMAIN=".sajankp.com",
+            RATE_LIMIT_STORAGE_URI="redis://localhost:6379/1",
+        )

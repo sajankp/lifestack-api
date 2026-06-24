@@ -188,7 +188,10 @@ async def execute_agent_tool(
         except Exception as e:
             await session.rollback()
             logger.error("tool_execution_failed", tool=name, error=str(e))
-            return {"status": "error", "message": str(e)}
+            return {
+                "status": "error",
+                "message": "An internal error occurred while executing the tool.",
+            }
 
 
 def _build_setup_message(

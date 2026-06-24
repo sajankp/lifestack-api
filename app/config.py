@@ -290,7 +290,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _check_production_defaults(self) -> "Settings":
         """Fail fast when insecure defaults are used in production."""
-        if self.ENV == "production":
+        if self.ENV in ("production", "staging"):
             if self.SECRET_KEY == "super-secret-key-change-in-production":
                 raise ValueError("SECRET_KEY must be changed from its default value in production.")
             if self.METRICS_TOKEN.startswith("dev-"):

@@ -2,6 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditLogger
@@ -16,6 +17,8 @@ from app.spending.service import CategoryService, TransactionService
 from app.todo.repository import TodoRepository
 from app.todo.schemas import TodoCreate, TodoUpdate
 from app.todo.service import TodoService
+
+logger = structlog.get_logger(__name__)
 
 
 def _parse_due_datetime(value: str) -> datetime:
@@ -145,7 +148,11 @@ class AgentTools:
         try:
             todo = await self.todo_service.get_todo(self.workspace_id, pid)
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            logger.error("get_todo_failed", public_id=public_id, error=str(e))
+            return {
+                "status": "error",
+                "message": "An internal error occurred while executing the tool.",
+            }
 
         return {
             "status": "success",
@@ -205,7 +212,11 @@ class AgentTools:
             )
         except Exception as e:
             await self.session.rollback()
-            return {"status": "error", "message": str(e)}
+            logger.error("update_todo_failed", public_id=public_id, error=str(e))
+            return {
+                "status": "error",
+                "message": "An internal error occurred while executing the tool.",
+            }
 
         return {
             "status": "success",
@@ -230,7 +241,11 @@ class AgentTools:
                 audit_logger=self.audit_logger,
             )
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            logger.error("delete_todo_failed", public_id=public_id, error=str(e))
+            return {
+                "status": "error",
+                "message": "An internal error occurred while executing the tool.",
+            }
         return {"status": "success", "entity_public_id": public_id}
 
     async def log_spending_transaction(
