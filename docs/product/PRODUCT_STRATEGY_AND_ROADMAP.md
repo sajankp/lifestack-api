@@ -112,10 +112,10 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 
 | Area | Roadmap Item | Why It Belongs Here |
 |---|---|---|
-| Spending analytics | Category breakdown, budget-vs-actual analytics, savings-rate analytics, and richer trend UX. | These are product-surface expansions beyond the implemented trends slice. |
+| Spending analytics (Implemented) | Category breakdown, budget-vs-actual, and savings-rate analytics. | Implemented under feat/spending-analytics branch. |
 | Wallet ledger | Ledger-style balance projection, richer transfer timeline UX, reconciliation, and statement matching. | These are finance-product depth items, not blockers for the current demo baseline. |
 | Notifications | Email delivery, push delivery, real-time notification transport, grouping, and digest variants. | Delivery channels depend on mobile/email infrastructure and should be sequenced with notification strategy. |
-| Imports | Very-large-file streaming guarantees, async/background import workers, `.xlsx` imports, smart column mapping, partial-success modes, and virus scanning. | These are scale/operations upgrades beyond the implemented CSV validate-preview-commit workflow. |
+| Imports (Implemented) | Async/background import workers, `.xlsx` imports, smart column mapping, and large-file streaming. | Implemented under feat/spending-analytics branch. |
 | Currency display | Remaining frontend-wide display polish, locale/date/number profiles, and historical FX replay for every view. | These are consistency and polish tracks after the implemented finance settings foundation. |
 | Voice/capture | WebRTC-grade production transport, broader capture domains, multi-item capture, and AI-assisted routing. | Capture is useful as an input layer, but expansion should follow mobile/coach sequencing. |
 | Weekly summaries | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
