@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, desc, func, select
 
 from app.core.audit import AuditLogger
 from app.core.exceptions import (
@@ -32,11 +32,20 @@ from app.spending.repository import (
 )
 from app.spending.schemas import (
     BudgetCreate,
+    BudgetPerformanceItem,
+    BudgetPerformanceResponse,
+    BudgetPerformanceTotals,
     BudgetUpdate,
+    CategoryBreakdownItem,
+    CategoryBreakdownOther,
+    CategoryBreakdownResponse,
     CategoryCreate,
     CategoryUpdate,
     RecurringTransactionCreate,
     RecurringTransactionUpdate,
+    SavingsRatePoint,
+    SavingsRateResponse,
+    SavingsRateTotals,
     SpendingTrendPoint,
     SpendingTrendResponse,
     TransactionCreate,
@@ -591,6 +600,200 @@ class TransactionService:
             months=points,
         )
 
+    async def get_category_breakdown(
+        self,
+        workspace_id: int,
+        from_date: date,
+        to_date: date,
+        type_filter: TransactionType,
+        limit: int = 10,
+    ) -> CategoryBreakdownResponse:
+        if from_date > to_date:
+            raise ValidationError(detail="from_date cannot be after to_date")
+        if (to_date - from_date).days > 24 * 31:
+            raise ValidationError(detail="Date range cannot exceed 24 months")
+
+        start_dt = datetime(from_date.year, from_date.month, from_date.day, tzinfo=UTC)
+        end_dt = datetime(to_date.year, to_date.month, to_date.day, 23, 59, 59, 999999, tzinfo=UTC)
+
+        # 1. Total amount
+        total_stmt = select(func.coalesce(func.sum(SpendingTransaction.amount), 0)).where(
+            SpendingTransaction.workspace_id == workspace_id,
+            SpendingTransaction.type == type_filter.value,
+            SpendingTransaction.occurred_at >= start_dt,
+            SpendingTransaction.occurred_at <= end_dt,
+        )
+        total_amount = Decimal(await self.transaction_repo.session.scalar(total_stmt) or 0)
+
+        # 2. Categories sums
+        stmt = (
+            select(
+                SpendingCategory.public_id,
+                SpendingCategory.name,
+                func.coalesce(func.sum(SpendingTransaction.amount), 0).label("amount"),
+                func.count(SpendingTransaction.id).label("count"),
+            )
+            .join(SpendingTransaction, SpendingTransaction.category_id == SpendingCategory.id)
+            .where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.type == type_filter.value,
+                SpendingTransaction.occurred_at >= start_dt,
+                SpendingTransaction.occurred_at <= end_dt,
+            )
+            .group_by(SpendingCategory.id, SpendingCategory.public_id, SpendingCategory.name)
+            .order_by(desc(func.sum(SpendingTransaction.amount)))
+        )
+        rows = (await self.transaction_repo.session.execute(stmt)).all()
+
+        items: list[CategoryBreakdownItem] = []
+        other_amount = Decimal("0")
+        other_count = 0
+        other_cats = 0
+
+        for idx, row in enumerate(rows):
+            amount = Decimal(row.amount)
+            pct = float((amount / total_amount) * 100) if total_amount > 0 else 0.0
+            if idx < limit:
+                items.append(
+                    CategoryBreakdownItem(
+                        category_id=row.public_id,
+                        category_name=row.name,
+                        amount=amount,
+                        pct_of_total=pct,
+                        transaction_count=int(row.count),
+                    )
+                )
+            else:
+                other_amount += amount
+                other_count += int(row.count)
+                other_cats += 1
+
+        other = None
+        if other_cats > 0:
+            other = CategoryBreakdownOther(
+                amount=other_amount,
+                pct_of_total=float((other_amount / total_amount) * 100)
+                if total_amount > 0
+                else 0.0,
+                category_count=other_cats,
+            )
+
+        return CategoryBreakdownResponse(
+            from_date=from_date,
+            to_date=to_date,
+            type=type_filter,
+            total=total_amount,
+            categories=items,
+            other=other,
+        )
+
+    async def get_savings_rate(
+        self, workspace_id: int, from_month: date, to_month: date
+    ) -> SavingsRateResponse:
+        if from_month > to_month:
+            raise ValidationError(detail="from_month cannot be after to_month")
+        if (to_month.year - from_month.year) * 12 + (to_month.month - from_month.month) >= 24:
+            raise ValidationError(detail="Date range cannot exceed 24 months")
+
+        start_dt = datetime(from_month.year, from_month.month, 1, tzinfo=UTC)
+        if to_month.month == 12:
+            end_dt = datetime(to_month.year + 1, 1, 1, tzinfo=UTC)
+        else:
+            end_dt = datetime(to_month.year, to_month.month + 1, 1, tzinfo=UTC)
+
+        month_bucket = func.date_trunc("month", SpendingTransaction.occurred_at)
+        stmt = (
+            select(
+                month_bucket.label("month"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                SpendingTransaction.type == TransactionType.income.value,
+                                SpendingTransaction.amount,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("income"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                SpendingTransaction.type == TransactionType.expense.value,
+                                SpendingTransaction.amount,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("expense"),
+            )
+            .where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.occurred_at >= start_dt,
+                SpendingTransaction.occurred_at < end_dt,
+            )
+            .group_by(month_bucket)
+            .order_by(month_bucket)
+        )
+        rows = (await self.transaction_repo.session.execute(stmt)).all()
+
+        data_by_month = {}
+        for row in rows:
+            month_str = row.month.strftime("%Y-%m")
+            income = Decimal(row.income)
+            expense = Decimal(row.expense)
+            savings = income - expense
+            rate = float((savings / income) * 100) if income > 0 else None
+            data_by_month[month_str] = (income, expense, savings, rate)
+
+        cursor = from_month.replace(day=1)
+        end = to_month.replace(day=1)
+        points: list[SavingsRatePoint] = []
+        total_income = Decimal("0")
+        total_expense = Decimal("0")
+
+        while cursor <= end:
+            month_str = cursor.strftime("%Y-%m")
+            if month_str in data_by_month:
+                income, expense, savings, rate = data_by_month[month_str]
+            else:
+                income, expense, savings, rate = Decimal("0"), Decimal("0"), Decimal("0"), None
+
+            points.append(
+                SavingsRatePoint(
+                    month=month_str,
+                    income=income,
+                    expense=expense,
+                    savings=savings,
+                    savings_rate_pct=rate,
+                )
+            )
+            total_income += income
+            total_expense += expense
+
+            if cursor.month == 12:
+                cursor = cursor.replace(year=cursor.year + 1, month=1)
+            else:
+                cursor = cursor.replace(month=cursor.month + 1)
+
+        total_savings = total_income - total_expense
+        avg_rate = float((total_savings / total_income) * 100) if total_income > 0 else None
+
+        return SavingsRateResponse(
+            from_month=from_month.strftime("%Y-%m"),
+            to_month=to_month.strftime("%Y-%m"),
+            months=points,
+            period_totals=SavingsRateTotals(
+                total_income=total_income,
+                total_expense=total_expense,
+                total_savings=total_savings,
+                average_savings_rate_pct=avg_rate,
+            ),
+        )
+
 
 class BudgetService:
     def __init__(
@@ -713,6 +916,134 @@ class BudgetService:
                 },
             )
         return budget
+
+    async def get_budget_performance(
+        self, workspace_id: int, from_month: date, to_month: date
+    ) -> BudgetPerformanceResponse:
+        from_month = from_month.replace(day=1)
+        to_month = to_month.replace(day=1)
+        if from_month > to_month:
+            raise ValidationError(detail="from_month cannot be after to_month")
+        if (to_month.year - from_month.year) * 12 + (to_month.month - from_month.month) >= 24:
+            raise ValidationError(detail="Date range cannot exceed 24 months")
+
+        start_dt = datetime(from_month.year, from_month.month, 1, tzinfo=UTC)
+        if to_month.month == 12:
+            end_dt = datetime(to_month.year + 1, 1, 1, tzinfo=UTC)
+        else:
+            end_dt = datetime(to_month.year, to_month.month + 1, 1, tzinfo=UTC)
+
+        # 1. Sum budgets by category
+        budget_stmt = (
+            select(
+                SpendingCategory.id,
+                SpendingCategory.public_id,
+                SpendingCategory.name,
+                func.sum(SpendingBudget.amount).label("budget_amount"),
+            )
+            .join(SpendingBudget, SpendingBudget.category_id == SpendingCategory.id)
+            .where(
+                SpendingBudget.workspace_id == workspace_id,
+                SpendingBudget.month_start >= from_month,
+                SpendingBudget.month_start <= to_month,
+            )
+            .group_by(SpendingCategory.id, SpendingCategory.public_id, SpendingCategory.name)
+        )
+        budget_rows = (await self.budget_repo.session.execute(budget_stmt)).all()
+
+        # 2. Sum transactions (expense type) by category
+        tx_stmt = (
+            select(
+                SpendingCategory.id,
+                SpendingCategory.public_id,
+                SpendingCategory.name,
+                func.sum(SpendingTransaction.amount).label("actual_amount"),
+            )
+            .join(SpendingTransaction, SpendingTransaction.category_id == SpendingCategory.id)
+            .where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.type == TransactionType.expense.value,
+                SpendingTransaction.occurred_at >= start_dt,
+                SpendingTransaction.occurred_at < end_dt,
+            )
+            .group_by(SpendingCategory.id, SpendingCategory.public_id, SpendingCategory.name)
+        )
+        tx_rows = (await self.budget_repo.session.execute(tx_stmt)).all()
+
+        categories_map = {}
+        for row in budget_rows:
+            categories_map[row.id] = {
+                "public_id": row.public_id,
+                "name": row.name,
+                "budget_amount": Decimal(row.budget_amount),
+                "actual_amount": Decimal("0"),
+            }
+
+        for row in tx_rows:
+            if row.id in categories_map:
+                categories_map[row.id]["actual_amount"] = Decimal(row.actual_amount)
+            else:
+                categories_map[row.id] = {
+                    "public_id": row.public_id,
+                    "name": row.name,
+                    "budget_amount": None,
+                    "actual_amount": Decimal(row.actual_amount),
+                }
+
+        items: list[BudgetPerformanceItem] = []
+        for data in categories_map.values():
+            budget_amount = data["budget_amount"]
+            actual_amount = data["actual_amount"]
+
+            if budget_amount is None:
+                utilization_pct = None
+                remaining = None
+                status = "exceeded" if actual_amount > 0 else "on_track"
+            else:
+                utilization_pct = (
+                    float((actual_amount / budget_amount) * 100) if budget_amount > 0 else 0.0
+                )
+                remaining = budget_amount - actual_amount
+                if utilization_pct < 90.0:
+                    status = "on_track"
+                elif utilization_pct <= 100.0:
+                    status = "warning"
+                else:
+                    status = "exceeded"
+
+            items.append(
+                BudgetPerformanceItem(
+                    category_id=data["public_id"],
+                    category_name=data["name"],
+                    budget_amount=budget_amount,
+                    actual_amount=actual_amount,
+                    utilization_pct=utilization_pct,
+                    remaining=remaining,
+                    status=status,
+                )
+            )
+
+        # Calculate totals
+        total_budgeted = sum(
+            item["budget_amount"]
+            for item in categories_map.values()
+            if item["budget_amount"] is not None
+        )
+        total_actual = sum(item["actual_amount"] for item in categories_map.values())
+        overall_utilization = (
+            float((total_actual / total_budgeted) * 100) if total_budgeted > 0 else None
+        )
+
+        return BudgetPerformanceResponse(
+            from_month=from_month.strftime("%Y-%m"),
+            to_month=to_month.strftime("%Y-%m"),
+            categories=items,
+            totals=BudgetPerformanceTotals(
+                total_budgeted=total_budgeted,
+                total_actual=total_actual,
+                overall_utilization_pct=overall_utilization,
+            ),
+        )
 
 
 def _advance_due_date(current: date, frequency: str, interval: int) -> date:
