@@ -1,6 +1,6 @@
 """hybrid_instrument_catalog
 
-Revision ID: 8d6e117cb0b0
+Revision ID: 0032_hybrid_instrument_catalog
 Revises: 0031_lookthrough_threshold
 Create Date: 2026-06-24 09:57:14.290220
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "8d6e117cb0b0"
+revision = "0032_hybrid_instrument_catalog"
 down_revision = "0031_lookthrough_threshold"
 branch_labels = None
 depends_on = None
