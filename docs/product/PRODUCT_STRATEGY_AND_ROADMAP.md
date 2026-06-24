@@ -125,12 +125,15 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 | Weekly summaries | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
 | Budget model | Grouped budgets and custom financial KPIs. | These are product-model expansions that should be designed intentionally. |
 | Wallet ledger (reconciliation) | Statement matching, multi-account reconciliation view, and richer transfer timeline UX. | Deeper finance-product work building on the implemented ledger foundation. |
+| JWT library maintenance | Migrate from `python-jose` to `PyJWT` or `joserfc`. | python-jose is no longer actively maintained; planning migration mitigates dependency security risk. |
 
 ### Investing and Market Data
 
 | Area | Roadmap Item | Why It Belongs Here |
 |---|---|---|
 | Investing performance | Richer return math, deeper visualization, benchmark comparison, dividend/total-return views, and scheduled/background price-refresh cadence. | On-demand automated price refresh is implemented; deeper performance analytics and scheduled pricing should be scoped as explicit product slices. |
+| Investing summary valuation | Query latest price data from `HoldingPrice` table instead of using cost basis. | Resolves misleading investing overview totals when asset values fluctuate. |
+| Portfolio daily change | Calculate dashboard daily change metrics using `PortfolioSnapshot` diffs. | Replaces the current unimplemented placeholder field (`daily_change` returns `None`). |
 | Hybrid instrument catalog | [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md): global public instruments/companies with workspace-scoped tenant overrides. | This reduces duplicate public securities and redundant provider calls, but should wait until the current workspace-scoped investing flows settle. |
 | Look-through analytics | UX alerts, quality scoring, company identity normalization, derivative look-through, and deeper constituent-provider coverage. | Look-through analytics and automated ETF/MF constituent ingestion are implemented; these are advanced accuracy, scale, and UX tracks after V1 correctness. |
 | Platform market data | [`Spec 035`](../specs/spec-035-platform-market-data-curation.md): platform-admin curation for shared/global constituent datasets, instrument prices, licensed market-data uploads, provenance, and rollback. | Workspace-level constituent CSV import is handled by [`Spec 034`](../specs/spec-034-constituent-csv-import.md); shared/global market-data curation is a later-stage permission and data-governance problem. |
