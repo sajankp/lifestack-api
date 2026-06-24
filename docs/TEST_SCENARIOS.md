@@ -81,6 +81,7 @@ The Playwright suite currently has 26 tests across 16 spec files.
 |---|---|
 | `app-shell-responsive.spec.ts` | Tablet-width app shell behavior: mobile drawer navigation, header notifications, profile menu, and logout. |
 | `auth.spec.ts` | Register, login, dashboard access, logout, and logged-out protected-route redirect. |
+| `capture.spec.ts` | Verify viewer role is blocked from connecting, member receives provider unavailable alert when API key is missing, and mock WebSocket session handles user text, agent transcript, tool executions, and client errors correctly. |
 | `keyboard-accessibility.spec.ts` | Verify keyboard-only sidebar navigation into Todo, Todo creation via Enter, Todo completion via Space on the row control, and Spending category modal creation by keyboard. |
 | `todo-smoke.spec.ts` | Create and complete a todo. |
 | `transfer-flow.spec.ts` | Create same-currency and cross-currency account transfers through the UI, verify account/module/gross/net/FX metadata in transfer history, and verify invalid transfer arithmetic is rejected by the API. |
@@ -94,7 +95,7 @@ The Playwright suite currently has 26 tests across 16 spec files.
 | `notifications-summaries.spec.ts` | Trigger a weekly summary through the E2E hook, assert the generated summary id/week response, verify the generated unread notification and header badge, mark notifications read, verify the Weekly Summaries page renders the generated summary, and verify notifications/summaries stay isolated when switching between personal and shared workspaces. |
 | `runtime-header-master-config.spec.ts` | Verify global header controls and Master Configuration account/category edit actions. |
 | `rbac.spec.ts` | Verify viewer mutation rejection, member todo CRUD, viewer finance-settings rejection, and owner finance-settings update. |
-| `workspace-isolation.spec.ts` | Verify an invited user can switch between personal and shared workspaces, sees workspace-specific Todo and spending transaction data in the UI, and cannot API-fetch Todo or spending records from a non-active workspace. |
+| `workspace-isolation.spec.ts` | Verify an invited user can switch between personal and shared workspaces, sees workspace-specific Todo, spending transaction, and investing holding data in the UI, and cannot API-fetch/mutate Todo, spending, investing, import, or export records from a non-active workspace. |
 
 ### Smoke Tier
 
@@ -117,6 +118,7 @@ The full tier runs all Playwright specs, including smoke plus:
 - Export create/download/delete lifecycle through the UI.
 - Guided first-run empty states and primary start controls across core modules.
 - Completed spending import rollback from the UI.
+- Voice agent connection block for viewer, missing API key error alerts, and mock WebSocket session interactions (transcripts, tool execution status, client errors).
 - Account-linked spending transaction creation and row context.
 - Spending recurring generation.
 - Investing unconverted multi-currency state, FX conversion, displayed FX rate metadata, visible original currency mix, and look-through.
@@ -124,7 +126,7 @@ The full tier runs all Playwright specs, including smoke plus:
 - Generated weekly summary hook response, notification, unread badge, mark-all-read behavior, and weekly summary rendering.
 - Runtime header and Master Configuration edits.
 - Workspace RBAC checks.
-- Workspace switch isolation for Todo UI and object lookup boundaries.
+- Workspace switch isolation for Todo, spending, and investing UI, and API lookup/mutation boundaries for Todo, spending, investing, imports, and exports.
 
 ## Current Backend Coverage
 
@@ -287,6 +289,7 @@ Coverage:
 - Auto-created category reporting.
 - Import delete lifecycle for validated imports.
 - Completed import rollback for spending transactions, spending budgets, and investing holdings.
+- Import workspace isolation (get, commit, delete, and list API actions).
 - Import preview cleanup job.
 
 ### Exports
@@ -302,6 +305,7 @@ Coverage:
 - Export create/get/download/delete lifecycle.
 - Pending export delete conflict.
 - Local backend lifecycle.
+- Export workspace isolation (get, download, and delete API actions).
 - Cleanup workflow.
 - Repository lifecycle.
 - Service validation for invalid modules, empty module lists, pending conflicts, limits, JSON generation, local backend, and S3 backend.
@@ -390,22 +394,11 @@ missing tests based on the current suite shape.
 
 ### P1: Product-Quality Gaps
 
-2. Cross-workspace breadth E2E
-   - Extend the current workspace isolation E2E beyond Todo, spending, and notifications/summaries to investing, imports, and exports.
-   - Switch workspaces and verify every high-level page changes context.
-   - Verify forbidden/not-found handling on those modules does not leak names, amounts, filenames, or summary content.
-
-3. Finance valuation metadata breadth
+2. Finance valuation metadata breadth
    - Current E2E covers visible reporting currency, original currency mix, unconverted state, conversion availability, and displayed FX rate values.
    - Add tests for FX date/source only after those fields are exposed in the relevant UI surfaces.
 
-4. Voice/capture E2E
-   - Verify failed provider/session state shows recovery UI.
-   - Verify oversized or invalid capture input is rejected with sanitized error text.
-   - Verify a successful tool action, such as create todo or log spending, appears in the target module.
-   - Verify viewer role cannot trigger mutating voice actions.
-
-5. Notifications and summaries workspace isolation breadth
+3. Notifications and summaries workspace isolation breadth
    - Current E2E verifies unread counts, mark-all-read behavior, and weekly summary lists while switching between personal and shared workspaces.
    - Extend this further to include notification pagination/filter state and latest-summary dashboard cards across workspaces.
 

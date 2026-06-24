@@ -323,6 +323,10 @@ npm run dev
 
 API docs: `http://localhost:8000/docs`
 
+## Production Deployment
+
+For deploying Lifestack to production or staging environments using Docker Compose, Cloudflare Tunnels, and encrypted automated backups, see the [Production Deployment Guide](docs/PRODUCTION_DEPLOYMENT.md).
+
 MCP integration is intentionally not documented here until its auth and usage flow are finalized.
 
 ## Voice Capture Runtime Limits
