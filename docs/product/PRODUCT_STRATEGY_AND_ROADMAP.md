@@ -1,7 +1,7 @@
 # Product Strategy and Roadmap
 
 Date: 2026-06-03
-Last updated: 2026-06-14
+Last updated: 2026-06-24
 
 Scope: current product positioning, implementation status, post-Gate 0 backlog, and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
 
@@ -93,6 +93,8 @@ This roadmap is the living home for product sequencing. Specs remain the source 
 | Implemented platform baseline | Specs 001, 002, 004, 005, 006, 007, 008, and 010 | API conventions, workspace isolation, audit logging, scheduler foundation, exports, dashboard reads, investing MVP, and FastTodo reference decisions are implemented baseline capabilities. |
 | Implemented finance and investing baseline | Specs 011, 012, 014, 022, 023, 027, [`031`](../specs/spec-031-automated-price-updates-and-ui.md), [`033`](../specs/spec-033-hybrid-instrument-catalog.md), and [`034`](../specs/spec-034-constituent-csv-import.md) | Currency governance, look-through analytics, performance V1, account identity, price refresh, hybrid global instrument catalog, and workspace-facing constituent CSV import are implemented. The unreliable automated constituent path from retired Spec 032 is no longer part of the runtime. |
 | Implemented workflow and operations baseline | Specs 003, 009, 013, 015, 016, 017, 019, 020, 024, 025, 026, and 028 | Spending, scheduler workflows, recurring todos, notifications, weekly summaries, CSV imports, runtime integration, audit remediation, and Gate 0 hardening are implemented at their documented stage. |
+| Implemented spending analytics and ledger | feat/spending-analytics branch | Category breakdown, budget-vs-actual, and savings-rate analytics are implemented. Per-account transaction ledger with running balance (GET /spending/accounts/{id}/ledger) and derived wallet cash-balance coupling (GET /finance/accounts/{id}/balance) are implemented and covered by integration tests. |
+| Implemented imports enhancements | feat/spending-analytics branch | Async/background import workers, `.xlsx` streaming, large-file handling, and import preview rows are implemented. |
 | Archived or partial capture path | [`Spec 018`](../specs/spec-018-quick-capture.md), [`Spec 021`](../specs/spec-021-voice-agent-function-calling.md) | Spec 018 quick capture is archived/deferred to roadmap. Spec 021 voice/tool calling is implemented as Phase 1; production capture expansion remains a roadmap item. |
 | Proposed/current slices | [`Spec 030`](../specs/spec-030-cli-management-commands.md) | CLI management commands remain a proposed/current implementation candidate. |
 | Deferred future data model | [`Spec 035`](../specs/spec-035-platform-market-data-curation.md) | Platform market-data curation is a deferred backlog item until the workspace-scoped investing flows, permission model, and provenance requirements are ready. |
@@ -113,13 +115,16 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 | Area | Roadmap Item | Why It Belongs Here |
 |---|---|---|
 | Spending analytics (Implemented) | Category breakdown, budget-vs-actual, and savings-rate analytics. | Implemented under feat/spending-analytics branch. |
-| Wallet ledger | Ledger-style balance projection, richer transfer timeline UX, reconciliation, and statement matching. | These are finance-product depth items, not blockers for the current demo baseline. |
-| Notifications | Email delivery, push delivery, real-time notification transport, grouping, and digest variants. | Delivery channels depend on mobile/email infrastructure and should be sequenced with notification strategy. |
+| Spending ledger (Implemented) | Per-account transaction ledger with running balance, opening/closing page balances, debit/credit color coding, and workspace isolation. Backend: `GET /spending/accounts/{id}/ledger`. Frontend: Ledger tab on Spending page. | Implemented under feat/spending-analytics branch. |
+| Wallet/account balance coupling (Implemented) | Derived spending balance for each account: `GET /finance/accounts/{id}/balance` computes income minus expenses from transaction history. Surfaced as a balance summary card on the Ledger tab. Deliberately independent from investing cash balances. | Implemented under feat/spending-analytics branch. |
 | Imports (Implemented) | Async/background import workers, `.xlsx` imports, smart column mapping, and large-file streaming. | Implemented under feat/spending-analytics branch. |
+| Daily-work surface polish (Implemented) | Overdue todo indicators, recurring status badges, and dashboard cues. | Implemented under feat/spending-analytics branch. |
+| Notifications | Email delivery, push delivery, real-time notification transport, grouping, and digest variants. | Delivery channels depend on mobile/email infrastructure and should be sequenced with notification strategy. |
 | Currency display | Remaining frontend-wide display polish, locale/date/number profiles, and historical FX replay for every view. | These are consistency and polish tracks after the implemented finance settings foundation. |
 | Voice/capture | WebRTC-grade production transport, broader capture domains, multi-item capture, and AI-assisted routing. | Capture is useful as an input layer, but expansion should follow mobile/coach sequencing. |
 | Weekly summaries | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
 | Budget model | Grouped budgets and custom financial KPIs. | These are product-model expansions that should be designed intentionally. |
+| Wallet ledger (reconciliation) | Statement matching, multi-account reconciliation view, and richer transfer timeline UX. | Deeper finance-product work building on the implemented ledger foundation. |
 
 ### Investing and Market Data
 
