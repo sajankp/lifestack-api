@@ -120,28 +120,45 @@ class InstrumentRepository:
     async def list_workspace(self, workspace_id: int) -> Sequence[Instrument]:
         result = await self.session.execute(
             select(Instrument)
-            .where(Instrument.workspace_id == workspace_id)
-            .order_by(Instrument.created_at.desc())
+            .where((Instrument.workspace_id == workspace_id) | (Instrument.workspace_id.is_(None)))
+            .order_by(Instrument.workspace_id.desc().nulls_last(), Instrument.created_at.desc())
         )
-        return result.scalars().all()
+        rows = result.scalars().all()
+        seen = set()
+        deduped = []
+        for r in rows:
+            if r.symbol not in seen:
+                seen.add(r.symbol)
+                deduped.append(r)
+        return deduped
 
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> Instrument | None:
         result = await self.session.execute(
             select(Instrument).where(
-                Instrument.workspace_id == workspace_id,
+                (Instrument.workspace_id == workspace_id) | (Instrument.workspace_id.is_(None)),
                 Instrument.public_id == public_id,
             )
         )
         return result.scalar_one_or_none()
 
-    async def get_by_symbol(self, workspace_id: int, symbol: str) -> Instrument | None:
-        result = await self.session.execute(
-            select(Instrument).where(
-                Instrument.workspace_id == workspace_id,
-                Instrument.symbol == symbol,
+    async def get_by_symbol(self, workspace_id: int | None, symbol: str) -> Instrument | None:
+        if workspace_id is not None:
+            # Query workspace first (override)
+            result = await self.session.execute(
+                select(Instrument).where(
+                    Instrument.workspace_id == workspace_id,
+                    Instrument.symbol == symbol,
+                )
             )
+            val = result.scalar_one_or_none()
+            if val is not None:
+                return val
+
+        # Query global
+        res_global = await self.session.execute(
+            select(Instrument).where(Instrument.workspace_id.is_(None), Instrument.symbol == symbol)
         )
-        return result.scalar_one_or_none()
+        return res_global.scalar_one_or_none()
 
     async def get_by_symbols(
         self, workspace_id: int, symbols: Sequence[str]
@@ -150,13 +167,19 @@ class InstrumentRepository:
         if not normalized:
             return {}
         result = await self.session.execute(
-            select(Instrument).where(
-                Instrument.workspace_id == workspace_id,
+            select(Instrument)
+            .where(
+                (Instrument.workspace_id == workspace_id) | (Instrument.workspace_id.is_(None)),
                 Instrument.symbol.in_(normalized),
             )
+            .order_by(Instrument.workspace_id.desc().nulls_last())
         )
         rows = result.scalars().all()
-        return {row.symbol: row for row in rows}
+        res = {}
+        for row in rows:
+            if row.symbol not in res:
+                res[row.symbol] = row
+        return res
 
     async def get_by_ids(self, ids: Sequence[int]) -> dict[int, Instrument]:
         unique_ids = {i for i in ids if i is not None}
@@ -186,20 +209,30 @@ class CompanyRepository:
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> Company | None:
         result = await self.session.execute(
             select(Company).where(
-                Company.workspace_id == workspace_id,
+                (Company.workspace_id == workspace_id) | (Company.workspace_id.is_(None)),
                 Company.public_id == public_id,
             )
         )
         return result.scalar_one_or_none()
 
-    async def get_by_name(self, workspace_id: int, name: str) -> Company | None:
-        result = await self.session.execute(
-            select(Company).where(
-                Company.workspace_id == workspace_id,
-                Company.name == name,
+    async def get_by_name(self, workspace_id: int | None, name: str) -> Company | None:
+        if workspace_id is not None:
+            # Query workspace first (override)
+            result = await self.session.execute(
+                select(Company).where(
+                    Company.workspace_id == workspace_id,
+                    Company.name == name,
+                )
             )
+            val = result.scalar_one_or_none()
+            if val is not None:
+                return val
+
+        # Query global
+        res_global = await self.session.execute(
+            select(Company).where(Company.workspace_id.is_(None), Company.name == name)
         )
-        return result.scalar_one_or_none()
+        return res_global.scalar_one_or_none()
 
     async def get_by_id(self, company_id: int) -> Company | None:
         result = await self.session.execute(select(Company).where(Company.id == company_id))
@@ -218,13 +251,19 @@ class CompanyRepository:
         if not unique_names:
             return {}
         result = await self.session.execute(
-            select(Company).where(
-                Company.workspace_id == workspace_id,
+            select(Company)
+            .where(
+                (Company.workspace_id == workspace_id) | (Company.workspace_id.is_(None)),
                 Company.name.in_(unique_names),
             )
+            .order_by(Company.workspace_id.desc().nulls_last())
         )
         rows = result.scalars().all()
-        return {row.name: row for row in rows}
+        res = {}
+        for row in rows:
+            if row.name not in res:
+                res[row.name] = row
+        return res
 
     async def create(self, company: Company) -> Company:
         self.session.add(company)

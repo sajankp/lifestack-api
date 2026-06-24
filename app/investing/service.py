@@ -8,7 +8,7 @@ import httpx
 
 from app.config import settings
 from app.core.audit import AuditLogger
-from app.core.exceptions import ConflictError, NotFoundError, ValidationError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
 from app.finance.models import Account, FxRate
 from app.finance.repository import (
@@ -192,6 +192,7 @@ class HoldingService:
     ) -> Instrument | None:
         if self.instrument_repo is None:
             return None
+        # get_by_symbol already checks workspace override first, then global
         instrument = await self.instrument_repo.get_by_symbol(workspace_id, symbol)
         if instrument is not None:
             if allow_type_change and instrument.instrument_type != instrument_type.value:
@@ -200,17 +201,24 @@ class HoldingService:
                 instrument = await self.instrument_repo.save(instrument)
             return instrument
 
+        # If not found, check via Yahoo Finance
+        target_workspace_id = workspace_id
+        async with httpx.AsyncClient() as client:
+            price_info = await _fetch_stock_price(client, symbol)
+            if price_info is not None:
+                target_workspace_id = None
+
         company: Company | None = None
         if self.company_repo is not None and instrument_type == InstrumentType.stock:
-            company = await self.company_repo.get_by_name(workspace_id, symbol)
+            company = await self.company_repo.get_by_name(target_workspace_id, symbol)
             if company is None:
                 company = await self.company_repo.create(
-                    Company(workspace_id=workspace_id, name=symbol, ticker=symbol)
+                    Company(workspace_id=target_workspace_id, name=symbol, ticker=symbol)
                 )
 
         instrument = await self.instrument_repo.create(
             Instrument(
-                workspace_id=workspace_id,
+                workspace_id=target_workspace_id,
                 symbol=symbol,
                 name=symbol,
                 instrument_type=instrument_type.value,
@@ -981,17 +989,23 @@ class InstrumentService:
         return await self.instrument_repo.list_workspace(workspace_id)
 
     async def create_instrument(self, workspace_id: int, payload: InstrumentCreate) -> Instrument:
-        existing = await self.instrument_repo.get_by_symbol(workspace_id, payload.symbol)
+        target_workspace_id = workspace_id
+        async with httpx.AsyncClient() as client:
+            price_info = await _fetch_stock_price(client, payload.symbol)
+            if price_info is not None:
+                target_workspace_id = None
+
+        existing = await self.instrument_repo.get_by_symbol(target_workspace_id, payload.symbol)
         if existing is not None:
             raise ConflictError(detail=f"Instrument '{payload.symbol}' already exists")
 
         company_id: int | None = None
         if payload.instrument_type == InstrumentType.stock:
-            company = await self.company_repo.get_by_name(workspace_id, payload.name)
+            company = await self.company_repo.get_by_name(target_workspace_id, payload.name)
             if company is None:
                 company = await self.company_repo.create(
                     Company(
-                        workspace_id=workspace_id,
+                        workspace_id=target_workspace_id,
                         name=payload.name,
                         ticker=payload.ticker or payload.symbol,
                     )
@@ -1000,7 +1014,7 @@ class InstrumentService:
 
         return await self.instrument_repo.create(
             Instrument(
-                workspace_id=workspace_id,
+                workspace_id=target_workspace_id,
                 symbol=payload.symbol,
                 name=payload.name,
                 instrument_type=payload.instrument_type.value,
@@ -1014,6 +1028,9 @@ class InstrumentService:
         instrument = await self.instrument_repo.get_by_public_id(workspace_id, public_id)
         if instrument is None:
             raise NotFoundError(detail=f"Instrument '{public_id}' not found")
+
+        if instrument.workspace_id != workspace_id:
+            raise ForbiddenError(detail="Cannot modify a global instrument reference")
 
         update_data = payload.model_dump(exclude_unset=True)
         if not update_data:
