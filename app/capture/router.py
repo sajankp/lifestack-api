@@ -3,7 +3,7 @@ from contextlib import suppress
 import structlog
 from fastapi import APIRouter, WebSocket
 
-from app.auth.repository import AuthSessionRepository
+from app.auth.repository import AuthSessionRepository, UserRepository
 from app.capture.agent import run_agent_session
 from app.core.auth import get_user_info_from_token
 from app.core.database import postgres
@@ -35,6 +35,11 @@ async def authenticate_ws(websocket: WebSocket) -> tuple[int, int]:
         auth_session = await auth_session_repo.get_active_by_sid(sid, user_id)
         if not auth_session:
             raise UnauthorizedError(detail="Session is no longer active")
+
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_id(user_id)
+        if not user or not user.is_active:
+            raise UnauthorizedError(detail="User is inactive")
 
         membership_repo = MembershipRepository(session)
         workspace_repo = WorkspaceRepository(session)
