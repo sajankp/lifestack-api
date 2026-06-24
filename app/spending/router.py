@@ -39,6 +39,7 @@ from app.spending.schemas import (
     CategoryResponse,
     CategorySpendTotal,
     CategoryUpdate,
+    LedgerResponse,
     RecurringTransactionCreate,
     RecurringTransactionResponse,
     RecurringTransactionUpdate,
@@ -694,3 +695,35 @@ async def delete_recurring(
     _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await recurring_service.deactivate_recurring(workspace_id, recurring_id)
+
+
+# ---------------------------------------------------------------------------
+# Spending Account Ledger
+# ---------------------------------------------------------------------------
+
+
+@router.get("/accounts/{account_id}/ledger", response_model=LedgerResponse)
+async def get_account_ledger(
+    account_id: uuid.UUID,
+    tx_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    from_date: datetime | None = Query(default=None),
+    to_date: datetime | None = Query(default=None),
+):
+    """Return a paginated transaction ledger for a spending account.
+
+    Entries are ordered most-recent first. Each entry includes a `running_balance`
+    representing the cumulative account balance (income minus expenses) after that
+    transaction. Opening and closing balances for the page are also returned.
+    """
+    return await tx_service.get_ledger(
+        workspace_id=workspace_id,
+        account_public_id=account_id,
+        from_date=from_date,
+        to_date=to_date,
+        limit=limit,
+        offset=offset,
+    )

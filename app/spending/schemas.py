@@ -355,3 +355,39 @@ class SavingsRateResponse(BaseModel):
     period_totals: SavingsRateTotals
 
     model_config = ConfigDict(populate_by_name=True, json_encoders={Decimal: str})
+
+
+# ---------------------------------------------------------------------------
+# Transaction Ledger schemas
+# ---------------------------------------------------------------------------
+
+
+class LedgerEntry(BaseModel):
+    """A single transaction with a cumulative running balance for the account."""
+
+    public_id: uuid.UUID
+    category_id: uuid.UUID
+    account_id: uuid.UUID | None
+    amount: Decimal
+    type: TransactionType
+    occurred_at: datetime
+    description: str | None
+    wallet_name: str | None
+    labels: str | None
+    source_type: str
+    running_balance: Decimal  # cumulative balance AFTER this transaction
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class LedgerResponse(BaseModel):
+    account_public_id: uuid.UUID
+    account_name: str
+    account_currency: str
+    opening_balance: Decimal  # balance before the first item in this page
+    closing_balance: Decimal  # balance after the last item in this page
+    total_transactions: int
+    items: list[LedgerEntry]
+
+    model_config = ConfigDict(json_encoders={Decimal: str})

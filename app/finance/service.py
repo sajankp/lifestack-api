@@ -166,6 +166,29 @@ class AccountService:
                 },
             )
 
+    async def get_spending_balance(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+    ) -> dict:
+        """Return derived spending balance for an account from transaction history."""
+        account = await self.get_account(workspace_id, public_id)
+        if account.id is None:
+            raise ValidationError(detail="Account ID is missing.")
+        balance, count, first_at, last_at = await self.account_repository.get_spending_balance(
+            workspace_id, account.id
+        )
+        return {
+            "account_public_id": account.public_id,
+            "account_name": account.name,
+            "account_type": account.account_type,
+            "currency_code": account.default_currency_code,
+            "spending_balance": balance,
+            "transaction_count": count,
+            "first_transaction_at": first_at,
+            "last_transaction_at": last_at,
+        }
+
 
 class FinanceSettingService:
     def __init__(

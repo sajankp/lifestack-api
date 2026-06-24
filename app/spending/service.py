@@ -41,6 +41,8 @@ from app.spending.schemas import (
     CategoryBreakdownResponse,
     CategoryCreate,
     CategoryUpdate,
+    LedgerEntry,
+    LedgerResponse,
     RecurringTransactionCreate,
     RecurringTransactionUpdate,
     SavingsRatePoint,
@@ -364,6 +366,126 @@ class TransactionService:
             account_id=account_id,
         )
         return dict(rows)
+
+    async def get_ledger(
+        self,
+        workspace_id: int,
+        account_public_id: uuid.UUID,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> LedgerResponse:
+        """Return a paginated ledger view for a spending account with running balance.
+
+        Transactions are ordered most-recent first (DESC). The running_balance
+        field on each entry represents the cumulative account balance AFTER
+        that transaction (viewing from oldest to newest).
+        """
+        account = await self.account_repo.get_by_public_id(workspace_id, account_public_id)
+        if not account:
+            raise NotFoundError(
+                detail=f"Account with id {account_public_id} not found in this workspace"
+            )
+        if account.id is None:
+            raise ValidationError(detail="Account ID is missing.")
+        account_id: int = account.id  # type: ignore[assignment]
+
+        txs, total = await self.transaction_repo.get_ledger_page(
+            workspace_id,
+            account_id,
+            from_date=from_date,
+            to_date=to_date,
+            limit=limit,
+            offset=offset,
+        )
+
+        # Compute the total net balance for the entire account (within date range)
+        total_balance = await self.transaction_repo.get_account_net_balance(
+            workspace_id,
+            account_id,
+            from_date=from_date,
+            to_date=to_date,
+        )
+
+        # For each transaction in this page (desc order), compute running balance.
+        # We need to know the "tail balance" (sum of all transactions AFTER this page,
+        # i.e. older entries). We achieve this by: tail_balance = total_balance - page_sum.
+        # Then accumulate from the bottom of the desc page upward.
+        page_sum = Decimal("0")
+        for tx in txs:
+            if tx.type == TransactionType.income:
+                page_sum += tx.amount
+            else:
+                page_sum -= tx.amount
+
+        tail_balance = total_balance - page_sum  # balance of all entries below this page
+
+        # Build running_balance per entry (desc page → last entry in page has tail_balance + its amount)
+        # We iterate the page reversed (oldest first), accumulate, then re-reverse.
+        reversed_txs = list(reversed(txs))
+        running = tail_balance
+        entries_reversed: list[LedgerEntry] = []
+        for tx in reversed_txs:
+            if tx.type == TransactionType.income:
+                running += tx.amount
+            else:
+                running -= tx.amount
+            entry = LedgerEntry(
+                public_id=tx.public_id,
+                category_id=uuid.UUID(int=0),  # placeholder – resolved below
+                account_id=account.public_id,
+                amount=tx.amount,
+                type=tx.type,
+                occurred_at=tx.occurred_at,
+                description=tx.description,
+                wallet_name=tx.wallet_name,
+                labels=tx.labels,
+                source_type=tx.source_type,
+                running_balance=running,
+                created_at=tx.created_at,
+            )
+            entries_reversed.append(entry)
+
+        # Re-reverse to restore desc order (most recent first)
+        entries = list(reversed(entries_reversed))
+
+        # Resolve category public_ids in bulk
+        cat_ids = [tx.category_id for tx in txs if tx.category_id is not None]
+        unique_cat_ids = list(set(cat_ids))
+        cat_map: dict[int, uuid.UUID] = {}
+        for cat_id in unique_cat_ids:
+            cat_row = await self.category_repo.get_by_id(workspace_id, cat_id)
+            if cat_row:
+                cat_map[cat_id] = cat_row.public_id
+
+        for i, (tx, entry) in enumerate(zip(txs, entries, strict=True)):
+            entries[i] = LedgerEntry(**{
+                **entry.model_dump(),
+                "category_id": cat_map.get(tx.category_id or 0, entry.category_id),
+            })
+
+        opening = (
+            entries[-1].running_balance
+            - (
+                entries[-1].amount
+                if txs[-1].type == TransactionType.income
+                else -entries[-1].amount
+            )
+            if entries
+            else total_balance
+        )
+        closing = entries[0].running_balance if entries else total_balance
+
+        return LedgerResponse(
+            account_public_id=account.public_id,
+            account_name=account.name,
+            account_currency=account.default_currency_code,
+            opening_balance=opening,
+            closing_balance=closing,
+            total_transactions=total,
+            items=entries,
+        )
 
     async def get_transaction(self, workspace_id: int, public_id: uuid.UUID) -> SpendingTransaction:
         transaction = await self.transaction_repo.get_by_public_id(workspace_id, public_id)
