@@ -33,7 +33,17 @@ erDiagram
         datetime created_at
     }
 
+    PASSWORD_RESET_TOKENS {
+        int id PK
+        int user_id FK
+        string token_hash UK
+        datetime expires_at
+        datetime used_at
+        datetime created_at
+    }
+
     USERS ||--o{ AUTH_SESSIONS : authenticates
+    USERS ||--o{ PASSWORD_RESET_TOKENS : requests
 ```
 
 ## Workspace Core
@@ -116,8 +126,31 @@ erDiagram
         datetime updated_at
     }
 
+    RECURRING_TODO_RULES {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        string title
+        string description
+        string priority
+        string frequency
+        int interval
+        date anchor_date
+        time due_time
+        string timezone
+        date next_due_date
+        date end_date
+        boolean is_active
+        datetime last_generated_at
+        datetime created_at
+        datetime updated_at
+    }
+
     USERS ||--o{ TODOS : owns
     WORKSPACES ||--o{ TODOS : scopes
+    USERS ||--o{ RECURRING_TODO_RULES : configures
+    WORKSPACES ||--o{ RECURRING_TODO_RULES : scopes
 ```
 
 ## Spending
@@ -261,6 +294,7 @@ erDiagram
         int workspace_id FK
         string reporting_currency_code FK
         string currency_display_preference
+        decimal lookthrough_min_weight_pct
         datetime created_at
         datetime updated_at
     }
@@ -423,6 +457,29 @@ erDiagram
         datetime updated_at
     }
 
+    HOLDING_PRICES {
+        int id PK
+        int workspace_id FK
+        int holding_id FK
+        date price_date
+        decimal unit_price
+        string source
+        datetime created_at
+    }
+
+    PORTFOLIO_SNAPSHOTS {
+        int id PK
+        int workspace_id FK
+        date snapshot_date
+        decimal total_value
+        decimal total_cost
+        decimal holdings_value
+        decimal cash_value
+        string currency_code
+        json fx_rates_used
+        datetime created_at
+    }
+
     WORKSPACES ||--o{ INVESTING_COMPANIES : scopes
     WORKSPACES ||--o{ INVESTING_INSTRUMENTS : scopes
     INVESTING_COMPANIES ||--o{ INVESTING_INSTRUMENTS : issuer
@@ -435,6 +492,9 @@ erDiagram
     USERS ||--o{ INVESTING_CASH_BALANCES : owns
     ACCOUNTS ||--o{ INVESTING_HOLDINGS : holds
     ACCOUNTS ||--o{ INVESTING_CASH_BALANCES : holds
+    WORKSPACES ||--o{ HOLDING_PRICES : scopes
+    INVESTING_HOLDINGS ||--o{ HOLDING_PRICES : has_prices
+    WORKSPACES ||--o{ PORTFOLIO_SNAPSHOTS : scopes
 ```
 
 ## Imports & Exports

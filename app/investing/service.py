@@ -1403,20 +1403,42 @@ class InvestingSummaryService:
         cash_repo: CashBalanceRepository,
         finance_setting_repo: FinanceSettingRepository | None = None,
         fx_rate_repo: FxRateRepository | None = None,
+        holding_price_repo: HoldingPriceRepository | None = None,
+        snapshot_repo: PortfolioSnapshotRepository | None = None,
     ):
         self.holding_repo = holding_repo
         self.cash_repo = cash_repo
         self.finance_setting_repo = finance_setting_repo
         self.fx_rate_repo = fx_rate_repo
+        self.holding_price_repo = holding_price_repo
+        self.snapshot_repo = snapshot_repo
 
     async def get_summary(self, workspace_id: int) -> InvestingSummaryResponse:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
         cash_balances, _ = await self.cash_repo.get_all(workspace_id, limit=10000, offset=0)
 
+        today = datetime.now(UTC).date()
+        latest_prices = {}
+        if self.holding_price_repo is not None and holdings:
+            holding_ids = [h.id for h in holdings if h.id is not None]
+            latest_prices = await self.holding_price_repo.latest_prices_on_or_before_bulk(
+                workspace_id=workspace_id, holding_ids=holding_ids, as_of=today
+            )
+
+        used_cost_basis_fallback = False
+        holding_values = {}
+        for holding in holdings:
+            price_record = latest_prices.get(holding.id)
+            if price_record is not None:
+                holding_values[holding.id] = holding.quantity * price_record.unit_price
+            else:
+                holding_values[holding.id] = holding.quantity * holding.avg_cost
+                used_cost_basis_fallback = True
+
         breakdown: dict[str, Decimal] = {}
 
         for holding in holdings:
-            value = holding.quantity * holding.avg_cost
+            value = holding_values[holding.id]
             curr = holding.currency.upper()
             breakdown[curr] = breakdown.get(curr, Decimal("0")) + value
 
@@ -1451,17 +1473,27 @@ class InvestingSummaryService:
                 portfolio_value = Decimal("0")
                 cash_total = Decimal("0")
                 for holding in holdings:
-                    portfolio_value += holding.quantity * holding.avg_cost
+                    portfolio_value += holding_values[holding.id]
                 for cash in cash_balances:
                     cash_total += cash.balance
+
+                # Calculate daily change
+                daily_change = None
+                if self.snapshot_repo is not None:
+                    prev_snapshot = await self.snapshot_repo.latest_before(workspace_id, today)
+                    if prev_snapshot is not None:
+                        daily_change = portfolio_value - prev_snapshot.total_value
+
                 return InvestingSummaryResponse(
                     portfolio_value=portfolio_value,
                     holdings_count=len(holdings),
                     cash_total=cash_total,
                     currency_breakdown=breakdown,
-                    daily_change=None,
+                    daily_change=daily_change,
                     reporting_currency=currency,
-                    valuation_status="single_currency_native",
+                    valuation_status="cost_basis_fallback"
+                    if used_cost_basis_fallback
+                    else "single_currency_native",
                     fx_as_of=None,
                 )
 
@@ -1498,7 +1530,7 @@ class InvestingSummaryService:
 
             converted_portfolio = Decimal("0")
             for holding in holdings:
-                native_value = holding.quantity * holding.avg_cost
+                native_value = holding_values[holding.id]
                 curr = holding.currency.upper()
                 converted_value = _convert_amount(native_value, curr, reporting_currency, fx_lookup)
                 if converted_value is None:
@@ -1531,14 +1563,24 @@ class InvestingSummaryService:
                     )
                 converted_cash += converted_value
 
+            # Calculate daily change
+            portfolio_value = converted_portfolio + converted_cash
+            daily_change = None
+            if self.snapshot_repo is not None:
+                prev_snapshot = await self.snapshot_repo.latest_before(workspace_id, today)
+                if prev_snapshot is not None:
+                    daily_change = portfolio_value - prev_snapshot.total_value
+
             return InvestingSummaryResponse(
-                portfolio_value=converted_portfolio,
+                portfolio_value=portfolio_value,
                 holdings_count=len(holdings),
                 cash_total=converted_cash,
                 currency_breakdown=breakdown,
-                daily_change=None,
+                daily_change=daily_change,
                 reporting_currency=reporting_currency,
-                valuation_status="converted_available",
+                valuation_status="cost_basis_fallback"
+                if used_cost_basis_fallback
+                else "converted_available",
                 fx_as_of=valuation_as_of,
                 fx_rates_used=_fx_rates_used(used_currencies, reporting_currency, fx_lookup),
             )
@@ -1546,17 +1588,26 @@ class InvestingSummaryService:
         portfolio_value = Decimal("0")
         cash_total = Decimal("0")
         for holding in holdings:
-            portfolio_value += holding.quantity * holding.avg_cost
+            portfolio_value += holding_values[holding.id]
         for cash in cash_balances:
             cash_total += cash.balance
+
+        # Calculate daily change
+        daily_change = None
+        if self.snapshot_repo is not None:
+            prev_snapshot = await self.snapshot_repo.latest_before(workspace_id, today)
+            if prev_snapshot is not None:
+                daily_change = portfolio_value - prev_snapshot.total_value
 
         return InvestingSummaryResponse(
             portfolio_value=portfolio_value,
             holdings_count=len(holdings),
             cash_total=cash_total,
             currency_breakdown=breakdown,
-            daily_change=None,
+            daily_change=daily_change,
             reporting_currency=reporting_currency,
-            valuation_status="converted_available",
+            valuation_status="cost_basis_fallback"
+            if used_cost_basis_fallback
+            else "converted_available",
             fx_as_of=None,
         )

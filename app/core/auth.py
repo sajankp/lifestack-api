@@ -1,7 +1,8 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 from pwdlib import PasswordHash
 from pwdlib.hashers.argon2 import Argon2Hasher
 
@@ -41,7 +42,8 @@ def create_token(
         to_encode.update({"token_type": token_type})
 
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm="HS256")
+    # PyJWT encode() returns str directly (unlike python-jose which returned bytes in some versions)
+    encoded_jwt: str = jwt.encode(to_encode, settings.SECRET_KEY, algorithm="HS256")
     return encoded_jwt
 
 
@@ -65,13 +67,10 @@ def get_user_info_from_token(
         if None in (username, user_id, sid):
             raise UnauthorizedError(detail="Could not validate credentials")
 
-    except JWTError as e:
-        detail = (
-            "Token has expired"
-            if isinstance(e, jwt.ExpiredSignatureError)
-            else "Could not validate credentials"
-        )
-        raise UnauthorizedError(detail=detail) from e
+    except ExpiredSignatureError as e:
+        raise UnauthorizedError(detail="Token has expired") from e
+    except InvalidTokenError as e:
+        raise UnauthorizedError(detail="Could not validate credentials") from e
 
     try:
         parsed_workspace_id = (

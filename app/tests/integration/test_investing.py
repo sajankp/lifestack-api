@@ -111,7 +111,7 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     assert summary["currency_breakdown"]["USD"] == "2680.0000000000"
     assert summary["daily_change"] is None
     assert summary["reporting_currency"] == "USD"
-    assert summary["valuation_status"] == "single_currency_native"
+    assert summary["valuation_status"] == "cost_basis_fallback"
 
     async with postgres.async_session_maker() as session:
         db_holding = (
@@ -1522,3 +1522,76 @@ async def test_hybrid_catalog_lookup_and_override(client: AsyncClient):
     symbols = {item["symbol"] for item in list_res.json()}
     assert "GLOBAL_MSFT" in symbols
     assert "PVT_HOLDING" not in symbols
+
+
+async def test_investing_summary_market_price_and_daily_change(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="investing-mp@example.com",
+        username="investing-mp",
+        password="TestPass123!",
+    )
+
+    # 1. Create a holding
+    create_holding = {
+        "symbol": "MSFT",
+        "account_id": account_map["brokerage"],
+        "quantity": "10.00000000",
+        "avg_cost": "200.00",
+        "currency": "usd",
+    }
+    holding_res = await client.post("/v1/investing/holdings", json=create_holding)
+    assert holding_res.status_code == 201
+    holding = holding_res.json()
+    holding_public_id = holding["public_id"]
+
+    # 2. Verify summary initially uses cost basis fallback (since no price exists)
+    summary_res = await client.get("/v1/investing/summary")
+    assert summary_res.status_code == 200
+    assert summary_res.json()["valuation_status"] == "cost_basis_fallback"
+    assert summary_res.json()["portfolio_value"] == "2000.0000000000"
+
+    # Fetch DB ids
+    async with postgres.async_session_maker() as session:
+        # Get workspace id and holding db id
+        db_holding = (
+            await session.execute(
+                select(Holding).where(Holding.public_id == uuid.UUID(holding_public_id))
+            )
+        ).scalar_one()
+        workspace_id = db_holding.workspace_id
+        holding_db_id = db_holding.id
+
+        # Insert a portfolio snapshot for yesterday (today - 1 day)
+        yesterday = datetime.now(UTC).date() - timedelta(days=1)
+        snapshot = PortfolioSnapshot(
+            workspace_id=workspace_id,
+            snapshot_date=yesterday,
+            total_value=Decimal("1500.00"),
+            total_cost=Decimal("1500.00"),
+            holdings_value=Decimal("1500.00"),
+            cash_value=Decimal("0.00"),
+            currency_code="USD",
+        )
+        session.add(snapshot)
+
+        # Insert a holding price for today
+        today = datetime.now(UTC).date()
+        price = HoldingPrice(
+            workspace_id=workspace_id,
+            holding_id=holding_db_id,
+            price_date=today,
+            unit_price=Decimal("250.00"),
+            source="manual",
+        )
+        session.add(price)
+        await session.commit()
+
+    # 3. Verify summary now uses market price (10 * 250 = 2500) and calculates daily_change (2500 - 1500 = 1000)
+    # and valuation_status is single_currency_native (since all holdings have prices)
+    summary_res = await client.get("/v1/investing/summary")
+    assert summary_res.status_code == 200
+    summary = summary_res.json()
+    assert summary["valuation_status"] == "single_currency_native"
+    assert Decimal(summary["portfolio_value"]) == Decimal("2500.00")
+    assert Decimal(summary["daily_change"]) == Decimal("1000.00")
