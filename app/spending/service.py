@@ -454,10 +454,15 @@ class TransactionService:
         cat_ids = [tx.category_id for tx in txs if tx.category_id is not None]
         unique_cat_ids = list(set(cat_ids))
         cat_map: dict[int, uuid.UUID] = {}
-        for cat_id in unique_cat_ids:
-            cat_row = await self.category_repo.get_by_id(workspace_id, cat_id)
-            if cat_row:
-                cat_map[cat_id] = cat_row.public_id
+        if unique_cat_ids:
+            cat_rows = await self.category_repo.session.execute(
+                select(SpendingCategory).where(
+                    SpendingCategory.workspace_id == workspace_id,
+                    SpendingCategory.id.in_(unique_cat_ids),
+                )
+            )
+            for cat_row in cat_rows.scalars().all():
+                cat_map[cat_row.id] = cat_row.public_id
 
         for i, (tx, entry) in enumerate(zip(txs, entries, strict=True)):
             entries[i] = LedgerEntry(**{

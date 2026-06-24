@@ -66,12 +66,10 @@ def downgrade() -> None:
     op.drop_index(
         "uq_workspace_instrument_symbol",
         table_name="investing_instruments",
-        postgresql_where=sa.text("workspace_id IS NOT NULL"),
     )
     op.drop_index(
         "uq_global_instrument_symbol",
         table_name="investing_instruments",
-        postgresql_where=sa.text("workspace_id IS NULL"),
     )
     op.create_unique_constraint(
         "uq_investing_instrument_workspace_symbol",
@@ -85,12 +83,10 @@ def downgrade() -> None:
     op.drop_index(
         "uq_workspace_company_name",
         table_name="investing_companies",
-        postgresql_where=sa.text("workspace_id IS NOT NULL"),
     )
     op.drop_index(
         "uq_global_company_name",
         table_name="investing_companies",
-        postgresql_where=sa.text("workspace_id IS NULL"),
     )
     op.create_unique_constraint(
         "uq_investing_company_workspace_name", "investing_companies", ["workspace_id", "name"]

@@ -385,6 +385,7 @@ class ImportService:
 
         is_xlsx = file_path.lower().endswith(".xlsx")
         f = None
+        wb = None
 
         if is_xlsx:
             wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
@@ -836,6 +837,8 @@ class ImportService:
         finally:
             if f is not None:
                 f.close()
+            if wb is not None:
+                wb.close()
 
         persisted_errors = await self.repository.list_errors(batch.id, limit=10000)
         batch.total_rows = total_rows
@@ -1326,20 +1329,22 @@ async def run_background_validate(
     async with postgres.async_session_maker() as session:
         repo = ImportRepository(session)
         service = ImportService(repo, session)
-        batch = await repo.get_by_public_id(workspace_id, batch_public_id)
-        if batch:
-            try:
+        batch = None
+        try:
+            batch = await repo.get_by_public_id(workspace_id, batch_public_id)
+            if batch:
                 await service.validate_batch_file(
                     workspace_id, user_id, batch, file_path, audit_logger
                 )
-            except Exception:
+        except Exception:
+            if batch is not None:
                 batch.status = ImportStatus.failed_validation
                 batch.updated_at = datetime.now(UTC)
                 await repo.save_batch(batch)
-                raise
-            finally:
-                with contextlib.suppress(Exception):
-                    Path(file_path).unlink(missing_ok=True)
+            raise
+        finally:
+            with contextlib.suppress(Exception):
+                Path(file_path).unlink(missing_ok=True)
 
 
 async def run_background_commit(
