@@ -203,10 +203,14 @@ class HoldingService:
 
         # If not found, check via Yahoo Finance
         target_workspace_id = workspace_id
-        async with httpx.AsyncClient() as client:
-            price_info = await _fetch_stock_price(client, symbol)
-            if price_info is not None:
-                target_workspace_id = None
+        try:
+            async with httpx.AsyncClient() as client:
+                price_info = await _fetch_stock_price(client, symbol)
+                if price_info is not None:
+                    target_workspace_id = None
+        except Exception:
+            # Fallback to workspace-scoped instrument on external API failure
+            pass
 
         company: Company | None = None
         if self.company_repo is not None and instrument_type == InstrumentType.stock:
@@ -990,10 +994,14 @@ class InstrumentService:
 
     async def create_instrument(self, workspace_id: int, payload: InstrumentCreate) -> Instrument:
         target_workspace_id = workspace_id
-        async with httpx.AsyncClient() as client:
-            price_info = await _fetch_stock_price(client, payload.symbol)
-            if price_info is not None:
-                target_workspace_id = None
+        try:
+            async with httpx.AsyncClient() as client:
+                price_info = await _fetch_stock_price(client, payload.symbol)
+                if price_info is not None:
+                    target_workspace_id = None
+        except Exception:
+            # Fallback to workspace-scoped instrument on external API failure
+            pass
 
         existing = await self.instrument_repo.get_by_symbol(target_workspace_id, payload.symbol)
         if existing is not None:

@@ -400,26 +400,22 @@ class TransactionService:
             offset=offset,
         )
 
-        # Compute the total net balance for the entire account (within date range)
-        total_balance = await self.transaction_repo.get_account_net_balance(
-            workspace_id,
-            account_id,
-            from_date=from_date,
-            to_date=to_date,
-        )
-
-        # For each transaction in this page (desc order), compute running balance.
-        # We need to know the "tail balance" (sum of all transactions AFTER this page,
-        # i.e. older entries). We achieve this by: tail_balance = total_balance - page_sum.
-        # Then accumulate from the bottom of the desc page upward.
-        page_sum = Decimal("0")
-        for tx in txs:
-            if tx.type == TransactionType.income:
-                page_sum += tx.amount
-            else:
-                page_sum -= tx.amount
-
-        tail_balance = total_balance - page_sum  # balance of all entries below this page
+        total_balance = Decimal("0")
+        # Compute the tail balance (the net balance of all transactions older than the oldest transaction in the page)
+        if txs:
+            tail_balance = await self.transaction_repo.get_account_net_balance(
+                workspace_id,
+                account_id,
+                before_tx=txs[-1],
+            )
+        else:
+            tail_balance = Decimal("0")
+            total_balance = await self.transaction_repo.get_account_net_balance(
+                workspace_id,
+                account_id,
+                from_date=from_date,
+                to_date=to_date,
+            )
 
         # Build running_balance per entry (desc page → last entry in page has tail_balance + its amount)
         # We iterate the page reversed (oldest first), accumulate, then re-reverse.
@@ -1122,14 +1118,12 @@ class BudgetService:
             budget_amount = data["budget_amount"]
             actual_amount = data["actual_amount"]
 
-            if budget_amount is None:
+            if budget_amount is None or budget_amount == 0:
                 utilization_pct = None
-                remaining = None
+                remaining = -actual_amount if budget_amount == 0 else None
                 status = "exceeded" if actual_amount > 0 else "on_track"
             else:
-                utilization_pct = (
-                    float((actual_amount / budget_amount) * 100) if budget_amount > 0 else 0.0
-                )
+                utilization_pct = float((actual_amount / budget_amount) * 100)
                 remaining = budget_amount - actual_amount
                 if utilization_pct < 90.0:
                     status = "on_track"

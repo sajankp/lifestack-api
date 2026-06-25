@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -264,6 +264,7 @@ class TransactionRepository:
         account_id: int,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        before_tx: SpendingTransaction | None = None,
     ) -> Decimal:
         """Return SUM(income) - SUM(expenses) for a given account."""
         stmt = select(
@@ -284,6 +285,16 @@ class TransactionRepository:
             stmt = stmt.where(SpendingTransaction.occurred_at >= from_date)
         if to_date is not None:
             stmt = stmt.where(SpendingTransaction.occurred_at <= to_date)
+        if before_tx is not None:
+            stmt = stmt.where(
+                or_(
+                    SpendingTransaction.occurred_at < before_tx.occurred_at,
+                    and_(
+                        SpendingTransaction.occurred_at == before_tx.occurred_at,
+                        SpendingTransaction.id < before_tx.id,
+                    ),
+                )
+            )
 
         result = await self.session.execute(stmt)
         return Decimal(str(result.scalar_one() or Decimal("0")))

@@ -142,12 +142,13 @@ class InstrumentRepository:
         return result.scalar_one_or_none()
 
     async def get_by_symbol(self, workspace_id: int | None, symbol: str) -> Instrument | None:
+        normalized_symbol = symbol.upper()
         if workspace_id is not None:
             # Query workspace first (override)
             result = await self.session.execute(
                 select(Instrument).where(
                     Instrument.workspace_id == workspace_id,
-                    Instrument.symbol == symbol,
+                    Instrument.symbol == normalized_symbol,
                 )
             )
             val = result.scalar_one_or_none()
@@ -156,7 +157,9 @@ class InstrumentRepository:
 
         # Query global
         res_global = await self.session.execute(
-            select(Instrument).where(Instrument.workspace_id.is_(None), Instrument.symbol == symbol)
+            select(Instrument).where(
+                Instrument.workspace_id.is_(None), Instrument.symbol == normalized_symbol
+            )
         )
         return res_global.scalar_one_or_none()
 
