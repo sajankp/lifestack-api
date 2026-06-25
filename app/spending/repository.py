@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -36,6 +36,15 @@ class CategoryRepository:
             select(SpendingCategory).where(
                 SpendingCategory.workspace_id == workspace_id,
                 SpendingCategory.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_id(self, workspace_id: int, category_id: int) -> SpendingCategory | None:
+        result = await self.session.execute(
+            select(SpendingCategory).where(
+                SpendingCategory.workspace_id == workspace_id,
+                SpendingCategory.id == category_id,
             )
         )
         return result.scalar_one_or_none()
@@ -213,6 +222,82 @@ class TransactionRepository:
     async def delete(self, transaction: SpendingTransaction) -> None:
         await self.session.delete(transaction)
         await self.session.flush()
+
+    async def get_ledger_page(
+        self,
+        workspace_id: int,
+        account_id: int,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[list[SpendingTransaction], int]:
+        """Return paginated transactions for an account ordered by occurred_at DESC.
+
+        Returns (transactions_page, total_count_for_account).
+        """
+        base = select(SpendingTransaction).where(
+            SpendingTransaction.workspace_id == workspace_id,
+            SpendingTransaction.account_id == account_id,
+        )
+        if from_date is not None:
+            base = base.where(SpendingTransaction.occurred_at >= from_date)
+        if to_date is not None:
+            base = base.where(SpendingTransaction.occurred_at <= to_date)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base
+            .order_by(
+                SpendingTransaction.occurred_at.desc(),
+                SpendingTransaction.id.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all()), int(total)
+
+    async def get_account_net_balance(
+        self,
+        workspace_id: int,
+        account_id: int,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+        before_tx: SpendingTransaction | None = None,
+    ) -> Decimal:
+        """Return SUM(income) - SUM(expenses) for a given account."""
+        stmt = select(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (SpendingTransaction.type == "income", SpendingTransaction.amount),
+                        else_=SpendingTransaction.amount * -1,
+                    )
+                ),
+                Decimal("0"),
+            )
+        ).where(
+            SpendingTransaction.workspace_id == workspace_id,
+            SpendingTransaction.account_id == account_id,
+        )
+        if from_date is not None:
+            stmt = stmt.where(SpendingTransaction.occurred_at >= from_date)
+        if to_date is not None:
+            stmt = stmt.where(SpendingTransaction.occurred_at <= to_date)
+        if before_tx is not None:
+            stmt = stmt.where(
+                or_(
+                    SpendingTransaction.occurred_at < before_tx.occurred_at,
+                    and_(
+                        SpendingTransaction.occurred_at == before_tx.occurred_at,
+                        SpendingTransaction.id < before_tx.id,
+                    ),
+                )
+            )
+
+        result = await self.session.execute(stmt)
+        return Decimal(str(result.scalar_one() or Decimal("0")))
 
 
 class BudgetRepository:

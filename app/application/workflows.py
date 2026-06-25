@@ -275,6 +275,7 @@ async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace:
         select(SpendingTransaction.category_id, func.sum(SpendingTransaction.amount))
         .where(
             SpendingTransaction.workspace_id == workspace.id,
+            SpendingTransaction.type == TransactionType.expense,
             SpendingTransaction.occurred_at >= current_month_dt,
             SpendingTransaction.occurred_at < next_month_dt,
         )

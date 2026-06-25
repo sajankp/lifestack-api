@@ -47,11 +47,10 @@ Time-based work belongs in scheduled jobs. Immediate cross-module actions should
 sajankp/
 |-- lifestack-api
 |-- lifestack-web
-|-- to-do
-`-- to-do-frontend
+`-- lifestack-e2e
 ```
 
-The older todo app remains a useful reference, especially for auth and product behavior, but Lifestack should become the new primary codebase.
+The monorepo contains `lifestack-api` (FastAPI backend), `lifestack-web` (React/Vite frontend), and `lifestack-e2e` (Playwright test suite).
 
 ---
 
@@ -155,6 +154,15 @@ lifestack-api/
 |   |   |-- repository.py
 |   |   `-- service.py
 |   |
+|   |-- capture/                 # WebSocket voice agent & Gemini tools
+|   |-- exports/                 # Data export generation
+|   |-- imports/                 # CSV data imports & preview
+|   |-- notifications/           # System notifications & counts
+|   |-- summaries/               # Weekly summaries
+|   |-- finance/                 # Accounts, user settings, & FX rates
+|   |-- cli/                     # CLI administrative tools
+|   |-- testing/                 # Local mock tools & test hooks
+|   |
 |   |-- ai/          # stage 2
 |   `-- mcp/         # stage 2
 |
@@ -162,6 +170,7 @@ lifestack-api/
 |-- docs/
 |-- Dockerfile
 |-- docker-compose.yml
+|-- docker-compose.prod.yml
 `-- .env.example
 ```
 
@@ -820,6 +829,10 @@ This balances developer velocity (fast push feedback) with release confidence (f
 | Investing module | ✅ Done |
 | Export (CSV / JSON) | ✅ Done |
 | Recurring transactions scheduler workflow | ✅ Done |
+| WebSocket voice agent / capture tools (Spec 021) | ✅ Done |
+| CSV bulk data imports / preview validation (Spec 022) | ✅ Done |
+| Weekly summary enrichment generation (Spec 016) | ✅ Done |
+| Multi-currency finance accounts, display setting preferences & FX rates | ✅ Done |
 | E2E tests (Playwright, full Docker Compose) | ✅ Done |
 
 ### Phase 2 - AI and Integrations
@@ -858,8 +871,10 @@ The following production-ready patterns are proven in the existing to-do app and
 | Metrics auth | Bearer token or dev-mode for `/metrics` | ✅ Carry forward |
 
 **Not carried forward:**
-- Gemini voice proxy — AI architecture to be redesigned in stage 2
 - bcrypt legacy hashing — new project, Argon2id only
+
+**Implemented in Phase 1 (not deferred):**
+- Gemini voice/capture agent (Spec 021) — WebSocket-based voice agent with tool calling is implemented in `app/capture/`. Stage 2 will add a provider-agnostic AI adapter architecture on top of the existing capture surface.
 
 **What changes in migration:**
 - Database switches from MongoDB to PostgreSQL

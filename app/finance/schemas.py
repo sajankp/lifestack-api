@@ -171,3 +171,23 @@ class CapitalTransferResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+# ---------------------------------------------------------------------------
+# Account balance – derived from spending transaction history
+# ---------------------------------------------------------------------------
+
+
+class AccountBalanceResponse(BaseModel):
+    """Derived spending balance for an account, computed from transaction history."""
+
+    account_public_id: uuid.UUID
+    account_name: str
+    account_type: AccountType
+    currency_code: str
+    spending_balance: Decimal  # income minus expenses (positive = net income)
+    transaction_count: int
+    first_transaction_at: datetime | None
+    last_transaction_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})

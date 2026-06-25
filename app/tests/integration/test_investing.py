@@ -111,7 +111,7 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     assert summary["currency_breakdown"]["USD"] == "2680.0000000000"
     assert summary["daily_change"] is None
     assert summary["reporting_currency"] == "USD"
-    assert summary["valuation_status"] == "single_currency_native"
+    assert summary["valuation_status"] == "cost_basis_fallback"
 
     async with postgres.async_session_maker() as session:
         db_holding = (
@@ -373,7 +373,7 @@ async def test_patch_instrument_type_corrects_existing_auto_created_stock(client
     holding_res = await client.post(
         "/v1/investing/holdings",
         json={
-            "symbol": "QQQ",
+            "symbol": "CUSTOMQQQ",
             "account_id": account_map["brokerage"],
             "quantity": "1.00000000",
             "avg_cost": "300.00",
@@ -384,7 +384,7 @@ async def test_patch_instrument_type_corrects_existing_auto_created_stock(client
 
     instruments_res = await client.get("/v1/investing/instruments")
     assert instruments_res.status_code == 200
-    instrument = next(item for item in instruments_res.json() if item["symbol"] == "QQQ")
+    instrument = next(item for item in instruments_res.json() if item["symbol"] == "CUSTOMQQQ")
     assert instrument["instrument_type"] == "stock"
 
     patch_res = await client.patch(
@@ -397,7 +397,7 @@ async def test_patch_instrument_type_corrects_existing_auto_created_stock(client
 
     list_res = await client.get("/v1/investing/holdings")
     assert list_res.status_code == 200
-    qqq = next(item for item in list_res.json()["items"] if item["symbol"] == "QQQ")
+    qqq = next(item for item in list_res.json()["items"] if item["symbol"] == "CUSTOMQQQ")
     assert qqq["instrument_type"] == "etf"
 
 
@@ -1096,7 +1096,7 @@ async def test_investing_constituent_workspace_isolation(client: AsyncClient):
     etf_res = await client.post(
         "/v1/investing/instruments",
         json={
-            "symbol": "IVV",
+            "symbol": "CUSTOMIVV",
             "name": "iShares Core S&P 500 ETF",
             "instrument_type": "etf",
         },
@@ -1457,3 +1457,141 @@ async def test_delete_holding_cascades_existing_price_history(client: AsyncClien
         prices = (await session.execute(select(HoldingPrice))).scalars().all()
         assert holding is None
         assert prices == []
+
+
+@pytest.mark.asyncio
+async def test_hybrid_catalog_lookup_and_override(client: AsyncClient):
+    # Register workspace A and workspace B
+    await _register_and_login(
+        client,
+        email="hybrid-a@example.com",
+        username="hybrid-a",
+        password="TestPass123!",
+    )
+
+    # Create a workspace-scoped instrument in A (doesn't exist in Yahoo Finance, so we make a private override or custom instrument)
+    etf_res_a = await client.post(
+        "/v1/investing/instruments",
+        json={
+            "symbol": "PVT_HOLDING",
+            "name": "Workspace A Private Fund",
+            "instrument_type": "etf",
+        },
+    )
+    assert etf_res_a.status_code == 201
+
+    # Create a global instrument (e.g. GLOBAL_MSFT - Yahoo Finance mocked/stubbed to return something)
+    with patch("app.investing.service._fetch_stock_price", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = (date(2026, 6, 24), Decimal("400.00"))
+
+        global_res = await client.post(
+            "/v1/investing/instruments",
+            json={
+                "symbol": "GLOBAL_MSFT",
+                "name": "Global Microsoft",
+                "instrument_type": "stock",
+            },
+        )
+        assert global_res.status_code == 201
+        assert global_res.json()["symbol"] == "GLOBAL_MSFT"
+
+        # Verify it has no workspace_id in the database
+        async with postgres.async_session_maker() as session:
+            db_inst = (
+                await session.execute(select(Instrument).where(Instrument.symbol == "GLOBAL_MSFT"))
+            ).scalar_one()
+            assert db_inst.workspace_id is None
+
+            db_pvt = (
+                await session.execute(select(Instrument).where(Instrument.symbol == "PVT_HOLDING"))
+            ).scalar_one()
+            assert db_pvt.workspace_id is not None
+
+    # Now logout and login to workspace B
+    await client.post("/v1/auth/logout")
+    await _register_and_login(
+        client,
+        email="hybrid-b@example.com",
+        username="hybrid-b",
+        password="TestPass123!",
+    )
+
+    # List instruments for B: should see GLOBAL_MSFT, but NOT PVT_HOLDING
+    list_res = await client.get("/v1/investing/instruments")
+    assert list_res.status_code == 200
+    symbols = {item["symbol"] for item in list_res.json()}
+    assert "GLOBAL_MSFT" in symbols
+    assert "PVT_HOLDING" not in symbols
+
+
+async def test_investing_summary_market_price_and_daily_change(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="investing-mp@example.com",
+        username="investing-mp",
+        password="TestPass123!",
+    )
+
+    # 1. Create a holding
+    create_holding = {
+        "symbol": "MSFT",
+        "account_id": account_map["brokerage"],
+        "quantity": "10.00000000",
+        "avg_cost": "200.00",
+        "currency": "usd",
+    }
+    holding_res = await client.post("/v1/investing/holdings", json=create_holding)
+    assert holding_res.status_code == 201
+    holding = holding_res.json()
+    holding_public_id = holding["public_id"]
+
+    # 2. Verify summary initially uses cost basis fallback (since no price exists)
+    summary_res = await client.get("/v1/investing/summary")
+    assert summary_res.status_code == 200
+    assert summary_res.json()["valuation_status"] == "cost_basis_fallback"
+    assert summary_res.json()["portfolio_value"] == "2000.0000000000"
+
+    # Fetch DB ids
+    async with postgres.async_session_maker() as session:
+        # Get workspace id and holding db id
+        db_holding = (
+            await session.execute(
+                select(Holding).where(Holding.public_id == uuid.UUID(holding_public_id))
+            )
+        ).scalar_one()
+        workspace_id = db_holding.workspace_id
+        holding_db_id = db_holding.id
+
+        # Insert a portfolio snapshot for yesterday (today - 1 day)
+        yesterday = datetime.now(UTC).date() - timedelta(days=1)
+        snapshot = PortfolioSnapshot(
+            workspace_id=workspace_id,
+            snapshot_date=yesterday,
+            total_value=Decimal("1500.00"),
+            total_cost=Decimal("1500.00"),
+            holdings_value=Decimal("1500.00"),
+            cash_value=Decimal("0.00"),
+            currency_code="USD",
+        )
+        session.add(snapshot)
+
+        # Insert a holding price for today
+        today = datetime.now(UTC).date()
+        price = HoldingPrice(
+            workspace_id=workspace_id,
+            holding_id=holding_db_id,
+            price_date=today,
+            unit_price=Decimal("250.00"),
+            source="manual",
+        )
+        session.add(price)
+        await session.commit()
+
+    # 3. Verify summary now uses market price (10 * 250 = 2500) and calculates daily_change (2500 - 1500 = 1000)
+    # and valuation_status is single_currency_native (since all holdings have prices)
+    summary_res = await client.get("/v1/investing/summary")
+    assert summary_res.status_code == 200
+    summary = summary_res.json()
+    assert summary["valuation_status"] == "single_currency_native"
+    assert Decimal(summary["portfolio_value"]) == Decimal("2500.00")
+    assert Decimal(summary["daily_change"]) == Decimal("1000.00")

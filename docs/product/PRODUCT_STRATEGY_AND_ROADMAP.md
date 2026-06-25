@@ -1,7 +1,7 @@
 # Product Strategy and Roadmap
 
 Date: 2026-06-03
-Last updated: 2026-06-14
+Last updated: 2026-06-24
 
 Scope: current product positioning, implementation status, post-Gate 0 backlog, and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
 
@@ -91,11 +91,13 @@ This roadmap is the living home for product sequencing. Specs remain the source 
 |---|---|---|
 | Historical foundation | [`spec-pack-v1-plan.md`](../specs/spec-pack-v1-plan.md), [`spec-029-current-product-demo-readiness-roadmap.md`](../specs/spec-029-current-product-demo-readiness-roadmap.md) | Gate 0 and the V1 spec pack are complete historical records, not active backlog. |
 | Implemented platform baseline | Specs 001, 002, 004, 005, 006, 007, 008, and 010 | API conventions, workspace isolation, audit logging, scheduler foundation, exports, dashboard reads, investing MVP, and FastTodo reference decisions are implemented baseline capabilities. |
-| Implemented finance and investing baseline | Specs 011, 012, 014, 022, 023, 027, [`031`](../specs/spec-031-automated-price-updates-and-ui.md), and [`034`](../specs/spec-034-constituent-csv-import.md) | Currency governance, look-through analytics, performance V1, account identity, price refresh, and workspace-facing constituent CSV import are implemented. The unreliable automated constituent path from retired Spec 032 is no longer part of the runtime. |
+| Implemented finance and investing baseline | Specs 011, 012, 014, 022, 023, 027, [`031`](../specs/spec-031-automated-price-updates-and-ui.md), [`033`](../specs/spec-033-hybrid-instrument-catalog.md), and [`034`](../specs/spec-034-constituent-csv-import.md) | Currency governance, look-through analytics, performance V1, account identity, price refresh, hybrid global instrument catalog, and workspace-facing constituent CSV import are implemented. The unreliable automated constituent path from retired Spec 032 is no longer part of the runtime. |
 | Implemented workflow and operations baseline | Specs 003, 009, 013, 015, 016, 017, 019, 020, 024, 025, 026, and 028 | Spending, scheduler workflows, recurring todos, notifications, weekly summaries, CSV imports, runtime integration, audit remediation, and Gate 0 hardening are implemented at their documented stage. |
+| Implemented spending analytics and ledger | feat/spending-analytics branch | Category breakdown, budget-vs-actual, and savings-rate analytics are implemented. Per-account transaction ledger with running balance (GET /spending/accounts/{id}/ledger) and derived wallet cash-balance coupling (GET /finance/accounts/{id}/balance) are implemented and covered by integration tests. |
+| Implemented imports enhancements | feat/spending-analytics branch | Async/background import workers, `.xlsx` streaming, large-file handling, and import preview rows are implemented. |
 | Archived or partial capture path | [`Spec 018`](../specs/spec-018-quick-capture.md), [`Spec 021`](../specs/spec-021-voice-agent-function-calling.md) | Spec 018 quick capture is archived/deferred to roadmap. Spec 021 voice/tool calling is implemented as Phase 1; production capture expansion remains a roadmap item. |
 | Proposed/current slices | [`Spec 030`](../specs/spec-030-cli-management-commands.md) | CLI management commands remain a proposed/current implementation candidate. |
-| Deferred future data model | [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md), [`Spec 035`](../specs/spec-035-platform-market-data-curation.md) | Hybrid global instrument catalog and platform market-data curation are deferred backlog items until the workspace-scoped investing flows, permission model, and provenance requirements are ready. |
+| Deferred future data model | [`Spec 035`](../specs/spec-035-platform-market-data-curation.md) | Platform market-data curation is a deferred backlog item until the workspace-scoped investing flows, permission model, and provenance requirements are ready. |
 
 ## 4) Near-Term Roadmap
 
@@ -112,20 +114,26 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 
 | Area | Roadmap Item | Why It Belongs Here |
 |---|---|---|
-| Spending analytics | Category breakdown, budget-vs-actual analytics, savings-rate analytics, and richer trend UX. | These are product-surface expansions beyond the implemented trends slice. |
-| Wallet ledger | Ledger-style balance projection, richer transfer timeline UX, reconciliation, and statement matching. | These are finance-product depth items, not blockers for the current demo baseline. |
+| Spending analytics (Implemented) | Category breakdown, budget-vs-actual, and savings-rate analytics. | Implemented under feat/spending-analytics branch. |
+| Spending ledger (Implemented) | Per-account transaction ledger with running balance, opening/closing page balances, debit/credit color coding, and workspace isolation. Backend: `GET /spending/accounts/{id}/ledger`. Frontend: Ledger tab on Spending page. | Implemented under feat/spending-analytics branch. |
+| Wallet/account balance coupling (Implemented) | Derived spending balance for each account: `GET /finance/accounts/{id}/balance` computes income minus expenses from transaction history. Surfaced as a balance summary card on the Ledger tab. Deliberately independent from investing cash balances. | Implemented under feat/spending-analytics branch. |
+| Imports (Implemented) | Async/background import workers, `.xlsx` imports, smart column mapping, and large-file streaming. | Implemented under feat/spending-analytics branch. |
+| Daily-work surface polish (Implemented) | Overdue todo indicators, recurring status badges, and dashboard cues. | Implemented under feat/spending-analytics branch. |
 | Notifications | Email delivery, push delivery, real-time notification transport, grouping, and digest variants. | Delivery channels depend on mobile/email infrastructure and should be sequenced with notification strategy. |
-| Imports | Very-large-file streaming guarantees, async/background import workers, `.xlsx` imports, smart column mapping, partial-success modes, and virus scanning. | These are scale/operations upgrades beyond the implemented CSV validate-preview-commit workflow. |
 | Currency display | Remaining frontend-wide display polish, locale/date/number profiles, and historical FX replay for every view. | These are consistency and polish tracks after the implemented finance settings foundation. |
-| Voice/capture | WebRTC-grade production transport, broader capture domains, multi-item capture, and AI-assisted routing. | Capture is useful as an input layer, but expansion should follow mobile/coach sequencing. |
+| Voice/capture | WebRTC-grade production transport, broader capture domains, multi-item capture, AI-assisted routing, and ADK migration planning. | Capture is useful as an input layer; Google ADK evaluation and voice-first migration guide is documented in [spec-039-adk-evaluation-and-migration-guide.md](../specs/spec-039-adk-evaluation-and-migration-guide.md) for Phase 2. |
 | Weekly summaries | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
 | Budget model | Grouped budgets and custom financial KPIs. | These are product-model expansions that should be designed intentionally. |
+| Wallet ledger (reconciliation) | Statement matching, multi-account reconciliation view, and richer transfer timeline UX. | Deeper finance-product work building on the implemented ledger foundation. |
+| JWT library maintenance | Migrate from `python-jose` to `PyJWT` or `joserfc`. | python-jose is no longer actively maintained; planning migration mitigates dependency security risk. |
 
 ### Investing and Market Data
 
 | Area | Roadmap Item | Why It Belongs Here |
 |---|---|---|
 | Investing performance | Richer return math, deeper visualization, benchmark comparison, dividend/total-return views, and scheduled/background price-refresh cadence. | On-demand automated price refresh is implemented; deeper performance analytics and scheduled pricing should be scoped as explicit product slices. |
+| Investing summary valuation | Query latest price data from `HoldingPrice` table instead of using cost basis. | Resolves misleading investing overview totals when asset values fluctuate. |
+| Portfolio daily change | Calculate dashboard daily change metrics using `PortfolioSnapshot` diffs. | Replaces the current unimplemented placeholder field (`daily_change` returns `None`). |
 | Hybrid instrument catalog | [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md): global public instruments/companies with workspace-scoped tenant overrides. | This reduces duplicate public securities and redundant provider calls, but should wait until the current workspace-scoped investing flows settle. |
 | Look-through analytics | UX alerts, quality scoring, company identity normalization, derivative look-through, and deeper constituent-provider coverage. | Look-through analytics and automated ETF/MF constituent ingestion are implemented; these are advanced accuracy, scale, and UX tracks after V1 correctness. |
 | Platform market data | [`Spec 035`](../specs/spec-035-platform-market-data-curation.md): platform-admin curation for shared/global constituent datasets, instrument prices, licensed market-data uploads, provenance, and rollback. | Workspace-level constituent CSV import is handled by [`Spec 034`](../specs/spec-034-constituent-csv-import.md); shared/global market-data curation is a later-stage permission and data-governance problem. |

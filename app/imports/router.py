@@ -1,9 +1,12 @@
+import contextlib
 import uuid
 from collections import Counter
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile, status
 from fastapi.responses import PlainTextResponse, Response
 
+from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.dependencies import (
     get_audit_logger,
@@ -13,15 +16,16 @@ from app.core.dependencies import (
     require_min_role,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams
-from app.imports.models import ImportModule
+from app.imports.models import ImportModule, ImportStatus
 from app.imports.schemas import (
     ImportBatchResponse,
     ImportCommitResponse,
     ImportErrorResponse,
     ImportErrorSummary,
+    ImportPreviewRowResponse,
     ImportValidateResponse,
 )
-from app.imports.service import ImportService
+from app.imports.service import ImportService, run_background_commit, run_background_validate
 
 router = APIRouter(
     prefix="/imports",
@@ -60,6 +64,8 @@ async def download_template(
 
 @router.post("", response_model=ImportValidateResponse)
 async def upload_and_validate(
+    response: Response,
+    background_tasks: BackgroundTasks,
     module: ImportModule = Form(...),
     file: UploadFile = File(...),
     service: ImportService = Depends(get_import_service),
@@ -67,34 +73,86 @@ async def upload_and_validate(
     user: dict = Depends(get_current_user),
     audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
-    batch, errors = await service.validate_upload(
+    batch, temp_path = await service.validate_upload(
         workspace_id, user["id"], module, file, audit_logger
     )
-    response_errors = [ImportErrorResponse.model_validate(e) for e in errors]
-    return ImportValidateResponse(
-        import_batch=ImportBatchResponse.model_validate(batch),
-        errors=response_errors,
-        error_summary=_build_error_summary(batch.error_rows, response_errors),
-    )
+    if settings.RUN_BACKGROUND_TASKS_SYNCHRONOUSLY:
+        try:
+            batch, errors = await service.validate_batch_file(
+                workspace_id, user["id"], batch, temp_path, audit_logger
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                Path(temp_path).unlink(missing_ok=True)
+        response_errors = [ImportErrorResponse.model_validate(e) for e in errors]
+        preview_rows = []
+        if batch.status == ImportStatus.validated:
+            rows = await service.repository.iter_preview_rows_chunk(batch.id, limit=100, offset=0)
+            preview_rows = [ImportPreviewRowResponse.model_validate(r) for r in rows]
+        return ImportValidateResponse(
+            import_batch=ImportBatchResponse.model_validate(batch),
+            errors=response_errors,
+            error_summary=_build_error_summary(batch.error_rows, response_errors),
+            preview_rows=preview_rows,
+        )
+    else:
+        response.status_code = status.HTTP_202_ACCEPTED
+        background_tasks.add_task(
+            run_background_validate,
+            workspace_id,
+            user["id"],
+            batch.public_id,
+            temp_path,
+        )
+        return ImportValidateResponse(
+            import_batch=ImportBatchResponse.model_validate(batch),
+            errors=[],
+            error_summary=ImportErrorSummary(
+                total_errors=0,
+                returned_errors=0,
+                by_code={},
+                by_field={},
+            ),
+            preview_rows=[],
+        )
 
 
 @router.post("/{import_public_id}/commit", response_model=ImportCommitResponse)
 async def commit_import(
     import_public_id: uuid.UUID,
+    response: Response,
+    background_tasks: BackgroundTasks,
     service: ImportService = Depends(get_import_service),
     workspace_id: int = Depends(get_current_workspace_id),
     user: dict = Depends(get_current_user),
     audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
-    batch, inserted, auto_created_categories = await service.commit_import(
-        workspace_id, user["id"], import_public_id, audit_logger
-    )
-    return ImportCommitResponse(
-        import_batch=ImportBatchResponse.model_validate(batch),
-        inserted_rows=inserted,
-        auto_created_categories=auto_created_categories,
-        auto_created_category_count=len(auto_created_categories),
-    )
+    if settings.RUN_BACKGROUND_TASKS_SYNCHRONOUSLY:
+        await service.start_commit(workspace_id, import_public_id)
+        batch, inserted, auto_created_categories = await service.commit_batch(
+            workspace_id, user["id"], import_public_id, audit_logger
+        )
+        return ImportCommitResponse(
+            import_batch=ImportBatchResponse.model_validate(batch),
+            inserted_rows=inserted,
+            auto_created_categories=auto_created_categories,
+            auto_created_category_count=len(auto_created_categories),
+        )
+    else:
+        batch = await service.start_commit(workspace_id, import_public_id)
+        response.status_code = status.HTTP_202_ACCEPTED
+        background_tasks.add_task(
+            run_background_commit,
+            workspace_id,
+            user["id"],
+            import_public_id,
+        )
+        return ImportCommitResponse(
+            import_batch=ImportBatchResponse.model_validate(batch),
+            inserted_rows=0,
+            auto_created_categories=[],
+            auto_created_category_count=0,
+        )
 
 
 @router.get("", response_model=PaginatedResponse[ImportBatchResponse])
@@ -122,10 +180,17 @@ async def get_import_detail(
 ):
     batch, errors = await service.get_batch_with_errors(workspace_id, import_public_id)
     response_errors = [ImportErrorResponse.model_validate(e) for e in errors]
+
+    preview_rows = []
+    if batch.status == ImportStatus.validated:
+        rows = await service.repository.iter_preview_rows_chunk(batch.id, limit=100, offset=0)
+        preview_rows = [ImportPreviewRowResponse.model_validate(r) for r in rows]
+
     return ImportValidateResponse(
         import_batch=ImportBatchResponse.model_validate(batch),
         errors=response_errors,
         error_summary=_build_error_summary(batch.error_rows, response_errors),
+        preview_rows=preview_rows,
     )
 
 

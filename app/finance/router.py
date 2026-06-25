@@ -21,6 +21,7 @@ from app.core.exceptions import NotFoundError
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.finance.models import CurrencyDisplayPreference
 from app.finance.schemas import (
+    AccountBalanceResponse,
     AccountCreate,
     AccountResponse,
     AccountUpdate,
@@ -112,6 +113,23 @@ async def delete_account(
         actor_id=user["id"],
         audit_logger=audit_logger,
     )
+
+
+@router.get("/accounts/{account_id}/balance", response_model=AccountBalanceResponse)
+async def get_account_spending_balance(
+    account_id: uuid.UUID,
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    """Retrieve the derived spending balance for a wallet/bank/card account.
+
+    The balance is computed from the workspace spending transaction history
+    (income minus expenses) for the given account. It is independent of
+    the investing cash balances.
+    """
+    data = await account_service.get_spending_balance(workspace_id, account_id)
+    return AccountBalanceResponse.model_validate(data)
 
 
 @router.get("/settings", response_model=WorkspaceFinanceSettingResponse)

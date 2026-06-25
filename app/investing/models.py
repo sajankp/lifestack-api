@@ -19,7 +19,9 @@ class Company(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
-    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    workspace_id: int | None = Field(
+        default=None, foreign_key="workspaces.id", index=True, nullable=True
+    )
     name: str = Field(max_length=255)
     ticker: str | None = Field(default=None, max_length=20, index=True)
     isin: str | None = Field(default=None, max_length=20)
@@ -33,10 +35,18 @@ class Company(SQLModel, table=True):
     )
 
     __table_args__ = (
-        sa.UniqueConstraint(
+        sa.Index(
+            "uq_global_company_name",
+            "name",
+            unique=True,
+            postgresql_where=sa.text("workspace_id IS NULL"),
+        ),
+        sa.Index(
+            "uq_workspace_company_name",
             "workspace_id",
             "name",
-            name="uq_investing_company_workspace_name",
+            unique=True,
+            postgresql_where=sa.text("workspace_id IS NOT NULL"),
         ),
     )
 
@@ -46,7 +56,9 @@ class Instrument(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
-    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    workspace_id: int | None = Field(
+        default=None, foreign_key="workspaces.id", index=True, nullable=True
+    )
     symbol: str = Field(max_length=20)
     name: str = Field(max_length=255)
     instrument_type: str = Field(
@@ -70,10 +82,18 @@ class Instrument(SQLModel, table=True):
     )
 
     __table_args__ = (
-        sa.UniqueConstraint(
+        sa.Index(
+            "uq_global_instrument_symbol",
+            "symbol",
+            unique=True,
+            postgresql_where=sa.text("workspace_id IS NULL"),
+        ),
+        sa.Index(
+            "uq_workspace_instrument_symbol",
             "workspace_id",
             "symbol",
-            name="uq_investing_instrument_workspace_symbol",
+            unique=True,
+            postgresql_where=sa.text("workspace_id IS NOT NULL"),
         ),
     )
 

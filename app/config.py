@@ -115,6 +115,7 @@ class Settings(BaseSettings):
     IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3
     IMPORT_LOCAL_PATH: str = "/var/lib/lifestack/imports"
     IMPORT_PREVIEW_TTL_HOURS: int = 24
+    RUN_BACKGROUND_TASKS_SYNCHRONOUSLY: bool = False
 
     # Session limits
     MAX_ACTIVE_SESSIONS_PER_USER: int = 5
@@ -164,7 +165,10 @@ class Settings(BaseSettings):
     # AI Voice Agent (Spec 021)
     GEMINI_API_KEY: str | None = None
     GEMINI_LIVE_URL: str = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
-    GEMINI_MODEL: str = "models/gemini-2.5-flash-native-audio-latest"
+    # Pin to an explicit versioned model — do NOT use a -latest alias here.
+    # Google can silently rotate or deprecate -latest aliases. If a specific versioned
+    # model becomes unavailable, update this default or set GEMINI_MODEL in .env.
+    GEMINI_MODEL: str = "models/gemini-2.5-flash-preview-native-audio-18-12"
     CAPTURE_MAX_WS_FRAME_BYTES: int = 256 * 1024
     CAPTURE_MAX_SESSION_BYTES: int = 15 * 1024 * 1024
     CAPTURE_MAX_SESSION_SECONDS: int = 5 * 60
@@ -289,7 +293,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _check_production_defaults(self) -> "Settings":
         """Fail fast when insecure defaults are used in production."""
-        if self.ENV == "production":
+        if self.ENV in ("production", "staging"):
             if self.SECRET_KEY == "super-secret-key-change-in-production":
                 raise ValueError("SECRET_KEY must be changed from its default value in production.")
             if self.METRICS_TOKEN.startswith("dev-"):

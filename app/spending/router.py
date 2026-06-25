@@ -31,15 +31,19 @@ from app.spending.models import (
 )
 from app.spending.schemas import (
     BudgetCreate,
+    BudgetPerformanceResponse,
     BudgetResponse,
     BudgetUpdate,
+    CategoryBreakdownResponse,
     CategoryCreate,
     CategoryResponse,
     CategorySpendTotal,
     CategoryUpdate,
+    LedgerResponse,
     RecurringTransactionCreate,
     RecurringTransactionResponse,
     RecurringTransactionUpdate,
+    SavingsRateResponse,
     SourceMetadataResponse,
     SpendingTrendResponse,
     TransactionCreate,
@@ -386,6 +390,55 @@ async def get_spending_trends(
     return await transaction_service.get_monthly_trends(workspace_id, start, end)
 
 
+@router.get("/analytics/breakdown", response_model=CategoryBreakdownResponse)
+async def get_category_breakdown(
+    transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    from_date: date = Query(..., alias="from"),
+    to_date: date = Query(..., alias="to"),
+    type: TransactionType = Query(TransactionType.expense),
+    limit: int = Query(default=10, ge=1, le=100),
+):
+    return await transaction_service.get_category_breakdown(
+        workspace_id=workspace_id,
+        from_date=from_date,
+        to_date=to_date,
+        type_filter=type,
+        limit=limit,
+    )
+
+
+@router.get("/analytics/budget-performance", response_model=BudgetPerformanceResponse)
+async def get_budget_performance(
+    budget_service: Annotated[BudgetService, Depends(get_spending_budget_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    from_month: date = Query(..., alias="from"),
+    to_month: date = Query(..., alias="to"),
+):
+    return await budget_service.get_budget_performance(
+        workspace_id=workspace_id,
+        from_month=from_month,
+        to_month=to_month,
+    )
+
+
+@router.get("/analytics/savings-rate", response_model=SavingsRateResponse)
+async def get_savings_rate(
+    transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    from_month: date = Query(..., alias="from"),
+    to_month: date = Query(..., alias="to"),
+):
+    return await transaction_service.get_savings_rate(
+        workspace_id=workspace_id,
+        from_month=from_month,
+        to_month=to_month,
+    )
+
+
 @router.post(
     "/transactions", response_model=TransactionResponse, status_code=status.HTTP_201_CREATED
 )
@@ -642,3 +695,35 @@ async def delete_recurring(
     _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await recurring_service.deactivate_recurring(workspace_id, recurring_id)
+
+
+# ---------------------------------------------------------------------------
+# Spending Account Ledger
+# ---------------------------------------------------------------------------
+
+
+@router.get("/accounts/{account_id}/ledger", response_model=LedgerResponse)
+async def get_account_ledger(
+    account_id: uuid.UUID,
+    tx_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    from_date: datetime | None = Query(default=None),
+    to_date: datetime | None = Query(default=None),
+):
+    """Return a paginated transaction ledger for a spending account.
+
+    Entries are ordered most-recent first. Each entry includes a `running_balance`
+    representing the cumulative account balance (income minus expenses) after that
+    transaction. Opening and closing balances for the page are also returned.
+    """
+    return await tx_service.get_ledger(
+        workspace_id=workspace_id,
+        account_public_id=account_id,
+        from_date=from_date,
+        to_date=to_date,
+        limit=limit,
+        offset=offset,
+    )

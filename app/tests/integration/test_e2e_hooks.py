@@ -202,9 +202,16 @@ def test_e2e_hooks_production_gating_settings():
         )
 
     # Should raise error if we try to set ENABLE_E2E_TEST_HOOKS=True in staging
-    with pytest.raises(ValueError, match="ENABLE_E2E_TEST_HOOKS is only allowed in local/test"):
+    with pytest.raises(
+        ValueError, match="ENABLE_E2E_TEST_HOOKS must remain disabled in production"
+    ):
         Settings(
             ENV="staging",
+            SECRET_KEY="staging-secret-key-changed-in-staging-12345",
+            METRICS_TOKEN="staging-metrics-token-changed-in-staging-12345",
+            COOKIE_SECURE=True,
+            COOKIE_DOMAIN=".sajankp.com",
+            RATE_LIMIT_STORAGE_URI="redis://localhost:6379/1",
             ENABLE_E2E_TEST_HOOKS=True,
         )
 

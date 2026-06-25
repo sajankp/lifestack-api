@@ -264,3 +264,130 @@ class UpcomingPreviewResponse(BaseModel):
     items: list[UpcomingTransactionItem]
 
     model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+# ---------------------------------------------------------------------------
+# Spending Analytics schemas
+# ---------------------------------------------------------------------------
+
+
+class CategoryBreakdownItem(BaseModel):
+    category_id: uuid.UUID
+    category_name: str
+    amount: Decimal
+    pct_of_total: float
+    transaction_count: int
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class CategoryBreakdownOther(BaseModel):
+    amount: Decimal
+    pct_of_total: float
+    category_count: int
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class CategoryBreakdownResponse(BaseModel):
+    from_date: date = Field(serialization_alias="from")
+    to_date: date = Field(serialization_alias="to")
+    type: TransactionType
+    total: Decimal
+    categories: list[CategoryBreakdownItem]
+    other: CategoryBreakdownOther | None = None
+
+    model_config = ConfigDict(populate_by_name=True, json_encoders={Decimal: str})
+
+
+class BudgetPerformanceItem(BaseModel):
+    category_id: uuid.UUID
+    category_name: str
+    budget_amount: Decimal | None
+    actual_amount: Decimal
+    utilization_pct: float | None
+    remaining: Decimal | None
+    status: Literal["on_track", "warning", "exceeded"]
+
+    model_config = ConfigDict(use_enum_values=True, json_encoders={Decimal: str})
+
+
+class BudgetPerformanceTotals(BaseModel):
+    total_budgeted: Decimal
+    total_actual: Decimal
+    overall_utilization_pct: float | None
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class BudgetPerformanceResponse(BaseModel):
+    from_month: str = Field(serialization_alias="from")
+    to_month: str = Field(serialization_alias="to")
+    categories: list[BudgetPerformanceItem]
+    totals: BudgetPerformanceTotals
+
+    model_config = ConfigDict(populate_by_name=True, json_encoders={Decimal: str})
+
+
+class SavingsRatePoint(BaseModel):
+    month: str
+    income: Decimal
+    expense: Decimal
+    savings: Decimal
+    savings_rate_pct: float | None
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class SavingsRateTotals(BaseModel):
+    total_income: Decimal
+    total_expense: Decimal
+    total_savings: Decimal
+    average_savings_rate_pct: float | None
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class SavingsRateResponse(BaseModel):
+    from_month: str = Field(serialization_alias="from")
+    to_month: str = Field(serialization_alias="to")
+    months: list[SavingsRatePoint]
+    period_totals: SavingsRateTotals
+
+    model_config = ConfigDict(populate_by_name=True, json_encoders={Decimal: str})
+
+
+# ---------------------------------------------------------------------------
+# Transaction Ledger schemas
+# ---------------------------------------------------------------------------
+
+
+class LedgerEntry(BaseModel):
+    """A single transaction with a cumulative running balance for the account."""
+
+    public_id: uuid.UUID
+    category_id: uuid.UUID
+    account_id: uuid.UUID | None
+    amount: Decimal
+    type: TransactionType
+    occurred_at: datetime
+    description: str | None
+    wallet_name: str | None
+    labels: str | None
+    source_type: str
+    running_balance: Decimal  # cumulative balance AFTER this transaction
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class LedgerResponse(BaseModel):
+    account_public_id: uuid.UUID
+    account_name: str
+    account_currency: str
+    opening_balance: Decimal  # balance before the first item in this page
+    closing_balance: Decimal  # balance after the last item in this page
+    total_transactions: int
+    items: list[LedgerEntry]
+
+    model_config = ConfigDict(json_encoders={Decimal: str})

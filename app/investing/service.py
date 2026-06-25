@@ -8,7 +8,7 @@ import httpx
 
 from app.config import settings
 from app.core.audit import AuditLogger
-from app.core.exceptions import ConflictError, NotFoundError, ValidationError
+from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
 from app.finance.models import Account, FxRate
 from app.finance.repository import (
@@ -192,6 +192,7 @@ class HoldingService:
     ) -> Instrument | None:
         if self.instrument_repo is None:
             return None
+        # get_by_symbol already checks workspace override first, then global
         instrument = await self.instrument_repo.get_by_symbol(workspace_id, symbol)
         if instrument is not None:
             if allow_type_change and instrument.instrument_type != instrument_type.value:
@@ -200,17 +201,28 @@ class HoldingService:
                 instrument = await self.instrument_repo.save(instrument)
             return instrument
 
+        # If not found, check via Yahoo Finance
+        target_workspace_id = workspace_id
+        try:
+            async with httpx.AsyncClient() as client:
+                price_info = await _fetch_stock_price(client, symbol)
+                if price_info is not None:
+                    target_workspace_id = None
+        except Exception:
+            # Fallback to workspace-scoped instrument on external API failure
+            pass
+
         company: Company | None = None
         if self.company_repo is not None and instrument_type == InstrumentType.stock:
-            company = await self.company_repo.get_by_name(workspace_id, symbol)
+            company = await self.company_repo.get_by_name(target_workspace_id, symbol)
             if company is None:
                 company = await self.company_repo.create(
-                    Company(workspace_id=workspace_id, name=symbol, ticker=symbol)
+                    Company(workspace_id=target_workspace_id, name=symbol, ticker=symbol)
                 )
 
         instrument = await self.instrument_repo.create(
             Instrument(
-                workspace_id=workspace_id,
+                workspace_id=target_workspace_id,
                 symbol=symbol,
                 name=symbol,
                 instrument_type=instrument_type.value,
@@ -981,17 +993,27 @@ class InstrumentService:
         return await self.instrument_repo.list_workspace(workspace_id)
 
     async def create_instrument(self, workspace_id: int, payload: InstrumentCreate) -> Instrument:
-        existing = await self.instrument_repo.get_by_symbol(workspace_id, payload.symbol)
+        target_workspace_id = workspace_id
+        try:
+            async with httpx.AsyncClient() as client:
+                price_info = await _fetch_stock_price(client, payload.symbol)
+                if price_info is not None:
+                    target_workspace_id = None
+        except Exception:
+            # Fallback to workspace-scoped instrument on external API failure
+            pass
+
+        existing = await self.instrument_repo.get_by_symbol(target_workspace_id, payload.symbol)
         if existing is not None:
             raise ConflictError(detail=f"Instrument '{payload.symbol}' already exists")
 
         company_id: int | None = None
         if payload.instrument_type == InstrumentType.stock:
-            company = await self.company_repo.get_by_name(workspace_id, payload.name)
+            company = await self.company_repo.get_by_name(target_workspace_id, payload.name)
             if company is None:
                 company = await self.company_repo.create(
                     Company(
-                        workspace_id=workspace_id,
+                        workspace_id=target_workspace_id,
                         name=payload.name,
                         ticker=payload.ticker or payload.symbol,
                     )
@@ -1000,7 +1022,7 @@ class InstrumentService:
 
         return await self.instrument_repo.create(
             Instrument(
-                workspace_id=workspace_id,
+                workspace_id=target_workspace_id,
                 symbol=payload.symbol,
                 name=payload.name,
                 instrument_type=payload.instrument_type.value,
@@ -1014,6 +1036,9 @@ class InstrumentService:
         instrument = await self.instrument_repo.get_by_public_id(workspace_id, public_id)
         if instrument is None:
             raise NotFoundError(detail=f"Instrument '{public_id}' not found")
+
+        if instrument.workspace_id != workspace_id:
+            raise ForbiddenError(detail="Cannot modify a global instrument reference")
 
         update_data = payload.model_dump(exclude_unset=True)
         if not update_data:
@@ -1386,20 +1411,42 @@ class InvestingSummaryService:
         cash_repo: CashBalanceRepository,
         finance_setting_repo: FinanceSettingRepository | None = None,
         fx_rate_repo: FxRateRepository | None = None,
+        holding_price_repo: HoldingPriceRepository | None = None,
+        snapshot_repo: PortfolioSnapshotRepository | None = None,
     ):
         self.holding_repo = holding_repo
         self.cash_repo = cash_repo
         self.finance_setting_repo = finance_setting_repo
         self.fx_rate_repo = fx_rate_repo
+        self.holding_price_repo = holding_price_repo
+        self.snapshot_repo = snapshot_repo
 
     async def get_summary(self, workspace_id: int) -> InvestingSummaryResponse:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
         cash_balances, _ = await self.cash_repo.get_all(workspace_id, limit=10000, offset=0)
 
+        today = datetime.now(UTC).date()
+        latest_prices = {}
+        if self.holding_price_repo is not None and holdings:
+            holding_ids = [h.id for h in holdings if h.id is not None]
+            latest_prices = await self.holding_price_repo.latest_prices_on_or_before_bulk(
+                workspace_id=workspace_id, holding_ids=holding_ids, as_of=today
+            )
+
+        used_cost_basis_fallback = False
+        holding_values = {}
+        for holding in holdings:
+            price_record = latest_prices.get(holding.id)
+            if price_record is not None:
+                holding_values[holding.id] = holding.quantity * price_record.unit_price
+            else:
+                holding_values[holding.id] = holding.quantity * holding.avg_cost
+                used_cost_basis_fallback = True
+
         breakdown: dict[str, Decimal] = {}
 
         for holding in holdings:
-            value = holding.quantity * holding.avg_cost
+            value = holding_values[holding.id]
             curr = holding.currency.upper()
             breakdown[curr] = breakdown.get(curr, Decimal("0")) + value
 
@@ -1434,17 +1481,27 @@ class InvestingSummaryService:
                 portfolio_value = Decimal("0")
                 cash_total = Decimal("0")
                 for holding in holdings:
-                    portfolio_value += holding.quantity * holding.avg_cost
+                    portfolio_value += holding_values[holding.id]
                 for cash in cash_balances:
                     cash_total += cash.balance
+
+                # Calculate daily change
+                daily_change = None
+                if self.snapshot_repo is not None:
+                    prev_snapshot = await self.snapshot_repo.latest_before(workspace_id, today)
+                    if prev_snapshot is not None:
+                        daily_change = portfolio_value - prev_snapshot.total_value
+
                 return InvestingSummaryResponse(
                     portfolio_value=portfolio_value,
                     holdings_count=len(holdings),
                     cash_total=cash_total,
                     currency_breakdown=breakdown,
-                    daily_change=None,
+                    daily_change=daily_change,
                     reporting_currency=currency,
-                    valuation_status="single_currency_native",
+                    valuation_status="cost_basis_fallback"
+                    if used_cost_basis_fallback
+                    else "single_currency_native",
                     fx_as_of=None,
                 )
 
@@ -1481,7 +1538,7 @@ class InvestingSummaryService:
 
             converted_portfolio = Decimal("0")
             for holding in holdings:
-                native_value = holding.quantity * holding.avg_cost
+                native_value = holding_values[holding.id]
                 curr = holding.currency.upper()
                 converted_value = _convert_amount(native_value, curr, reporting_currency, fx_lookup)
                 if converted_value is None:
@@ -1514,14 +1571,24 @@ class InvestingSummaryService:
                     )
                 converted_cash += converted_value
 
+            # Calculate daily change
+            portfolio_value = converted_portfolio + converted_cash
+            daily_change = None
+            if self.snapshot_repo is not None:
+                prev_snapshot = await self.snapshot_repo.latest_before(workspace_id, today)
+                if prev_snapshot is not None:
+                    daily_change = portfolio_value - prev_snapshot.total_value
+
             return InvestingSummaryResponse(
-                portfolio_value=converted_portfolio,
+                portfolio_value=portfolio_value,
                 holdings_count=len(holdings),
                 cash_total=converted_cash,
                 currency_breakdown=breakdown,
-                daily_change=None,
+                daily_change=daily_change,
                 reporting_currency=reporting_currency,
-                valuation_status="converted_available",
+                valuation_status="cost_basis_fallback"
+                if used_cost_basis_fallback
+                else "converted_available",
                 fx_as_of=valuation_as_of,
                 fx_rates_used=_fx_rates_used(used_currencies, reporting_currency, fx_lookup),
             )
@@ -1529,17 +1596,26 @@ class InvestingSummaryService:
         portfolio_value = Decimal("0")
         cash_total = Decimal("0")
         for holding in holdings:
-            portfolio_value += holding.quantity * holding.avg_cost
+            portfolio_value += holding_values[holding.id]
         for cash in cash_balances:
             cash_total += cash.balance
+
+        # Calculate daily change
+        daily_change = None
+        if self.snapshot_repo is not None:
+            prev_snapshot = await self.snapshot_repo.latest_before(workspace_id, today)
+            if prev_snapshot is not None:
+                daily_change = portfolio_value - prev_snapshot.total_value
 
         return InvestingSummaryResponse(
             portfolio_value=portfolio_value,
             holdings_count=len(holdings),
             cash_total=cash_total,
             currency_breakdown=breakdown,
-            daily_change=None,
+            daily_change=daily_change,
             reporting_currency=reporting_currency,
-            valuation_status="converted_available",
+            valuation_status="cost_basis_fallback"
+            if used_cost_basis_fallback
+            else "converted_available",
             fx_as_of=None,
         )

@@ -3,46 +3,46 @@
 This checklist is for release-hardening and regression review on `main`.
 
 ## Auth and Session
-- [ ] JWT cookie auth flows (`/auth/login`, `/auth/refresh`, `/auth/logout`) validated.
-- [ ] Session revocation tested (revoked session cannot call protected endpoints).
+- [x] JWT cookie auth flows (`/auth/login`, `/auth/refresh`, `/auth/logout`) validated.
+- [x] Session revocation tested (revoked session cannot call protected endpoints).
 - [x] CSRF origin checks enforced on cookie-authenticated mutations.
 - [x] Double-submit CSRF token required for cookie-authenticated mutations.
 
 ## Authorization and Tenant Isolation
-- [ ] Cross-workspace access attempts return non-disclosing errors (`404` where applicable).
-- [ ] Write endpoints reject foreign `public_id` references across workspaces.
-- [ ] Capture, notification, summary, finance, spending, todo, and investing routes are workspace-scoped.
+- [x] Cross-workspace access attempts return non-disclosing errors (`404` where applicable).
+- [x] Write endpoints reject foreign `public_id` references across workspaces.
+- [x] Capture, notification, summary, finance, spending, todo, and investing routes are workspace-scoped.
 
 ## Input Validation and Error Safety
-- [ ] Request validation returns RFC 7807 problem responses.
-- [ ] Invalid frequency/interval/date inputs are rejected with `4xx`, not `5xx`.
-- [ ] Scheduler/workflow loops have non-advancing-date safety guards.
+- [x] Request validation returns RFC 7807 problem responses.
+- [x] Invalid frequency/interval/date inputs are rejected with `4xx`, not `5xx`.
+- [x] Scheduler/workflow loops have non-advancing-date safety guards.
 - [x] Multipart imports are rejected at request ingress when they exceed `MAX_MULTIPART_BODY_BYTES`.
 - [x] Voice capture WebSocket sessions enforce frame, cumulative byte, duration, and text-size limits.
 - [x] Voice provider failures return sanitized client-facing errors.
 
 ## Audit and Traceability
-- [ ] Mutation paths emit audit logs with before/after snapshots.
-- [ ] Sensitive keys are redacted in audit payloads.
-- [ ] System workflows that create domain records (e.g., recurring generation) emit audit events.
+- [x] Mutation paths emit audit logs with before/after snapshots.
+- [x] Sensitive keys are redacted in audit payloads.
+- [x] System workflows that create domain records (e.g., recurring generation) emit audit events.
 
 ## Scheduler and Background Safety
-- [ ] Scheduler jobs are idempotent or explicitly blocked by scheduler policy.
+- [x] Scheduler jobs are idempotent or explicitly blocked by scheduler policy.
 - [x] Local E2E workflow trigger routes are gated by `ENABLE_E2E_TEST_HOOKS` and rejected outside local/test environments.
-- [ ] Advisory lock strategy prevents concurrent duplicate execution.
-- [ ] Per-workspace error isolation and timeout handling verified.
+- [x] Advisory lock strategy prevents concurrent duplicate execution.
+- [x] Per-workspace error isolation and timeout handling verified.
 
 ## Operational Security
-- [ ] Secrets are loaded from env (no committed credentials).
+- [x] Secrets are loaded from env (no committed credentials).
 - [x] Production startup rejects default `SECRET_KEY` and default dev metrics token.
 - [x] Production startup requires secure cookies.
 - [x] Production startup requires rate limiting to remain enabled.
 - [x] Production startup rejects in-memory rate-limit storage.
-- [ ] Rate limiting is enabled for auth endpoints in non-test environments.
-- [ ] Security headers middleware active in app startup path.
-- [ ] Production container runs without Uvicorn reload mode.
-- [ ] Production container runs as non-root `appuser`.
-- [ ] Production container exposes a `/health` Docker `HEALTHCHECK`.
+- [x] Rate limiting is enabled for auth endpoints in non-test environments.
+- [x] Security headers middleware active in app startup path.
+- [x] Production container runs without Uvicorn reload mode.
+- [x] Production container runs as non-root `appuser`.
+- [x] Production container exposes a `/health` Docker `HEALTHCHECK`.
 - [x] CI runs `pip-audit` against installed Python dependencies.
 - [x] CI runs Bandit static analysis against `app/`.
 - [x] CI runs TruffleHog secret scanning for verified live secrets.

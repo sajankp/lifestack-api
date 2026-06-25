@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -213,6 +213,51 @@ class AccountRepository:
     async def delete(self, account: Account) -> None:
         await self.session.delete(account)
         await self.session.flush()
+
+    async def get_spending_balance(
+        self, workspace_id: int, account_id: int
+    ) -> tuple[Decimal, int, "datetime | None", "datetime | None"]:
+        """Return (net_balance, tx_count, first_tx_at, last_tx_at) from spending_transactions.
+
+        net_balance = SUM(income) - SUM(expenses) for this account.
+        """
+        from app.spending.models import SpendingTransaction  # noqa: PLC0415
+
+        income_sum = func.coalesce(
+            func.sum(
+                case(
+                    (SpendingTransaction.type == "income", SpendingTransaction.amount),
+                    else_=Decimal("0"),
+                )
+            ),
+            Decimal("0"),
+        )
+        expense_sum = func.coalesce(
+            func.sum(
+                case(
+                    (SpendingTransaction.type == "expense", SpendingTransaction.amount),
+                    else_=Decimal("0"),
+                )
+            ),
+            Decimal("0"),
+        )
+        count_col = func.count(SpendingTransaction.id)
+        first_tx = func.min(SpendingTransaction.occurred_at)
+        last_tx = func.max(SpendingTransaction.occurred_at)
+
+        result = await self.session.execute(
+            select(income_sum, expense_sum, count_col, first_tx, last_tx).where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.account_id == account_id,
+            )
+        )
+        row = result.one()
+        income = Decimal(str(row[0]))
+        expense = Decimal(str(row[1]))
+        count = row[2]
+        first_at = row[3]
+        last_at = row[4]
+        return income - expense, count, first_at, last_at
 
 
 class FinanceSettingRepository:

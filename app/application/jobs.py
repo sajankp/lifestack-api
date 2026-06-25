@@ -235,12 +235,12 @@ async def recurring_transactions_job(workspace_id: int | None = None) -> None:
 
         total_generated = 0
         total_todos_generated = 0
-        for workspace_id in workspace_ids:
+        for ws_id in workspace_ids:
             ws_start = datetime.now(UTC)
             try:
                 async with postgres.async_session_maker() as ws_session:  # noqa: SIM117
                     async with ws_session.begin():
-                        workspace = await ws_session.get(Workspace, workspace_id)
+                        workspace = await ws_session.get(Workspace, ws_id)
                         if workspace is None or not workspace.is_active:
                             continue
                         count = await asyncio.wait_for(
@@ -258,7 +258,7 @@ async def recurring_transactions_job(workspace_id: int | None = None) -> None:
                 logger.info(
                     "recurring_transactions_workspace_success",
                     job_name="recurring_transactions_job",
-                    workspace_id=workspace_id,
+                    workspace_id=ws_id,
                     duration_ms=duration_ms,
                     status="success",
                 )
@@ -267,7 +267,7 @@ async def recurring_transactions_job(workspace_id: int | None = None) -> None:
                 logger.error(
                     "recurring_transactions_workspace_timeout",
                     job_name="recurring_transactions_job",
-                    workspace_id=workspace_id,
+                    workspace_id=ws_id,
                     duration_ms=duration_ms,
                     status="timeout",
                 )
@@ -276,7 +276,7 @@ async def recurring_transactions_job(workspace_id: int | None = None) -> None:
                 logger.error(
                     "recurring_transactions_workspace_failed",
                     job_name="recurring_transactions_job",
-                    workspace_id=workspace_id,
+                    workspace_id=ws_id,
                     duration_ms=duration_ms,
                     status="failed",
                     exc_info=True,
