@@ -1324,11 +1324,11 @@ async def run_background_validate(
     user_id: int,
     batch_public_id: uuid.UUID,
     file_path: str,
-    audit_logger: AuditLogger,
 ) -> None:
     async with postgres.async_session_maker() as session:
         repo = ImportRepository(session)
         service = ImportService(repo, session)
+        audit_logger = AuditLogger(session)
         batch = None
         try:
             batch = await repo.get_by_public_id(workspace_id, batch_public_id)
@@ -1336,11 +1336,14 @@ async def run_background_validate(
                 await service.validate_batch_file(
                     workspace_id, user_id, batch, file_path, audit_logger
                 )
+            await session.commit()
         except Exception:
+            await session.rollback()
             if batch is not None:
                 batch.status = ImportStatus.failed_validation
                 batch.updated_at = datetime.now(UTC)
                 await repo.save_batch(batch)
+                await session.commit()
             raise
         finally:
             with contextlib.suppress(Exception):
@@ -1351,9 +1354,14 @@ async def run_background_commit(
     workspace_id: int,
     user_id: int,
     batch_public_id: uuid.UUID,
-    audit_logger: AuditLogger,
 ) -> None:
     async with postgres.async_session_maker() as session:
         repo = ImportRepository(session)
         service = ImportService(repo, session)
-        await service.commit_batch(workspace_id, user_id, batch_public_id, audit_logger)
+        audit_logger = AuditLogger(session)
+        try:
+            await service.commit_batch(workspace_id, user_id, batch_public_id, audit_logger)
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise

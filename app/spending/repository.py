@@ -262,17 +262,10 @@ class TransactionRepository:
         self,
         workspace_id: int,
         account_id: int,
-        before_offset: int | None = None,
-        account_total: int | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
     ) -> Decimal:
-        """Return SUM(income) - SUM(expenses) for a given account.
-
-        When before_offset is supplied, only counts transactions that appear
-        AFTER the current page in the desc-sorted order (i.e. older ones)
-        so we can compute the opening balance for a page.
-        """
+        """Return SUM(income) - SUM(expenses) for a given account."""
         stmt = select(
             func.coalesce(
                 func.sum(

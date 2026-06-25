@@ -221,6 +221,8 @@ class AccountRepository:
 
         net_balance = SUM(income) - SUM(expenses) for this account.
         """
+        from app.spending.models import SpendingTransaction  # noqa: PLC0415
+
         income_sum = func.coalesce(
             func.sum(
                 case(

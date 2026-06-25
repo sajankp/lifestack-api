@@ -103,7 +103,6 @@ async def upload_and_validate(
             user["id"],
             batch.public_id,
             temp_path,
-            audit_logger,
         )
         return ImportValidateResponse(
             import_batch=ImportBatchResponse.model_validate(batch),
@@ -147,7 +146,6 @@ async def commit_import(
             workspace_id,
             user["id"],
             import_public_id,
-            audit_logger,
         )
         return ImportCommitResponse(
             import_batch=ImportBatchResponse.model_validate(batch),
