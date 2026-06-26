@@ -4,6 +4,8 @@
 
 Implementation note (2026-06-11): CSV templates, validate-preview-commit flows, batch history/detail, rollback/delete, source metadata for spending transactions, budgets, and holdings, storage configuration, and integration tests are implemented in `app/imports`. Stage 2+ notes are context only; future sequencing lives in the product roadmap.
 
+Implementation note (2026-06-26): Spending transaction imports now resolve account text into first-class workspace `account_id` references. The generic spending CSV accepts optional `account_name`; Spendee-format imports use `Wallet` as the account name. Unknown or blank Spendee wallets fail validation under the existing fail-all import rule. The Spendee `Author` column is not part of the supported import contract; imported rows are attributed to the authenticated uploading user via the import batch/transaction `user_id` and timestamps.
+
 ## 1. Overview
 Manual data entry is a major onboarding bottleneck for spending, budgets, and investing. Users often have historical data in Excel/Sheets. This spec introduces downloadable CSV templates and a fail-all bulk import pipeline that validates first, then writes atomically.
 
@@ -143,6 +145,19 @@ Columns:
 - `amount` (decimal)
 - `category` (category name or category public_id)
 - `description` (optional)
+- `account_name` (optional; must match an existing workspace account when provided)
+
+Spendee-format spending imports are also supported with:
+- `Date`
+- `Wallet` (required; must match an existing workspace account and is stored as `account_id`)
+- `Type`
+- `Category name`
+- `Amount`
+- `Currency` (accepted for Spendee compatibility; spending rows do not store per-row currency today)
+- `Note`
+- `Labels` (stored as the raw `labels` string)
+
+`Author` is intentionally not imported. The row owner is the authenticated user who uploads and commits the batch.
 
 ### 8.2 Spending budgets
 Columns:

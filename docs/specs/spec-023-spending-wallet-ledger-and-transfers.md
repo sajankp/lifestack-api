@@ -90,16 +90,16 @@ Option A (preferred): extend/reuse `finance.accounts` with richer `account_type`
 2. Backfill heuristic:
   - map existing `wallet_name` values to created wallet accounts per workspace.
   - set `account_id` when deterministic match exists.
-3. Keep `wallet_name` readable for history/import compatibility.
+3. Keep `wallet_name` readable for legacy history, but do not use it for new import writes.
 4. Gradually shift UI writes to `account_id` only.
 
 ## 8) Import/Export Alignment
-- CSV imports accept both:
-  - `wallet_name` (legacy),
-  - `account_name` (new preferred alias).
-- If account does not exist:
-  - auto-create account (configurable), or
-  - strict-mode fail-all (default for Phase 1 imports remains fail-all unless explicitly toggled).
+- CSV imports accept `account_name` for generic spending templates.
+- Spendee imports map `Wallet` to an existing workspace account and store `account_id`.
+- If the account does not exist, validation fails under the fail-all import rule.
+- The legacy `wallet_name` column remains readable for older rows but is not populated by imports.
+- Spendee `Labels` are stored as the raw transaction `labels` string. There is no structured tag table or normalization in this slice.
+- Spendee `Author` is not part of the supported import contract; uploaded rows are attributed to the authenticated importer.
 
 ## 9) UX Requirements
 - Spending page should expose:
@@ -118,7 +118,7 @@ Option A (preferred): extend/reuse `finance.accounts` with richer `account_type`
 2. User can transfer between two wallets/accounts; transfer appears in history.
 3. Spending transactions can bind to account_id and legacy rows remain readable.
 4. Balance calculations reflect both spending rows and transfers.
-5. Existing imports with `wallet_name` continue to work.
+5. Spending imports resolve account names into first-class `account_id`; invalid accounts fail validation.
 
 ## 12) Test Plan
 ### Backend
@@ -138,5 +138,5 @@ Option A (preferred): extend/reuse `finance.accounts` with richer `account_type`
 ## 13) Rollout
 1. Backend schema + API extension and compatibility layer.
 2. Frontend account selector + transfer UX on spending page.
-3. CSV import alias support (`account_name`) and optional auto-create guardrails.
+3. CSV import alias support (`account_name`) and strict account validation.
 4. Documentation updates across api/web/e2e repos.

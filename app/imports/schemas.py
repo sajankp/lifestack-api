@@ -12,6 +12,7 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
         "amount",
         "category",
         "description",
+        "account_name",
     ],
     ImportModule.spending_budgets: [
         "month_start",
@@ -44,7 +45,6 @@ SPENDEE_TRANSACTION_HEADERS = [
     "Currency",
     "Note",
     "Labels",
-    "Author",
 ]
 
 
