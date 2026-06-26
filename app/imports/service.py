@@ -242,7 +242,10 @@ class ImportService:
         rows = (
             (
                 await self.session.execute(
-                    select(Account).where(Account.workspace_id == workspace_id)
+                    select(Account).where(
+                        Account.workspace_id == workspace_id,
+                        Account.is_active,
+                    )
                 )
             )
             .scalars()
@@ -586,7 +589,7 @@ class ImportService:
                         add_error(
                             "account_name",
                             "required",
-                            "Wallet must match an existing account in the workspace",
+                            "Wallet is required and must match an existing account in the workspace",
                             account_name_raw,
                         )
 
