@@ -994,3 +994,41 @@ async def test_import_investing_constituents_lifecycle(client: AsyncClient):
         assert len(consts) == 1
         assert consts[0].constituent_company_id == company_nvda.id
         assert consts[0].weight == Decimal("1.00000000")
+
+
+@pytest.mark.asyncio
+async def test_import_spendee_csv_with_author_column(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    # Create the "Main Wallet" account in the workspace
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Main Wallet", "account_type": "bank", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+    account_public_id = acct_resp.json()["public_id"]
+
+    # Spendee export format WITH Author column
+    csv_content = (
+        'Date,Wallet,Type,"Category name",Amount,Currency,Note,Labels,Author\n'
+        '2026-02-17T00:50:58+00:00,Main Wallet,Expense,Other,-3700.00,INR,School fee,family,"Sajan"\n'
+    )
+    files = {"file": ("spendee.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    data = {"module": "spending-transactions"}
+    validate = await client.post("/v1/imports", data=data, files=files, cookies=creds["cookies"])
+    assert validate.status_code == 200, validate.text
+    payload = validate.json()
+    assert payload["import_batch"]["status"] == "validated"
+    assert payload["error_summary"]["total_errors"] == 0
+    import_id = payload["import_batch"]["public_id"]
+
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code == 200, commit.text
+
+    txs = await client.get("/v1/spending/transactions", cookies=creds["cookies"])
+    assert txs.status_code == 200
+    assert txs.json()["total"] == 1
+    row = txs.json()["items"][0]
+    assert row["wallet_name"] is None
+    assert row["account_id"] == account_public_id
