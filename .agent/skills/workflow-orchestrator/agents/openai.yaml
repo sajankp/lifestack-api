@@ -1,4 +1,0 @@
-interface:
-  display_name: "Workflow Orchestrator"
-  short_description: "Help with Workflow Orchestrator tasks"
-  default_prompt: "Use $workflow-orchestrator to run end-to-end feature delivery from spec and implementation through PR review completion."

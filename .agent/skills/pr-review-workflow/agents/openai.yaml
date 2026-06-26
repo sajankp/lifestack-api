@@ -1,4 +1,0 @@
-interface:
-  display_name: "PR Review Workflow"
-  short_description: "Help with PR Review Workflow tasks"
-  default_prompt: "Use $pr-review-workflow to process this PR, resolve validated threads, and prepare merge readiness."
