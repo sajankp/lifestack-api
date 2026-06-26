@@ -136,7 +136,7 @@ async def test_import_template_download_as_attachment(client: AsyncClient):
         response.headers["content-disposition"]
         == 'attachment; filename="spending-transactions-template.csv"'
     )
-    assert "occurred_at,type,amount,category,description" in response.text
+    assert "occurred_at,type,amount,category,description,account_name" in response.text
 
 
 @pytest.mark.asyncio
@@ -217,6 +217,14 @@ async def test_import_local_storage_key_uses_generated_object_name(
 async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
     creds = await _register_and_login(client, uuid.uuid4().hex[:8])
 
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Main Wallet", "account_type": "wallet", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     categories = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()[
         "items"
     ]
@@ -224,8 +232,8 @@ async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
 
     # Spendee-like export format.
     csv_content = (
-        'Date,Wallet,Type,"Category name",Amount,Currency,Note,Labels,Author\n'
-        '2026-02-17T00:50:58+00:00,Main Wallet,Expense,Other,-3700.00,INR,School fee,family,"Sajan"\n'
+        'Date,Wallet,Type,"Category name",Amount,Currency,Note,Labels\n'
+        "2026-02-17T00:50:58+00:00,Main Wallet,Expense,Other,-3700.00,INR,School fee,family\n"
     )
     files = {"file": ("spendee.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
     data = {"module": "spending-transactions"}
@@ -250,7 +258,8 @@ async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
     assert row["type"] == "expense"
     # Negative Spendee expense should be normalized to positive stored amount.
     assert row["amount"] == "3700.00"
-    assert row["wallet_name"] == "Main Wallet"
+    assert row["account_id"] == account_id
+    assert row["wallet_name"] is None
     assert row["labels"] == "family"
     assert row["source_type"] == "imported"
     assert row["source_metadata"] == {
@@ -279,6 +288,31 @@ async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
     assert tx.source_type == "imported"
     assert tx.source_import_id == batch.id
     assert tx.source_ref == f"{import_id}:2"
+
+
+@pytest.mark.asyncio
+async def test_import_spendee_csv_fails_when_wallet_does_not_match_account(
+    client: AsyncClient,
+):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    csv_content = (
+        'Date,Wallet,Type,"Category name",Amount,Currency,Note,Labels\n'
+        "2026-02-17T00:50:58+00:00,Missing Wallet,Expense,Other,-3700.00,INR,School fee,family\n"
+    )
+    files = {"file": ("spendee.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "spending-transactions"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+
+    assert validate.status_code == 200, validate.text
+    payload = validate.json()
+    assert payload["import_batch"]["status"] == "failed_validation"
+    assert payload["error_summary"]["by_field"]["account_name"] == 1
+    assert payload["errors"][0]["error_code"] == "not_found"
 
 
 @pytest.mark.asyncio

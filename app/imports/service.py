@@ -242,7 +242,10 @@ class ImportService:
         rows = (
             (
                 await self.session.execute(
-                    select(Account).where(Account.workspace_id == workspace_id)
+                    select(Account).where(
+                        Account.workspace_id == workspace_id,
+                        Account.is_active,
+                    )
                 )
             )
             .scalars()
@@ -513,7 +516,7 @@ class ImportService:
                         amount_raw = self._norm(row.get("Amount"))
                         category_raw = self._norm(row.get("Category name"))
                         description_raw = self._norm(row.get("Note")) or None
-                        wallet_name_raw = self._norm(row.get("Wallet")) or None
+                        account_name_raw = self._norm(row.get("Wallet")) or None
                         labels_raw = self._norm(row.get("Labels")) or None
                     else:
                         occurred_raw = self._norm(row.get("occurred_at"))
@@ -522,7 +525,7 @@ class ImportService:
                         amount_raw = self._norm(row.get("amount"))
                         category_raw = self._norm(row.get("category"))
                         description_raw = self._norm(row.get("description")) or None
-                        wallet_name_raw = None
+                        account_name_raw = self._norm(row.get("account_name")) or None
                         labels_raw = None
 
                     try:
@@ -572,6 +575,24 @@ class ImportService:
                     else:
                         add_error("category", "required", "category is required", category_raw)
 
+                    account_id = None
+                    if account_name_raw:
+                        account_id = account_map.get(account_name_raw.lower())
+                        if account_id is None:
+                            add_error(
+                                "account_name",
+                                "not_found",
+                                "account not found in workspace",
+                                account_name_raw,
+                            )
+                    elif header_mode == "spendee":
+                        add_error(
+                            "account_name",
+                            "required",
+                            "Wallet is required and must match an existing account in the workspace",
+                            account_name_raw,
+                        )
+
                     payload = {
                         "occurred_at": occurred_at.isoformat() if occurred_at else None,
                         "type": type_raw,
@@ -579,7 +600,8 @@ class ImportService:
                         "category_id": category_id,
                         "category_name": category_raw if category_raw else None,
                         "description": description_raw,
-                        "wallet_name": wallet_name_raw,
+                        "account_name": account_name_raw,
+                        "account_id": account_id,
                         "labels": labels_raw,
                     }
                 elif batch.module == ImportModule.spending_budgets:
@@ -994,7 +1016,7 @@ class ImportService:
                             type=TransactionType(p["type"]),
                             occurred_at=datetime.fromisoformat(p["occurred_at"]),
                             description=p.get("description"),
-                            wallet_name=p.get("wallet_name"),
+                            account_id=p.get("account_id"),
                             labels=p.get("labels"),
                             source_type=TransactionSourceType.imported,
                             source_import_id=batch.id,
