@@ -81,10 +81,10 @@ async def _startup_check() -> None:
             msg="METRICS_TOKEN is using a default value in a non-local environment.",
         )
 
-    if settings.ENV in ("production", "staging") and not settings.SCHEDULER_ENABLED:
+    if not settings.SCHEDULER_ENABLED:
         logger.warning(
-            "scheduler_disabled_in_prod",
-            msg="SCHEDULER_ENABLED is set to False in a production/staging environment. Scheduled jobs will not run.",
+            "scheduler_disabled",
+            msg="SCHEDULER_ENABLED is set to False. Scheduled jobs will not run.",
         )
 
 
