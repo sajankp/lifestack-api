@@ -522,7 +522,7 @@ class ImportService:
                         amount_raw = self._norm(row.get("amount"))
                         category_raw = self._norm(row.get("category"))
                         description_raw = self._norm(row.get("description")) or None
-                        wallet_name_raw = None
+                        wallet_name_raw = self._norm(row.get("account_name")) or None
                         labels_raw = None
 
                     try:
@@ -572,6 +572,17 @@ class ImportService:
                     else:
                         add_error("category", "required", "category is required", category_raw)
 
+                    account_id = None
+                    if wallet_name_raw:
+                        account_id = account_map.get(wallet_name_raw.lower())
+                        if account_id is None:
+                            add_error(
+                                "account_name" if header_mode != "spendee" else "Wallet",
+                                "not_found",
+                                "account not found in workspace",
+                                wallet_name_raw,
+                            )
+
                     payload = {
                         "occurred_at": occurred_at.isoformat() if occurred_at else None,
                         "type": type_raw,
@@ -580,6 +591,7 @@ class ImportService:
                         "category_name": category_raw if category_raw else None,
                         "description": description_raw,
                         "wallet_name": wallet_name_raw,
+                        "account_id": account_id,
                         "labels": labels_raw,
                     }
                 elif batch.module == ImportModule.spending_budgets:
@@ -953,6 +965,9 @@ class ImportService:
 
             category_name_to_id = await self._category_maps(workspace_id)
             by_name, _by_public = category_name_to_id
+            account_map = {}
+            if batch.module == ImportModule.spending_transactions:
+                account_map = await self._account_map(workspace_id)
             offset = 0
             while True:
                 rows = await self.repository.iter_preview_rows_chunk(
@@ -986,10 +1001,16 @@ class ImportService:
                                     raise ValidationError(detail="failed to create category")
                                 by_name[category_name] = category_id
                                 auto_created_categories.append(category.name)
+                        wallet_name_val = p.get("wallet_name")
+                        wallet_name_raw = self._norm(wallet_name_val) if wallet_name_val else ""
+                        account_id = (
+                            account_map.get(wallet_name_raw.lower()) if wallet_name_raw else None
+                        )
                         tx = SpendingTransaction(
                             workspace_id=workspace_id,
                             user_id=user_id,
                             category_id=int(category_id),
+                            account_id=account_id,
                             amount=Decimal(p["amount"]),
                             type=TransactionType(p["type"]),
                             occurred_at=datetime.fromisoformat(p["occurred_at"]),

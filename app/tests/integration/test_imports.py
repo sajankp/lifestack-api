@@ -217,6 +217,15 @@ async def test_import_local_storage_key_uses_generated_object_name(
 async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
     creds = await _register_and_login(client, uuid.uuid4().hex[:8])
 
+    # Create the "Main Wallet" account in the workspace
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Main Wallet", "account_type": "bank", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+    account_public_id = acct_resp.json()["public_id"]
+
     categories = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()[
         "items"
     ]
@@ -251,6 +260,7 @@ async def test_import_spendee_csv_with_wallet_and_labels(client: AsyncClient):
     # Negative Spendee expense should be normalized to positive stored amount.
     assert row["amount"] == "3700.00"
     assert row["wallet_name"] == "Main Wallet"
+    assert row["account_id"] == account_public_id
     assert row["labels"] == "family"
     assert row["source_type"] == "imported"
     assert row["source_metadata"] == {
@@ -960,3 +970,46 @@ async def test_import_investing_constituents_lifecycle(client: AsyncClient):
         assert len(consts) == 1
         assert consts[0].constituent_company_id == company_nvda.id
         assert consts[0].weight == Decimal("1.00000000")
+
+
+@pytest.mark.asyncio
+async def test_import_spending_transactions_with_account_name(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    # 1. Create a finance account in the workspace
+    account_name = "My Bank Account"
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={"name": account_name, "account_type": "bank", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert acct_resp.status_code == 201
+    account_public_id = acct_resp.json()["public_id"]
+
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
+    food = next(c for c in cats if c["name"] == "Food & Dining")
+
+    # 2. Upload CSV with standard headers + account_name column
+    csv_content = (
+        "occurred_at,type,amount,category,description,account_name\n"
+        f"{datetime.now(UTC).isoformat()},expense,42.50,{food['public_id']},dinner out,{account_name}\n"
+    )
+
+    files = {"file": ("tx_with_acct.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    data = {"module": "spending-transactions"}
+    validate = await client.post("/v1/imports", data=data, files=files, cookies=creds["cookies"])
+    assert validate.status_code == 200, validate.text
+    payload = validate.json()
+    assert payload["import_batch"]["status"] == "validated"
+    import_id = payload["import_batch"]["public_id"]
+
+    # 3. Commit import
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code == 200, commit.text
+
+    # 4. Verify transaction exists and is linked to the correct account
+    txs = (await client.get("/v1/spending/transactions", cookies=creds["cookies"])).json()["items"]
+    assert len(txs) == 1
+    assert txs[0]["amount"] == "42.50"
+    assert txs[0]["account_id"] == account_public_id
+    assert txs[0]["wallet_name"] == account_name
