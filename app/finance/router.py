@@ -29,6 +29,7 @@ from app.finance.schemas import (
     CapitalTransferResponse,
     CurrencyResponse,
     FxRateResponse,
+    ReconciliationSummary,
     UserFinanceSettingResponse,
     UserFinanceSettingUpdate,
     WorkspaceFinanceSettingResponse,
@@ -122,14 +123,35 @@ async def get_account_spending_balance(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
 ):
-    """Retrieve the derived spending balance for a wallet/bank/card account.
+    """Retrieve the transfer-inclusive projected balance for a wallet/bank/card account.
 
     The balance is computed from the workspace spending transaction history
-    (income minus expenses) for the given account. It is independent of
-    the investing cash balances.
+    (income minus expenses) plus capital transfer contributions (inflows minus
+    outflows). It is independent of the investing cash balance snapshots.
     """
     data = await account_service.get_spending_balance(workspace_id, account_id)
     return AccountBalanceResponse.model_validate(data)
+
+
+@router.get("/accounts/{account_id}/reconciliation", response_model=ReconciliationSummary)
+async def get_account_reconciliation(
+    account_id: uuid.UUID,
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    """Compare the projected spending ledger balance against the latest cash balance snapshot.
+
+    Returns:
+    - ``projected_balance``: income - expenses + transfer_in - transfer_out (all-time)
+    - ``snapshot_balance``: the most recent investing cash balance snapshot, or null
+    - ``discrepancy``: projected - snapshot (positive = ledger > snapshot, negative = snapshot > ledger)
+    - ``transaction_count`` / ``transfer_count``: entry breakdown
+
+    A discrepancy indicates unrecorded transactions or transfers on one side.
+    A null snapshot means no cash balance has been recorded yet for this account.
+    """
+    return await account_service.get_reconciliation_summary(workspace_id, account_id)
 
 
 @router.get("/settings", response_model=WorkspaceFinanceSettingResponse)

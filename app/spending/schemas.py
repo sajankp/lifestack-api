@@ -3,10 +3,13 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from app.imports.models import ImportModule
 from app.spending.models import TransactionSourceType, TransactionType
+
+# Ledger entry kinds: regular spending transaction, or a capital transfer in/out
+LedgerEntryKind = Literal["transaction", "transfer_out", "transfer_in"]
 
 # ---------------------------------------------------------------------------
 # Category schemas
@@ -363,19 +366,28 @@ class SavingsRateResponse(BaseModel):
 
 
 class LedgerEntry(BaseModel):
-    """A single transaction with a cumulative running balance for the account."""
+    """A single ledger entry (spending transaction or capital transfer) with a cumulative running balance.
+
+    entry_kind discriminates between regular transactions and transfer events:
+    - ``transaction``: a spending income/expense transaction
+    - ``transfer_out``: a capital transfer leaving this account
+    - ``transfer_in``: a capital transfer arriving at this account
+
+    Transfer entries have ``category_id = None`` and ``wallet_name = None``.
+    """
 
     public_id: uuid.UUID
-    category_id: uuid.UUID
+    entry_kind: LedgerEntryKind  # discriminator between transaction and transfer rows
+    category_id: uuid.UUID | None  # None for transfer entries
     account_id: uuid.UUID | None
     amount: Decimal
-    type: TransactionType
+    type: TransactionType | None  # None for transfer entries (use entry_kind instead)
     occurred_at: datetime
     description: str | None
     wallet_name: str | None
     labels: str | None
     source_type: str
-    running_balance: Decimal  # cumulative balance AFTER this transaction
+    running_balance: Decimal  # cumulative balance AFTER this entry
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
@@ -387,7 +399,13 @@ class LedgerResponse(BaseModel):
     account_currency: str
     opening_balance: Decimal  # balance before the first item in this page
     closing_balance: Decimal  # balance after the last item in this page
-    total_transactions: int
+    total_entries: int  # total count of all entries (transactions + transfers)
     items: list[LedgerEntry]
+
+    @computed_field
+    @property
+    def total_transactions(self) -> int:
+        """Deprecated: use total_entries instead."""
+        return self.total_entries
 
     model_config = ConfigDict(json_encoders={Decimal: str})

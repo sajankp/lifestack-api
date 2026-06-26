@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -216,13 +216,14 @@ class AccountRepository:
 
     async def get_spending_balance(
         self, workspace_id: int, account_id: int
-    ) -> tuple[Decimal, int, "datetime | None", "datetime | None"]:
-        """Return (net_balance, tx_count, first_tx_at, last_tx_at) from spending_transactions.
+    ) -> tuple[Decimal, int, int, "datetime | None", "datetime | None"]:
+        """Return (projected_balance, tx_count, transfer_count, first_tx_at, last_tx_at).
 
-        net_balance = SUM(income) - SUM(expenses) for this account.
+        projected_balance = (income txns - expense txns)
+                          + (transfer inflows - transfer outflows)
+
+        This is the single source of truth for the account's calculated balance.
         """
-        from app.spending.models import SpendingTransaction  # noqa: PLC0415
-
         income_sum = func.coalesce(
             func.sum(
                 case(
@@ -241,23 +242,117 @@ class AccountRepository:
             ),
             Decimal("0"),
         )
-        count_col = func.count(SpendingTransaction.id)
+        tx_count_col = func.count(SpendingTransaction.id)
         first_tx = func.min(SpendingTransaction.occurred_at)
         last_tx = func.max(SpendingTransaction.occurred_at)
 
-        result = await self.session.execute(
-            select(income_sum, expense_sum, count_col, first_tx, last_tx).where(
+        tx_sub = (
+            select(
+                income_sum.label("income"),
+                expense_sum.label("expense"),
+                tx_count_col.label("tx_count"),
+                first_tx.label("first_at"),
+                last_tx.label("last_at"),
+            )
+            .where(
                 SpendingTransaction.workspace_id == workspace_id,
                 SpendingTransaction.account_id == account_id,
             )
+            .subquery()
+        )
+
+        inflow_sub = (
+            select(
+                func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0")).label("inflow"),
+                func.count(CapitalTransfer.id).label("inflow_count"),
+            )
+            .where(
+                CapitalTransfer.workspace_id == workspace_id,
+                CapitalTransfer.to_account_id == account_id,
+            )
+            .subquery()
+        )
+
+        outflow_sub = (
+            select(
+                func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0")).label(
+                    "outflow"
+                ),
+                func.count(CapitalTransfer.id).label("outflow_count"),
+            )
+            .where(
+                CapitalTransfer.workspace_id == workspace_id,
+                CapitalTransfer.from_account_id == account_id,
+            )
+            .subquery()
+        )
+
+        result = await self.session.execute(
+            select(
+                tx_sub.c.income,
+                tx_sub.c.expense,
+                tx_sub.c.tx_count,
+                tx_sub.c.first_at,
+                tx_sub.c.last_at,
+                inflow_sub.c.inflow,
+                inflow_sub.c.inflow_count,
+                outflow_sub.c.outflow,
+                outflow_sub.c.outflow_count,
+            )
+            .select_from(tx_sub)
+            .join(inflow_sub, true())
+            .join(outflow_sub, true())
         )
         row = result.one()
-        income = Decimal(str(row[0]))
-        expense = Decimal(str(row[1]))
-        count = row[2]
+        income = Decimal(str(row[0] or "0"))
+        expense = Decimal(str(row[1] or "0"))
+        tx_count = int(row[2] or 0)
         first_at = row[3]
         last_at = row[4]
-        return income - expense, count, first_at, last_at
+        inflow = Decimal(str(row[5] or "0"))
+        inflow_count = int(row[6] or 0)
+        outflow = Decimal(str(row[7] or "0"))
+        outflow_count = int(row[8] or 0)
+
+        projected_balance = income - expense + inflow - outflow
+        transfer_count = inflow_count + outflow_count
+
+        return projected_balance, tx_count, transfer_count, first_at, last_at
+
+    async def get_reconciliation_summary(
+        self, workspace_id: int, account_id: int
+    ) -> tuple[Decimal, int, int, Decimal | None, "datetime | None"]:
+        """Return (projected_balance, tx_count, transfer_count, snapshot_balance, snapshot_as_of).
+
+        projected_balance is the transfer-inclusive ledger balance.
+        snapshot_balance is the most recent CashBalance.balance for this account,
+        or None if no snapshot exists.
+        """
+        (
+            projected_balance,
+            tx_count,
+            transfer_count,
+            _first,
+            _last,
+        ) = await self.get_spending_balance(workspace_id, account_id)
+
+        snapshot_row = await self.session.execute(
+            select(CashBalance.balance, CashBalance.as_of)
+            .where(
+                CashBalance.workspace_id == workspace_id,
+                CashBalance.account_id == account_id,
+            )
+            .order_by(CashBalance.as_of.desc())
+            .limit(1)
+        )
+        snapshot = snapshot_row.one_or_none()
+        snapshot_balance: Decimal | None = None
+        snapshot_as_of: datetime | None = None
+        if snapshot is not None:
+            snapshot_balance = Decimal(str(snapshot[0]))
+            snapshot_as_of = snapshot[1]
+
+        return projected_balance, tx_count, transfer_count, snapshot_balance, snapshot_as_of
 
 
 class FinanceSettingRepository:

@@ -27,6 +27,7 @@ from app.spending.models import (
 from app.spending.repository import (
     BudgetRepository,
     CategoryRepository,
+    LedgerRow,
     RecurringTransactionRepository,
     TransactionRepository,
 )
@@ -378,9 +379,10 @@ class TransactionService:
     ) -> LedgerResponse:
         """Return a paginated ledger view for a spending account with running balance.
 
-        Transactions are ordered most-recent first (DESC). The running_balance
-        field on each entry represents the cumulative account balance AFTER
-        that transaction (viewing from oldest to newest).
+        Entries are ordered most-recent first (DESC) and include both spending
+        transactions and capital transfers. The running_balance field on each
+        entry represents the cumulative account balance AFTER that entry
+        (viewing from oldest to newest).
         """
         account = await self.account_repo.get_by_public_id(workspace_id, account_public_id)
         if not account:
@@ -391,7 +393,7 @@ class TransactionService:
             raise ValidationError(detail="Account ID is missing.")
         account_id: int = account.id  # type: ignore[assignment]
 
-        txs, total = await self.transaction_repo.get_ledger_page(
+        rows, total = await self.transaction_repo.get_ledger_page(
             workspace_id,
             account_id,
             from_date=from_date,
@@ -401,12 +403,12 @@ class TransactionService:
         )
 
         total_balance = Decimal("0")
-        # Compute the tail balance (the net balance of all transactions older than the oldest transaction in the page)
-        if txs:
+        # Compute the tail balance: net of all entries BEFORE the oldest row in this page
+        if rows:
             tail_balance = await self.transaction_repo.get_account_net_balance(
                 workspace_id,
                 account_id,
-                before_tx=txs[-1],
+                before_row=rows[-1],
             )
         else:
             tail_balance = Decimal("0")
@@ -417,37 +419,41 @@ class TransactionService:
                 to_date=to_date,
             )
 
-        # Build running_balance per entry (desc page → last entry in page has tail_balance + its amount)
-        # We iterate the page reversed (oldest first), accumulate, then re-reverse.
-        reversed_txs = list(reversed(txs))
+        # Build running_balance per entry (desc page → oldest row first, accumulate, re-reverse)
+        def _is_credit(row: LedgerRow) -> bool:
+            """Return True if this entry adds to the balance."""
+            return row.entry_kind == "transfer_in" or row.type == "income"
+
+        reversed_rows = list(reversed(rows))
         running = tail_balance
         entries_reversed: list[LedgerEntry] = []
-        for tx in reversed_txs:
-            if tx.type == TransactionType.income:
-                running += tx.amount
+        for row in reversed_rows:
+            if _is_credit(row):
+                running += row.amount
             else:
-                running -= tx.amount
+                running -= row.amount
             entry = LedgerEntry(
-                public_id=tx.public_id,
-                category_id=uuid.UUID(int=0),  # placeholder – resolved below
+                public_id=row.public_id,
+                entry_kind=row.entry_kind,  # type: ignore[arg-type]
+                category_id=None,  # resolved below for transaction rows
                 account_id=account.public_id,
-                amount=tx.amount,
-                type=tx.type,
-                occurred_at=tx.occurred_at,
-                description=tx.description,
-                wallet_name=tx.wallet_name,
-                labels=tx.labels,
-                source_type=tx.source_type,
+                amount=row.amount,
+                type=row.type,  # type: ignore[arg-type]
+                occurred_at=row.occurred_at,
+                description=row.description,
+                wallet_name=row.wallet_name,
+                labels=row.labels,
+                source_type=row.source_type,
                 running_balance=running,
-                created_at=tx.created_at,
+                created_at=row.created_at,
             )
             entries_reversed.append(entry)
 
         # Re-reverse to restore desc order (most recent first)
         entries = list(reversed(entries_reversed))
 
-        # Resolve category public_ids in bulk
-        cat_ids = [tx.category_id for tx in txs if tx.category_id is not None]
+        # Resolve category public_ids in bulk (transaction rows only)
+        cat_ids = [r.category_id for r in rows if r.category_id is not None]
         unique_cat_ids = list(set(cat_ids))
         cat_map: dict[int, uuid.UUID] = {}
         if unique_cat_ids:
@@ -460,23 +466,26 @@ class TransactionService:
             for cat_row in cat_rows.scalars().all():
                 cat_map[cat_row.id] = cat_row.public_id
 
-        for i, (tx, entry) in enumerate(zip(txs, entries, strict=True)):
-            entries[i] = LedgerEntry(**{
-                **entry.model_dump(),
-                "category_id": cat_map.get(tx.category_id or 0, entry.category_id),
-            })
+        for i, (row, entry) in enumerate(zip(rows, entries, strict=True)):
+            if row.category_id is not None:
+                entries[i] = LedgerEntry(**{
+                    **entry.model_dump(),
+                    "category_id": cat_map.get(row.category_id),
+                })
 
-        opening = (
-            entries[-1].running_balance
-            - (
-                entries[-1].amount
-                if txs[-1].type == TransactionType.income
-                else -entries[-1].amount
+        # Opening/closing balances for this page
+        if entries:
+            last_row = rows[-1]
+            last_entry = entries[-1]
+            opening = (
+                last_entry.running_balance - last_entry.amount
+                if _is_credit(last_row)
+                else last_entry.running_balance + last_entry.amount
             )
-            if entries
-            else total_balance
-        )
-        closing = entries[0].running_balance if entries else total_balance
+            closing = entries[0].running_balance
+        else:
+            opening = total_balance
+            closing = total_balance
 
         return LedgerResponse(
             account_public_id=account.public_id,
@@ -484,7 +493,7 @@ class TransactionService:
             account_currency=account.default_currency_code,
             opening_balance=opening,
             closing_balance=closing,
-            total_transactions=total,
+            total_entries=total,
             items=entries,
         )
 

@@ -51,7 +51,7 @@ If you move money from your spending account to your brokerage account (e.g., tr
 
 Lifestack deliberately avoids automatic balance mutations when logging transactions or transfers:
 1. **No Hidden Side Effects:** It keeps the database state explicit and highly auditable.
-   * *Note:* While a spending transaction has an optional, nullable `account_id` field (allowing you to tag which account paid for an item), **logging a transaction has absolutely zero mathematical impact on the account's cash balance snapshot**. Lifestack does not subtract from or add to cash balances dynamically when you log transactions.
+   * *Note:* While a spending transaction/transfer has an associated `account_id`, **logging it has absolutely zero mathematical impact on the account's cash balance snapshot**. Lifestack does not subtract from or add to cash balance snapshots dynamically when you log transactions.
 2. **Reconciliation Flexibility:** You can import bank CSVs or update your cash balance snapshots manually, without having to perfectly categorize and align every single cup of coffee to keep your balance correct.
 3. **Multi-Currency Clarity:** FX rates fluctuate constantly. Decoupling ensures that read-time valuation conversion doesn't corrupt historical transaction data.
 
@@ -60,19 +60,20 @@ Lifestack deliberately avoids automatic balance mutations when logging transacti
 ## 5. Reconciling and Tallying Balances
 
 ### How Personal Finance Apps Handle This
-Personal finance applications typically fall into two categories:
 * **Ledger-Based (e.g., Firefly III, GnuCash):** Every expense is automatically deducted from the account. If you miss logging a single coffee, your account balance is incorrect.
 * **Snapshot-First (e.g., Monarch Money, Copilot, Lifestack):** Balance snapshots are treated as the "ground truth" (e.g., synced from bank APIs or updated manually), while the transaction ledger is for categorizing flow.
 
-### Tallying Up in Lifestack (UI Support & Roadmap)
-Currently, in Lifestack V1, **the UI does not have built-in support or dedicated screens to automate this reconciliation**.
-* **V1 Status:** You must compare the sum of your categorized transactions (found in the Spending page lists/charts) against your Cash Balance snapshot manually.
-* **Roadmap:** Ledger-style balance projection, transaction-matching reconciliation screens, and automated statement matching are planned for future versions (V2/Wallet ledger phase).
+### Tallying Up in Lifestack (Automated Reconciliation UI)
+In Lifestack, the **Spending Ledger** tab has built-in reconciliation support:
+* **Projected Balance:** Calculated dynamically as:
+  $$\text{Projected Balance} = \sum \text{Incomes} - \sum \text{Expenses} + \sum \text{Transfer Inflows} - \sum \text{Transfer Outflows}$$
+* **Reconciliation Card:** Located below the balance summary on the Ledger tab, it compares this Projected Balance against the **Latest Cash Balance Snapshot** (your ground-truth statement balance).
+* **Discrepancy Highlight:**
+  - If the projected ledger and cash snapshot don't match, the discrepancy is displayed.
+  - The card color-codes the gap (amber for minor differences, rose/red for discrepancies $\ge 5\%$ of the projected balance).
+  - A "No snapshot recorded" state indicates when a cash balance snapshot has not yet been set for the account.
 
-If you want to run this check programmatically under V1, you can query the database directly or write a script to calculate:
-$$\text{Expected Balance} = \text{Starting Balance} + \sum \text{Incomes} - \sum \text{Expenses}$$
-
-Any difference between the **Expected Balance** and your **Current Cash Balance Snapshot** represents:
-1. Missing/unlogged transactions.
-2. Untracked bank fees or interest payments.
-3. Discrepancies in transfer logs.
+Any difference represents:
+1. Missing/unlogged transactions or transfers.
+2. Untracked interest, bank fees, or small cash expenses.
+3. Errors in the logged date or amount of a transfer.
