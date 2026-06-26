@@ -333,6 +333,7 @@ class TransactionRepository:
             select(combined)
             .order_by(
                 combined.c.occurred_at.desc(),
+                combined.c.entry_kind.desc(),
                 combined.c.id.desc(),
             )
             .limit(limit)

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -246,45 +246,73 @@ class AccountRepository:
         first_tx = func.min(SpendingTransaction.occurred_at)
         last_tx = func.max(SpendingTransaction.occurred_at)
 
-        tx_result = await self.session.execute(
-            select(income_sum, expense_sum, tx_count_col, first_tx, last_tx).where(
+        tx_sub = (
+            select(
+                income_sum.label("income"),
+                expense_sum.label("expense"),
+                tx_count_col.label("tx_count"),
+                first_tx.label("first_at"),
+                last_tx.label("last_at"),
+            )
+            .where(
                 SpendingTransaction.workspace_id == workspace_id,
                 SpendingTransaction.account_id == account_id,
             )
+            .subquery()
         )
-        tx_row = tx_result.one()
-        income = Decimal(str(tx_row[0]))
-        expense = Decimal(str(tx_row[1]))
-        tx_count = int(tx_row[2])
-        first_at = tx_row[3]
-        last_at = tx_row[4]
 
-        # Capital transfer contributions
-        inflow_result = await self.session.execute(
+        inflow_sub = (
             select(
-                func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0")),
-                func.count(CapitalTransfer.id),
-            ).where(
+                func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0")).label("inflow"),
+                func.count(CapitalTransfer.id).label("inflow_count"),
+            )
+            .where(
                 CapitalTransfer.workspace_id == workspace_id,
                 CapitalTransfer.to_account_id == account_id,
             )
+            .subquery()
         )
-        inflow_row = inflow_result.one()
-        inflow = Decimal(str(inflow_row[0]))
-        inflow_count = int(inflow_row[1])
 
-        outflow_result = await self.session.execute(
+        outflow_sub = (
             select(
-                func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0")),
-                func.count(CapitalTransfer.id),
-            ).where(
+                func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0")).label(
+                    "outflow"
+                ),
+                func.count(CapitalTransfer.id).label("outflow_count"),
+            )
+            .where(
                 CapitalTransfer.workspace_id == workspace_id,
                 CapitalTransfer.from_account_id == account_id,
             )
+            .subquery()
         )
-        outflow_row = outflow_result.one()
-        outflow = Decimal(str(outflow_row[0]))
-        outflow_count = int(outflow_row[1])
+
+        result = await self.session.execute(
+            select(
+                tx_sub.c.income,
+                tx_sub.c.expense,
+                tx_sub.c.tx_count,
+                tx_sub.c.first_at,
+                tx_sub.c.last_at,
+                inflow_sub.c.inflow,
+                inflow_sub.c.inflow_count,
+                outflow_sub.c.outflow,
+                outflow_sub.c.outflow_count,
+            )
+            .select_from(tx_sub)
+            .join(inflow_sub, true())
+            .join(outflow_sub, true())
+        )
+        row = result.one()
+        income = Decimal(str(row[0] or "0"))
+        expense = Decimal(str(row[1] or "0"))
+        tx_count = int(row[2] or 0)
+        first_at = row[3]
+        last_at = row[4]
+        inflow = Decimal(str(row[5] or "0"))
+        inflow_count = int(row[6] or 0)
+        outflow = Decimal(str(row[7] or "0"))
+        outflow_count = int(row[8] or 0)
 
         projected_balance = income - expense + inflow - outflow
         transfer_count = inflow_count + outflow_count
