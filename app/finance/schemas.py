@@ -179,15 +179,53 @@ class CapitalTransferResponse(BaseModel):
 
 
 class AccountBalanceResponse(BaseModel):
-    """Derived spending balance for an account, computed from transaction history."""
+    """Projected balance for an account, computed from spending transaction history
+    plus capital transfer contributions (inflows minus outflows).
+
+    This is the single source of truth for an account's calculated balance.
+    It deliberately excludes investing cash balance snapshots, which represent
+    real-world ground-truth and are compared via the reconciliation endpoint.
+    """
 
     account_public_id: uuid.UUID
     account_name: str
     account_type: AccountType
     currency_code: str
-    spending_balance: Decimal  # income minus expenses (positive = net income)
+    spending_balance: Decimal  # (income - expenses) + (transfer_in - transfer_out)
     transaction_count: int
+    transfer_count: int
     first_transaction_at: datetime | None
     last_transaction_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+# ---------------------------------------------------------------------------
+# Account reconciliation – compare projected balance vs cash snapshot
+# ---------------------------------------------------------------------------
+
+
+class ReconciliationSummary(BaseModel):
+    """Comparison of a spending account's projected ledger balance against the
+    latest investing cash balance snapshot for the same account.
+
+    projected_balance = (income transactions - expense transactions)
+                        + (transfer inflows - transfer outflows)
+
+    discrepancy = projected_balance - snapshot_balance
+      positive → ledger shows more than the snapshot (likely missing expense/transfer)
+      negative → snapshot shows more than the ledger (likely missing income/transfer)
+      None     → no snapshot exists yet, cannot reconcile
+    """
+
+    account_public_id: uuid.UUID
+    account_name: str
+    currency_code: str
+    projected_balance: Decimal
+    snapshot_balance: Decimal | None
+    snapshot_as_of: datetime | None
+    discrepancy: Decimal | None  # projected - snapshot; None when no snapshot
+    transaction_count: int
+    transfer_count: int
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})

@@ -1,18 +1,40 @@
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import and_, case, func, or_, select
+import sqlalchemy as sa
+from sqlalchemy import and_, case, func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
+from app.finance.models import CapitalTransfer
 from app.spending.models import (
     RecurringTransaction,
     SpendingBudget,
     SpendingCategory,
     SpendingTransaction,
 )
+
+
+@dataclass
+class LedgerRow:
+    """Unified row type returned by get_ledger_page representing either a
+    spending transaction or a capital transfer event for an account."""
+
+    id: int
+    public_id: UUID
+    occurred_at: datetime
+    amount: Decimal
+    entry_kind: str  # "transaction" | "transfer_out" | "transfer_in"
+    type: str | None  # "income" | "expense" | None (None for transfers)
+    description: str | None
+    wallet_name: str | None
+    labels: str | None
+    source_type: str
+    category_id: int | None
+    created_at: datetime
 
 
 class CategoryRepository:
@@ -231,32 +253,112 @@ class TransactionRepository:
         to_date: datetime | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
-    ) -> tuple[list[SpendingTransaction], int]:
-        """Return paginated transactions for an account ordered by occurred_at DESC.
+    ) -> tuple[list[LedgerRow], int]:
+        """Return paginated ledger entries for an account ordered by occurred_at DESC.
 
-        Returns (transactions_page, total_count_for_account).
+        Includes both spending_transactions AND capital_transfers in the same
+        timeline, giving each a consistent entry_kind discriminator:
+          - ``transaction``  : spending income/expense row
+          - ``transfer_out`` : capital transfer leaving this account
+          - ``transfer_in``  : capital transfer arriving at this account
+
+        Returns (ledger_rows, total_count_for_account).
         """
-        base = select(SpendingTransaction).where(
+        # --- Leg 1: spending transactions for this account ------------------
+        tx_where = [
             SpendingTransaction.workspace_id == workspace_id,
             SpendingTransaction.account_id == account_id,
-        )
+        ]
         if from_date is not None:
-            base = base.where(SpendingTransaction.occurred_at >= from_date)
+            tx_where.append(SpendingTransaction.occurred_at >= from_date)
         if to_date is not None:
-            base = base.where(SpendingTransaction.occurred_at <= to_date)
+            tx_where.append(SpendingTransaction.occurred_at <= to_date)
+
+        tx_select = select(
+            SpendingTransaction.id.label("id"),
+            SpendingTransaction.public_id.label("public_id"),
+            SpendingTransaction.occurred_at.label("occurred_at"),
+            SpendingTransaction.amount.label("amount"),
+            literal("transaction", type_=sa.String()).label("entry_kind"),
+            SpendingTransaction.type.label("type"),
+            SpendingTransaction.description.label("description"),
+            SpendingTransaction.wallet_name.label("wallet_name"),
+            SpendingTransaction.labels.label("labels"),
+            SpendingTransaction.source_type.label("source_type"),
+            SpendingTransaction.category_id.label("category_id"),
+            SpendingTransaction.created_at.label("created_at"),
+        ).where(*tx_where)
+
+        # --- Leg 2: capital transfers involving this account -----------------
+        xfer_where = [
+            CapitalTransfer.workspace_id == workspace_id,
+            or_(
+                CapitalTransfer.from_account_id == account_id,
+                CapitalTransfer.to_account_id == account_id,
+            ),
+        ]
+        if from_date is not None:
+            xfer_where.append(CapitalTransfer.occurred_at >= from_date)
+        if to_date is not None:
+            xfer_where.append(CapitalTransfer.occurred_at <= to_date)
+
+        xfer_select = select(
+            CapitalTransfer.id.label("id"),
+            CapitalTransfer.public_id.label("public_id"),
+            CapitalTransfer.occurred_at.label("occurred_at"),
+            CapitalTransfer.gross_amount.label("amount"),
+            case(
+                (CapitalTransfer.from_account_id == account_id, literal("transfer_out")),
+                else_=literal("transfer_in"),
+            ).label("entry_kind"),
+            # Transfers don't have a transaction type; service uses entry_kind instead
+            literal(None, type_=sa.String()).label("type"),
+            CapitalTransfer.notes.label("description"),
+            literal(None, type_=sa.String()).label("wallet_name"),
+            literal(None, type_=sa.String()).label("labels"),
+            CapitalTransfer.source_type.label("source_type"),
+            literal(None, type_=sa.Integer()).label("category_id"),
+            CapitalTransfer.created_at.label("created_at"),
+        ).where(*xfer_where)
+
+        combined = union_all(tx_select, xfer_select).alias("ledger_entries")
+
+        # Total count (without pagination)
         total = (
-            await self.session.execute(select(func.count()).select_from(base.subquery()))
+            await self.session.execute(select(func.count()).select_from(combined))
         ).scalar_one()
-        result = await self.session.execute(
-            base
+
+        # Paged result ordered most-recent first
+        paged = (
+            select(combined)
             .order_by(
-                SpendingTransaction.occurred_at.desc(),
-                SpendingTransaction.id.desc(),
+                combined.c.occurred_at.desc(),
+                combined.c.id.desc(),
             )
             .limit(limit)
             .offset(offset)
         )
-        return list(result.scalars().all()), int(total)
+
+        rows = (await self.session.execute(paged)).mappings().all()
+
+        result: list[LedgerRow] = [
+            LedgerRow(
+                id=int(r["id"]),
+                public_id=r["public_id"],
+                occurred_at=r["occurred_at"],
+                amount=Decimal(str(r["amount"])),
+                entry_kind=str(r["entry_kind"]),
+                type=r["type"],
+                description=r["description"],
+                wallet_name=r["wallet_name"],
+                labels=r["labels"],
+                source_type=str(r["source_type"]),
+                category_id=r["category_id"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+        return result, int(total)
 
     async def get_account_net_balance(
         self,
@@ -264,10 +366,38 @@ class TransactionRepository:
         account_id: int,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
-        before_tx: SpendingTransaction | None = None,
+        before_row: LedgerRow | None = None,
     ) -> Decimal:
-        """Return SUM(income) - SUM(expenses) for a given account."""
-        stmt = select(
+        """Return the net balance of an account including both spending transactions
+        AND capital transfer contributions.
+
+        balance = SUM(income txns) - SUM(expense txns)
+                + SUM(transfer_in gross_amount) - SUM(transfer_out gross_amount)
+
+        ``before_row`` restricts the query to entries strictly preceding that row
+        (used for computing the running balance tail in paginated ledger views).
+        """
+        # Spending transactions net: income - expense
+        tx_where = [
+            SpendingTransaction.workspace_id == workspace_id,
+            SpendingTransaction.account_id == account_id,
+        ]
+        if from_date is not None:
+            tx_where.append(SpendingTransaction.occurred_at >= from_date)
+        if to_date is not None:
+            tx_where.append(SpendingTransaction.occurred_at <= to_date)
+        if before_row is not None:
+            tx_where.append(
+                or_(
+                    SpendingTransaction.occurred_at < before_row.occurred_at,
+                    and_(
+                        SpendingTransaction.occurred_at == before_row.occurred_at,
+                        SpendingTransaction.id < before_row.id,
+                    ),
+                )
+            )
+
+        tx_net_stmt = select(
             func.coalesce(
                 func.sum(
                     case(
@@ -277,27 +407,56 @@ class TransactionRepository:
                 ),
                 Decimal("0"),
             )
-        ).where(
-            SpendingTransaction.workspace_id == workspace_id,
-            SpendingTransaction.account_id == account_id,
-        )
-        if from_date is not None:
-            stmt = stmt.where(SpendingTransaction.occurred_at >= from_date)
-        if to_date is not None:
-            stmt = stmt.where(SpendingTransaction.occurred_at <= to_date)
-        if before_tx is not None:
-            stmt = stmt.where(
-                or_(
-                    SpendingTransaction.occurred_at < before_tx.occurred_at,
-                    and_(
-                        SpendingTransaction.occurred_at == before_tx.occurred_at,
-                        SpendingTransaction.id < before_tx.id,
-                    ),
-                )
-            )
+        ).where(*tx_where)
 
-        result = await self.session.execute(stmt)
-        return Decimal(str(result.scalar_one() or Decimal("0")))
+        tx_net = Decimal(
+            str((await self.session.execute(tx_net_stmt)).scalar_one() or Decimal("0"))
+        )
+
+        # Capital transfers net: inflows - outflows
+        xfer_where_in = [
+            CapitalTransfer.workspace_id == workspace_id,
+            CapitalTransfer.to_account_id == account_id,
+        ]
+        xfer_where_out = [
+            CapitalTransfer.workspace_id == workspace_id,
+            CapitalTransfer.from_account_id == account_id,
+        ]
+
+        def _apply_date_filters(where_list: list, occurred_at_col: sa.Column) -> None:  # type: ignore[type-arg]
+            if from_date is not None:
+                where_list.append(occurred_at_col >= from_date)
+            if to_date is not None:
+                where_list.append(occurred_at_col <= to_date)
+            if before_row is not None:
+                where_list.append(
+                    or_(
+                        occurred_at_col < before_row.occurred_at,
+                        and_(
+                            occurred_at_col == before_row.occurred_at,
+                            CapitalTransfer.id < before_row.id,
+                        ),
+                    )
+                )
+
+        _apply_date_filters(xfer_where_in, CapitalTransfer.occurred_at)
+        _apply_date_filters(xfer_where_out, CapitalTransfer.occurred_at)
+
+        inflow_stmt = select(
+            func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0"))
+        ).where(*xfer_where_in)
+        outflow_stmt = select(
+            func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0"))
+        ).where(*xfer_where_out)
+
+        inflow = Decimal(
+            str((await self.session.execute(inflow_stmt)).scalar_one() or Decimal("0"))
+        )
+        outflow = Decimal(
+            str((await self.session.execute(outflow_stmt)).scalar_one() or Decimal("0"))
+        )
+
+        return tx_net + inflow - outflow
 
 
 class BudgetRepository:

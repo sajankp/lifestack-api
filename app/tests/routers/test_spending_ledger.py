@@ -43,7 +43,7 @@ async def test_ledger_empty_account(client: AsyncClient):
     res = await client.get(f"/v1/spending/accounts/{account_id}/ledger", cookies=cookies)
     assert res.status_code == 200
     data = res.json()
-    assert data["total_transactions"] == 0
+    assert data["total_entries"] == 0
     assert data["items"] == []
     assert data["account_public_id"] == account_id
     assert float(data["opening_balance"]) == 0.0
@@ -76,7 +76,7 @@ async def test_ledger_running_balance(client: AsyncClient):
     )
     assert res.status_code == 200
     data = res.json()
-    assert data["total_transactions"] == 3
+    assert data["total_entries"] == 3
     assert len(data["items"]) == 3
     # Desc order: most recent first (income +500 → bal 1200), then expense -300 → bal 700, then income +1000 → bal 1000
     balances = [float(item["running_balance"]) for item in data["items"]]
@@ -125,7 +125,7 @@ async def test_ledger_pagination(client: AsyncClient):
     )
     assert res.status_code == 200
     data = res.json()
-    assert data["total_transactions"] == 5
+    assert data["total_entries"] == 5
     assert len(data["items"]) == 2
 
     res2 = await client.get(
