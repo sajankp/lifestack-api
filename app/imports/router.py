@@ -96,6 +96,10 @@ async def upload_and_validate(
             preview_rows=preview_rows,
         )
     else:
+        # The batch was flushed but not committed — FastAPI's generator dependency
+        # commits AFTER background tasks run, so the worker would query the DB and
+        # find nothing. Committing here makes the batch visible to the worker.
+        await service.session.commit()
         response.status_code = status.HTTP_202_ACCEPTED
         background_tasks.add_task(
             run_background_validate,
@@ -140,6 +144,10 @@ async def commit_import(
         )
     else:
         batch = await service.start_commit(workspace_id, import_public_id)
+        # Commit the status transition (validated → committing) before the worker runs
+        # for the same reason as in upload_and_validate: the worker's session won't see
+        # the updated status until it is committed.
+        await service.session.commit()
         response.status_code = status.HTTP_202_ACCEPTED
         background_tasks.add_task(
             run_background_commit,
