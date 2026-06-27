@@ -424,8 +424,7 @@ class ImportService:
             mapping = self._smart_match_headers(headers, batch.module)
             header_mode = "default"
             if batch.module == ImportModule.spending_transactions and (
-                headers == SPENDEE_TRANSACTION_HEADERS
-                or headers == SPENDEE_TRANSACTION_HEADERS + ["Author"]
+                headers[: len(SPENDEE_TRANSACTION_HEADERS)] == SPENDEE_TRANSACTION_HEADERS
             ):
                 header_mode = "spendee"
 
