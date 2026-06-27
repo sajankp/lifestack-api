@@ -14,6 +14,11 @@ class InstrumentType(StrEnum):
     mutual_fund = "mutual_fund"
 
 
+class OrderType(StrEnum):
+    buy = "buy"
+    sell = "sell"
+
+
 class Company(SQLModel, table=True):
     __tablename__ = "investing_companies"
 
@@ -177,6 +182,8 @@ class CashBalance(SQLModel, table=True):
     source_type: str = Field(default="manual", sa_type=sa.String(length=32), index=True)
     source_ref: str | None = Field(default=None, max_length=255)
     source_import_id: int | None = Field(default=None, foreign_key="import_batches.id", index=True)
+    trigger_type: str | None = Field(default=None, sa_type=sa.String(length=20), nullable=True)
+    trigger_ref: uuid.UUID | None = Field(default=None, sa_type=sa.Uuid, nullable=True)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
@@ -262,4 +269,71 @@ class PortfolioSnapshot(SQLModel, table=True):
             "workspace_id",
             sa.text("snapshot_date DESC"),
         ),
+    )
+
+
+class InvestingOrder(SQLModel, table=True):
+    __tablename__ = "investing_orders"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+
+    account_id: int = Field(index=True)
+    order_type: str = Field(
+        sa_column=sa.Column(
+            sa.Enum("buy", "sell", name="investing_order_type"),
+            nullable=False,
+        )
+    )
+    symbol: str = Field(max_length=20)
+    instrument_id: int | None = Field(
+        default=None, foreign_key="investing_instruments.id", index=True, nullable=True
+    )
+
+    quantity: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=8))
+    price_per_unit: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=6))
+    gross_amount: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    brokerage_fee: Decimal = Field(default=Decimal("0"), sa_type=sa.Numeric(precision=12, scale=2))
+    tax_amount: Decimal = Field(default=Decimal("0"), sa_type=sa.Numeric(precision=12, scale=2))
+    other_fees: Decimal = Field(default=Decimal("0"), sa_type=sa.Numeric(precision=12, scale=2))
+    net_amount: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    currency: str = Field(max_length=10)
+    exchange_name: str | None = Field(default=None, max_length=50, nullable=True)
+
+    occurred_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
+    notes: str | None = Field(default=None, nullable=True)
+
+    realized_gain_loss: Decimal | None = Field(
+        default=None, sa_type=sa.Numeric(precision=18, scale=2), nullable=True
+    )
+    avg_cost_at_sale: Decimal | None = Field(
+        default=None, sa_type=sa.Numeric(precision=18, scale=6), nullable=True
+    )
+
+    source_type: str = Field(default="manual", sa_type=sa.String(length=32), index=True)
+    source_ref: str | None = Field(default=None, max_length=255, nullable=True)
+    source_import_id: int | None = Field(
+        default=None, foreign_key="import_batches.id", index=True, nullable=True
+    )
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_investing_orders_account_workspace",
+        ),
+        sa.Index(
+            "ix_investing_orders_workspace_symbol_account", "workspace_id", "symbol", "account_id"
+        ),
+        sa.Index("ix_investing_orders_workspace_occurred_at", "workspace_id", "occurred_at"),
+        sa.Index("ix_investing_orders_workspace_import", "workspace_id", "source_import_id"),
     )

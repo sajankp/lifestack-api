@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.investing.models import InstrumentType
+from app.investing.models import InstrumentType, OrderType
 from app.spending.schemas import SourceMetadataResponse
 
 
@@ -102,10 +102,68 @@ class CashBalanceResponse(BaseModel):
     balance: Decimal
     currency: str
     as_of: datetime
+    trigger_type: str | None = None
+    trigger_ref: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class InvestingOrderCreate(BaseModel):
+    account_id: uuid.UUID
+    order_type: OrderType
+    symbol: str = Field(..., min_length=1, max_length=20)
+    quantity: Decimal = Field(..., gt=0, decimal_places=8)
+    price_per_unit: Decimal = Field(..., gt=0, decimal_places=6)
+    currency: str = Field(..., min_length=1, max_length=10)
+    brokerage_fee: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
+    tax_amount: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
+    other_fees: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
+    exchange_name: str | None = Field(default=None, max_length=50)
+    occurred_at: datetime
+    notes: str | None = None
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class InvestingOrderResponse(BaseModel):
+    public_id: uuid.UUID
+    account_id: uuid.UUID
+    account_name: str
+    order_type: OrderType
+    symbol: str
+    instrument_type: str | None = None
+    quantity: Decimal
+    price_per_unit: Decimal
+    gross_amount: Decimal
+    brokerage_fee: Decimal
+    tax_amount: Decimal
+    other_fees: Decimal
+    net_amount: Decimal
+    currency: str
+    exchange_name: str | None = None
+    occurred_at: datetime
+    notes: str | None = None
+    realized_gain_loss: Decimal | None = None
+    avg_cost_at_sale: Decimal | None = None
+    source_type: str | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class InvestingOrderBulkCreate(BaseModel):
+    account_id: uuid.UUID
+    orders: list[InvestingOrderCreate]
 
 
 class InvestingSummaryResponse(BaseModel):

@@ -38,6 +38,7 @@ from app.investing.repository import (
     HoldingRepository,
     InstrumentConstituentRepository,
     InstrumentRepository,
+    InvestingOrderRepository,
     PortfolioSnapshotRepository,
 )
 from app.investing.service import (
@@ -46,6 +47,7 @@ from app.investing.service import (
     ExposureAnalyticsService,
     HoldingService,
     InstrumentService,
+    InvestingOrderService,
     InvestingSummaryService,
     PerformanceService,
 )
@@ -375,6 +377,30 @@ async def get_investing_performance_service(
     )
 
 
+async def get_investing_order_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> InvestingOrderRepository:
+    return InvestingOrderRepository(session)
+
+
+async def get_investing_order_service(
+    order_repo: InvestingOrderRepository = Depends(get_investing_order_repo),
+    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
+    cash_balance_repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+    instrument_service: InstrumentService = Depends(get_investing_instrument_service),
+) -> InvestingOrderService:
+    return InvestingOrderService(
+        order_repo,
+        holding_repo,
+        cash_balance_repo,
+        account_repo,
+        currency_repo,
+        instrument_service,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Imports
 # ---------------------------------------------------------------------------
@@ -429,8 +455,9 @@ async def get_finance_transfer_service(
     transfer_repo: CapitalTransferRepository = Depends(get_finance_transfer_repo),
     account_repo: AccountRepository = Depends(get_finance_account_repo),
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+    cash_balance_repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
 ) -> CapitalTransferService:
-    return CapitalTransferService(transfer_repo, account_repo, currency_repo)
+    return CapitalTransferService(transfer_repo, account_repo, currency_repo, cash_balance_repo)
 
 
 # ---------------------------------------------------------------------------

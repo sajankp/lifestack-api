@@ -18,6 +18,7 @@ from app.core.dependencies import (
     get_investing_holding_price_repo,
     get_investing_holding_service,
     get_investing_instrument_service,
+    get_investing_order_service,
     get_investing_performance_service,
     get_investing_snapshot_repo,
     get_investing_summary_service,
@@ -41,6 +42,9 @@ from app.investing.schemas import (
     InstrumentCreate,
     InstrumentResponse,
     InstrumentUpdate,
+    InvestingOrderBulkCreate,
+    InvestingOrderCreate,
+    InvestingOrderResponse,
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
     PerformanceSummaryResponse,
@@ -51,6 +55,7 @@ from app.investing.service import (
     ExposureAnalyticsService,
     HoldingService,
     InstrumentService,
+    InvestingOrderService,
     InvestingSummaryService,
     PerformanceService,
 )
@@ -541,3 +546,176 @@ async def get_performance_summary(
     _user: Annotated[dict, Depends(get_current_user)],
 ):
     return await performance_service.summary(workspace_id)
+
+
+def _order_response(
+    order,
+    account_cache: dict[int, tuple[uuid.UUID, str]],
+    instrument_type_cache: dict[int, str] | None = None,
+) -> InvestingOrderResponse:
+    pub_id, name = account_cache.get(order.account_id, (None, "Unknown"))
+    data = {
+        "public_id": order.public_id,
+        "account_id": pub_id,
+        "account_name": name,
+        "order_type": order.order_type,
+        "symbol": order.symbol,
+        "instrument_type": (
+            instrument_type_cache.get(order.instrument_id)
+            if instrument_type_cache and order.instrument_id is not None
+            else None
+        ),
+        "quantity": order.quantity,
+        "price_per_unit": order.price_per_unit,
+        "gross_amount": order.gross_amount,
+        "brokerage_fee": order.brokerage_fee,
+        "tax_amount": order.tax_amount,
+        "other_fees": order.other_fees,
+        "net_amount": order.net_amount,
+        "currency": order.currency,
+        "exchange_name": order.exchange_name,
+        "occurred_at": order.occurred_at,
+        "notes": order.notes,
+        "realized_gain_loss": order.realized_gain_loss,
+        "avg_cost_at_sale": order.avg_cost_at_sale,
+        "source_type": order.source_type,
+        "created_at": order.created_at,
+    }
+    return InvestingOrderResponse.model_validate(data)
+
+
+@router.post("/orders", response_model=InvestingOrderResponse, status_code=status.HTTP_201_CREATED)
+async def place_order(
+    order_in: InvestingOrderCreate,
+    order_service: Annotated[InvestingOrderService, Depends(get_investing_order_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    order = await order_service.place_order(
+        workspace_id=workspace_id,
+        user_id=user["id"],
+        order_in=order_in,
+        audit_logger=audit_logger,
+    )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    return _order_response(order, account_cache)
+
+
+@router.get("/orders", response_model=PaginatedResponse[InvestingOrderResponse])
+async def list_orders(
+    order_service: Annotated[InvestingOrderService, Depends(get_investing_order_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+    symbol: str | None = None,
+    order_type: str | None = None,
+):
+    orders, total = await order_service.list_orders(
+        workspace_id, pagination.limit, pagination.offset, symbol=symbol, order_type=order_type
+    )
+    if not orders:
+        return PaginatedResponse(
+            items=[], total=total, limit=pagination.limit, offset=pagination.offset
+        )
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    items = [_order_response(o, account_cache) for o in orders]
+    return PaginatedResponse(
+        items=items, total=total, limit=pagination.limit, offset=pagination.offset
+    )
+
+
+@router.get("/orders/by-holding/{symbol}", response_model=list[InvestingOrderResponse])
+async def list_orders_for_holding(
+    symbol: str,
+    account_id: uuid.UUID,
+    order_service: Annotated[InvestingOrderService, Depends(get_investing_order_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    account = await account_service.account_repository.get_by_public_id(workspace_id, account_id)
+    if not account or account.id is None:
+        return []
+    orders = await order_service.list_orders_for_holding(workspace_id, symbol, account.id)
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    return [_order_response(o, account_cache) for o in orders]
+
+
+@router.get("/orders/{order_id}", response_model=InvestingOrderResponse)
+async def get_order(
+    order_id: uuid.UUID,
+    order_service: Annotated[InvestingOrderService, Depends(get_investing_order_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    order = await order_service.get_order(workspace_id, order_id)
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    return _order_response(order, account_cache)
+
+
+@router.delete("/orders/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_order(
+    order_id: uuid.UUID,
+    order_service: Annotated[InvestingOrderService, Depends(get_investing_order_service)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    await order_service.delete_order(
+        workspace_id=workspace_id,
+        user_id=user["id"],
+        order_public_id=order_id,
+        audit_logger=audit_logger,
+    )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
+
+
+@router.post(
+    "/orders/bulk", response_model=list[InvestingOrderResponse], status_code=status.HTTP_201_CREATED
+)
+async def bulk_import_orders(
+    payload: InvestingOrderBulkCreate,
+    order_service: Annotated[InvestingOrderService, Depends(get_investing_order_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    orders_in = [
+        InvestingOrderCreate(
+            account_id=payload.account_id,
+            order_type=o.order_type,
+            symbol=o.symbol,
+            quantity=o.quantity,
+            price_per_unit=o.price_per_unit,
+            currency=o.currency,
+            brokerage_fee=o.brokerage_fee,
+            tax_amount=o.tax_amount,
+            other_fees=o.other_fees,
+            exchange_name=o.exchange_name,
+            occurred_at=o.occurred_at,
+            notes=o.notes,
+        )
+        for o in payload.orders
+    ]
+    created = await order_service.bulk_import_orders(
+        workspace_id=workspace_id,
+        user_id=user["id"],
+        orders=orders_in,
+        source_import_id=None,
+        audit_logger=audit_logger,
+    )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    return [_order_response(o, account_cache) for o in created]
