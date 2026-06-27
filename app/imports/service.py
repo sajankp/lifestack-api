@@ -18,6 +18,7 @@ from app.core.audit import AuditLogger
 from app.core.database import postgres
 from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import Account, Currency
+from app.finance.repository import AccountRepository, CurrencyRepository
 from app.imports.models import (
     ImportBatch,
     ImportError,
@@ -28,6 +29,13 @@ from app.imports.models import (
 from app.imports.repository import ImportRepository
 from app.imports.schemas import SPENDEE_TRANSACTION_HEADERS, TEMPLATE_HEADERS
 from app.investing.models import Company, Holding, Instrument, InstrumentConstituent, InstrumentType
+from app.investing.repository import (
+    CashBalanceRepository,
+    HoldingRepository,
+    InvestingOrderRepository,
+)
+from app.investing.schemas import InvestingOrderCreate
+from app.investing.service import InstrumentService, InvestingOrderService
 from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
@@ -60,6 +68,19 @@ class ImportService:
             "date_time",
         ],
         "type": ["type", "transaction_type", "kind", "txn_type"],
+        "order_type": ["order_type", "trade_type", "type", "transaction_type", "kind"],
+        "price_per_unit": [
+            "price_per_unit",
+            "price",
+            "unit_price",
+            "avg_price",
+            "trade_price",
+            "execution_price",
+        ],
+        "brokerage_fee": ["brokerage_fee", "commission", "broker_fee", "fee"],
+        "tax_amount": ["tax_amount", "tax", "stt", "stamp_duty"],
+        "other_fees": ["other_fees", "other", "misc_fees", "charges"],
+        "exchange_name": ["exchange_name", "exchange", "market", "venue"],
         "amount": ["amount", "value", "sum", "price", "total", "cost", "val", "amt"],
         "category": ["category", "category_name", "group", "class", "tag", "cat"],
         "description": ["description", "note", "memo", "comment", "details", "desc"],
@@ -102,6 +123,15 @@ class ImportService:
             "weight",
             "as_of_date",
         },
+        ImportModule.investing_orders: {
+            "order_type",
+            "symbol",
+            "account_name",
+            "quantity",
+            "price_per_unit",
+            "currency",
+            "occurred_at",
+        },
     }
 
     def _smart_match_headers(self, file_headers: list[str], module: ImportModule) -> dict[str, str]:
@@ -137,9 +167,15 @@ class ImportService:
                     break
         return mapping
 
-    def __init__(self, repository: ImportRepository, session: AsyncSession):
+    def __init__(
+        self,
+        repository: ImportRepository,
+        session: AsyncSession,
+        order_service: InvestingOrderService | None = None,
+    ):
         self.repository = repository
         self.session = session
+        self.order_service = order_service
 
     def template_csv(self, module: ImportModule) -> str:
         header = TEMPLATE_HEADERS[module]
@@ -150,6 +186,10 @@ class ImportService:
             lines.append("2026-05-01,Food & Dining,800.00")
         elif module == ImportModule.investing_constituents:
             lines.append("UMMA,Apple Inc,AAPL,0.082,2026-06-14")
+        elif module == ImportModule.investing_orders:
+            lines.append(
+                "buy,AAPL,Primary Brokerage,10,150.00,USD,1.99,0,0,2026-01-15T10:30:00+00:00,NASDAQ,First purchase"
+            )
         else:
             lines.append("AAPL,Primary Brokerage,10,150.25,USD,stock")
         return "\n".join(lines) + "\n"
@@ -252,6 +292,21 @@ class ImportService:
             .all()
         )
         return {a.name.strip().lower(): a.id for a in rows if a.id is not None}
+
+    async def _account_public_id_map(self, workspace_id: int) -> dict[str, uuid.UUID]:
+        rows = (
+            (
+                await self.session.execute(
+                    select(Account).where(
+                        Account.workspace_id == workspace_id,
+                        Account.is_active,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {a.name.strip().lower(): a.public_id for a in rows}
 
     async def _currency_set(self) -> set[str]:
         rows = (await self.session.execute(select(Currency.code))).scalars().all()
@@ -374,6 +429,9 @@ class ImportService:
         currency_set = await self._currency_set()
 
         instruments_map = {}
+        order_account_pub_map: dict[str, uuid.UUID] = {}
+        if batch.module == ImportModule.investing_orders:
+            order_account_pub_map = await self._account_public_id_map(workspace_id)
         if batch.module == ImportModule.investing_constituents:
             inst_rows = (
                 (
@@ -732,6 +790,131 @@ class ImportService:
                         "avg_cost": str(avg_cost) if avg_cost is not None else None,
                         "currency": currency,
                         "instrument_type": inst_type.value if inst_type else None,
+                    }
+                elif batch.module == ImportModule.investing_orders:
+                    order_type_raw = self._norm(row.get("order_type"))
+                    symbol_raw = self._norm(row.get("symbol"))
+                    account_name_raw = self._norm(row.get("account_name"))
+                    quantity_raw = self._norm(row.get("quantity"))
+                    price_raw = self._norm(row.get("price_per_unit"))
+                    currency_raw = self._norm(row.get("currency"))
+                    occurred_raw = self._norm(row.get("occurred_at"))
+                    fee_raw = self._norm(row.get("brokerage_fee")) or "0"
+                    tax_raw = self._norm(row.get("tax_amount")) or "0"
+                    other_raw = self._norm(row.get("other_fees")) or "0"
+                    exchange_raw = self._norm(row.get("exchange_name")) or None
+                    notes_raw = self._norm(row.get("notes")) or None
+
+                    order_type_val = order_type_raw.lower() if order_type_raw else ""
+                    if order_type_val not in {"buy", "sell"}:
+                        add_error(
+                            "order_type",
+                            "invalid_enum",
+                            "order_type must be 'buy' or 'sell'",
+                            order_type_raw,
+                        )
+
+                    if not symbol_raw:
+                        add_error("symbol", "required", "symbol is required", symbol_raw)
+
+                    account_public_id = None
+                    if account_name_raw:
+                        account_public_id = order_account_pub_map.get(account_name_raw.lower())
+                        if account_public_id is None:
+                            add_error(
+                                "account_name",
+                                "not_found",
+                                "account not found in workspace",
+                                account_name_raw,
+                            )
+                    else:
+                        add_error(
+                            "account_name", "required", "account_name is required", account_name_raw
+                        )
+
+                    try:
+                        quantity = Decimal(quantity_raw)
+                        if quantity <= 0:
+                            raise InvalidOperation
+                    except Exception:
+                        add_error(
+                            "quantity",
+                            "invalid_decimal",
+                            "quantity must be a positive decimal",
+                            quantity_raw,
+                        )
+                        quantity = None
+
+                    try:
+                        price = Decimal(price_raw)
+                        if price <= 0:
+                            raise InvalidOperation
+                    except Exception:
+                        add_error(
+                            "price_per_unit",
+                            "invalid_decimal",
+                            "price_per_unit must be a positive decimal",
+                            price_raw,
+                        )
+                        price = None
+
+                    currency = None
+                    if currency_raw:
+                        currency = currency_raw.upper()
+                        if currency not in currency_set:
+                            add_error(
+                                "currency",
+                                "not_found",
+                                "currency not enabled in workspace",
+                                currency_raw,
+                            )
+                    else:
+                        add_error("currency", "required", "currency is required", currency_raw)
+
+                    occurred_at = None
+                    try:
+                        occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
+                    except Exception:
+                        add_error(
+                            "occurred_at",
+                            "invalid_datetime",
+                            "occurred_at must be ISO datetime",
+                            occurred_raw,
+                        )
+
+                    def _safe_decimal(raw: str, field: str) -> Decimal:
+                        try:
+                            val = Decimal(raw)
+                            if val < 0:
+                                raise InvalidOperation
+                            return val
+                        except Exception:
+                            add_error(
+                                field,
+                                "invalid_decimal",
+                                f"{field} must be a non-negative decimal",
+                                raw,
+                            )
+                            return Decimal("0")
+
+                    fee = _safe_decimal(fee_raw, "brokerage_fee")
+                    tax = _safe_decimal(tax_raw, "tax_amount")
+                    other = _safe_decimal(other_raw, "other_fees")
+
+                    payload = {
+                        "order_type": order_type_val,
+                        "symbol": symbol_raw.upper() if symbol_raw else None,
+                        "account_name": account_name_raw,
+                        "account_public_id": str(account_public_id) if account_public_id else None,
+                        "quantity": str(quantity) if quantity is not None else None,
+                        "price_per_unit": str(price) if price is not None else None,
+                        "currency": currency,
+                        "brokerage_fee": str(fee),
+                        "tax_amount": str(tax),
+                        "other_fees": str(other),
+                        "occurred_at": occurred_at.isoformat() if occurred_at else None,
+                        "exchange_name": exchange_raw,
+                        "notes": notes_raw,
                     }
                 else:
                     instrument_symbol_raw = self._norm(row.get("instrument_symbol"))
@@ -1187,6 +1370,51 @@ class ImportService:
                             self.session.add(holding)
                             existing_holdings[holding_key] = holding
                         inserted += 1
+                elif batch.module == ImportModule.investing_orders:
+                    if self.order_service is None:
+                        raise ValidationError(
+                            detail="Order service is not available for this import type"
+                        )
+                    order_ins: list[InvestingOrderCreate] = []
+                    for row in rows:
+                        p = row.payload_json
+                        required = (
+                            "order_type",
+                            "symbol",
+                            "account_public_id",
+                            "quantity",
+                            "price_per_unit",
+                            "currency",
+                            "occurred_at",
+                        )
+                        if any(p.get(f) is None for f in required):
+                            raise ValidationError(
+                                detail=f"Row {row.row_number}: missing required order field in preview payload"
+                            )
+                        order_ins.append(
+                            InvestingOrderCreate(
+                                account_id=uuid.UUID(p["account_public_id"]),
+                                order_type=p["order_type"],
+                                symbol=p["symbol"],
+                                quantity=Decimal(p["quantity"]),
+                                price_per_unit=Decimal(p["price_per_unit"]),
+                                currency=p["currency"],
+                                brokerage_fee=Decimal(p.get("brokerage_fee") or "0"),
+                                tax_amount=Decimal(p.get("tax_amount") or "0"),
+                                other_fees=Decimal(p.get("other_fees") or "0"),
+                                exchange_name=p.get("exchange_name"),
+                                occurred_at=datetime.fromisoformat(p["occurred_at"]),
+                                notes=p.get("notes"),
+                            )
+                        )
+                    created = await self.order_service.bulk_import_orders(
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                        orders=order_ins,
+                        source_import_id=batch.id,
+                        audit_logger=audit_logger,
+                    )
+                    inserted += len(created)
                 else:  # ImportModule.investing_constituents
                     for row in rows:
                         p = row.payload_json
@@ -1309,6 +1537,10 @@ class ImportService:
                 deleted_records = await self.repository.delete_investing_holdings_for_batch(
                     workspace_id, batch.id
                 )
+            elif batch.module == ImportModule.investing_orders:
+                deleted_records = await self.repository.delete_investing_orders_for_batch(
+                    workspace_id, batch.id
+                )
             else:
                 deleted_records = 0
             action = "import_rolled_back"
@@ -1379,7 +1611,15 @@ async def run_background_commit(
 ) -> None:
     async with postgres.async_session_maker() as session:
         repo = ImportRepository(session)
-        service = ImportService(repo, session)
+        order_service = InvestingOrderService(
+            order_repository=InvestingOrderRepository(session),
+            holding_repository=HoldingRepository(session),
+            cash_balance_repository=CashBalanceRepository(session),
+            account_repository=AccountRepository(session),
+            currency_repository=CurrencyRepository(session),
+            instrument_service=InstrumentService(session),
+        )
+        service = ImportService(repo, session, order_service=order_service)
         audit_logger = AuditLogger(session)
         try:
             await service.commit_batch(workspace_id, user_id, batch_public_id, audit_logger)

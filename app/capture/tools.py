@@ -7,9 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditLogger
 from app.finance.repository import AccountRepository, CurrencyRepository
-from app.investing.repository import CashBalanceRepository
-from app.investing.schemas import CashBalanceCreate
-from app.investing.service import CashBalanceService
+from app.investing.repository import (
+    CashBalanceRepository,
+    HoldingRepository,
+    InvestingOrderRepository,
+)
+from app.investing.schemas import CashBalanceCreate, InvestingOrderCreate
+from app.investing.service import CashBalanceService, InstrumentService, InvestingOrderService
 from app.spending.models import TransactionType
 from app.spending.repository import CategoryRepository, TransactionRepository
 from app.spending.schemas import TransactionCreate
@@ -58,6 +62,18 @@ class AgentTools:
         self.currency_repo = CurrencyRepository(session)
         self.cash_service = CashBalanceService(
             self.cash_repo, self.account_repo, self.currency_repo
+        )
+
+        self.holding_repo = HoldingRepository(session)
+        self.order_repo = InvestingOrderRepository(session)
+        self.instrument_service = InstrumentService(session)
+        self.order_service = InvestingOrderService(
+            order_repository=self.order_repo,
+            holding_repository=self.holding_repo,
+            cash_balance_repository=self.cash_repo,
+            account_repository=self.account_repo,
+            currency_repository=self.currency_repo,
+            instrument_service=self.instrument_service,
         )
 
         self.audit_logger = AuditLogger(session)
@@ -364,3 +380,97 @@ class AgentTools:
             "balance": str(cash.balance),
             "currency": cash.currency,
         }
+
+    async def place_stock_order(
+        self,
+        order_type: str,
+        symbol: str,
+        quantity: str,
+        price_per_unit: str,
+        account_name: str,
+        currency: str = "USD",
+        brokerage_fee: str = "0",
+    ) -> dict:
+        """Place a buy or sell order for a stock in a brokerage account.
+
+        Args:
+            order_type: Either 'buy' or 'sell'.
+            symbol: The stock ticker symbol (e.g., 'AAPL', 'INFY.NS').
+            quantity: Number of shares as a string (e.g., '10').
+            price_per_unit: Price per share as a string (e.g., '150.00').
+            account_name: Name of the brokerage account to use.
+            currency: Currency code (default 'USD').
+            brokerage_fee: Brokerage commission as a string (default '0').
+        """
+        order_type_lower = order_type.strip().lower()
+        if order_type_lower not in {"buy", "sell"}:
+            return {"status": "error", "message": "order_type must be 'buy' or 'sell'"}
+
+        try:
+            qty = Decimal(quantity)
+            if qty <= 0:
+                raise ValueError
+        except Exception:
+            return {"status": "error", "message": "quantity must be a positive number"}
+
+        try:
+            price = Decimal(price_per_unit)
+            if price <= 0:
+                raise ValueError
+        except Exception:
+            return {"status": "error", "message": "price_per_unit must be a positive number"}
+
+        try:
+            fee = Decimal(brokerage_fee)
+            if fee < 0:
+                raise ValueError
+        except Exception:
+            return {"status": "error", "message": "brokerage_fee must be a non-negative number"}
+
+        account = await self.account_repo.get_by_name(self.workspace_id, account_name)
+        if not account or not account.is_active:
+            return {
+                "status": "error",
+                "message": f"Account '{account_name}' not found or inactive",
+            }
+
+        order_in = InvestingOrderCreate(
+            account_id=account.public_id,
+            order_type=order_type_lower,  # type: ignore[arg-type]
+            symbol=symbol.upper(),
+            quantity=qty,
+            price_per_unit=price,
+            currency=currency.upper(),
+            brokerage_fee=fee,
+            occurred_at=datetime.now(UTC),
+        )
+
+        try:
+            order = await self.order_service.place_order(
+                workspace_id=self.workspace_id,
+                user_id=self.user_id,
+                order_in=order_in,
+                audit_logger=self.audit_logger,
+                source_type="voice_agent",
+            )
+        except Exception as exc:
+            detail = getattr(exc, "detail", str(exc))
+            return {"status": "error", "message": detail}
+
+        response: dict = {
+            "status": "success",
+            "entity_public_id": str(order.public_id),
+            "entity_type": "investing_order",
+            "order_type": order.order_type,
+            "symbol": order.symbol,
+            "quantity": str(order.quantity),
+            "price_per_unit": str(order.price_per_unit),
+            "gross_amount": str(order.gross_amount),
+            "net_amount": str(order.net_amount),
+            "currency": order.currency,
+            "account_name": account_name,
+        }
+        if order.realized_gain_loss is not None:
+            response["realized_gain_loss"] = str(order.realized_gain_loss)
+            response["avg_cost_at_sale"] = str(order.avg_cost_at_sale)
+        return response

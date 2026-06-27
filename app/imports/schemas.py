@@ -34,6 +34,20 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
         "weight",
         "as_of_date",
     ],
+    ImportModule.investing_orders: [
+        "order_type",
+        "symbol",
+        "account_name",
+        "quantity",
+        "price_per_unit",
+        "currency",
+        "brokerage_fee",
+        "tax_amount",
+        "other_fees",
+        "occurred_at",
+        "exchange_name",
+        "notes",
+    ],
 }
 
 SPENDEE_TRANSACTION_HEADERS = [

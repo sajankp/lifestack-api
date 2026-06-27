@@ -415,8 +415,9 @@ async def get_import_repo(
 async def get_import_service(
     repo: ImportRepository = Depends(get_import_repo),
     session: AsyncSession = Depends(get_db_session),
+    order_service: InvestingOrderService = Depends(get_investing_order_service),
 ) -> ImportService:
-    return ImportService(repo, session)
+    return ImportService(repo, session, order_service=order_service)
 
 
 # ---------------------------------------------------------------------------
