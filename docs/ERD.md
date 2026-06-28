@@ -453,6 +453,37 @@ erDiagram
         string source_type
         string source_ref
         int source_import_id FK
+        string trigger_type
+        uuid trigger_ref
+        datetime created_at
+        datetime updated_at
+    }
+
+    INVESTING_ORDERS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        int account_id FK
+        string order_type
+        string symbol
+        int instrument_id FK
+        decimal quantity
+        decimal price_per_unit
+        decimal gross_amount
+        decimal brokerage_fee
+        decimal tax_amount
+        decimal other_fees
+        decimal net_amount
+        string currency
+        string exchange_name
+        datetime occurred_at
+        string notes
+        decimal realized_gain_loss
+        decimal avg_cost_at_sale
+        string source_type
+        string source_ref
+        int source_import_id FK
         datetime created_at
         datetime updated_at
     }
@@ -490,8 +521,12 @@ erDiagram
     INVESTING_INSTRUMENTS ||--o{ INVESTING_HOLDINGS : linked_instrument
     WORKSPACES ||--o{ INVESTING_CASH_BALANCES : scopes
     USERS ||--o{ INVESTING_CASH_BALANCES : owns
+    WORKSPACES ||--o{ INVESTING_ORDERS : scopes
+    USERS ||--o{ INVESTING_ORDERS : places
+    INVESTING_INSTRUMENTS ||--o{ INVESTING_ORDERS : linked_instrument
     ACCOUNTS ||--o{ INVESTING_HOLDINGS : holds
     ACCOUNTS ||--o{ INVESTING_CASH_BALANCES : holds
+    ACCOUNTS ||--o{ INVESTING_ORDERS : traded_in
     WORKSPACES ||--o{ HOLDING_PRICES : scopes
     INVESTING_HOLDINGS ||--o{ HOLDING_PRICES : has_prices
     WORKSPACES ||--o{ PORTFOLIO_SNAPSHOTS : scopes
@@ -590,6 +625,7 @@ erDiagram
 - `workspace_currencies` is the workspace-level allow-list for currencies.
 - `fx_rates` stores currency pairs with both a base and quote currency reference.
 - `capital_transfers` connects the spending and investing modules through accounts and currencies.
-- `investing_holdings` and `investing_cash_balances` enforce tenant-safe `account_id` relationships to the `accounts` table.
+- `investing_holdings`, `investing_cash_balances`, and `investing_orders` enforce tenant-safe `account_id` relationships to the `accounts` table.
+- `investing_orders` records each buy/sell trade against a brokerage account. Placing an order automatically writes a new `investing_cash_balances` row (`trigger_type="order"`) and recomputes the linked holding's weighted `avg_cost`; a transfer into an investing account writes a balance row with `trigger_type="transfer"`. `trigger_ref` points back to the order/transfer `public_id`.
 - `import_batches` tracks the life of bulk data uploads for transaction and holdings modules.
 - `exports` handles the user-driven data exports lifecycle.

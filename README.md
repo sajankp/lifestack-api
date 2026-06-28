@@ -86,7 +86,7 @@ A fast task manager with priorities, due dates, and a clean service-layer archit
 Track transactions, budgets, and monthly spending patterns.
 
 ### Investment Tracker
-Track account-backed holdings, cash balances, FX conversion, performance snapshots, and portfolio-level changes over time.
+Track account-backed holdings, cash balances, FX conversion, performance snapshots, and portfolio-level changes over time. Transaction-based buy/sell **orders** against brokerage accounts automatically update brokerage cash balances, compute weighted average cost, and record realized gain/loss, with bulk order import and per-holding trade history.
 
 ### Capture, Notifications, Summaries, Imports, and Exports
 Capture todo and spending intents, receive in-app notifications, review weekly summaries, import CSV data, and export workspace data.
@@ -245,6 +245,7 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Budget guardrails workflow (system todos, idempotency, auto-resolve) | ✅ Done |
 | Investing module (Spec 008 baseline) | ✅ Done |
 | Investing currency/account governance + FX + transfer ledger (Spec 011) | ✅ Done |
+| Transaction-based investing orders — buy/sell, auto cash-balance updates, computed avg_cost, realized gain/loss, bulk import (Spec 041) | ✅ Done |
 | Look-through exposure + overlap analytics APIs (Spec 012 backend) | ✅ Done |
 | Recurring transactions scheduler workflow (Spec 013) | ✅ Done |
 | Recurring todo rules + scheduler generation (Spec 019) | ✅ Done |

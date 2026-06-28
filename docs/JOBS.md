@@ -28,25 +28,31 @@ All background jobs are subject to **advisory lock coordination** (`pg_try_advis
 - **Job Function**: `fx_rate_ingestion_job`
 - **Workflow Function**: Ingests updated foreign exchange rates for active currency pairs from external feeds or mock providers to keep look-through and portfolio valuation conversions current.
 
-## 4. Export Cleanup Job
+## 4. Investment Closing Prices Job
+- **Job ID**: `investment_closing_prices`
+- **Schedule**: Daily at 02:30 UTC
+- **Job Function**: `investment_closing_prices_job`
+- **Workflow Function**: Fetches the latest closing market prices for active holdings and records them in `holding_prices`, keeping portfolio valuation, daily-change, and look-through analytics on current market values.
+
+## 5. Export Cleanup Job
 - **Job ID**: `export_cleanup`
 - **Schedule**: Daily at 03:00 UTC
 - **Job Function**: `export_cleanup_job`
 - **Workflow Function**: Cleans up expired workspace data exports and download records from database and storage backends.
 
-## 5. Session Cleanup Job
+## 6. Session Cleanup Job
 - **Job ID**: `session_cleanup`
 - **Schedule**: Daily at 04:00 UTC
 - **Job Function**: `session_cleanup_job`
 - **Workflow Function**: Purges expired and revoked authentication session records (`auth_sessions`) from the database to prevent database bloat.
 
-## 6. Import Preview Cleanup Job
+## 7. Import Preview Cleanup Job
 - **Job ID**: `import_preview_cleanup`
 - **Schedule**: Daily at 05:00 UTC
 - **Job Function**: `import_preview_cleanup_job`
 - **Workflow Function**: Deletes cached CSV import preview rows and files (`import_preview_rows`) older than 24 hours to reduce storage usage and keep personal data secure.
 
-## 7. Weekly Summary Job
+## 8. Weekly Summary Job
 - **Job ID**: `weekly_summary`
 - **Schedule**: Weekly on Mondays at 01:30 UTC
 - **Job Function**: `weekly_summary_job`

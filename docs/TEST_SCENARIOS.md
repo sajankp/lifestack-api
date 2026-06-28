@@ -1,6 +1,6 @@
 # LifeStack Test Scenarios
 
-Last verified: 2026-06-12
+Last verified: 2026-06-28
 
 This document is the current test coverage and missing-test backlog for the
 LifeStack workspace. It is based on the live test files in:
@@ -75,7 +75,7 @@ npm run security:audit
 
 ## Current Full-Stack E2E Coverage
 
-The Playwright suite currently has 26 tests across 16 spec files.
+The Playwright suite currently has 38 tests across 18 spec files.
 
 | Spec | Current coverage |
 |---|---|
@@ -91,6 +91,7 @@ The Playwright suite currently has 26 tests across 16 spec files.
 | `spending-guardrails.spec.ts` | Create category, create budget, log threshold-breaching transaction, trigger guardrail hook over HTTP, verify warning todo, create a wallet/account, log spending against it, and verify transaction-row account context. |
 | `spending-recurring.spec.ts` | Create/edit recurring spending rule, trigger recurring generation hook over HTTP, verify generated transaction, and deactivate rule. |
 | `investing-fx.spec.ts` | Create GBP/USD brokerage accounts, add holdings, verify unconverted multi-currency state before reporting currency setup, switch reporting currency, verify displayed FX-rate metadata, valuation, and look-through analytics. |
+| `investing-orders.spec.ts` | Place a buy order and verify holding creation, place a second buy and verify weighted avg_cost, place a sell and verify realized gain/loss, reject a buy on insufficient cash, delete an order and recompute the holding, show per-holding trade history, and verify a transfer-triggered brokerage cash balance entry. |
 | `finance-display-settings.spec.ts` | Verify workspace display settings and user override precedence on dashboard totals. |
 | `notifications-summaries.spec.ts` | Trigger a weekly summary through the E2E hook, assert the generated summary id/week response, verify the generated unread notification and header badge, mark notifications read, verify the Weekly Summaries page renders the generated summary, and verify notifications/summaries stay isolated when switching between personal and shared workspaces. |
 | `runtime-header-master-config.spec.ts` | Verify global header controls and Master Configuration account/category edit actions. |
@@ -257,6 +258,7 @@ Files:
 
 - `integration/test_investing.py`
 - `test_investing_schema.py`
+- `investing/tests/test_order_service.py`
 
 Coverage:
 
@@ -269,6 +271,7 @@ Coverage:
 - Look-through exposure and overlap analytics.
 - Constituent weight validation and workspace isolation.
 - Portfolio snapshot latest-query index and FX-rate validation.
+- Buy/sell order placement: brokerage-account validation, automatic cash-balance debit/credit, insufficient-cash and oversell rejection, computed weighted avg_cost, realized gain/loss, holding recompute on order delete, and bulk order import.
 
 ### Imports
 
