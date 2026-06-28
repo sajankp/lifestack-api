@@ -1034,6 +1034,40 @@ class InstrumentService:
             )
         )
 
+    async def find_or_create_instrument(
+        self, workspace_id: int, symbol: str, instrument_type: InstrumentType
+    ) -> Instrument | None:
+        instrument = await self.instrument_repo.get_by_symbol(workspace_id, symbol)
+        if instrument is not None:
+            return instrument
+
+        target_workspace_id = workspace_id
+        try:
+            async with httpx.AsyncClient() as client:
+                price_info = await _fetch_stock_price(client, symbol)
+                if price_info is not None:
+                    target_workspace_id = None
+        except Exception:
+            pass
+
+        company: Company | None = None
+        if instrument_type == InstrumentType.stock:
+            company = await self.company_repo.get_by_name(target_workspace_id, symbol)
+            if company is None:
+                company = await self.company_repo.create(
+                    Company(workspace_id=target_workspace_id, name=symbol, ticker=symbol)
+                )
+
+        return await self.instrument_repo.create(
+            Instrument(
+                workspace_id=target_workspace_id,
+                symbol=symbol,
+                name=symbol,
+                instrument_type=instrument_type.value,
+                company_id=company.id if company else None,
+            )
+        )
+
     async def update_instrument(
         self, workspace_id: int, public_id: uuid.UUID, payload: InstrumentUpdate
     ) -> Instrument:
