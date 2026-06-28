@@ -10,6 +10,35 @@ The long-term wedge is a calm daily briefing: what needs attention today, what c
 
 ---
 
+## This repo is the backend of a three-part system
+
+Lifestack runs as three repositories that compose into one product. **This repo (`lifestack-api`) is the backend and the recommended entry point** for understanding the system.
+
+| Repo | Role | Stack |
+|---|---|---|
+| **lifestack-api** (this repo) | FastAPI backend — domain modules, auth, scheduled jobs, audit | Python 3.13 · FastAPI · SQLAlchemy/SQLModel · PostgreSQL · Redis |
+| [lifestack-web](https://github.com/sajankp/lifestack-web) | React 19 SPA — dashboard, modules, voice-agent UI | React 19 · Vite · TanStack Query · Zustand · Tailwind |
+| [lifestack-e2e](https://github.com/sajankp/lifestack-e2e) | Playwright end-to-end suite against the full Docker stack | Playwright · Docker Compose |
+
+```text
+[ browser ] ──> lifestack-web (React) ──> lifestack-api (FastAPI) ──> PostgreSQL
+                                                  │
+                                   Redis · APScheduler jobs · Gemini Live (voice)
+
+ingress via Cloudflare Tunnel · encrypted nightly DB backups to S3/R2
+```
+
+### Engineering highlights
+
+- **Modular monolith** with strict `router → service → repository` layering; cross-module logic isolated in `application/` so modules never call each other directly.
+- **Multi-tenant from day one** — every business table carries `workspace_id`, enforced by composite foreign keys at the database level.
+- **Production-grade auth** — JWT in HttpOnly cookies, refresh-token rotation with replay detection, CSRF double-submit, Argon2id, concurrent-session limits.
+- **Operability** — append-only PII-redacted audit logging, structlog + OpenTelemetry + Prometheus, scheduled jobs guarded by Postgres advisory locks.
+- **Quality gates** — 80% backend / 70% frontend coverage thresholds, 18 Playwright E2E specs, and `pip-audit` + Bandit + TruffleHog in CI.
+- **Spec-driven** — 40+ specs under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
+
+---
+
 ## Product Principles
 
 - Own your data end to end. Personal data should remain portable, inspectable, and useful without being trapped inside disconnected tools.
