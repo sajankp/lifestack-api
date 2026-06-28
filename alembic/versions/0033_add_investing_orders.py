@@ -28,11 +28,8 @@ def upgrade() -> None:
         sa.Column("trigger_ref", sa.Uuid(), nullable=True),
     )
 
-    # Create investing_order_type enum
-    investing_order_type = sa.Enum("buy", "sell", name="investing_order_type")
-    investing_order_type.create(op.get_bind(), checkfirst=True)
-
     # Create investing_orders table
+    # (op.create_table issues CREATE TYPE automatically for named enum columns)
     op.create_table(
         "investing_orders",
         sa.Column("id", sa.Integer(), nullable=False),
