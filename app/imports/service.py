@@ -367,6 +367,8 @@ class ImportService:
         upload: UploadFile,
         audit_logger: AuditLogger,
     ) -> tuple[ImportBatch, str]:
+        if module == ImportModule.investing_holdings:
+            raise ValidationError(detail="investing-holdings imports are no longer supported")
         if not upload.filename:
             raise ValidationError(detail="filename is required")
         if not (
