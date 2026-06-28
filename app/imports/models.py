@@ -13,6 +13,7 @@ class ImportModule(StrEnum):
     investing_holdings = "investing-holdings"
     investing_constituents = "investing-constituents"
     investing_orders = "investing-orders"
+    finance_transfers = "finance-transfers"
 
 
 class ImportStatus(StrEnum):

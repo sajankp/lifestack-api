@@ -806,3 +806,61 @@ async def test_import_spendee_csv_with_author_column(client: AsyncClient):
     assert row["account_id"] == account_public_id
     assert row["amount"] == "3700.00"
     assert row["type"] == "expense"
+
+
+@pytest.mark.asyncio
+async def test_import_capital_transfers_validates_and_commits(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    # Create from_account and to_account
+    from_acct = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "ICICI", "account_type": "bank", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert from_acct.status_code == 201
+
+    to_acct = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "GROWW", "account_type": "brokerage", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert to_acct.status_code == 201
+
+    # Enable INR currency for workspace
+    # Since currency bootstrap automatically enables defaults, and INR was set, it should be active.
+
+    csv_content = (
+        "occurred_at,from_account,to_account,from_currency,to_currency,gross_amount,net_amount_received,notes\n"
+        "2026-02-17T00:50:58+00:00,ICICI,GROWW,INR,INR,50000.00,50000.00,SIP Investment\n"
+    )
+    files = {"file": ("transfers.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    data = {"module": "finance-transfers"}
+    validate = await client.post("/v1/imports", data=data, files=files, cookies=creds["cookies"])
+    assert validate.status_code == 200, validate.text
+    payload = validate.json()
+    assert payload["import_batch"]["status"] == "validated"
+    assert payload["error_summary"]["total_errors"] == 0
+    import_id = payload["import_batch"]["public_id"]
+
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code == 200, commit.text
+
+    # Verify transfers list contains the imported transfer
+    transfers_resp = await client.get("/v1/finance/transfers", cookies=creds["cookies"])
+    assert transfers_resp.status_code == 200
+    transfers = transfers_resp.json()["items"]
+    assert len(transfers) == 1
+    assert transfers[0]["from_account_name"] == "ICICI"
+    assert transfers[0]["to_account_name"] == "GROWW"
+    assert transfers[0]["gross_amount"] == "50000.00"
+    assert transfers[0]["notes"] == "SIP Investment"
+
+    # Roll back
+    rollback_resp = await client.delete(f"/v1/imports/{import_id}", cookies=creds["cookies"])
+    assert rollback_resp.status_code == 204
+
+    # Verify transfer was deleted
+    transfers_resp2 = await client.get("/v1/finance/transfers", cookies=creds["cookies"])
+    assert transfers_resp2.status_code == 200
+    assert len(transfers_resp2.json()["items"]) == 0
