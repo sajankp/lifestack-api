@@ -50,6 +50,8 @@ class ImportBatch(SQLModel, table=True):
     valid_rows: int = Field(default=0)
     error_rows: int = Field(default=0)
 
+    commit_error: str | None = Field(default=None, max_length=2048)
+
     started_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )

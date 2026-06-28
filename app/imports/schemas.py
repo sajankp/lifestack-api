@@ -29,6 +29,8 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
     ImportModule.investing_orders: [
         "order_type",
         "symbol",
+        "instrument_type",
+        "instrument_name",
         "account_name",
         "quantity",
         "price_per_unit",
@@ -93,6 +95,7 @@ class ImportBatchResponse(BaseModel):
     total_rows: int
     valid_rows: int
     error_rows: int
+    commit_error: str | None = None
     started_at: datetime
     validated_at: datetime | None
     committed_at: datetime | None

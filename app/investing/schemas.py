@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.investing.models import InstrumentType, OrderType
 from app.spending.schemas import SourceMetadataResponse
@@ -114,6 +114,8 @@ class InvestingOrderCreate(BaseModel):
     account_id: uuid.UUID
     order_type: OrderType
     symbol: str = Field(..., min_length=1, max_length=20)
+    instrument_type: InstrumentType = Field(default=InstrumentType.stock)
+    instrument_name: str | None = Field(default=None, max_length=255)
     quantity: Decimal = Field(..., gt=0, decimal_places=8)
     price_per_unit: Decimal = Field(..., gt=0, decimal_places=6)
     currency: str = Field(..., min_length=1, max_length=10)
@@ -133,6 +135,12 @@ class InvestingOrderCreate(BaseModel):
     @classmethod
     def normalize_currency(cls, value: str) -> str:
         return value.strip().upper()
+
+    @model_validator(mode="after")
+    def require_name_for_mutual_fund(self) -> "InvestingOrderCreate":
+        if self.instrument_type == InstrumentType.mutual_fund and not self.instrument_name:
+            raise ValueError("instrument_name is required when instrument_type is mutual_fund")
+        return self
 
 
 class InvestingOrderResponse(BaseModel):

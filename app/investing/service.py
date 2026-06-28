@@ -1035,11 +1035,20 @@ class InstrumentService:
         )
 
     async def find_or_create_instrument(
-        self, workspace_id: int, symbol: str, instrument_type: InstrumentType
+        self,
+        workspace_id: int,
+        symbol: str,
+        instrument_type: InstrumentType,
+        instrument_name: str | None = None,
     ) -> Instrument | None:
         instrument = await self.instrument_repo.get_by_symbol(workspace_id, symbol)
         if instrument is not None:
+            if instrument_name and instrument.name == instrument.symbol:
+                instrument.name = instrument_name
+                instrument.updated_at = datetime.now(UTC)
             return instrument
+
+        display_name = instrument_name or symbol
 
         target_workspace_id = workspace_id
         try:
@@ -1055,14 +1064,14 @@ class InstrumentService:
             company = await self.company_repo.get_by_name(target_workspace_id, symbol)
             if company is None:
                 company = await self.company_repo.create(
-                    Company(workspace_id=target_workspace_id, name=symbol, ticker=symbol)
+                    Company(workspace_id=target_workspace_id, name=display_name, ticker=symbol)
                 )
 
         return await self.instrument_repo.create(
             Instrument(
                 workspace_id=target_workspace_id,
                 symbol=symbol,
-                name=symbol,
+                name=display_name,
                 instrument_type=instrument_type.value,
                 company_id=company.id if company else None,
             )
@@ -1856,7 +1865,10 @@ class InvestingOrderService:
             realized_gain_loss = order_in.quantity * (order_in.price_per_unit - holding.avg_cost)
 
         instrument = await self.instrument_service.find_or_create_instrument(
-            workspace_id, order_in.symbol, InstrumentType.stock
+            workspace_id,
+            order_in.symbol,
+            order_in.instrument_type,
+            order_in.instrument_name,
         )
 
         order = InvestingOrder(
