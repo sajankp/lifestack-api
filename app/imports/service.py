@@ -28,7 +28,15 @@ from app.imports.models import (
 )
 from app.imports.repository import ImportRepository
 from app.imports.schemas import SPENDEE_TRANSACTION_HEADERS, TEMPLATE_HEADERS
-from app.investing.models import Company, Instrument, InstrumentConstituent, InstrumentType
+from app.investing.models import (
+    CashBalance as InvestingCashBalance,
+)
+from app.investing.models import (
+    Company,
+    Instrument,
+    InstrumentConstituent,
+    InstrumentType,
+)
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
@@ -101,6 +109,7 @@ class ImportService:
         ],
         "currency": ["currency", "ccy", "currency_code", "curr"],
         "instrument_type": ["instrument_type", "asset_type", "type", "inst_type"],
+        "instrument_name": ["instrument_name", "fund_name", "scheme_name", "inst_name"],
         "company_name": ["company_name", "company", "issuer", "co_name"],
         "company_ticker": ["company_ticker", "ticker_symbol", "company_symbol", "co_ticker"],
         "weight": ["weight", "percentage", "pct", "allocation", "wt"],
@@ -207,7 +216,10 @@ class ImportService:
             lines.append("UMMA,Apple Inc,AAPL,0.082,2026-06-14")
         elif module == ImportModule.investing_orders:
             lines.append(
-                "buy,AAPL,Primary Brokerage,10,150.00,USD,1.99,0,0,2026-01-15T10:30:00+00:00,NASDAQ,First purchase"
+                "buy,AAPL,stock,,Primary Brokerage,10,150.00,USD,1.99,0,0,2026-01-15T10:30:00+00:00,NASDAQ,First purchase"
+            )
+            lines.append(
+                "buy,122639,mutual_fund,Parag Parikh Flexi Cap Fund Direct Growth,GROWW,222.03,90.07,INR,0,0,0,2026-04-09T00:00:00+00:00,,Parag Parikh Flexi Cap Fund Direct Growth | Amount: 19999"
             )
         elif module == ImportModule.finance_transfers:
             lines.append(
@@ -723,6 +735,8 @@ class ImportService:
                 elif batch.module == ImportModule.investing_orders:
                     order_type_raw = self._norm(row.get("order_type"))
                     symbol_raw = self._norm(row.get("symbol"))
+                    instrument_type_raw = self._norm(row.get("instrument_type")) or "stock"
+                    instrument_name_raw = self._norm(row.get("instrument_name")) or None
                     account_name_raw = self._norm(row.get("account_name"))
                     quantity_raw = self._norm(row.get("quantity"))
                     price_raw = self._norm(row.get("price_per_unit"))
@@ -741,6 +755,28 @@ class ImportService:
                             "invalid_enum",
                             "order_type must be 'buy' or 'sell'",
                             order_type_raw,
+                        )
+
+                    valid_instrument_types = {t.value for t in InstrumentType}
+                    instrument_type_val = instrument_type_raw.lower()
+                    if instrument_type_val not in valid_instrument_types:
+                        add_error(
+                            "instrument_type",
+                            "invalid_enum",
+                            f"instrument_type must be one of: {', '.join(sorted(valid_instrument_types))}",
+                            instrument_type_raw,
+                        )
+                        instrument_type_val = "stock"
+
+                    if (
+                        instrument_type_val == InstrumentType.mutual_fund
+                        and not instrument_name_raw
+                    ):
+                        add_error(
+                            "instrument_name",
+                            "required",
+                            "instrument_name is required when instrument_type is mutual_fund",
+                            instrument_name_raw,
                         )
 
                     if not symbol_raw:
@@ -833,6 +869,8 @@ class ImportService:
                     payload = {
                         "order_type": order_type_val,
                         "symbol": symbol_raw.upper() if symbol_raw else None,
+                        "instrument_type": instrument_type_val,
+                        "instrument_name": instrument_name_raw,
                         "account_name": account_name_raw,
                         "account_public_id": str(account_public_id) if account_public_id else None,
                         "quantity": str(quantity) if quantity is not None else None,
@@ -1432,6 +1470,8 @@ class ImportService:
                                 account_id=uuid.UUID(p["account_public_id"]),
                                 order_type=p["order_type"],
                                 symbol=p["symbol"],
+                                instrument_type=InstrumentType(p.get("instrument_type") or "stock"),
+                                instrument_name=p.get("instrument_name") or None,
                                 quantity=Decimal(p["quantity"]),
                                 price_per_unit=Decimal(p["price_per_unit"]),
                                 currency=p["currency"],
@@ -1487,6 +1527,32 @@ class ImportService:
                         )
                         self.session.add(transfer)
                         inserted += 1
+
+                        # Mirror what finance.service.create_transfer does: update
+                        # investing cash balance when money flows into an investing account.
+                        if (
+                            transfer.to_module == TransferModule.investing
+                            and self.order_service is not None
+                        ):
+                            await self.session.flush()  # get transfer.public_id
+                            cash_repo = self.order_service.cash_balance_repository
+                            latest = await cash_repo.get_latest_for_account_currency(
+                                workspace_id, to_account_id, transfer.to_currency_code
+                            )
+                            prev_balance = latest.balance if latest is not None else Decimal("0")
+                            new_cash = InvestingCashBalance(
+                                workspace_id=workspace_id,
+                                user_id=user_id,
+                                account_id=to_account_id,
+                                balance=prev_balance + transfer.net_amount_received,
+                                currency=transfer.to_currency_code,
+                                as_of=transfer.occurred_at,
+                                source_type="imported",
+                                source_import_id=batch.id,
+                                trigger_type="transfer",
+                                trigger_ref=transfer.public_id,
+                            )
+                            self.session.add(new_cash)
                 else:  # ImportModule.investing_constituents
                     # Pre-load existing constituents for the chunk to prevent unique constraint violation
                     keys = []
@@ -1600,7 +1666,14 @@ class ImportService:
                 raise
             batch.status = ImportStatus.failed_commit
             batch.updated_at = datetime.now(UTC)
+            if isinstance(e, ValidationError):
+                batch.commit_error = e.detail
+            elif isinstance(e, IntegrityError):
+                batch.commit_error = f"Database conflict or integrity error: {e.orig}"
+            else:
+                batch.commit_error = str(e)
             await self.repository.save_batch(batch)
+            await self.session.commit()
             if isinstance(e, IntegrityError):
                 raise ValidationError(
                     detail=f"Database conflict or integrity error during import: {e.orig}"
@@ -1690,6 +1763,7 @@ class ImportService:
                     workspace_id, user_id, batch.id
                 )
             elif batch.module == ImportModule.finance_transfers:
+                await self.repository.delete_cash_balances_for_import(workspace_id, batch.id)
                 deleted_records = await self.repository.delete_capital_transfers_for_batch(
                     workspace_id, batch.id
                 )
@@ -1779,5 +1853,6 @@ async def run_background_commit(
             await service.commit_batch(workspace_id, user_id, batch_public_id, audit_logger)
             await session.commit()
         except Exception:
-            await session.rollback()
-            raise
+            # commit_batch already rolled back, saved failed_commit status with error
+            # message, and committed that status update — don't double-rollback here
+            pass

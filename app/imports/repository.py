@@ -171,6 +171,19 @@ class ImportRepository:
         )
         return result.scalars().all()
 
+    async def delete_cash_balances_for_import(
+        self, workspace_id: int | None, import_batch_id: int | None
+    ) -> int:
+        if workspace_id is None or import_batch_id is None:
+            raise ValueError("workspace_id and import_batch_id are required")
+        result = await self.session.execute(
+            delete(CashBalance).where(
+                CashBalance.workspace_id == workspace_id,
+                CashBalance.source_import_id == import_batch_id,
+            )
+        )
+        return result.rowcount or 0
+
     async def delete_cash_balances_by_trigger_refs(
         self, workspace_id: int | None, trigger_type: str, trigger_refs: Sequence[uuid.UUID]
     ) -> int:
