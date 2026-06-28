@@ -23,6 +23,7 @@ from app.finance.schemas import (
     FxRateUpsert,
     ReconciliationSummary,
 )
+from app.investing.models import CashBalance as InvestingCashBalance
 
 
 class CurrencyService:
@@ -447,10 +448,12 @@ class CapitalTransferService:
         transfer_repository: CapitalTransferRepository,
         account_repository: AccountRepository,
         currency_repository: CurrencyRepository,
+        cash_balance_repository=None,
     ):
         self.transfer_repository = transfer_repository
         self.account_repository = account_repository
         self.currency_repository = currency_repository
+        self.cash_balance_repository = cash_balance_repository
 
     def _serialize_transfer(
         self,
@@ -592,6 +595,25 @@ class CapitalTransferService:
                 )
             )
         transfer = await self.transfer_repository.create(transfer)
+
+        # Auto-update brokerage cash balance when transferring TO investing
+        if transfer_in.to_module == "investing" and self.cash_balance_repository is not None:
+            latest_cash = await self.cash_balance_repository.get_latest_for_account_currency(
+                workspace_id, to_account.id, transfer_in.to_currency_code
+            )
+            prev_balance = latest_cash.balance if latest_cash is not None else Decimal("0")
+            new_balance = prev_balance + transfer.net_amount_received
+            new_cash = InvestingCashBalance(
+                workspace_id=workspace_id,
+                user_id=actor_id,
+                account_id=to_account.id,
+                balance=new_balance,
+                currency=transfer_in.to_currency_code,
+                as_of=transfer.occurred_at,
+                trigger_type="transfer",
+                trigger_ref=transfer.public_id,
+            )
+            await self.cash_balance_repository.create(new_cash)
 
         if audit_logger:
             from_module = (

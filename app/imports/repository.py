@@ -5,7 +5,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow, ImportStatus
-from app.investing.models import Holding
+from app.investing.models import CashBalance, Holding, InvestingOrder
 from app.spending.models import SpendingBudget, SpendingTransaction
 
 
@@ -149,6 +149,52 @@ class ImportRepository:
             delete(Holding).where(
                 Holding.workspace_id == workspace_id,
                 Holding.source_import_id == import_batch_id,
+            )
+        )
+        return result.rowcount or 0
+
+    async def list_investing_orders_for_batch(
+        self, workspace_id: int | None, import_batch_id: int | None
+    ) -> Sequence[InvestingOrder]:
+        if workspace_id is None or import_batch_id is None:
+            raise ValueError(
+                "workspace_id and import_batch_id are required for order import rollback"
+            )
+        result = await self.session.execute(
+            select(InvestingOrder).where(
+                InvestingOrder.workspace_id == workspace_id,
+                InvestingOrder.source_import_id == import_batch_id,
+            )
+        )
+        return result.scalars().all()
+
+    async def delete_cash_balances_by_trigger_refs(
+        self, workspace_id: int | None, trigger_type: str, trigger_refs: Sequence[uuid.UUID]
+    ) -> int:
+        if workspace_id is None:
+            raise ValueError("workspace_id is required to delete cash balances")
+        if not trigger_refs:
+            return 0
+        result = await self.session.execute(
+            delete(CashBalance).where(
+                CashBalance.workspace_id == workspace_id,
+                CashBalance.trigger_type == trigger_type,
+                CashBalance.trigger_ref.in_(trigger_refs),
+            )
+        )
+        return result.rowcount or 0
+
+    async def delete_investing_orders_for_batch(
+        self, workspace_id: int | None, import_batch_id: int | None
+    ) -> int:
+        if workspace_id is None or import_batch_id is None:
+            raise ValueError(
+                "workspace_id and import_batch_id are required for order import rollback"
+            )
+        result = await self.session.execute(
+            delete(InvestingOrder).where(
+                InvestingOrder.workspace_id == workspace_id,
+                InvestingOrder.source_import_id == import_batch_id,
             )
         )
         return result.rowcount or 0

@@ -165,6 +165,7 @@ async def execute_agent_tool(
                 "create_todo_task": tools.create_todo_task,
                 "log_spending_transaction": tools.log_spending_transaction,
                 "log_cash_balance": tools.log_cash_balance,
+                "place_stock_order": tools.place_stock_order,
                 "list_todos": tools.list_todos,
                 "get_todo": tools.get_todo,
                 "update_todo": tools.update_todo,
@@ -324,6 +325,50 @@ def _build_setup_message(
                                     },
                                 },
                                 "required": ["account_name", "balance", "currency"],
+                            },
+                        },
+                        {
+                            "name": "place_stock_order",
+                            "description": "Place a buy or sell order for a stock in a brokerage account. Updates cash balance and holding quantity automatically.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "order_type": {
+                                        "type": "STRING",
+                                        "description": "Either 'buy' or 'sell'.",
+                                    },
+                                    "symbol": {
+                                        "type": "STRING",
+                                        "description": "The stock ticker symbol (e.g., 'AAPL', 'INFY.NS').",
+                                    },
+                                    "quantity": {
+                                        "type": "STRING",
+                                        "description": "Number of shares as a string (e.g., '10').",
+                                    },
+                                    "price_per_unit": {
+                                        "type": "STRING",
+                                        "description": "Price per share as a string (e.g., '150.00').",
+                                    },
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "Name of the brokerage account to use.",
+                                    },
+                                    "currency": {
+                                        "type": "STRING",
+                                        "description": "Currency code (e.g., 'USD', 'INR'). Defaults to 'USD'.",
+                                    },
+                                    "brokerage_fee": {
+                                        "type": "STRING",
+                                        "description": "Brokerage commission as a string (e.g., '1.99'). Defaults to '0'.",
+                                    },
+                                },
+                                "required": [
+                                    "order_type",
+                                    "symbol",
+                                    "quantity",
+                                    "price_per_unit",
+                                    "account_name",
+                                ],
                             },
                         },
                         {

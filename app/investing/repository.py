@@ -13,6 +13,7 @@ from app.investing.models import (
     HoldingPrice,
     Instrument,
     InstrumentConstituent,
+    InvestingOrder,
     PortfolioSnapshot,
 )
 
@@ -111,6 +112,96 @@ class CashBalanceRepository:
     async def delete(self, cash_balance: CashBalance) -> None:
         await self.session.delete(cash_balance)
         await self.session.flush()
+
+    async def get_latest_for_account_currency(
+        self, workspace_id: int, account_id: int, currency: str
+    ) -> CashBalance | None:
+        result = await self.session.execute(
+            select(CashBalance)
+            .where(
+                CashBalance.workspace_id == workspace_id,
+                CashBalance.account_id == account_id,
+                CashBalance.currency == currency,
+            )
+            .order_by(CashBalance.as_of.desc(), CashBalance.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+
+class InvestingOrderRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, order: InvestingOrder) -> InvestingOrder:
+        self.session.add(order)
+        await self.session.flush()
+        await self.session.refresh(order)
+        return order
+
+    async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> InvestingOrder | None:
+        result = await self.session.execute(
+            select(InvestingOrder).where(
+                InvestingOrder.workspace_id == workspace_id,
+                InvestingOrder.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_by_workspace(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        symbol: str | None = None,
+        account_id: int | None = None,
+        order_type: str | None = None,
+    ) -> tuple[Sequence[InvestingOrder], int]:
+        base = select(InvestingOrder).where(InvestingOrder.workspace_id == workspace_id)
+        if symbol is not None:
+            base = base.where(InvestingOrder.symbol == symbol.upper())
+        if account_id is not None:
+            base = base.where(InvestingOrder.account_id == account_id)
+        if order_type is not None:
+            base = base.where(InvestingOrder.order_type == order_type)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(InvestingOrder.occurred_at.desc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), total
+
+    async def list_by_holding(
+        self, workspace_id: int, symbol: str, account_id: int
+    ) -> Sequence[InvestingOrder]:
+        result = await self.session.execute(
+            select(InvestingOrder)
+            .where(
+                InvestingOrder.workspace_id == workspace_id,
+                InvestingOrder.symbol == symbol.upper(),
+                InvestingOrder.account_id == account_id,
+            )
+            .order_by(InvestingOrder.occurred_at.asc(), InvestingOrder.id.asc())
+        )
+        return result.scalars().all()
+
+    async def save(self, order: InvestingOrder) -> InvestingOrder:
+        self.session.add(order)
+        await self.session.flush()
+        await self.session.refresh(order)
+        return order
+
+    async def delete(self, order: InvestingOrder) -> None:
+        await self.session.delete(order)
+        await self.session.flush()
+
+    async def bulk_create(self, orders: list[InvestingOrder]) -> list[InvestingOrder]:
+        self.session.add_all(orders)
+        await self.session.flush()
+        for o in orders:
+            await self.session.refresh(o)
+        return orders
 
 
 class InstrumentRepository:

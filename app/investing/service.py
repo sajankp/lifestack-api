@@ -24,6 +24,8 @@ from app.investing.models import (
     Instrument,
     InstrumentConstituent,
     InstrumentType,
+    InvestingOrder,
+    OrderType,
     PortfolioSnapshot,
 )
 from app.investing.repository import (
@@ -33,6 +35,7 @@ from app.investing.repository import (
     HoldingRepository,
     InstrumentConstituentRepository,
     InstrumentRepository,
+    InvestingOrderRepository,
     PortfolioSnapshotRepository,
 )
 from app.investing.schemas import (
@@ -47,6 +50,7 @@ from app.investing.schemas import (
     InstrumentConstituentUpsert,
     InstrumentCreate,
     InstrumentUpdate,
+    InvestingOrderCreate,
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
     OverlapRow,
@@ -1619,3 +1623,412 @@ class InvestingSummaryService:
             else "converted_available",
             fx_as_of=None,
         )
+
+
+AVG_COST_PRECISION = Decimal("0.000001")
+
+
+class InvestingOrderService:
+    def __init__(
+        self,
+        order_repository: InvestingOrderRepository,
+        holding_repository: HoldingRepository,
+        cash_balance_repository: CashBalanceRepository,
+        account_repository: AccountRepository,
+        currency_repository: CurrencyRepository,
+        instrument_service: InstrumentService,
+    ):
+        self.order_repository = order_repository
+        self.holding_repository = holding_repository
+        self.cash_balance_repository = cash_balance_repository
+        self.account_repository = account_repository
+        self.currency_repository = currency_repository
+        self.instrument_service = instrument_service
+
+    async def _validate_brokerage_account(
+        self, workspace_id: int, account_public_id: uuid.UUID
+    ) -> "Account":
+        account = await self.account_repository.get_by_public_id(workspace_id, account_public_id)
+        if not account or not account.is_active:
+            raise NotFoundError(
+                detail=f"Account with id {account_public_id} not found in this workspace"
+            )
+        if account.account_type != "brokerage":
+            raise ValidationError(
+                detail=(
+                    f"Orders can only be placed against brokerage accounts. "
+                    f"Account '{account.name}' is type '{account.account_type}'"
+                )
+            )
+        return account
+
+    async def _get_cash_balance(self, workspace_id: int, account_id: int, currency: str) -> Decimal:
+        latest = await self.cash_balance_repository.get_latest_for_account_currency(
+            workspace_id, account_id, currency
+        )
+        return latest.balance if latest is not None else Decimal("0")
+
+    async def _update_cash_balance(
+        self,
+        workspace_id: int,
+        user_id: int,
+        account_id: int,
+        currency: str,
+        delta: Decimal,
+        trigger_type: str,
+        trigger_ref: uuid.UUID,
+    ) -> CashBalance:
+        current = await self._get_cash_balance(workspace_id, account_id, currency)
+        new_balance = current + delta
+        cash = CashBalance(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            account_id=account_id,
+            balance=new_balance,
+            currency=currency,
+            as_of=datetime.now(UTC),
+            trigger_type=trigger_type,
+            trigger_ref=trigger_ref,
+        )
+        return await self.cash_balance_repository.create(cash)
+
+    def _replay_orders(
+        self, orders: Sequence[InvestingOrder], *, record_sells: bool
+    ) -> tuple[Decimal, Decimal]:
+        """Replay orders chronologically with a moving-average cost model.
+
+        Returns the resulting ``(quantity, avg_cost)``. When ``record_sells`` is
+        True, each sell order's ``realized_gain_loss`` and ``avg_cost_at_sale`` are
+        updated in place against the cost basis at the time of the sale. Raises
+        ``ValidationError`` if a sell would drive the holding negative at any
+        intermediate point, not just in the final aggregate.
+        """
+        qty = Decimal("0")
+        avg = Decimal("0")
+        for order in orders:
+            if order.order_type == "buy":
+                new_qty = qty + order.quantity
+                if new_qty > 0:
+                    avg = ((qty * avg + order.quantity * order.price_per_unit) / new_qty).quantize(
+                        AVG_COST_PRECISION
+                    )
+                qty = new_qty
+            else:
+                if order.quantity > qty:
+                    raise ValidationError(
+                        detail=(
+                            "Cannot delete this order. Remaining orders would result in a "
+                            "negative holding (a sell would exceed shares held at that point)"
+                        )
+                    )
+                if record_sells:
+                    order.realized_gain_loss = (
+                        order.quantity * (order.price_per_unit - avg)
+                    ).quantize(Decimal("0.01"))
+                    order.avg_cost_at_sale = avg
+                qty -= order.quantity
+                if qty == 0:
+                    avg = Decimal("0")
+        return qty, avg
+
+    async def _recompute_holding_from_orders(
+        self, workspace_id: int, user_id: int, symbol: str, account_id: int
+    ) -> Holding | None:
+        orders = await self.order_repository.list_by_holding(workspace_id, symbol, account_id)
+        holding = await self.holding_repository.get_by_unique_key(workspace_id, symbol, account_id)
+
+        if not orders:
+            # No orders remain; delete the holding if it exists
+            if holding is not None:
+                await self.holding_repository.delete(holding)
+            return None
+
+        new_qty, new_avg_cost = self._replay_orders(orders, record_sells=True)
+
+        # Persist recomputed realized gain/loss on the (mutated) sell orders
+        for order in orders:
+            if order.order_type == "sell":
+                await self.order_repository.save(order)
+
+        if holding is None:
+            holding = await self.holding_repository.create(
+                Holding(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    symbol=symbol,
+                    account_id=account_id,
+                    quantity=new_qty,
+                    avg_cost=new_avg_cost,
+                    currency="",
+                    source_type="order",
+                )
+            )
+        else:
+            holding.quantity = new_qty
+            holding.avg_cost = new_avg_cost
+            holding.updated_at = datetime.now(UTC)
+            holding = await self.holding_repository.save(holding)
+        return holding
+
+    async def place_order(
+        self,
+        workspace_id: int,
+        user_id: int,
+        order_in: InvestingOrderCreate,
+        audit_logger: AuditLogger | None = None,
+        source_type: str = "manual",
+    ) -> InvestingOrder:
+        account = await self._validate_brokerage_account(workspace_id, order_in.account_id)
+        assert account.id is not None
+
+        gross_amount = order_in.quantity * order_in.price_per_unit
+        total_fees = order_in.brokerage_fee + order_in.tax_amount + order_in.other_fees
+
+        if order_in.order_type == OrderType.buy:
+            net_amount = gross_amount + total_fees
+        else:
+            net_amount = gross_amount - total_fees
+
+        if order_in.order_type == OrderType.buy:
+            available_cash = await self._get_cash_balance(
+                workspace_id, account.id, order_in.currency
+            )
+            if available_cash < net_amount:
+                raise ValidationError(
+                    detail=(
+                        f"Insufficient cash balance. "
+                        f"Available: {order_in.currency} {available_cash:.2f}, "
+                        f"Required: {order_in.currency} {net_amount:.2f}"
+                    )
+                )
+
+        realized_gain_loss: Decimal | None = None
+        avg_cost_at_sale: Decimal | None = None
+
+        holding = await self.holding_repository.get_by_unique_key(
+            workspace_id, order_in.symbol, account.id
+        )
+
+        if order_in.order_type == OrderType.sell:
+            if holding is None or holding.quantity < order_in.quantity:
+                current_qty = holding.quantity if holding else Decimal("0")
+                raise ValidationError(
+                    detail=(
+                        f"Cannot sell {order_in.quantity} shares of {order_in.symbol}. "
+                        f"Current holding: {current_qty} shares"
+                    )
+                )
+            avg_cost_at_sale = holding.avg_cost
+            realized_gain_loss = order_in.quantity * (order_in.price_per_unit - holding.avg_cost)
+
+        instrument = await self.instrument_service.find_or_create_instrument(
+            workspace_id, order_in.symbol, InstrumentType.stock
+        )
+
+        order = InvestingOrder(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            account_id=account.id,
+            order_type=order_in.order_type.value,
+            symbol=order_in.symbol,
+            instrument_id=instrument.id if instrument else None,
+            quantity=order_in.quantity,
+            price_per_unit=order_in.price_per_unit,
+            gross_amount=gross_amount.quantize(Decimal("0.01")),
+            brokerage_fee=order_in.brokerage_fee,
+            tax_amount=order_in.tax_amount,
+            other_fees=order_in.other_fees,
+            net_amount=net_amount.quantize(Decimal("0.01")),
+            currency=order_in.currency,
+            exchange_name=order_in.exchange_name,
+            occurred_at=order_in.occurred_at,
+            notes=order_in.notes,
+            realized_gain_loss=realized_gain_loss.quantize(Decimal("0.01"))
+            if realized_gain_loss is not None
+            else None,
+            avg_cost_at_sale=avg_cost_at_sale,
+            source_type=source_type,
+        )
+        order = await self.order_repository.create(order)
+
+        # Update holding avg_cost and quantity
+        if order_in.order_type == OrderType.buy:
+            if holding is None:
+                holding = Holding(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    symbol=order_in.symbol,
+                    account_id=account.id,
+                    quantity=order_in.quantity,
+                    avg_cost=order_in.price_per_unit.quantize(AVG_COST_PRECISION),
+                    currency=order_in.currency,
+                    source_type="order",
+                    instrument_id=instrument.id if instrument else None,
+                )
+                await self.holding_repository.create(holding)
+            else:
+                existing_qty = holding.quantity
+                existing_avg = holding.avg_cost
+                new_qty = existing_qty + order_in.quantity
+                new_avg = (
+                    (existing_qty * existing_avg + order_in.quantity * order_in.price_per_unit)
+                    / new_qty
+                ).quantize(AVG_COST_PRECISION)
+                holding.quantity = new_qty
+                holding.avg_cost = new_avg
+                holding.updated_at = datetime.now(UTC)
+                await self.holding_repository.save(holding)
+        else:
+            assert holding is not None
+            holding.quantity = holding.quantity - order_in.quantity
+            holding.updated_at = datetime.now(UTC)
+            await self.holding_repository.save(holding)
+
+        # Update cash balance
+        cash_delta = -net_amount if order_in.order_type == OrderType.buy else net_amount
+        await self._update_cash_balance(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            account_id=account.id,
+            currency=order_in.currency,
+            delta=cash_delta,
+            trigger_type="order",
+            trigger_ref=order.public_id,
+        )
+
+        if audit_logger:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action=f"investing_order_{order_in.order_type.value}",
+                module="investing",
+                entity_type="investing_order",
+                entity_id=order.id or 0,
+                details={
+                    "entity_public_id": str(order.public_id),
+                    "before": None,
+                    "after": {
+                        "order_type": order_in.order_type.value,
+                        "symbol": order_in.symbol,
+                        "quantity": str(order_in.quantity),
+                        "price_per_unit": str(order_in.price_per_unit),
+                        "net_amount": str(net_amount),
+                        "currency": order_in.currency,
+                    },
+                    "changed_fields": ["quantity", "avg_cost", "cash_balance"],
+                },
+            )
+
+        return order
+
+    async def delete_order(
+        self,
+        workspace_id: int,
+        user_id: int,
+        order_public_id: uuid.UUID,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
+        order = await self.order_repository.get_by_public_id(workspace_id, order_public_id)
+        if not order:
+            raise NotFoundError(
+                detail=f"Order with id {order_public_id} not found in this workspace"
+            )
+
+        # Replay the remaining orders chronologically to ensure deleting this one
+        # never drives the holding negative at any point in time (not just in the
+        # final aggregate).
+        remaining_orders = [
+            o
+            for o in await self.order_repository.list_by_holding(
+                workspace_id, order.symbol, order.account_id
+            )
+            if o.public_id != order.public_id
+        ]
+        self._replay_orders(remaining_orders, record_sells=False)
+
+        # Reverse the cash balance impact
+        cash_delta = order.net_amount if order.order_type == "buy" else -order.net_amount
+        await self._update_cash_balance(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            account_id=order.account_id,
+            currency=order.currency,
+            delta=cash_delta,
+            trigger_type="order",
+            trigger_ref=order.public_id,
+        )
+
+        await self.order_repository.delete(order)
+
+        # Recompute holding from remaining orders
+        await self._recompute_holding_from_orders(
+            workspace_id, user_id, order.symbol, order.account_id
+        )
+
+        if audit_logger:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action="investing_order_deleted",
+                module="investing",
+                entity_type="investing_order",
+                entity_id=order.id or 0,
+                details={
+                    "entity_public_id": str(order.public_id),
+                    "before": {
+                        "order_type": order.order_type,
+                        "symbol": order.symbol,
+                        "quantity": str(order.quantity),
+                    },
+                    "after": None,
+                    "changed_fields": [],
+                },
+            )
+
+    async def bulk_import_orders(
+        self,
+        workspace_id: int,
+        user_id: int,
+        orders: list[InvestingOrderCreate],
+        source_import_id: int | None,
+        audit_logger: AuditLogger | None = None,
+    ) -> list[InvestingOrder]:
+        sorted_orders = sorted(orders, key=lambda o: o.occurred_at)
+        created = []
+        for order_in in sorted_orders:
+            order = await self.place_order(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                order_in=order_in,
+                audit_logger=audit_logger,
+                source_type="csv_import",
+            )
+            if source_import_id is not None:
+                order.source_import_id = source_import_id
+                await self.order_repository.create(order)
+            created.append(order)
+        return created
+
+    async def list_orders(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        symbol: str | None = None,
+        account_id: int | None = None,
+        order_type: str | None = None,
+    ) -> tuple[Sequence[InvestingOrder], int]:
+        return await self.order_repository.list_by_workspace(
+            workspace_id, limit, offset, symbol, account_id, order_type
+        )
+
+    async def get_order(self, workspace_id: int, public_id: uuid.UUID) -> InvestingOrder:
+        order = await self.order_repository.get_by_public_id(workspace_id, public_id)
+        if not order:
+            raise NotFoundError(detail=f"Order with id {public_id} not found in this workspace")
+        return order
+
+    async def list_orders_for_holding(
+        self, workspace_id: int, symbol: str, account_id: int
+    ) -> Sequence[InvestingOrder]:
+        return await self.order_repository.list_by_holding(workspace_id, symbol, account_id)
