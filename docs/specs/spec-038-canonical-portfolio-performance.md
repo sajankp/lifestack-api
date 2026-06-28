@@ -60,6 +60,13 @@ This zero-contribution rule is an interim product decision. It avoids a misleadi
 while keeping the portfolio-level daily metric available. A future implementation may instead show
 `N/A` when comparison coverage falls below an explicitly defined threshold.
 
+**Implementation note:** The current implementation in `PerformanceService.summary` calculates
+`daily_change` as the difference between two consecutive snapshot `holdings_value` totals — it does
+not yet apply the per-holding price-movement formula above. As a result, adding a holding whose
+previous close is not in an existing snapshot will cause its full market value to appear as a single
+day's movement, which violates this policy. Aligning the implementation with the formula above is
+tracked as a follow-up to the investment transaction ledger work described below.
+
 ## Deferred Plan: Investment Transaction Ledger
 
 A future investing slice should replace direct quantity/average-cost maintenance with
