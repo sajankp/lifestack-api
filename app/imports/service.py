@@ -444,6 +444,7 @@ class ImportService:
                     ])
                 if batch.module == ImportModule.spending_transactions:
                     valid_headers.append(SPENDEE_TRANSACTION_HEADERS)
+                    valid_headers.append(SPENDEE_TRANSACTION_HEADERS + ["Author"])
 
                 err = ImportError(
                     import_batch_id=batch.id,

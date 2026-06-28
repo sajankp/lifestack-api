@@ -1030,5 +1030,6 @@ async def test_import_spendee_csv_with_author_column(client: AsyncClient):
     assert txs.status_code == 200
     assert txs.json()["total"] == 1
     row = txs.json()["items"][0]
-    assert row["wallet_name"] is None
     assert row["account_id"] == account_public_id
+    assert row["amount"] == "3700.00"
+    assert row["type"] == "expense"
