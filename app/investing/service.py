@@ -1692,41 +1692,79 @@ class InvestingOrderService:
         )
         return await self.cash_balance_repository.create(cash)
 
+    def _replay_orders(
+        self, orders: Sequence[InvestingOrder], *, record_sells: bool
+    ) -> tuple[Decimal, Decimal]:
+        """Replay orders chronologically with a moving-average cost model.
+
+        Returns the resulting ``(quantity, avg_cost)``. When ``record_sells`` is
+        True, each sell order's ``realized_gain_loss`` and ``avg_cost_at_sale`` are
+        updated in place against the cost basis at the time of the sale. Raises
+        ``ValidationError`` if a sell would drive the holding negative at any
+        intermediate point, not just in the final aggregate.
+        """
+        qty = Decimal("0")
+        avg = Decimal("0")
+        for order in orders:
+            if order.order_type == "buy":
+                new_qty = qty + order.quantity
+                if new_qty > 0:
+                    avg = ((qty * avg + order.quantity * order.price_per_unit) / new_qty).quantize(
+                        AVG_COST_PRECISION
+                    )
+                qty = new_qty
+            else:
+                if order.quantity > qty:
+                    raise ValidationError(
+                        detail=(
+                            "Cannot delete this order. Remaining orders would result in a "
+                            "negative holding (a sell would exceed shares held at that point)"
+                        )
+                    )
+                if record_sells:
+                    order.realized_gain_loss = (
+                        order.quantity * (order.price_per_unit - avg)
+                    ).quantize(Decimal("0.01"))
+                    order.avg_cost_at_sale = avg
+                qty -= order.quantity
+                if qty == 0:
+                    avg = Decimal("0")
+        return qty, avg
+
     async def _recompute_holding_from_orders(
-        self, workspace_id: int, symbol: str, account_id: int
+        self, workspace_id: int, user_id: int, symbol: str, account_id: int
     ) -> Holding | None:
-        aggregated = await self.order_repository.sum_by_symbol_account(
-            workspace_id, symbol, account_id
-        )
+        orders = await self.order_repository.list_by_holding(workspace_id, symbol, account_id)
         holding = await self.holding_repository.get_by_unique_key(workspace_id, symbol, account_id)
 
-        net_qty = aggregated["net_qty"]
-        total_buy_qty = aggregated["total_buy_qty"]
-        total_cost_basis = aggregated["total_cost_basis"]
-
-        if total_buy_qty == Decimal("0"):
+        if not orders:
             # No orders remain; delete the holding if it exists
             if holding is not None:
                 await self.holding_repository.delete(holding)
             return None
 
-        new_avg_cost = (total_cost_basis / total_buy_qty).quantize(AVG_COST_PRECISION)
+        new_qty, new_avg_cost = self._replay_orders(orders, record_sells=True)
+
+        # Persist recomputed realized gain/loss on the (mutated) sell orders
+        for order in orders:
+            if order.order_type == "sell":
+                await self.order_repository.save(order)
 
         if holding is None:
             holding = await self.holding_repository.create(
                 Holding(
                     workspace_id=workspace_id,
-                    user_id=0,
+                    user_id=user_id,
                     symbol=symbol,
                     account_id=account_id,
-                    quantity=net_qty,
+                    quantity=new_qty,
                     avg_cost=new_avg_cost,
                     currency="",
                     source_type="order",
                 )
             )
         else:
-            holding.quantity = net_qty
+            holding.quantity = new_qty
             holding.avg_cost = new_avg_cost
             holding.updated_at = datetime.now(UTC)
             holding = await self.holding_repository.save(holding)
@@ -1896,20 +1934,17 @@ class InvestingOrderService:
                 detail=f"Order with id {order_public_id} not found in this workspace"
             )
 
-        # Check that deleting this order won't leave sells exceeding buys
-        aggregated = await self.order_repository.sum_by_symbol_account(
-            workspace_id, order.symbol, order.account_id
-        )
-        if order.order_type == "buy":
-            remaining_buy = aggregated["total_buy_qty"] - order.quantity
-            if remaining_buy < aggregated["total_sell_qty"]:
-                raise ValidationError(
-                    detail=(
-                        "Cannot delete this buy order. "
-                        "Remaining orders would result in negative holding "
-                        "(sell quantity exceeds buy quantity)"
-                    )
-                )
+        # Replay the remaining orders chronologically to ensure deleting this one
+        # never drives the holding negative at any point in time (not just in the
+        # final aggregate).
+        remaining_orders = [
+            o
+            for o in await self.order_repository.list_by_holding(
+                workspace_id, order.symbol, order.account_id
+            )
+            if o.public_id != order.public_id
+        ]
+        self._replay_orders(remaining_orders, record_sells=False)
 
         # Reverse the cash balance impact
         cash_delta = order.net_amount if order.order_type == "buy" else -order.net_amount
@@ -1926,7 +1961,9 @@ class InvestingOrderService:
         await self.order_repository.delete(order)
 
         # Recompute holding from remaining orders
-        await self._recompute_holding_from_orders(workspace_id, order.symbol, order.account_id)
+        await self._recompute_holding_from_orders(
+            workspace_id, user_id, order.symbol, order.account_id
+        )
 
         if audit_logger:
             await audit_logger.log(

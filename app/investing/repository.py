@@ -1,6 +1,5 @@
 from collections.abc import Sequence
 from datetime import date
-from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import delete, func, select
@@ -183,9 +182,15 @@ class InvestingOrderRepository:
                 InvestingOrder.symbol == symbol.upper(),
                 InvestingOrder.account_id == account_id,
             )
-            .order_by(InvestingOrder.occurred_at.asc())
+            .order_by(InvestingOrder.occurred_at.asc(), InvestingOrder.id.asc())
         )
         return result.scalars().all()
+
+    async def save(self, order: InvestingOrder) -> InvestingOrder:
+        self.session.add(order)
+        await self.session.flush()
+        await self.session.refresh(order)
+        return order
 
     async def delete(self, order: InvestingOrder) -> None:
         await self.session.delete(order)
@@ -197,25 +202,6 @@ class InvestingOrderRepository:
         for o in orders:
             await self.session.refresh(o)
         return orders
-
-    async def sum_by_symbol_account(self, workspace_id: int, symbol: str, account_id: int) -> dict:
-        """Aggregate buy/sell quantities and total cost basis for recomputing avg_cost."""
-        orders = await self.list_by_holding(workspace_id, symbol, account_id)
-        total_buy_qty = Decimal("0")
-        total_cost_basis = Decimal("0")
-        total_sell_qty = Decimal("0")
-        for o in orders:
-            if o.order_type == "buy":
-                total_buy_qty += o.quantity
-                total_cost_basis += o.quantity * o.price_per_unit
-            else:
-                total_sell_qty += o.quantity
-        return {
-            "total_buy_qty": total_buy_qty,
-            "total_sell_qty": total_sell_qty,
-            "total_cost_basis": total_cost_basis,
-            "net_qty": total_buy_qty - total_sell_qty,
-        }
 
 
 class InstrumentRepository:

@@ -9,7 +9,9 @@ from app.core.audit import AuditLogger
 from app.finance.repository import AccountRepository, CurrencyRepository
 from app.investing.repository import (
     CashBalanceRepository,
+    CompanyRepository,
     HoldingRepository,
+    InstrumentRepository,
     InvestingOrderRepository,
 )
 from app.investing.schemas import CashBalanceCreate, InvestingOrderCreate
@@ -66,7 +68,9 @@ class AgentTools:
 
         self.holding_repo = HoldingRepository(session)
         self.order_repo = InvestingOrderRepository(session)
-        self.instrument_service = InstrumentService(session)
+        self.instrument_service = InstrumentService(
+            InstrumentRepository(session), CompanyRepository(session)
+        )
         self.order_service = InvestingOrderService(
             order_repository=self.order_repo,
             holding_repository=self.holding_repo,

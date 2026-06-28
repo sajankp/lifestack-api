@@ -370,38 +370,125 @@ async def test_delete_order_not_found_raises():
     assert "not found" in exc_info.value.detail
 
 
-@pytest.mark.asyncio
-async def test_delete_buy_order_that_would_leave_negative_holding_raises():
-    order = InvestingOrder(
-        id=1,
-        public_id=uuid.uuid4(),
+def _make_order(
+    *,
+    id: int,
+    order_type: str,
+    quantity: str,
+    price: str,
+    occurred_at: datetime,
+    public_id: uuid.UUID | None = None,
+) -> InvestingOrder:
+    qty = Decimal(quantity)
+    unit = Decimal(price)
+    return InvestingOrder(
+        id=id,
+        public_id=public_id or uuid.uuid4(),
         workspace_id=WS,
         user_id=USER,
         account_id=ACCOUNT_ID,
-        order_type="buy",
+        order_type=order_type,
         symbol="AAPL",
-        quantity=Decimal("5"),
-        price_per_unit=Decimal("150"),
-        gross_amount=Decimal("750"),
-        net_amount=Decimal("750"),
+        quantity=qty,
+        price_per_unit=unit,
+        gross_amount=qty * unit,
+        net_amount=qty * unit,
         currency="USD",
-        occurred_at=datetime.now(UTC),
-    )
-    svc = _make_service()
-    svc.order_repository.get_by_public_id = AsyncMock(return_value=order)
-    # Aggregated: 10 bought, 8 sold, deleting 5 of the buys leaves 5 buys vs 8 sells
-    svc.order_repository.sum_by_symbol_account = AsyncMock(
-        return_value={
-            "total_buy_qty": Decimal("10"),
-            "total_sell_qty": Decimal("8"),
-            "total_cost_basis": Decimal("1500"),
-            "net_qty": Decimal("2"),
-        }
+        occurred_at=occurred_at,
     )
 
+
+@pytest.mark.asyncio
+async def test_delete_buy_order_that_would_leave_negative_holding_raises():
+    # History: buy 5, buy 5, sell 8. Deleting the first buy leaves buy 5 then
+    # sell 8 — which goes negative at the sell.
+    target = _make_order(
+        id=1,
+        order_type="buy",
+        quantity="5",
+        price="150",
+        occurred_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    history = [
+        target,
+        _make_order(
+            id=2,
+            order_type="buy",
+            quantity="5",
+            price="160",
+            occurred_at=datetime(2026, 1, 2, tzinfo=UTC),
+        ),
+        _make_order(
+            id=3,
+            order_type="sell",
+            quantity="8",
+            price="170",
+            occurred_at=datetime(2026, 1, 3, tzinfo=UTC),
+        ),
+    ]
+    svc = _make_service()
+    svc.order_repository.get_by_public_id = AsyncMock(return_value=target)
+    svc.order_repository.list_by_holding = AsyncMock(return_value=history)
+
     with pytest.raises(ValidationError) as exc_info:
-        await svc.delete_order(WS, USER, order.public_id)
+        await svc.delete_order(WS, USER, target.public_id)
     assert "negative holding" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_delete_order_recomputes_avg_cost_chronologically():
+    # buy 10 @100, sell 10 @150, buy 10 @200 -> avg cost should be 200 (not 150).
+    # Deleting an unrelated later order triggers a full chronological recompute.
+    history = [
+        _make_order(
+            id=1,
+            order_type="buy",
+            quantity="10",
+            price="100",
+            occurred_at=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+        _make_order(
+            id=2,
+            order_type="sell",
+            quantity="10",
+            price="150",
+            occurred_at=datetime(2026, 1, 2, tzinfo=UTC),
+        ),
+        _make_order(
+            id=3,
+            order_type="buy",
+            quantity="10",
+            price="200",
+            occurred_at=datetime(2026, 1, 3, tzinfo=UTC),
+        ),
+    ]
+    target = _make_order(
+        id=4,
+        order_type="buy",
+        quantity="1",
+        price="999",
+        occurred_at=datetime(2026, 1, 4, tzinfo=UTC),
+    )
+
+    svc = _make_service(existing_holding=_make_holding(qty="11", avg_cost="0"))
+    svc.order_repository.get_by_public_id = AsyncMock(return_value=target)
+    # First call (delete validation) sees all orders; after delete, recompute sees `history`.
+    svc.order_repository.list_by_holding = AsyncMock(side_effect=[[*history, target], history])
+    svc.order_repository.save = AsyncMock(side_effect=lambda o: o)
+
+    saved: list[Holding] = []
+    svc.holding_repository.save = AsyncMock(side_effect=lambda h: saved.append(h) or h)
+
+    await svc.delete_order(WS, USER, target.public_id)
+
+    assert saved, "expected holding to be recomputed and saved"
+    recomputed = saved[-1]
+    assert recomputed.quantity == Decimal("10")
+    assert recomputed.avg_cost == Decimal("200.000000")
+    # The sell's realized P&L is recorded against the cost basis at sale time (100).
+    sell = next(o for o in history if o.order_type == "sell")
+    assert sell.avg_cost_at_sale == Decimal("100.000000")
+    assert sell.realized_gain_loss == Decimal("500.00")
 
 
 # ---------------------------------------------------------------------------

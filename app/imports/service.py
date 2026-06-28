@@ -31,7 +31,9 @@ from app.imports.schemas import SPENDEE_TRANSACTION_HEADERS, TEMPLATE_HEADERS
 from app.investing.models import Company, Holding, Instrument, InstrumentConstituent, InstrumentType
 from app.investing.repository import (
     CashBalanceRepository,
+    CompanyRepository,
     HoldingRepository,
+    InstrumentRepository,
     InvestingOrderRepository,
 )
 from app.investing.schemas import InvestingOrderCreate
@@ -1617,7 +1619,9 @@ async def run_background_commit(
             cash_balance_repository=CashBalanceRepository(session),
             account_repository=AccountRepository(session),
             currency_repository=CurrencyRepository(session),
-            instrument_service=InstrumentService(session),
+            instrument_service=InstrumentService(
+                InstrumentRepository(session), CompanyRepository(session)
+            ),
         )
         service = ImportService(repo, session, order_service=order_service)
         audit_logger = AuditLogger(session)
