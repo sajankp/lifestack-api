@@ -1488,6 +1488,45 @@ class ImportService:
                         self.session.add(transfer)
                         inserted += 1
                 else:  # ImportModule.investing_constituents
+                    # Pre-load existing constituents for the chunk to prevent unique constraint violation
+                    keys = []
+                    for row in rows:
+                        p = row.payload_json
+                        company_name_raw = p.get("company_name")
+                        company_name_norm = (
+                            company_name_raw.strip().lower() if company_name_raw else ""
+                        )
+                        company = company_cache.get(company_name_norm)
+                        if company is not None and p.get("instrument_id") is not None:
+                            try:
+                                dt = datetime.strptime(p["as_of_date"], "%Y-%m-%d").date()
+                                keys.append((int(p["instrument_id"]), company.id, dt))
+                            except Exception:
+                                pass
+
+                    existing_consts = {}
+                    if keys:
+                        const_rows = (
+                            (
+                                await self.session.execute(
+                                    select(InstrumentConstituent).where(
+                                        InstrumentConstituent.source == "csv_import",
+                                        tuple_(
+                                            InstrumentConstituent.instrument_id,
+                                            InstrumentConstituent.constituent_company_id,
+                                            InstrumentConstituent.as_of_date,
+                                        ).in_(keys),
+                                    )
+                                )
+                            )
+                            .scalars()
+                            .all()
+                        )
+                        existing_consts = {
+                            (c.instrument_id, c.constituent_company_id, c.as_of_date): c
+                            for c in const_rows
+                        }
+
                     for row in rows:
                         p = row.payload_json
                         company_name_raw = p.get("company_name")
@@ -1512,15 +1551,24 @@ class ImportService:
                                 detail="Instrument ID is missing in preview payload"
                             )
 
-                        constituent = InstrumentConstituent(
-                            instrument_id=int(instrument_id),
-                            constituent_company_id=company.id,
-                            weight=Decimal(p["weight"]),
-                            as_of_date=datetime.strptime(p["as_of_date"], "%Y-%m-%d").date(),
-                            source="csv_import",
-                            fetched_at=datetime.now(UTC),
-                        )
-                        self.session.add(constituent)
+                        as_of_date = datetime.strptime(p["as_of_date"], "%Y-%m-%d").date()
+                        const_key = (int(instrument_id), company.id, as_of_date)
+                        existing_const = existing_consts.get(const_key)
+
+                        if existing_const:
+                            existing_const.weight = Decimal(p["weight"])
+                            existing_const.fetched_at = datetime.now(UTC)
+                        else:
+                            constituent = InstrumentConstituent(
+                                instrument_id=int(instrument_id),
+                                constituent_company_id=company.id,
+                                weight=Decimal(p["weight"]),
+                                as_of_date=as_of_date,
+                                source="csv_import",
+                                fetched_at=datetime.now(UTC),
+                            )
+                            self.session.add(constituent)
+                            existing_consts[const_key] = constituent
                         inserted += 1
 
                 await self.session.flush()
