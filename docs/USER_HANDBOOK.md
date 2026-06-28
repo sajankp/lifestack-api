@@ -57,7 +57,27 @@ Lifestack deliberately avoids automatic balance mutations when logging transacti
 
 ---
 
-## 5. Reconciling and Tallying Balances
+## 5. Tracking Stock Orders (Buy / Sell)
+
+Lifestack tracks buy and sell orders under the **Investing** module. Orders give you a detailed trade history and let the app compute your weighted average cost and realized gain/loss automatically.
+
+### How Orders Work
+* **Buy orders** deduct from your brokerage cash balance and increase your holding quantity. The weighted average cost is recalculated on every buy.
+* **Sell orders** reduce your holding quantity and record the realized gain/loss based on the average cost at the time of the sale.
+* **Fees** (brokerage, tax, other) are tracked per order and are included in the net amount calculation. For buys, fees are added to the cost; for sells, fees are subtracted from the proceeds.
+
+### Relationship to Cash Balances
+Placing a buy or sell order does **not** automatically adjust the cash balance snapshot — the snapshot model is decoupled (see Section 4). After placing an order, update the Cash Balance for the brokerage account to reflect the real-world impact of the trade.
+
+### Importing Orders
+You can bulk-import historical orders via **Bulk Imports** using a CSV with the `investing-orders` module. Required columns: `symbol`, `order_type` (`buy`/`sell`), `quantity`, `price_per_unit`, `currency`, `occurred_at`. Optional: `brokerage_fee`, `tax_amount`, `other_fees`, `exchange_name`, `notes`.
+
+### Voice Agent
+You can say *"Buy 10 shares of AAPL at $150"* to the voice agent and it will call `place_stock_order` directly.
+
+---
+
+## 6. Reconciling and Tallying Balances
 
 ### How Personal Finance Apps Handle This
 * **Ledger-Based (e.g., Firefly III, GnuCash):** Every expense is automatically deducted from the account. If you miss logging a single coffee, your account balance is incorrect.
