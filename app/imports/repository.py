@@ -142,10 +142,12 @@ class ImportRepository:
         return result.rowcount or 0
 
     async def delete_capital_transfers_for_batch(
-        self, workspace_id: int, import_batch_id: int | None
+        self, workspace_id: int | None, import_batch_id: int | None
     ) -> int:
-        if import_batch_id is None:
-            raise ValueError("import_batch_id is required for transfer import rollback")
+        if workspace_id is None or import_batch_id is None:
+            raise ValueError(
+                "workspace_id and import_batch_id are required for transfer import rollback"
+            )
         result = await self.session.execute(
             delete(CapitalTransfer).where(
                 CapitalTransfer.workspace_id == workspace_id,

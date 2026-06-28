@@ -49,6 +49,12 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
         "gross_amount",
         "net_amount_received",
         "notes",
+        "from_module",
+        "to_module",
+        "fx_rate_used",
+        "fx_fee_amount",
+        "platform_fee_amount",
+        "tax_amount",
     ],
 }
 

@@ -856,6 +856,10 @@ class ImportService:
                     notes_raw = self._norm(row.get("notes")) or None
                     from_module_raw = self._norm(row.get("from_module")) or "spending"
                     to_module_raw = self._norm(row.get("to_module")) or "investing"
+                    fx_rate_raw = self._norm(row.get("fx_rate_used")) or None
+                    fx_fee_raw = self._norm(row.get("fx_fee_amount")) or "0"
+                    platform_fee_raw = self._norm(row.get("platform_fee_amount")) or "0"
+                    tax_raw = self._norm(row.get("tax_amount")) or "0"
 
                     occurred_at = None
                     try:
@@ -957,6 +961,39 @@ class ImportService:
                         )
                         net_amount_received = None
 
+                    fx_rate_used = None
+                    if fx_rate_raw:
+                        try:
+                            fx_rate_used = Decimal(fx_rate_raw)
+                            if fx_rate_used <= 0:
+                                raise InvalidOperation
+                        except Exception:
+                            add_error(
+                                "fx_rate_used",
+                                "invalid_decimal",
+                                "fx_rate_used must be a positive decimal",
+                                fx_rate_raw,
+                            )
+
+                    def _safe_decimal(raw: str, field: str) -> Decimal:
+                        try:
+                            val = Decimal(raw)
+                            if val < 0:
+                                raise InvalidOperation
+                            return val
+                        except Exception:
+                            add_error(
+                                field,
+                                "invalid_decimal",
+                                f"{field} must be a non-negative decimal",
+                                raw,
+                            )
+                            return Decimal("0")
+
+                    fx_fee_amount = _safe_decimal(fx_fee_raw, "fx_fee_amount")
+                    platform_fee_amount = _safe_decimal(platform_fee_raw, "platform_fee_amount")
+                    tax_amount = _safe_decimal(tax_raw, "tax_amount")
+
                     if from_module_raw not in {"spending", "investing"}:
                         add_error(
                             "from_module",
@@ -971,6 +1008,33 @@ class ImportService:
                             "to_module must be spending or investing",
                             to_module_raw,
                         )
+
+                    if gross_amount is not None and net_amount_received is not None:
+                        if (
+                            from_currency == to_currency
+                            and fx_rate_used is not None
+                            and fx_rate_used != Decimal("1")
+                        ):
+                            add_error(
+                                "fx_rate_used",
+                                "invalid_value",
+                                "FX rate must be 1.0 when transferring between the same currency",
+                                str(fx_rate_used),
+                            )
+
+                        gross = gross_amount
+                        fx_rate = fx_rate_used if fx_rate_used is not None else Decimal("1")
+                        converted_gross = gross * fx_rate
+                        total_fees = fx_fee_amount + platform_fee_amount + tax_amount
+                        net = net_amount_received
+                        difference = abs(converted_gross - total_fees - net)
+                        if difference > Decimal("0.01"):
+                            add_error(
+                                "net_amount_received",
+                                "invalid_value",
+                                f"Transfer arithmetic inconsistent: gross ({gross:.2f}) * rate ({fx_rate:.4f}) - fees ({total_fees:.2f}) ≠ net ({net:.2f}). Difference: {difference:.4f}",
+                                str(net_amount_received),
+                            )
 
                     payload = {
                         "occurred_at": occurred_at.isoformat() if occurred_at else None,
@@ -991,6 +1055,10 @@ class ImportService:
                         "notes": notes_raw,
                         "from_module": from_module_raw,
                         "to_module": to_module_raw,
+                        "fx_rate_used": str(fx_rate_used) if fx_rate_used is not None else None,
+                        "fx_fee_amount": str(fx_fee_amount),
+                        "platform_fee_amount": str(platform_fee_amount),
+                        "tax_amount": str(tax_amount),
                     }
                 else:
                     instrument_symbol_raw = self._norm(row.get("instrument_symbol"))
@@ -1389,6 +1457,10 @@ class ImportService:
                         p = row.payload_json
                         from_account_id = account_map.get(p["from_account"].lower())
                         to_account_id = account_map.get(p["to_account"].lower())
+                        if from_account_id is None or to_account_id is None:
+                            raise ValidationError(
+                                detail="from_account or to_account not found in workspace"
+                            )
 
                         transfer = CapitalTransfer(
                             workspace_id=workspace_id,
