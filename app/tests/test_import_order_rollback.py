@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.core.exceptions import ValidationError
+from app.imports.repository import ImportRepository
 from app.imports.service import ImportService
 from app.investing.models import InvestingOrder
 
@@ -84,3 +85,33 @@ async def test_rollback_orders_requires_order_service():
 
     with pytest.raises(ValidationError):
         await svc._rollback_investing_orders(WS, USER, BATCH_ID)
+
+
+@pytest.mark.parametrize(
+    ("workspace_id", "import_batch_id"),
+    [(None, BATCH_ID), (WS, None), (None, None)],
+)
+@pytest.mark.asyncio
+async def test_batch_deleters_fail_closed_on_missing_ids(workspace_id, import_batch_id):
+    """Missing identifiers must raise before any SQL runs (no IS NULL bulk delete)."""
+    session = AsyncMock()
+    repo = ImportRepository(session)
+
+    with pytest.raises(ValueError):
+        await repo.delete_investing_orders_for_batch(workspace_id, import_batch_id)
+    with pytest.raises(ValueError):
+        await repo.list_investing_orders_for_batch(workspace_id, import_batch_id)
+
+    session.execute.assert_not_called()
+    session.flush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_cash_balances_fail_closed_on_missing_workspace():
+    session = AsyncMock()
+    repo = ImportRepository(session)
+
+    with pytest.raises(ValueError):
+        await repo.delete_cash_balances_by_trigger_refs(None, "order", [uuid.uuid4()])
+
+    session.execute.assert_not_called()

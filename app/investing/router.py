@@ -553,7 +553,9 @@ def _order_response(
     account_cache: dict[int, tuple[uuid.UUID, str]],
     instrument_type_cache: dict[int, str] | None = None,
 ) -> InvestingOrderResponse:
-    pub_id, name = account_cache.get(order.account_id, (None, "Unknown"))
+    # account_id is required (non-nullable) on InvestingOrderResponse, so fall back
+    # to a nil UUID rather than None to avoid a Pydantic validation 500.
+    pub_id, name = account_cache.get(order.account_id, (uuid.UUID(int=0), "Unknown"))
     data = {
         "public_id": order.public_id,
         "account_id": pub_id,

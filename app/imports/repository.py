@@ -154,10 +154,12 @@ class ImportRepository:
         return result.rowcount or 0
 
     async def list_investing_orders_for_batch(
-        self, workspace_id: int, import_batch_id: int | None
+        self, workspace_id: int | None, import_batch_id: int | None
     ) -> Sequence[InvestingOrder]:
-        if import_batch_id is None:
-            raise ValueError("import_batch_id is required for order import rollback")
+        if workspace_id is None or import_batch_id is None:
+            raise ValueError(
+                "workspace_id and import_batch_id are required for order import rollback"
+            )
         result = await self.session.execute(
             select(InvestingOrder).where(
                 InvestingOrder.workspace_id == workspace_id,
@@ -167,8 +169,10 @@ class ImportRepository:
         return result.scalars().all()
 
     async def delete_cash_balances_by_trigger_refs(
-        self, workspace_id: int, trigger_type: str, trigger_refs: Sequence[uuid.UUID]
+        self, workspace_id: int | None, trigger_type: str, trigger_refs: Sequence[uuid.UUID]
     ) -> int:
+        if workspace_id is None:
+            raise ValueError("workspace_id is required to delete cash balances")
         if not trigger_refs:
             return 0
         result = await self.session.execute(
@@ -181,10 +185,12 @@ class ImportRepository:
         return result.rowcount or 0
 
     async def delete_investing_orders_for_batch(
-        self, workspace_id: int, import_batch_id: int | None
+        self, workspace_id: int | None, import_batch_id: int | None
     ) -> int:
-        if import_batch_id is None:
-            raise ValueError("import_batch_id is required for order import rollback")
+        if workspace_id is None or import_batch_id is None:
+            raise ValueError(
+                "workspace_id and import_batch_id are required for order import rollback"
+            )
         result = await self.session.execute(
             delete(InvestingOrder).where(
                 InvestingOrder.workspace_id == workspace_id,
