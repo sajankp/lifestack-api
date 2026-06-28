@@ -100,6 +100,44 @@ When `CapitalTransferService.create_transfer()` is called with `to_module = 'inv
 - Cash Balances tab shows trigger_type badge
 - Holdings tab shows "Trade History" link per row
 
+## Design Rationale: Holdings as Materialized Cache
+
+`investing_holdings` is **not** an independent source of truth — it is a materialized cache derived from `investing_orders`. Every `place_order` and `delete_order` call ends by running `_recompute_holding_from_orders`, which replays the full order history and writes the resulting `(quantity, avg_cost)` back to the `Holding` row.
+
+Holdings still exist as a table because three things cannot be computed from orders alone:
+
+1. **`HoldingPrice` records** — market price snapshots FK to `investing_holdings.id`. The holding row is the anchor for "what is this position worth today?" A unit price attaches to a position, not to an individual trade.
+2. **`PortfolioSnapshot`** — stores `holdings_value` computed from `quantity × latest_unit_price`. Snapshots read holdings + prices; they do not replay orders.
+3. **Fast reads** — `GET /investing/holdings` returns current positions with valuation in a single query. Replaying orders on every list request would be expensive.
+
+The "Sell all shares → holding NOT deleted" edge case (above) reflects this: the row survives at quantity = 0 to preserve the `HoldingPrice` history anchor.
+
+## Migration / Deprecation: Holdings CSV Import Removed
+
+### Why the two-route problem is a correctness bug
+
+Before spec-041, the `investing-holdings` CSV import was the only way to seed portfolio positions. It wrote directly to `investing_holdings` with `source_type = "imported"`, bypassing the order ledger entirely.
+
+Now that orders exist, keeping the holdings import creates a **silent data corruption path**:
+
+```
+CSV import: 100 AAPL @ $150 avg cost  (source_type = "imported")
+Place buy order: +50 AAPL @ $180
+→ place_order calls _recompute_holding_from_orders
+→ sees only 1 order → writes 50 AAPL @ $180 to the holding
+→ the original CSV quantity (100) is silently discarded
+```
+
+Any holding seeded via CSV and then touched by an order loses its CSV-imported quantity with no error or warning.
+
+### Decision
+
+The `investing-holdings` import module is **removed**. It is no longer accepted by the API, no longer shown in the UI, and its service/repository code is deleted.
+
+**For historic data:** Import past trades as orders via the `investing-orders` CSV module. If you only have a position snapshot (no individual trade history), import a single buy order dated to the approximate acquisition date at the known avg_cost as `price_per_unit`. This flows through the order ledger, is recomputable, and is consistent with all future orders.
+
+**Existing `import_batches` rows** with `module = 'investing-holdings'` in the database are left in place. The delete/rollback path for those batches is also removed; any positions they created must be manually managed if needed.
+
 ## Files Changed
 
 **Backend:**

@@ -19,14 +19,6 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
         "category",
         "amount",
     ],
-    ImportModule.investing_holdings: [
-        "symbol",
-        "account_name",
-        "quantity",
-        "avg_cost",
-        "currency",
-        "instrument_type",
-    ],
     ImportModule.investing_constituents: [
         "instrument_symbol",
         "company_name",

@@ -5,7 +5,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow, ImportStatus
-from app.investing.models import CashBalance, Holding, InvestingOrder
+from app.investing.models import CashBalance, InvestingOrder
 from app.spending.models import SpendingBudget, SpendingTransaction
 
 
@@ -136,19 +136,6 @@ class ImportRepository:
             delete(SpendingBudget).where(
                 SpendingBudget.workspace_id == workspace_id,
                 SpendingBudget.source_import_id == import_batch_id,
-            )
-        )
-        return result.rowcount or 0
-
-    async def delete_investing_holdings_for_batch(
-        self, workspace_id: int, import_batch_id: int | None
-    ) -> int:
-        if import_batch_id is None:
-            raise ValueError("import_batch_id is required for holding import rollback")
-        result = await self.session.execute(
-            delete(Holding).where(
-                Holding.workspace_id == workspace_id,
-                Holding.source_import_id == import_batch_id,
             )
         )
         return result.rowcount or 0
