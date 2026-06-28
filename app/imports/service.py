@@ -1501,6 +1501,38 @@ class ImportService:
         errors = await self.repository.list_errors(batch.id, limit=200)
         return batch, errors
 
+    async def _rollback_investing_orders(
+        self, workspace_id: int, user_id: int, import_batch_id: int
+    ) -> int:
+        """Roll back a committed investing-orders import.
+
+        Placing orders has side effects (cash-balance snapshots and holding
+        avg_cost/quantity changes), so deleting the order rows alone would orphan
+        cash balances and leave holdings incorrect. This removes the order-triggered
+        cash balances and recomputes the affected holdings from the remaining orders.
+        """
+        if self.order_service is None:
+            raise ValidationError(detail="Order service is required to roll back an order import")
+
+        orders = await self.repository.list_investing_orders_for_batch(
+            workspace_id, import_batch_id
+        )
+        if not orders:
+            return 0
+
+        affected = {(o.symbol, o.account_id) for o in orders}
+        await self.repository.delete_cash_balances_by_trigger_refs(
+            workspace_id, "order", [o.public_id for o in orders]
+        )
+        deleted_records = await self.repository.delete_investing_orders_for_batch(
+            workspace_id, import_batch_id
+        )
+        for symbol, account_id in affected:
+            await self.order_service._recompute_holding_from_orders(
+                workspace_id, user_id, symbol, account_id
+            )
+        return deleted_records
+
     async def delete_batch(
         self,
         workspace_id: int,
@@ -1540,8 +1572,8 @@ class ImportService:
                     workspace_id, batch.id
                 )
             elif batch.module == ImportModule.investing_orders:
-                deleted_records = await self.repository.delete_investing_orders_for_batch(
-                    workspace_id, batch.id
+                deleted_records = await self._rollback_investing_orders(
+                    workspace_id, user_id, batch.id
                 )
             else:
                 deleted_records = 0
