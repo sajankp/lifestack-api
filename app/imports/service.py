@@ -423,9 +423,8 @@ class ImportService:
         try:
             mapping = self._smart_match_headers(headers, batch.module)
             header_mode = "default"
-            if (
-                batch.module == ImportModule.spending_transactions
-                and headers == SPENDEE_TRANSACTION_HEADERS
+            if batch.module == ImportModule.spending_transactions and (
+                headers[: len(SPENDEE_TRANSACTION_HEADERS)] == SPENDEE_TRANSACTION_HEADERS
             ):
                 header_mode = "spendee"
 
@@ -445,6 +444,7 @@ class ImportService:
                     ])
                 if batch.module == ImportModule.spending_transactions:
                     valid_headers.append(SPENDEE_TRANSACTION_HEADERS)
+                    valid_headers.append(SPENDEE_TRANSACTION_HEADERS + ["Author"])
 
                 err = ImportError(
                     import_batch_id=batch.id,
