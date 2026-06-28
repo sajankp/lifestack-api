@@ -28,7 +28,7 @@ from app.imports.models import (
 )
 from app.imports.repository import ImportRepository
 from app.imports.schemas import SPENDEE_TRANSACTION_HEADERS, TEMPLATE_HEADERS
-from app.investing.models import Company, Holding, Instrument, InstrumentConstituent, InstrumentType
+from app.investing.models import Company, Instrument, InstrumentConstituent, InstrumentType
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
@@ -111,13 +111,6 @@ class ImportService:
     REQUIRED_HEADERS = {
         ImportModule.spending_transactions: {"occurred_at", "type", "amount", "category"},
         ImportModule.spending_budgets: {"month_start", "category", "amount"},
-        ImportModule.investing_holdings: {
-            "symbol",
-            "account_name",
-            "quantity",
-            "avg_cost",
-            "currency",
-        },
         ImportModule.investing_constituents: {
             "instrument_symbol",
             "company_name",
@@ -141,9 +134,6 @@ class ImportService:
             return "".join(c for c in s.lower() if c.isalnum())
 
         expected_headers = TEMPLATE_HEADERS[module]
-        if module == ImportModule.investing_holdings:
-            expected_headers = expected_headers + ["instrument_type"]
-
         mapping = {}
         used_file_headers = set()
         normalized_file_headers = {normalize(h): h for h in file_headers if h}
@@ -192,8 +182,6 @@ class ImportService:
             lines.append(
                 "buy,AAPL,Primary Brokerage,10,150.00,USD,1.99,0,0,2026-01-15T10:30:00+00:00,NASDAQ,First purchase"
             )
-        else:
-            lines.append("AAPL,Primary Brokerage,10,150.25,USD,stock")
         return "\n".join(lines) + "\n"
 
     async def _hash_file(self, upload: UploadFile) -> tuple[str, int]:
@@ -379,6 +367,8 @@ class ImportService:
         upload: UploadFile,
         audit_logger: AuditLogger,
     ) -> tuple[ImportBatch, str]:
+        if module == ImportModule.investing_holdings:
+            raise ValidationError(detail="investing-holdings imports are no longer supported")
         if not upload.filename:
             raise ValidationError(detail="filename is required")
         if not (
@@ -494,14 +484,6 @@ class ImportService:
 
             if header_mode != "spendee" and missing_required:
                 valid_headers = [TEMPLATE_HEADERS[batch.module]]
-                if batch.module == ImportModule.investing_holdings:
-                    valid_headers.append([
-                        "symbol",
-                        "account_name",
-                        "quantity",
-                        "avg_cost",
-                        "currency",
-                    ])
                 if batch.module == ImportModule.spending_transactions:
                     valid_headers.append(SPENDEE_TRANSACTION_HEADERS)
                     valid_headers.append(SPENDEE_TRANSACTION_HEADERS + ["Author"])
@@ -706,92 +688,6 @@ class ImportService:
                         "category_id": category_id,
                         "category_name": category_raw if category_raw else None,
                         "amount": str(amount) if amount is not None else None,
-                    }
-                elif batch.module == ImportModule.investing_holdings:
-                    symbol_raw = self._norm(row.get("symbol"))
-                    account_name_raw = self._norm(row.get("account_name"))
-                    quantity_raw = self._norm(row.get("quantity"))
-                    avg_cost_raw = self._norm(row.get("avg_cost"))
-                    currency_raw = self._norm(row.get("currency"))
-                    instrument_type_raw = self._norm(row.get("instrument_type"))
-
-                    if not symbol_raw:
-                        add_error("symbol", "required", "symbol is required", symbol_raw)
-
-                    account_id = None
-                    if account_name_raw:
-                        account_id = account_map.get(account_name_raw.lower())
-                        if account_id is None:
-                            add_error(
-                                "account_name",
-                                "not_found",
-                                "account not found in workspace",
-                                account_name_raw,
-                            )
-                    else:
-                        add_error(
-                            "account_name", "required", "account_name is required", account_name_raw
-                        )
-
-                    try:
-                        quantity = Decimal(quantity_raw)
-                        if quantity <= 0:
-                            raise InvalidOperation
-                    except Exception:
-                        add_error(
-                            "quantity",
-                            "invalid_decimal",
-                            "quantity must be a positive decimal",
-                            quantity_raw,
-                        )
-                        quantity = None
-
-                    try:
-                        avg_cost = Decimal(avg_cost_raw)
-                        if avg_cost <= 0:
-                            raise InvalidOperation
-                    except Exception:
-                        add_error(
-                            "avg_cost",
-                            "invalid_decimal",
-                            "avg_cost must be a positive decimal",
-                            avg_cost_raw,
-                        )
-                        avg_cost = None
-
-                    currency = None
-                    if currency_raw:
-                        currency = currency_raw.upper()
-                        if currency not in currency_set:
-                            add_error(
-                                "currency",
-                                "not_found",
-                                "currency not enabled in workspace",
-                                currency_raw,
-                            )
-                    else:
-                        add_error("currency", "required", "currency is required", currency_raw)
-
-                    inst_type = None
-                    if instrument_type_raw:
-                        try:
-                            inst_type = InstrumentType(instrument_type_raw.lower())
-                        except Exception:
-                            add_error(
-                                "instrument_type",
-                                "invalid_enum",
-                                "instrument_type must be stock, etf, or mutual_fund",
-                                instrument_type_raw,
-                            )
-
-                    payload = {
-                        "symbol": symbol_raw.upper() if symbol_raw else None,
-                        "account_name": account_name_raw,
-                        "account_id": account_id,
-                        "quantity": str(quantity) if quantity is not None else None,
-                        "avg_cost": str(avg_cost) if avg_cost is not None else None,
-                        "currency": currency,
-                        "instrument_type": inst_type.value if inst_type else None,
                     }
                 elif batch.module == ImportModule.investing_orders:
                     order_type_raw = self._norm(row.get("order_type"))
@@ -1264,114 +1160,6 @@ class ImportService:
                             self.session.add(budget)
                             existing_budgets[budget_key] = budget
                         inserted += 1
-                elif batch.module == ImportModule.investing_holdings:
-                    account_map = await self._account_map(workspace_id)
-                    holding_keys = set()
-                    instruments_map = {}
-                    symbols = {
-                        str(row.payload_json["symbol"]).upper()
-                        for row in rows
-                        if row.payload_json.get("symbol")
-                    }
-                    if symbols:
-                        instrument_rows = (
-                            (
-                                await self.session.execute(
-                                    select(Instrument).where(
-                                        Instrument.workspace_id == workspace_id,
-                                        Instrument.symbol.in_(symbols),
-                                    )
-                                )
-                            )
-                            .scalars()
-                            .all()
-                        )
-                        instruments_map = {
-                            instrument.symbol.upper(): instrument for instrument in instrument_rows
-                        }
-
-                    for row in rows:
-                        p = row.payload_json
-                        account_name_val = p.get("account_name")
-                        account_name_raw = self._norm(account_name_val) if account_name_val else ""
-                        account_id = (
-                            account_map.get(account_name_raw.lower()) if account_name_raw else None
-                        )
-                        if account_id is not None:
-                            holding_keys.add((p["symbol"], account_id))
-
-                    existing_holdings = {}
-                    if holding_keys:
-                        holding_rows = (
-                            (
-                                await self.session.execute(
-                                    select(Holding).where(
-                                        Holding.workspace_id == workspace_id,
-                                        tuple_(Holding.symbol, Holding.account_id).in_(
-                                            holding_keys
-                                        ),
-                                    )
-                                )
-                            )
-                            .scalars()
-                            .all()
-                        )
-                        existing_holdings = {
-                            (holding.symbol, holding.account_id): holding
-                            for holding in holding_rows
-                        }
-
-                    for row in rows:
-                        p = row.payload_json
-                        account_name_val = p.get("account_name")
-                        account_name_raw = self._norm(account_name_val) if account_name_val else ""
-                        account_id = (
-                            account_map.get(account_name_raw.lower()) if account_name_raw else None
-                        )
-                        if account_id is None:
-                            raise ValidationError(
-                                detail=f"Account '{account_name_raw or 'Unknown'}' not found in workspace"
-                            )
-                        instrument_type = InstrumentType(
-                            p.get("instrument_type") or InstrumentType.stock.value
-                        )
-                        symbol_key = p["symbol"].upper()
-                        instrument = instruments_map.get(symbol_key)
-                        if instrument is None:
-                            instrument = await self._resolve_or_create_instrument(
-                                workspace_id, p["symbol"], instrument_type
-                            )
-                            instruments_map[symbol_key] = instrument
-
-                        holding_key = (p["symbol"], account_id)
-                        existing_holding = existing_holdings.get(holding_key)
-
-                        if existing_holding:
-                            existing_holding.quantity = Decimal(p["quantity"])
-                            existing_holding.avg_cost = Decimal(p["avg_cost"])
-                            existing_holding.currency = p["currency"]
-                            existing_holding.instrument_id = instrument.id
-                            existing_holding.source_type = "imported"
-                            existing_holding.source_import_id = batch.id
-                            existing_holding.source_ref = f"{batch.public_id}:{row.row_number}"
-                            existing_holding.updated_at = datetime.now(UTC)
-                        else:
-                            holding = Holding(
-                                workspace_id=workspace_id,
-                                user_id=user_id,
-                                symbol=p["symbol"],
-                                account_id=account_id,
-                                instrument_id=instrument.id,
-                                quantity=Decimal(p["quantity"]),
-                                avg_cost=Decimal(p["avg_cost"]),
-                                currency=p["currency"],
-                                source_type="imported",
-                                source_import_id=batch.id,
-                                source_ref=f"{batch.public_id}:{row.row_number}",
-                            )
-                            self.session.add(holding)
-                            existing_holdings[holding_key] = holding
-                        inserted += 1
                 elif batch.module == ImportModule.investing_orders:
                     if self.order_service is None:
                         raise ValidationError(
@@ -1565,10 +1353,6 @@ class ImportService:
                 )
             elif batch.module == ImportModule.spending_budgets:
                 deleted_records = await self.repository.delete_spending_budgets_for_batch(
-                    workspace_id, batch.id
-                )
-            elif batch.module == ImportModule.investing_holdings:
-                deleted_records = await self.repository.delete_investing_holdings_for_batch(
                     workspace_id, batch.id
                 )
             elif batch.module == ImportModule.investing_orders:

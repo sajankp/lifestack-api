@@ -103,7 +103,6 @@ def _source_metadata_response(
         rollback_supported = import_batch is not None and import_batch.module in (
             ImportModule.spending_transactions,
             ImportModule.spending_budgets,
-            ImportModule.investing_holdings,
         )
         return SourceMetadataResponse(
             source_type=source_type,

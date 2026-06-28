@@ -9,6 +9,7 @@ from sqlmodel import Field, SQLModel
 class ImportModule(StrEnum):
     spending_transactions = "spending-transactions"
     spending_budgets = "spending-budgets"
+    # Kept for backward-compat deserialization of historic import_batches rows only.
     investing_holdings = "investing-holdings"
     investing_constituents = "investing-constituents"
     investing_orders = "investing-orders"
