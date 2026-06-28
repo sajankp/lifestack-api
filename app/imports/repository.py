@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.finance.models import CapitalTransfer
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow, ImportStatus
 from app.investing.models import CashBalance, InvestingOrder
 from app.spending.models import SpendingBudget, SpendingTransaction
@@ -136,6 +137,19 @@ class ImportRepository:
             delete(SpendingBudget).where(
                 SpendingBudget.workspace_id == workspace_id,
                 SpendingBudget.source_import_id == import_batch_id,
+            )
+        )
+        return result.rowcount or 0
+
+    async def delete_capital_transfers_for_batch(
+        self, workspace_id: int, import_batch_id: int | None
+    ) -> int:
+        if import_batch_id is None:
+            raise ValueError("import_batch_id is required for transfer import rollback")
+        result = await self.session.execute(
+            delete(CapitalTransfer).where(
+                CapitalTransfer.workspace_id == workspace_id,
+                CapitalTransfer.source_import_id == import_batch_id,
             )
         )
         return result.rowcount or 0

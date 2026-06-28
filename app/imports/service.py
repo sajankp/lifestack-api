@@ -17,7 +17,7 @@ from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.database import postgres
 from app.core.exceptions import NotFoundError, ValidationError
-from app.finance.models import Account, Currency
+from app.finance.models import Account, CapitalTransfer, Currency, TransferModule
 from app.finance.repository import AccountRepository, CurrencyRepository
 from app.imports.models import (
     ImportBatch,
@@ -106,6 +106,24 @@ class ImportService:
         "weight": ["weight", "percentage", "pct", "allocation", "wt"],
         "as_of_date": ["as_of_date", "as_of", "date_as_of", "date", "asof"],
         "month_start": ["month_start", "month", "start_month", "date", "start_date"],
+        "from_account": [
+            "from_account",
+            "from_account_name",
+            "from",
+            "source_account",
+            "wallet",
+            "account",
+        ],
+        "to_account": [
+            "to_account",
+            "to_account_name",
+            "to",
+            "destination_account",
+            "target_account",
+        ],
+        "from_currency": ["from_currency", "from_currency_code", "currency"],
+        "to_currency": ["to_currency", "to_currency_code"],
+        "net_amount_received": ["net_amount_received", "net_amount", "amount"],
     }
 
     REQUIRED_HEADERS = {
@@ -126,6 +144,15 @@ class ImportService:
             "price_per_unit",
             "currency",
             "occurred_at",
+        },
+        ImportModule.finance_transfers: {
+            "occurred_at",
+            "from_account",
+            "to_account",
+            "from_currency",
+            "to_currency",
+            "gross_amount",
+            "net_amount_received",
         },
     }
 
@@ -181,6 +208,10 @@ class ImportService:
         elif module == ImportModule.investing_orders:
             lines.append(
                 "buy,AAPL,Primary Brokerage,10,150.00,USD,1.99,0,0,2026-01-15T10:30:00+00:00,NASDAQ,First purchase"
+            )
+        elif module == ImportModule.finance_transfers:
+            lines.append(
+                "2026-05-01T09:30:00Z,ICICI,GROWW,INR,INR,50000.00,50000.00,SIP Investment"
             )
         return "\n".join(lines) + "\n"
 
@@ -422,7 +453,7 @@ class ImportService:
 
         instruments_map = {}
         order_account_pub_map: dict[str, uuid.UUID] = {}
-        if batch.module == ImportModule.investing_orders:
+        if batch.module in {ImportModule.investing_orders, ImportModule.finance_transfers}:
             order_account_pub_map = await self._account_public_id_map(workspace_id)
         if batch.module == ImportModule.investing_constituents:
             inst_rows = (
@@ -813,6 +844,153 @@ class ImportService:
                         "occurred_at": occurred_at.isoformat() if occurred_at else None,
                         "exchange_name": exchange_raw,
                         "notes": notes_raw,
+                    }
+                elif batch.module == ImportModule.finance_transfers:
+                    occurred_raw = self._norm(row.get("occurred_at"))
+                    from_account_raw = self._norm(row.get("from_account"))
+                    to_account_raw = self._norm(row.get("to_account"))
+                    from_currency_raw = self._norm(row.get("from_currency"))
+                    to_currency_raw = self._norm(row.get("to_currency"))
+                    gross_amount_raw = self._norm(row.get("gross_amount"))
+                    net_amount_raw = self._norm(row.get("net_amount_received"))
+                    notes_raw = self._norm(row.get("notes")) or None
+                    from_module_raw = self._norm(row.get("from_module")) or "spending"
+                    to_module_raw = self._norm(row.get("to_module")) or "investing"
+
+                    occurred_at = None
+                    try:
+                        occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
+                    except Exception:
+                        add_error(
+                            "occurred_at",
+                            "invalid_datetime",
+                            "occurred_at must be ISO datetime",
+                            occurred_raw,
+                        )
+
+                    from_account_pub_id = None
+                    if from_account_raw:
+                        from_account_pub_id = order_account_pub_map.get(from_account_raw.lower())
+                        if from_account_pub_id is None:
+                            add_error(
+                                "from_account",
+                                "not_found",
+                                "from_account not found in workspace",
+                                from_account_raw,
+                            )
+                    else:
+                        add_error(
+                            "from_account", "required", "from_account is required", from_account_raw
+                        )
+
+                    to_account_pub_id = None
+                    if to_account_raw:
+                        to_account_pub_id = order_account_pub_map.get(to_account_raw.lower())
+                        if to_account_pub_id is None:
+                            add_error(
+                                "to_account",
+                                "not_found",
+                                "to_account not found in workspace",
+                                to_account_raw,
+                            )
+                    else:
+                        add_error(
+                            "to_account", "required", "to_account is required", to_account_raw
+                        )
+
+                    from_currency = None
+                    if from_currency_raw:
+                        from_currency = from_currency_raw.upper()
+                        if from_currency not in currency_set:
+                            add_error(
+                                "from_currency",
+                                "not_found",
+                                "from_currency not enabled in workspace",
+                                from_currency_raw,
+                            )
+                    else:
+                        add_error(
+                            "from_currency",
+                            "required",
+                            "from_currency is required",
+                            from_currency_raw,
+                        )
+
+                    to_currency = None
+                    if to_currency_raw:
+                        to_currency = to_currency_raw.upper()
+                        if to_currency not in currency_set:
+                            add_error(
+                                "to_currency",
+                                "not_found",
+                                "to_currency not enabled in workspace",
+                                to_currency_raw,
+                            )
+                    else:
+                        add_error(
+                            "to_currency", "required", "to_currency is required", to_currency_raw
+                        )
+
+                    try:
+                        gross_amount = Decimal(gross_amount_raw)
+                        if gross_amount < 0:
+                            raise InvalidOperation
+                    except Exception:
+                        add_error(
+                            "gross_amount",
+                            "invalid_decimal",
+                            "gross_amount must be a non-negative decimal",
+                            gross_amount_raw,
+                        )
+                        gross_amount = None
+
+                    try:
+                        net_amount_received = Decimal(net_amount_raw)
+                        if net_amount_received < 0:
+                            raise InvalidOperation
+                    except Exception:
+                        add_error(
+                            "net_amount_received",
+                            "invalid_decimal",
+                            "net_amount_received must be a non-negative decimal",
+                            net_amount_raw,
+                        )
+                        net_amount_received = None
+
+                    if from_module_raw not in {"spending", "investing"}:
+                        add_error(
+                            "from_module",
+                            "invalid_enum",
+                            "from_module must be spending or investing",
+                            from_module_raw,
+                        )
+                    if to_module_raw not in {"spending", "investing"}:
+                        add_error(
+                            "to_module",
+                            "invalid_enum",
+                            "to_module must be spending or investing",
+                            to_module_raw,
+                        )
+
+                    payload = {
+                        "occurred_at": occurred_at.isoformat() if occurred_at else None,
+                        "from_account": from_account_raw,
+                        "from_account_public_id": str(from_account_pub_id)
+                        if from_account_pub_id
+                        else None,
+                        "to_account": to_account_raw,
+                        "to_account_public_id": str(to_account_pub_id)
+                        if to_account_pub_id
+                        else None,
+                        "from_currency": from_currency,
+                        "to_currency": to_currency,
+                        "gross_amount": str(gross_amount) if gross_amount is not None else None,
+                        "net_amount_received": str(net_amount_received)
+                        if net_amount_received is not None
+                        else None,
+                        "notes": notes_raw,
+                        "from_module": from_module_raw,
+                        "to_module": to_module_raw,
                     }
                 else:
                     instrument_symbol_raw = self._norm(row.get("instrument_symbol"))
@@ -1205,6 +1383,38 @@ class ImportService:
                         audit_logger=audit_logger,
                     )
                     inserted += len(created)
+                elif batch.module == ImportModule.finance_transfers:
+                    account_map = await self._account_map(workspace_id)
+                    for row in rows:
+                        p = row.payload_json
+                        from_account_id = account_map.get(p["from_account"].lower())
+                        to_account_id = account_map.get(p["to_account"].lower())
+
+                        transfer = CapitalTransfer(
+                            workspace_id=workspace_id,
+                            actor_id=user_id,
+                            from_module=TransferModule(p["from_module"]),
+                            to_module=TransferModule(p["to_module"]),
+                            from_account_id=from_account_id,
+                            to_account_id=to_account_id,
+                            from_currency_code=p["from_currency"],
+                            to_currency_code=p["to_currency"],
+                            gross_amount=Decimal(p["gross_amount"]),
+                            fx_rate_used=Decimal(p.get("fx_rate_used"))
+                            if p.get("fx_rate_used")
+                            else None,
+                            fx_fee_amount=Decimal(p.get("fx_fee_amount") or "0"),
+                            platform_fee_amount=Decimal(p.get("platform_fee_amount") or "0"),
+                            tax_amount=Decimal(p.get("tax_amount") or "0"),
+                            net_amount_received=Decimal(p["net_amount_received"]),
+                            occurred_at=datetime.fromisoformat(p["occurred_at"]),
+                            notes=p.get("notes"),
+                            source_type="imported",
+                            source_import_id=batch.id,
+                            source_ref=f"{batch.public_id}:{row.row_number}",
+                        )
+                        self.session.add(transfer)
+                        inserted += 1
                 else:  # ImportModule.investing_constituents
                     for row in rows:
                         p = row.payload_json
@@ -1358,6 +1568,10 @@ class ImportService:
             elif batch.module == ImportModule.investing_orders:
                 deleted_records = await self._rollback_investing_orders(
                     workspace_id, user_id, batch.id
+                )
+            elif batch.module == ImportModule.finance_transfers:
+                deleted_records = await self.repository.delete_capital_transfers_for_batch(
+                    workspace_id, batch.id
                 )
             else:
                 deleted_records = 0

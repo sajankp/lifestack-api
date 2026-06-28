@@ -40,6 +40,16 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
         "exchange_name",
         "notes",
     ],
+    ImportModule.finance_transfers: [
+        "occurred_at",
+        "from_account",
+        "to_account",
+        "from_currency",
+        "to_currency",
+        "gross_amount",
+        "net_amount_received",
+        "notes",
+    ],
 }
 
 SPENDEE_TRANSACTION_HEADERS = [

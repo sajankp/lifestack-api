@@ -17,6 +17,7 @@ class TransactionSourceType(StrEnum):
     imported = "imported"
     synced = "synced"
     assistant = "assistant"
+    order = "order"
 
 
 class SpendingCategory(SQLModel, table=True):

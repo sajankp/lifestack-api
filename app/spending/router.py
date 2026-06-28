@@ -128,6 +128,13 @@ def _source_metadata_response(
             origin="assistant_action",
             label="Assistant action",
         )
+    if source_type == "order":
+        return SourceMetadataResponse(
+            source_type=source_type,
+            source_ref=source_ref,
+            origin="manual_entry",
+            label="Order-derived",
+        )
     return SourceMetadataResponse(
         source_type=source_type,
         source_ref=source_ref,
