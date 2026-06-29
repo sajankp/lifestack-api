@@ -794,6 +794,34 @@ class CapitalTransferService:
         if transfer_in.notes is not None:
             transfer.notes = transfer_in.notes
 
+        # Arithmetic consistency check (same rule as create_transfer)
+        if (
+            transfer.from_currency_code == transfer.to_currency_code
+            and transfer.fx_rate_used is not None
+            and transfer.fx_rate_used != Decimal("1")
+        ):
+            raise ValidationError(
+                detail="FX rate must be 1.0 when transferring between the same currency"
+            )
+        gross = transfer.gross_amount
+        fx_rate = transfer.fx_rate_used if transfer.fx_rate_used is not None else Decimal("1")
+        converted_gross = gross * fx_rate
+        total_fees = (
+            (transfer.fx_fee_amount or Decimal("0"))
+            + (transfer.platform_fee_amount or Decimal("0"))
+            + (transfer.tax_amount or Decimal("0"))
+        )
+        net = transfer.net_amount_received
+        difference = abs(converted_gross - total_fees - net)
+        if difference > Decimal("0.01"):
+            raise ValidationError(
+                detail=(
+                    f"Transfer arithmetic inconsistent: "
+                    f"gross ({gross:.2f}) * rate ({fx_rate:.4f}) - fees ({total_fees:.2f}) ≠ net ({net:.2f}). "
+                    f"Difference: {difference:.4f}"
+                )
+            )
+
         transfer = await self.transfer_repository.save(transfer)
 
         # Rebuild cash balance snapshot if balance-affecting fields changed

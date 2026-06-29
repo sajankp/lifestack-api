@@ -159,7 +159,7 @@ class CapitalTransferUpdate(BaseModel):
     occurred_at: datetime | None = None
     notes: str | None = Field(default=None, max_length=500)
 
-    @field_validator("from_currency_code", "to_currency_code")
+    @field_validator("from_currency_code", "to_currency_code", mode="before")
     @classmethod
     def normalize_currency(cls, value: str | None) -> str | None:
         return value.strip().upper() if value else value
