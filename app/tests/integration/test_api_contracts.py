@@ -149,18 +149,30 @@ async def test_investing_account_currency_selector_contracts(client: AsyncClient
 
     account_id = account_body["public_id"]
 
-    create_holding = await client.post(
-        "/v1/investing/holdings",
+    await client.post(
+        "/v1/investing/cash-balances",
         json={
-            "symbol": "AAPL",
             "account_id": account_id,
-            "quantity": "2.50000000",
-            "avg_cost": "180.00",
-            "currency": "usd",
+            "balance": "1950.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
         },
     )
-    assert create_holding.status_code == 201
-    holding_body = create_holding.json()
+    order_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": account_id,
+            "order_type": "buy",
+            "symbol": "AAPL",
+            "quantity": "2.50000000",
+            "price_per_unit": "180.00",
+            "currency": "usd",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert order_res.status_code == 201
+    holdings_list = await client.get("/v1/investing/holdings")
+    holding_body = next(h for h in holdings_list.json()["items"] if h["symbol"] == "AAPL")
     assert holding_body["account_name"] == account_body["name"]
     assert holding_body["currency"] == "USD"
 
