@@ -24,6 +24,7 @@ services:
     volumes:
       - .:/app
       - /app/.venv
+      - imports-temp:/app/imports_temp
 
   postgres:
     image: postgres:18
@@ -54,3 +55,4 @@ services:
 
 volumes:
   pg-data:
+  imports-temp:
