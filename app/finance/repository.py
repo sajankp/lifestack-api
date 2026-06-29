@@ -263,7 +263,12 @@ class AccountRepository:
 
         inflow_sub = (
             select(
-                func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0")).label("inflow"),
+                # net_amount_received: what the destination account actually received.
+                # For cross-currency transfers this is in to_currency (correct for the
+                # receiving account), whereas gross_amount is in from_currency (wrong).
+                func.coalesce(func.sum(CapitalTransfer.net_amount_received), Decimal("0")).label(
+                    "inflow"
+                ),
                 func.count(CapitalTransfer.id).label("inflow_count"),
             )
             .where(
@@ -318,6 +323,104 @@ class AccountRepository:
         transfer_count = inflow_count + outflow_count
 
         return projected_balance, tx_count, transfer_count, first_at, last_at
+
+    async def get_spending_balances_bulk(
+        self, workspace_id: int, account_ids: list[int]
+    ) -> dict[int, tuple[Decimal, int, int, "datetime | None", "datetime | None"]]:
+        """Return spending balance data for multiple accounts in three queries instead of N.
+
+        Returns a dict keyed by account_id with the same tuple as get_spending_balance.
+        """
+        if not account_ids:
+            return {}
+
+        tx_result = await self.session.execute(
+            select(
+                SpendingTransaction.account_id,
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (SpendingTransaction.type == "income", SpendingTransaction.amount),
+                            else_=Decimal("0"),
+                        )
+                    ),
+                    Decimal("0"),
+                ).label("income"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (SpendingTransaction.type == "expense", SpendingTransaction.amount),
+                            else_=Decimal("0"),
+                        )
+                    ),
+                    Decimal("0"),
+                ).label("expense"),
+                func.count(SpendingTransaction.id).label("tx_count"),
+                func.min(SpendingTransaction.occurred_at).label("first_at"),
+                func.max(SpendingTransaction.occurred_at).label("last_at"),
+            )
+            .where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.account_id.in_(account_ids),
+            )
+            .group_by(SpendingTransaction.account_id)
+        )
+        tx_by_account: dict[int, tuple] = {row[0]: row for row in tx_result.all()}
+
+        inflow_result = await self.session.execute(
+            select(
+                CapitalTransfer.to_account_id,
+                func.coalesce(func.sum(CapitalTransfer.net_amount_received), Decimal("0")).label(
+                    "inflow"
+                ),
+                func.count(CapitalTransfer.id).label("inflow_count"),
+            )
+            .where(
+                CapitalTransfer.workspace_id == workspace_id,
+                CapitalTransfer.to_account_id.in_(account_ids),
+            )
+            .group_by(CapitalTransfer.to_account_id)
+        )
+        inflow_by_account: dict[int, tuple] = {row[0]: row for row in inflow_result.all()}
+
+        outflow_result = await self.session.execute(
+            select(
+                CapitalTransfer.from_account_id,
+                func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0")).label(
+                    "outflow"
+                ),
+                func.count(CapitalTransfer.id).label("outflow_count"),
+            )
+            .where(
+                CapitalTransfer.workspace_id == workspace_id,
+                CapitalTransfer.from_account_id.in_(account_ids),
+            )
+            .group_by(CapitalTransfer.from_account_id)
+        )
+        outflow_by_account: dict[int, tuple] = {row[0]: row for row in outflow_result.all()}
+
+        results: dict[int, tuple[Decimal, int, int, datetime | None, datetime | None]] = {}
+        for account_id in account_ids:
+            tx = tx_by_account.get(account_id)
+            income = Decimal(str(tx[1] or "0")) if tx else Decimal("0")
+            expense = Decimal(str(tx[2] or "0")) if tx else Decimal("0")
+            tx_count = int(tx[3] or 0) if tx else 0
+            first_at = tx[4] if tx else None
+            last_at = tx[5] if tx else None
+
+            inf = inflow_by_account.get(account_id)
+            inflow = Decimal(str(inf[1] or "0")) if inf else Decimal("0")
+            inflow_count = int(inf[2] or 0) if inf else 0
+
+            out = outflow_by_account.get(account_id)
+            outflow = Decimal(str(out[1] or "0")) if out else Decimal("0")
+            outflow_count = int(out[2] or 0) if out else 0
+
+            projected_balance = income - expense + inflow - outflow
+            transfer_count = inflow_count + outflow_count
+            results[account_id] = (projected_balance, tx_count, transfer_count, first_at, last_at)
+
+        return results
 
     async def get_reconciliation_summary(
         self, workspace_id: int, account_id: int

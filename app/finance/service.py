@@ -197,6 +197,34 @@ class AccountService:
             "last_transaction_at": last_at,
         }
 
+    async def get_spending_balances_bulk(
+        self,
+        workspace_id: int,
+        accounts: list,
+    ) -> list[dict]:
+        """Return spending balance data for multiple accounts without per-account DB round-trips."""
+        id_to_account = {a.id: a for a in accounts if a.id is not None}
+        if not id_to_account:
+            return []
+        bulk = await self.account_repository.get_spending_balances_bulk(
+            workspace_id, list(id_to_account.keys())
+        )
+        return [
+            {
+                "account_public_id": a.public_id,
+                "account_name": a.name,
+                "account_type": a.account_type,
+                "currency_code": a.default_currency_code,
+                "spending_balance": bulk[a.id][0],
+                "transaction_count": bulk[a.id][1],
+                "transfer_count": bulk[a.id][2],
+                "first_transaction_at": bulk[a.id][3],
+                "last_transaction_at": bulk[a.id][4],
+            }
+            for a in accounts
+            if a.id is not None and a.id in bulk
+        ]
+
     async def get_reconciliation_summary(
         self,
         workspace_id: int,
