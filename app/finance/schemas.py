@@ -229,3 +229,33 @@ class ReconciliationSummary(BaseModel):
     transfer_count: int
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+# ---------------------------------------------------------------------------
+# Net worth — cross-module balance sheet
+# ---------------------------------------------------------------------------
+
+
+class SpendingAccountBalance(BaseModel):
+    account_public_id: uuid.UUID
+    account_name: str
+    account_type: AccountType
+    currency_code: str
+    balance: Decimal
+    balance_in_reporting_currency: Decimal | None = None
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class NetWorthResponse(BaseModel):
+    reporting_currency: str | None
+    spending_accounts: list[SpendingAccountBalance]
+    spending_total: Decimal | None
+    investing_cash_total: Decimal | None
+    holdings_value: Decimal | None
+    investing_total: Decimal | None
+    total_net_worth: Decimal | None
+    valuation_status: str
+    fx_as_of: datetime | None
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
