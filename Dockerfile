@@ -18,7 +18,7 @@ COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
 
 # Run as non-root user for reduced blast radius
-RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
+RUN useradd -m -u 1001 appuser && mkdir -p /app/imports_temp && chown -R appuser:appuser /app /app/imports_temp
 USER appuser
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
