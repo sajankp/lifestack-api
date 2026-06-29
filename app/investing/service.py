@@ -775,7 +775,10 @@ class PerformanceService:
 
     async def create_snapshot(self, workspace_id: int, snapshot_date: date) -> None:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
-        cash_balances = await self.cash_repo.get_latest_per_account_currency(workspace_id)
+        as_of_datetime = datetime.combine(snapshot_date, datetime.max.time(), UTC)
+        cash_balances = await self.cash_repo.get_latest_per_account_currency(
+            workspace_id, as_of=as_of_datetime
+        )
         holdings_value = Decimal("0")
         total_cost = Decimal("0")
         cash_value = Decimal("0")

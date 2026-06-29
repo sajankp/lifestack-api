@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
 from sqlalchemy import delete, func, select
@@ -128,24 +128,29 @@ class CashBalanceRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_latest_per_account_currency(self, workspace_id: int) -> Sequence[CashBalance]:
+    async def get_latest_per_account_currency(
+        self, workspace_id: int, as_of: datetime | None = None
+    ) -> Sequence[CashBalance]:
         """Return the single latest CashBalance row per (account_id, currency) pair."""
-        subq = (
-            select(
-                CashBalance.id,
-                func
-                .row_number()
-                .over(
-                    partition_by=[CashBalance.account_id, CashBalance.currency],
-                    order_by=[CashBalance.as_of.desc(), CashBalance.created_at.desc()],
-                )
-                .label("rn"),
+        subq_stmt = select(
+            CashBalance.id,
+            func
+            .row_number()
+            .over(
+                partition_by=[CashBalance.account_id, CashBalance.currency],
+                order_by=[CashBalance.as_of.desc(), CashBalance.created_at.desc()],
             )
-            .where(CashBalance.workspace_id == workspace_id)
-            .subquery()
-        )
+            .label("rn"),
+        ).where(CashBalance.workspace_id == workspace_id)
+
+        if as_of is not None:
+            subq_stmt = subq_stmt.where(CashBalance.as_of <= as_of)
+
+        subq = subq_stmt.subquery()
         result = await self.session.execute(
-            select(CashBalance).join(subq, CashBalance.id == subq.c.id).where(subq.c.rn == 1)
+            select(CashBalance)
+            .join(subq, CashBalance.id == subq.c.id)
+            .where(CashBalance.workspace_id == workspace_id, subq.c.rn == 1)
         )
         return result.scalars().all()
 

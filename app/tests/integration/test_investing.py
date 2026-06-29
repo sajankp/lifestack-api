@@ -87,8 +87,12 @@ async def _create_holding_via_order(
     order_res = await client.post("/v1/investing/orders", json=order_payload)
     assert order_res.status_code == 201, order_res.text
     holdings_res = await client.get("/v1/investing/holdings")
-    by_symbol = {h["symbol"]: h for h in holdings_res.json()["items"]}
-    return by_symbol[symbol.upper()]["public_id"]
+    holding = next(
+        h
+        for h in holdings_res.json()["items"]
+        if h["symbol"] == symbol.upper() and h["account_id"] == account_id
+    )
+    return holding["public_id"]
 
 
 @pytest.mark.asyncio
