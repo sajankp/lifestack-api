@@ -204,6 +204,7 @@ class ImportService:
         self.repository = repository
         self.session = session
         self.order_service = order_service
+        self._cash_balance_cache: dict[tuple[int, str], Decimal] = {}
 
     def template_csv(self, module: ImportModule) -> str:
         header = TEMPLATE_HEADERS[module]
@@ -1530,21 +1531,31 @@ class ImportService:
 
                         # Mirror what finance.service.create_transfer does: update
                         # investing cash balance when money flows into an investing account.
+                        # Use an in-memory cache so multiple transfers in the same batch
+                        # accumulate correctly without N+1 DB queries.
                         if (
                             transfer.to_module == TransferModule.investing
                             and self.order_service is not None
                         ):
                             await self.session.flush()  # get transfer.public_id
-                            cash_repo = self.order_service.cash_balance_repository
-                            latest = await cash_repo.get_latest_for_account_currency(
-                                workspace_id, to_account_id, transfer.to_currency_code
+                            cache_key = (to_account_id, transfer.to_currency_code)
+                            if cache_key not in self._cash_balance_cache:
+                                cash_repo = self.order_service.cash_balance_repository
+                                latest = await cash_repo.get_latest_for_account_currency(
+                                    workspace_id, to_account_id, transfer.to_currency_code
+                                )
+                                self._cash_balance_cache[cache_key] = (
+                                    latest.balance if latest is not None else Decimal("0")
+                                )
+                            new_balance = (
+                                self._cash_balance_cache[cache_key] + transfer.net_amount_received
                             )
-                            prev_balance = latest.balance if latest is not None else Decimal("0")
+                            self._cash_balance_cache[cache_key] = new_balance
                             new_cash = InvestingCashBalance(
                                 workspace_id=workspace_id,
                                 user_id=user_id,
                                 account_id=to_account_id,
-                                balance=prev_balance + transfer.net_amount_received,
+                                balance=new_balance,
                                 currency=transfer.to_currency_code,
                                 as_of=transfer.occurred_at,
                                 source_type="imported",
@@ -1854,5 +1865,6 @@ async def run_background_commit(
             await session.commit()
         except Exception:
             # commit_batch already rolled back, saved failed_commit status with error
-            # message, and committed that status update — don't double-rollback here
-            pass
+            # message, and committed that status update — don't double-rollback here,
+            # but re-raise so monitoring tools can log/alert on the failure
+            raise

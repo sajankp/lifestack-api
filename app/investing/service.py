@@ -1046,6 +1046,7 @@ class InstrumentService:
             if instrument_name and instrument.name == instrument.symbol:
                 instrument.name = instrument_name
                 instrument.updated_at = datetime.now(UTC)
+                await self.instrument_repo.save(instrument)
             return instrument
 
         display_name = instrument_name or symbol
@@ -1061,7 +1062,7 @@ class InstrumentService:
 
         company: Company | None = None
         if instrument_type == InstrumentType.stock:
-            company = await self.company_repo.get_by_name(target_workspace_id, symbol)
+            company = await self.company_repo.get_by_name(target_workspace_id, display_name)
             if company is None:
                 company = await self.company_repo.create(
                     Company(workspace_id=target_workspace_id, name=display_name, ticker=symbol)
