@@ -8,25 +8,6 @@ from app.investing.models import InstrumentType, OrderType
 from app.spending.schemas import SourceMetadataResponse
 
 
-class HoldingCreate(BaseModel):
-    symbol: str = Field(..., min_length=1, max_length=20)
-    account_id: uuid.UUID
-    quantity: Decimal = Field(..., gt=0, decimal_places=8)
-    avg_cost: Decimal = Field(..., ge=0, decimal_places=2)
-    currency: str = Field(..., min_length=1, max_length=10)
-    instrument_type: InstrumentType = InstrumentType.stock
-
-    @field_validator("symbol")
-    @classmethod
-    def normalize_symbol(cls, value: str) -> str:
-        return value.strip().upper()
-
-    @field_validator("currency")
-    @classmethod
-    def normalize_currency(cls, value: str) -> str:
-        return value.strip().upper()
-
-
 class HoldingUpdate(BaseModel):
     symbol: str | None = Field(default=None, min_length=1, max_length=20)
     quantity: Decimal | None = Field(default=None, gt=0, decimal_places=8)

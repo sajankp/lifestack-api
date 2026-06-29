@@ -79,19 +79,32 @@ async def test_investing_performance_summary_endpoint(client: AsyncClient):
     assert create_account.status_code in (201, 409)
     account_id = create_account.json()["public_id"]
 
-    hold = await client.post(
-        "/v1/investing/holdings",
+    await client.post(
+        "/v1/investing/cash-balances",
         json={
-            "symbol": "AAPL",
             "account_id": account_id,
-            "quantity": "2.00000000",
-            "avg_cost": "100.00",
+            "balance": "1200.00",
             "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+        cookies=creds["cookies"],
+    )
+    hold = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": account_id,
+            "order_type": "buy",
+            "symbol": "AAPL",
+            "quantity": "2.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": datetime.now(UTC).isoformat(),
         },
         cookies=creds["cookies"],
     )
     assert hold.status_code == 201
-    hid = hold.json()["public_id"]
+    holdings_list = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
+    hid = next(h["public_id"] for h in holdings_list.json()["items"] if h["symbol"] == "AAPL")
 
     price = await client.post(
         "/v1/investing/prices",

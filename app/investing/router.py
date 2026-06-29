@@ -33,7 +33,6 @@ from app.investing.schemas import (
     CashBalanceResponse,
     CashBalanceUpdate,
     ExposureAnalyticsResponse,
-    HoldingCreate,
     HoldingPriceBulkCreate,
     HoldingResponse,
     HoldingUpdate,
@@ -178,43 +177,6 @@ async def list_holdings(
         limit=pagination.limit,
         offset=pagination.offset,
     )
-
-
-@router.post("/holdings", response_model=HoldingResponse, status_code=status.HTTP_201_CREATED)
-async def create_holding(
-    holding_in: HoldingCreate,
-    holding_service: Annotated[HoldingService, Depends(get_investing_holding_service)],
-    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
-    price_repo: Annotated[HoldingPriceRepository, Depends(get_investing_holding_price_repo)],
-    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
-    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    user: Annotated[dict, Depends(get_current_user)],
-    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
-    _role: Annotated[object, Depends(require_min_role("member"))],
-):
-    holding = await holding_service.create_holding(
-        user["id"], workspace_id, holding_in, audit_logger=audit_logger
-    )
-    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
-    account = await account_service.account_repository.get_by_id(workspace_id, holding.account_id)
-    data = holding.model_dump()
-    data["instrument_type"] = holding_in.instrument_type.value
-    data["account_id"] = account.public_id if account else None
-    data["account_name"] = account.name if account else "Unknown"
-    data["source_metadata"] = _source_metadata_response(
-        holding.source_type, holding.source_ref, None
-    )
-
-    today = datetime.now(UTC).date()
-    price_row = (
-        await price_repo.latest_price_on_or_before(workspace_id, holding.id, today)
-        if holding.id is not None
-        else None
-    )
-    unit_price = price_row.unit_price if price_row is not None else None
-    _populate_valuation_fields(data, holding.quantity, holding.avg_cost, unit_price)
-
-    return HoldingResponse.model_validate(data)
 
 
 @router.patch("/holdings/{holding_id}", response_model=HoldingResponse)

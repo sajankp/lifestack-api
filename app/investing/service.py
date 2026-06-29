@@ -43,7 +43,6 @@ from app.investing.schemas import (
     CashBalanceUpdate,
     ExposureAnalyticsResponse,
     ExposureCompanyRow,
-    HoldingCreate,
     HoldingPriceBulkCreate,
     HoldingUpdate,
     InstrumentConstituentResponse,
@@ -265,59 +264,6 @@ class HoldingService:
         holding = await self.repository.get_by_public_id(workspace_id, public_id)
         if not holding:
             raise NotFoundError(detail=f"Holding with id {public_id} not found in this workspace")
-        return holding
-
-    async def create_holding(
-        self,
-        user_id: int,
-        workspace_id: int,
-        holding_in: HoldingCreate,
-        audit_logger: AuditLogger | None = None,
-    ) -> Holding:
-        account = await self._validate_refs(
-            workspace_id, holding_in.account_id, holding_in.currency
-        )
-        existing = await self.repository.get_by_unique_key(
-            workspace_id, holding_in.symbol, account.id
-        )
-        if existing:
-            raise ConflictError(
-                detail=("A holding already exists for this symbol/account in this workspace")
-            )
-
-        holding = Holding(
-            workspace_id=workspace_id,
-            user_id=user_id,
-            symbol=holding_in.symbol,
-            account_id=account.id,
-            quantity=holding_in.quantity,
-            avg_cost=holding_in.avg_cost,
-            currency=holding_in.currency,
-        )
-        instrument = await self._resolve_or_create_instrument(
-            workspace_id, holding_in.symbol, holding_in.instrument_type
-        )
-        if instrument is not None:
-            holding.instrument_id = instrument.id
-        holding = await self.repository.create(holding)
-
-        if audit_logger:
-            after_snap = _snapshot_holding(holding)
-            await audit_logger.log(
-                workspace_id=workspace_id,
-                actor_id=user_id,
-                action="create",
-                module="investing",
-                entity_type="holding",
-                entity_id=holding.id,  # type: ignore[arg-type]
-                details={
-                    "entity_public_id": str(holding.public_id),
-                    "before": None,
-                    "after": after_snap,
-                    "changed_fields": list(after_snap.keys()),
-                },
-            )
-
         return holding
 
     async def update_holding(
@@ -829,7 +775,10 @@ class PerformanceService:
 
     async def create_snapshot(self, workspace_id: int, snapshot_date: date) -> None:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
-        cash_balances, _ = await self.cash_repo.get_all(workspace_id, limit=10000, offset=0)
+        as_of_datetime = datetime.combine(snapshot_date, datetime.max.time(), UTC)
+        cash_balances = await self.cash_repo.get_latest_per_account_currency(
+            workspace_id, as_of=as_of_datetime
+        )
         holdings_value = Decimal("0")
         total_cost = Decimal("0")
         cash_value = Decimal("0")
@@ -1471,7 +1420,7 @@ class InvestingSummaryService:
 
     async def get_summary(self, workspace_id: int) -> InvestingSummaryResponse:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
-        cash_balances, _ = await self.cash_repo.get_all(workspace_id, limit=10000, offset=0)
+        cash_balances = await self.cash_repo.get_latest_per_account_currency(workspace_id)
 
         today = datetime.now(UTC).date()
         latest_prices = {}
