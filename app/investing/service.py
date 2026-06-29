@@ -50,6 +50,7 @@ from app.investing.schemas import (
     InstrumentCreate,
     InstrumentUpdate,
     InvestingOrderCreate,
+    InvestingOrderUpdate,
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
     OverlapRow,
@@ -1980,6 +1981,150 @@ class InvestingOrderService:
                     "changed_fields": [],
                 },
             )
+
+    async def update_order(
+        self,
+        workspace_id: int,
+        user_id: int,
+        order_public_id: uuid.UUID,
+        order_update: InvestingOrderUpdate,
+        audit_logger: AuditLogger | None = None,
+    ) -> InvestingOrder:
+        order = await self.order_repository.get_by_public_id(workspace_id, order_public_id)
+        if not order:
+            raise NotFoundError(
+                detail=f"Order with id {order_public_id} not found in this workspace"
+            )
+
+        # Resolve updated values (None means keep existing)
+        new_order_type = (
+            order_update.order_type.value
+            if order_update.order_type is not None
+            else order.order_type
+        )
+        new_quantity = (
+            order_update.quantity if order_update.quantity is not None else order.quantity
+        )
+        new_price = (
+            order_update.price_per_unit
+            if order_update.price_per_unit is not None
+            else order.price_per_unit
+        )
+        new_brokerage_fee = (
+            order_update.brokerage_fee
+            if order_update.brokerage_fee is not None
+            else order.brokerage_fee
+        )
+        new_tax_amount = (
+            order_update.tax_amount if order_update.tax_amount is not None else order.tax_amount
+        )
+        new_other_fees = (
+            order_update.other_fees if order_update.other_fees is not None else order.other_fees
+        )
+        new_occurred_at = (
+            order_update.occurred_at if order_update.occurred_at is not None else order.occurred_at
+        )
+
+        new_gross = new_quantity * new_price
+        new_total_fees = new_brokerage_fee + new_tax_amount + new_other_fees
+        new_net = (
+            new_gross + new_total_fees if new_order_type == "buy" else new_gross - new_total_fees
+        ).quantize(MONEY_QUANT)
+
+        # Validate replay with the updated order substituted in place before touching DB
+        all_orders = await self.order_repository.list_by_holding(
+            workspace_id, order.symbol, order.account_id
+        )
+        simulated_orders: list[InvestingOrder] = []
+        for o in all_orders:
+            if o.id == order.id:
+                # Replace with in-memory copy reflecting proposed edits
+                sim = InvestingOrder(
+                    **{col: getattr(o, col) for col in o.model_fields},
+                )
+                sim.order_type = new_order_type
+                sim.quantity = new_quantity
+                sim.price_per_unit = new_price
+                sim.occurred_at = new_occurred_at
+                simulated_orders.append(sim)
+            else:
+                simulated_orders.append(o)
+        # Re-sort by occurred_at since the date may have changed
+        simulated_orders.sort(key=lambda o: (o.occurred_at, o.id or 0))
+        self._replay_orders(simulated_orders, record_sells=False)
+
+        # Reverse old cash impact
+        old_cash_reversal = order.net_amount if order.order_type == "buy" else -order.net_amount
+        await self._update_cash_balance(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            account_id=order.account_id,
+            currency=order.currency,
+            delta=old_cash_reversal,
+            trigger_type="order",
+            trigger_ref=order.public_id,
+        )
+
+        # For buy orders validate sufficient cash after reversal
+        if new_order_type == "buy":
+            available_cash = await self._get_cash_balance(
+                workspace_id, order.account_id, order.currency
+            )
+            if available_cash < new_net:
+                raise ValidationError(
+                    detail=(
+                        f"Insufficient cash balance. "
+                        f"Available: {order.currency} {available_cash:.2f}, "
+                        f"Required: {order.currency} {new_net:.2f}"
+                    )
+                )
+
+        # Persist updated order fields
+        order.order_type = new_order_type
+        order.quantity = new_quantity
+        order.price_per_unit = new_price
+        order.brokerage_fee = new_brokerage_fee
+        order.tax_amount = new_tax_amount
+        order.other_fees = new_other_fees
+        order.gross_amount = new_gross.quantize(MONEY_QUANT)
+        order.net_amount = new_net
+        order.occurred_at = new_occurred_at
+        if order_update.exchange_name is not None:
+            order.exchange_name = order_update.exchange_name
+        if "notes" in order_update.model_fields_set:
+            order.notes = order_update.notes
+        order.updated_at = datetime.now(UTC)
+        order = await self.order_repository.save(order)
+
+        # Apply new cash impact
+        new_cash_delta = -new_net if new_order_type == "buy" else new_net
+        await self._update_cash_balance(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            account_id=order.account_id,
+            currency=order.currency,
+            delta=new_cash_delta,
+            trigger_type="order",
+            trigger_ref=order.public_id,
+        )
+
+        # Recompute holding quantity and avg cost from full order history
+        await self._recompute_holding_from_orders(
+            workspace_id, user_id, order.symbol, order.account_id
+        )
+
+        if audit_logger:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action="investing_order_updated",
+                module="investing",
+                entity_type="investing_order",
+                entity_id=order.id or 0,
+                details={"entity_public_id": str(order.public_id)},
+            )
+
+        return order
 
     async def bulk_import_orders(
         self,

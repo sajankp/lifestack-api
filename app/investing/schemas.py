@@ -39,6 +39,7 @@ class HoldingResponse(BaseModel):
     quantity: Decimal
     avg_cost: Decimal
     currency: str
+    source_type: str = "manual"
     source_metadata: SourceMetadataResponse | None = None
     created_at: datetime
     updated_at: datetime
@@ -148,6 +149,18 @@ class InvestingOrderResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class InvestingOrderUpdate(BaseModel):
+    order_type: OrderType | None = None
+    quantity: Decimal | None = Field(default=None, gt=0, decimal_places=8)
+    price_per_unit: Decimal | None = Field(default=None, gt=0, decimal_places=6)
+    brokerage_fee: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    tax_amount: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    other_fees: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    exchange_name: str | None = Field(default=None, max_length=50)
+    occurred_at: datetime | None = None
+    notes: str | None = None
 
 
 class InvestingOrderBulkCreate(BaseModel):
