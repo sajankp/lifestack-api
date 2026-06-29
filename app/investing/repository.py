@@ -113,6 +113,28 @@ class CashBalanceRepository:
         await self.session.delete(cash_balance)
         await self.session.flush()
 
+    async def get_by_trigger_ref(self, workspace_id: int, trigger_ref: UUID) -> CashBalance | None:
+        result = await self.session.execute(
+            select(CashBalance).where(
+                CashBalance.workspace_id == workspace_id,
+                CashBalance.trigger_ref == trigger_ref,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def count_newer_than(
+        self, workspace_id: int, account_id: int, currency: str, created_after: datetime
+    ) -> int:
+        result = await self.session.execute(
+            select(func.count()).where(
+                CashBalance.workspace_id == workspace_id,
+                CashBalance.account_id == account_id,
+                CashBalance.currency == currency,
+                CashBalance.created_at > created_after,
+            )
+        )
+        return result.scalar_one()
+
     async def get_latest_for_account_currency(
         self, workspace_id: int, account_id: int, currency: str
     ) -> CashBalance | None:

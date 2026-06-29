@@ -20,6 +20,7 @@ from app.finance.schemas import (
     AccountCreate,
     AccountUpdate,
     CapitalTransferCreate,
+    CapitalTransferUpdate,
     FxRateUpsert,
     ReconciliationSummary,
 )
@@ -659,5 +660,184 @@ class CapitalTransferService:
                     "changed_fields": list(after_snap.keys()),
                 },
             )
+
+        return self._serialize_transfer(transfer, from_account, to_account)
+
+    async def delete_transfer(self, workspace_id: int, public_id: uuid.UUID) -> None:
+        transfer = await self.transfer_repository.get_by_public_id(workspace_id, public_id)
+        if not transfer:
+            raise NotFoundError(detail=f"Transfer with id {public_id} not found in this workspace")
+
+        if self.cash_balance_repository is not None:
+            linked = await self.cash_balance_repository.get_by_trigger_ref(
+                workspace_id, transfer.public_id
+            )
+            if linked is not None:
+                newer_count = await self.cash_balance_repository.count_newer_than(
+                    workspace_id, linked.account_id, linked.currency, linked.created_at
+                )
+                if newer_count > 0:
+                    to_account = await self.account_repository.get_by_id(
+                        workspace_id, transfer.to_account_id
+                    )
+                    account_name = to_account.name if to_account else str(transfer.to_account_id)
+                    raise ConflictError(
+                        detail=(
+                            f"{account_name} ({transfer.to_currency_code}) has {newer_count} "
+                            f"newer balance snapshot(s) created after this transfer. "
+                            f"Delete those order imports first, then retry."
+                        )
+                    )
+                await self.cash_balance_repository.delete(linked)
+
+        await self.transfer_repository.delete(transfer)
+
+    async def update_transfer(
+        self,
+        workspace_id: int,
+        actor_id: int,
+        public_id: uuid.UUID,
+        transfer_in: CapitalTransferUpdate,
+    ) -> dict[str, Any]:
+        transfer = await self.transfer_repository.get_by_public_id(workspace_id, public_id)
+        if not transfer:
+            raise NotFoundError(detail=f"Transfer with id {public_id} not found in this workspace")
+
+        # Resolve accounts (use provided or fall back to existing)
+        if transfer_in.from_account_id is not None:
+            from_account = await self.account_repository.get_by_public_id(
+                workspace_id, transfer_in.from_account_id
+            )
+            if not from_account:
+                raise ValidationError(detail="from_account_id is invalid for this workspace")
+        else:
+            from_account = await self.account_repository.get_by_id(
+                workspace_id, transfer.from_account_id
+            )
+
+        if transfer_in.to_account_id is not None:
+            to_account = await self.account_repository.get_by_public_id(
+                workspace_id, transfer_in.to_account_id
+            )
+            if not to_account:
+                raise ValidationError(detail="to_account_id is invalid for this workspace")
+        else:
+            to_account = await self.account_repository.get_by_id(
+                workspace_id, transfer.to_account_id
+            )
+
+        new_to_currency = transfer_in.to_currency_code or transfer.to_currency_code
+        new_net = transfer_in.net_amount_received
+        old_net = transfer.net_amount_received
+
+        balance_affecting = (
+            (
+                transfer_in.to_account_id is not None
+                and to_account is not None
+                and to_account.id != transfer.to_account_id
+            )
+            or (
+                transfer_in.to_currency_code is not None
+                and transfer_in.to_currency_code != transfer.to_currency_code
+            )
+            or (new_net is not None and new_net != old_net)
+        )
+
+        # Safety check: block if newer snapshots exist on the existing account/currency
+        linked = None
+        if self.cash_balance_repository is not None and balance_affecting:
+            linked = await self.cash_balance_repository.get_by_trigger_ref(
+                workspace_id, transfer.public_id
+            )
+            if linked is not None:
+                newer_count = await self.cash_balance_repository.count_newer_than(
+                    workspace_id, linked.account_id, linked.currency, linked.created_at
+                )
+                if newer_count > 0:
+                    old_to_account = await self.account_repository.get_by_id(
+                        workspace_id, transfer.to_account_id
+                    )
+                    account_name = (
+                        old_to_account.name if old_to_account else str(transfer.to_account_id)
+                    )
+                    raise ConflictError(
+                        detail=(
+                            f"{account_name} ({transfer.to_currency_code}) has {newer_count} "
+                            f"newer balance snapshot(s) created after this transfer. "
+                            f"Delete those order imports first, then retry."
+                        )
+                    )
+
+        # Apply field updates to transfer record
+        if from_account:
+            transfer.from_account_id = from_account.id  # type: ignore[assignment]
+        if to_account:
+            transfer.to_account_id = to_account.id  # type: ignore[assignment]
+        if transfer_in.from_currency_code is not None:
+            transfer.from_currency_code = transfer_in.from_currency_code
+        if transfer_in.to_currency_code is not None:
+            transfer.to_currency_code = transfer_in.to_currency_code
+        if transfer_in.gross_amount is not None:
+            transfer.gross_amount = transfer_in.gross_amount
+        if transfer_in.fx_rate_used is not None:
+            transfer.fx_rate_used = transfer_in.fx_rate_used
+        if transfer_in.fx_fee_amount is not None:
+            transfer.fx_fee_amount = transfer_in.fx_fee_amount
+        if transfer_in.platform_fee_amount is not None:
+            transfer.platform_fee_amount = transfer_in.platform_fee_amount
+        if transfer_in.tax_amount is not None:
+            transfer.tax_amount = transfer_in.tax_amount
+        if transfer_in.net_amount_received is not None:
+            transfer.net_amount_received = transfer_in.net_amount_received
+        if transfer_in.occurred_at is not None:
+            transfer.occurred_at = transfer_in.occurred_at
+        if transfer_in.notes is not None:
+            transfer.notes = transfer_in.notes
+
+        transfer = await self.transfer_repository.save(transfer)
+
+        # Rebuild cash balance snapshot if balance-affecting fields changed
+        if self.cash_balance_repository is not None and balance_affecting:
+            if linked is None:
+                linked = await self.cash_balance_repository.get_by_trigger_ref(
+                    workspace_id, transfer.public_id
+                )
+
+            account_changed = (
+                transfer_in.to_account_id is not None
+                and to_account is not None
+                and linked is not None
+                and to_account.id != linked.account_id
+            )
+            currency_changed = (
+                transfer_in.to_currency_code is not None
+                and linked is not None
+                and transfer_in.to_currency_code != linked.currency
+            )
+
+            if linked is not None and (account_changed or currency_changed):
+                # Delete old snapshot; create fresh one on the new account/currency
+                await self.cash_balance_repository.delete(linked)
+                prev = await self.cash_balance_repository.get_latest_for_account_currency(
+                    workspace_id,
+                    to_account.id,
+                    new_to_currency,  # type: ignore[union-attr]
+                )
+                prev_balance = prev.balance if prev is not None else Decimal("0")
+                new_cash = InvestingCashBalance(
+                    workspace_id=workspace_id,
+                    user_id=actor_id,
+                    account_id=to_account.id,  # type: ignore[union-attr]
+                    balance=prev_balance + transfer.net_amount_received,
+                    currency=new_to_currency,
+                    as_of=transfer.occurred_at,
+                    trigger_type="transfer",
+                    trigger_ref=transfer.public_id,
+                )
+                await self.cash_balance_repository.create(new_cash)
+            elif linked is not None and new_net is not None:
+                # In-place update: adjust by the delta
+                linked.balance = linked.balance - old_net + new_net
+                await self.cash_balance_repository.save(linked)
 
         return self._serialize_transfer(transfer, from_account, to_account)

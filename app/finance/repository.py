@@ -565,3 +565,13 @@ class CapitalTransferRepository:
         await self.session.flush()
         await self.session.refresh(transfer)
         return transfer
+
+    async def save(self, transfer: CapitalTransfer) -> CapitalTransfer:
+        self.session.add(transfer)
+        await self.session.flush()
+        await self.session.refresh(transfer)
+        return transfer
+
+    async def delete(self, transfer: CapitalTransfer) -> None:
+        await self.session.delete(transfer)
+        await self.session.flush()
