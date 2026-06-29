@@ -32,6 +32,7 @@ from app.finance.schemas import (
     AccountUpdate,
     CapitalTransferCreate,
     CapitalTransferResponse,
+    CapitalTransferUpdate,
     CurrencyResponse,
     FxRateResponse,
     NetWorthResponse,
@@ -287,6 +288,35 @@ async def create_transfer(
         audit_logger=audit_logger,
     )
     return CapitalTransferResponse.model_validate(transfer)
+
+
+@router.patch("/transfers/{transfer_id}", response_model=CapitalTransferResponse)
+async def update_transfer(
+    transfer_id: uuid.UUID,
+    transfer_in: CapitalTransferUpdate,
+    transfer_service: Annotated[CapitalTransferService, Depends(get_finance_transfer_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    transfer = await transfer_service.update_transfer(
+        workspace_id=workspace_id,
+        actor_id=user["id"],
+        public_id=transfer_id,
+        transfer_in=transfer_in,
+    )
+    return CapitalTransferResponse.model_validate(transfer)
+
+
+@router.delete("/transfers/{transfer_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_transfer(
+    transfer_id: uuid.UUID,
+    transfer_service: Annotated[CapitalTransferService, Depends(get_finance_transfer_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    await transfer_service.delete_transfer(workspace_id, transfer_id)
 
 
 def _convert_to_reporting(

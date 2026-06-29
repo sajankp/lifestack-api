@@ -693,3 +693,238 @@ async def test_finance_account_delete_rejected_when_in_use_by_investing_cash(cli
     delete_res = await client.delete(f"/v1/finance/accounts/{account_id}")
     assert delete_res.status_code == 409
     assert "cannot be deleted" in delete_res.json()["detail"]
+
+
+async def _create_bank_and_brokerage(client: AsyncClient, *, suffix: str = "") -> tuple[str, str]:
+    bank = await client.post(
+        "/v1/finance/accounts",
+        json={"name": f"Bank{suffix}", "account_type": "bank", "default_currency_code": "USD"},
+    )
+    assert bank.status_code == 201
+    broker = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": f"Broker{suffix}",
+            "account_type": "brokerage",
+            "default_currency_code": "USD",
+        },
+    )
+    assert broker.status_code == 201
+    return bank.json()["public_id"], broker.json()["public_id"]
+
+
+async def _create_investing_transfer(
+    client: AsyncClient, *, from_id: str, to_id: str, amount: str = "1000.00"
+) -> dict:
+    res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "investing",
+            "from_account_id": from_id,
+            "to_account_id": to_id,
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
+            "gross_amount": amount,
+            "net_amount_received": amount,
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "notes": "seed",
+        },
+    )
+    assert res.status_code == 201
+    return res.json()
+
+
+@pytest.mark.asyncio
+async def test_delete_transfer_removes_transfer_and_cash_balance(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="delete-transfer@example.com",
+        username="delete-transfer",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-del")
+    transfer = await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id)
+    transfer_id = transfer["public_id"]
+
+    # Verify cash balance was created
+    cb_res = await client.get("/v1/investing/cash-balances")
+    assert cb_res.status_code == 200
+    assert cb_res.json()["total"] == 1
+    assert cb_res.json()["items"][0]["balance"] == "1000.00"
+
+    delete_res = await client.delete(f"/v1/finance/transfers/{transfer_id}")
+    assert delete_res.status_code == 204
+
+    # Transfer should be gone
+    get_res = await client.get(f"/v1/finance/transfers/{transfer_id}")
+    assert get_res.status_code == 404
+
+    # Cash balance snapshot should also be gone
+    cb_after = await client.get("/v1/investing/cash-balances")
+    assert cb_after.status_code == 200
+    assert cb_after.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_transfer_blocked_by_newer_cash_balance(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="delete-transfer-blocked@example.com",
+        username="delete-transfer-blocked",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-blk")
+    transfer = await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id)
+    transfer_id = transfer["public_id"]
+
+    # Manually add another cash balance for the same account/currency (simulates order snapshot)
+    extra_cb = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": broker_id,
+            "balance": "900.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert extra_cb.status_code == 201
+
+    delete_res = await client.delete(f"/v1/finance/transfers/{transfer_id}")
+    assert delete_res.status_code == 409
+    detail = delete_res.json()["detail"]
+    assert "newer balance snapshot" in detail
+    assert "Delete those order imports first" in detail
+
+
+@pytest.mark.asyncio
+async def test_delete_transfer_not_found(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="delete-transfer-404@example.com",
+        username="delete-transfer-404",
+        password="TestPass123!",
+    )
+    res = await client.delete(f"/v1/finance/transfers/{uuid.uuid4()}")
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_patch_transfer_notes_only_no_balance_change(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="patch-transfer-notes@example.com",
+        username="patch-transfer-notes",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-notes")
+    transfer = await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id)
+    transfer_id = transfer["public_id"]
+
+    patch_res = await client.patch(
+        f"/v1/finance/transfers/{transfer_id}",
+        json={"notes": "corrected note"},
+    )
+    assert patch_res.status_code == 200
+    assert patch_res.json()["notes"] == "corrected note"
+    assert patch_res.json()["net_amount_received"] == "1000.00"
+
+    # Cash balance should be unchanged
+    cb_res = await client.get("/v1/investing/cash-balances")
+    assert cb_res.json()["items"][0]["balance"] == "1000.00"
+
+
+@pytest.mark.asyncio
+async def test_patch_transfer_amount_updates_cash_balance(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="patch-transfer-amount@example.com",
+        username="patch-transfer-amount",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-amt")
+    transfer = await _create_investing_transfer(
+        client, from_id=bank_id, to_id=broker_id, amount="500.00"
+    )
+    transfer_id = transfer["public_id"]
+
+    patch_res = await client.patch(
+        f"/v1/finance/transfers/{transfer_id}",
+        json={"gross_amount": "800.00", "net_amount_received": "800.00"},
+    )
+    assert patch_res.status_code == 200
+    assert patch_res.json()["net_amount_received"] == "800.00"
+
+    cb_res = await client.get("/v1/investing/cash-balances")
+    balances = cb_res.json()["items"]
+    assert any(b["balance"] == "800.00" for b in balances)
+
+
+@pytest.mark.asyncio
+async def test_patch_transfer_to_account_moves_cash_balance(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="patch-transfer-acct@example.com",
+        username="patch-transfer-acct",
+        password="TestPass123!",
+    )
+    bank_id, broker1_id = await _create_bank_and_brokerage(client, suffix="-acct1")
+    broker2 = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Broker2-acct",
+            "account_type": "brokerage",
+            "default_currency_code": "USD",
+        },
+    )
+    assert broker2.status_code == 201
+    broker2_id = broker2.json()["public_id"]
+
+    transfer = await _create_investing_transfer(client, from_id=bank_id, to_id=broker1_id)
+    transfer_id = transfer["public_id"]
+
+    patch_res = await client.patch(
+        f"/v1/finance/transfers/{transfer_id}",
+        json={"to_account_id": broker2_id},
+    )
+    assert patch_res.status_code == 200
+    assert patch_res.json()["to_account_public_id"] == broker2_id
+
+    # Cash balance should now be on broker2, not broker1
+    cb_res = await client.get("/v1/investing/cash-balances")
+    balances = {b["account_name"]: b["balance"] for b in cb_res.json()["items"]}
+    assert balances.get("Broker2-acct") == "1000.00"
+    assert "Broker1-acct1" not in balances
+
+
+@pytest.mark.asyncio
+async def test_patch_transfer_blocked_by_newer_cash_balance(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="patch-transfer-blk@example.com",
+        username="patch-transfer-blk",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-pblk")
+    transfer = await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id)
+    transfer_id = transfer["public_id"]
+
+    # Add a newer snapshot on the same account to simulate a committed order
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": broker_id,
+            "balance": "900.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    patch_res = await client.patch(
+        f"/v1/finance/transfers/{transfer_id}",
+        json={"net_amount_received": "1200.00", "gross_amount": "1200.00"},
+    )
+    assert patch_res.status_code == 409
+    detail = patch_res.json()["detail"]
+    assert "newer balance snapshot" in detail
+    assert "Delete those order imports first" in detail
