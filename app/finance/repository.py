@@ -263,7 +263,12 @@ class AccountRepository:
 
         inflow_sub = (
             select(
-                func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0")).label("inflow"),
+                # net_amount_received: what the destination account actually received.
+                # For cross-currency transfers this is in to_currency (correct for the
+                # receiving account), whereas gross_amount is in from_currency (wrong).
+                func.coalesce(func.sum(CapitalTransfer.net_amount_received), Decimal("0")).label(
+                    "inflow"
+                ),
                 func.count(CapitalTransfer.id).label("inflow_count"),
             )
             .where(

@@ -23,7 +23,7 @@ from app.core.dependencies import (
 )
 from app.core.exceptions import NotFoundError
 from app.core.pagination import PaginatedResponse, PaginationParams
-from app.finance.models import CurrencyDisplayPreference
+from app.finance.models import AccountType, CurrencyDisplayPreference
 from app.finance.repository import FinanceSettingRepository, FxRateRepository
 from app.finance.schemas import (
     AccountBalanceResponse,
@@ -353,9 +353,13 @@ async def get_net_worth(
     if ws_settings and ws_settings.reporting_currency_code:
         reporting_currency = ws_settings.reporting_currency_code.upper()
 
-    # Resolve per-account spending balances
+    # Resolve per-account spending balances — brokerage accounts are excluded because
+    # their cash is already captured in investing_cash_total; including them here
+    # would double-count and also mis-display cross-currency inflows (gross vs net issue).
     raw_balances: list[dict] = []
     for account in accounts:
+        if account.account_type == AccountType.brokerage:
+            continue
         data = await account_service.get_spending_balance(workspace_id, account.public_id)
         raw_balances.append(data)
 
