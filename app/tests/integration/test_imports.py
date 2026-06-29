@@ -864,3 +864,102 @@ async def test_import_capital_transfers_validates_and_commits(client: AsyncClien
     transfers_resp2 = await client.get("/v1/finance/transfers", cookies=creds["cookies"])
     assert transfers_resp2.status_code == 200
     assert len(transfers_resp2.json()["items"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_historical_transfer_import_after_orders_updates_cash_balance(
+    client: AsyncClient,
+):
+    """
+    Regression test: a historical transfer (occurred_at in the past) committed
+    AFTER investing orders must still be visible as the latest cash balance.
+
+    The bug: get_latest_for_account_currency ordered by as_of DESC.  Orders always
+    write balances with as_of=now(), so a historical transfer's balance record
+    (as_of=past) was permanently shadowed — the next order saw the stale balance.
+    Fix: order by created_at DESC so the most recently written record wins.
+    """
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    # Create accounts
+    bank = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "BANK", "account_type": "bank", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert bank.status_code == 201
+
+    broker = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "BROKER", "account_type": "brokerage", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert broker.status_code == 201
+
+    async def _commit_import(csv: str, module: str) -> str:
+        files = {"file": ("data.csv", io.BytesIO(csv.encode()), "text/csv")}
+        r = await client.post(
+            "/v1/imports", data={"module": module}, files=files, cookies=creds["cookies"]
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["import_batch"]["status"] == "validated"
+        batch_id = r.json()["import_batch"]["public_id"]
+        commit = await client.post(f"/v1/imports/{batch_id}/commit", cookies=creds["cookies"])
+        assert commit.status_code in (200, 202), commit.text
+        return batch_id
+
+    # Step 1: seed transfer at a historical date — credits 10000 INR to BROKER
+    await _commit_import(
+        "occurred_at,from_account,to_account,from_currency,to_currency,"
+        "gross_amount,net_amount_received,notes,from_module,to_module\n"
+        "2023-01-01T00:00:00+00:00,BANK,BROKER,INR,INR,10000,10000,,spending,investing\n",
+        "finance-transfers",
+    )
+
+    # Step 2: place an order that consumes 9000 INR — balance should become 1000
+    # (balance record as_of=now() overwrites the transfer's as_of=2023-01-01 in the old bug)
+    await _commit_import(
+        "order_type,symbol,instrument_type,instrument_name,account_name,"
+        "quantity,price_per_unit,currency,brokerage_fee,tax_amount,other_fees,"
+        "occurred_at,exchange_name,notes\n"
+        "buy,TESTFUND,mutual_fund,Test Fund,BROKER,900,10,INR,0,0,0,"
+        "2023-02-01T00:00:00+00:00,,\n",
+        "investing-orders",
+    )
+
+    # Step 3: import ANOTHER historical transfer (occurred_at older than the order's as_of)
+    # This is the scenario that was broken: the new balance must be 1000 + 5000 = 6000
+    await _commit_import(
+        "occurred_at,from_account,to_account,from_currency,to_currency,"
+        "gross_amount,net_amount_received,notes,from_module,to_module\n"
+        "2022-06-01T00:00:00+00:00,BANK,BROKER,INR,INR,5000,5000,,spending,investing\n",
+        "finance-transfers",
+    )
+
+    # Step 4: place a 5500 INR order — must succeed (6000 available, NOT the stale 1000)
+    files = {
+        "file": (
+            "data.csv",
+            io.BytesIO(
+                b"order_type,symbol,instrument_type,instrument_name,account_name,"
+                b"quantity,price_per_unit,currency,brokerage_fee,tax_amount,other_fees,"
+                b"occurred_at,exchange_name,notes\n"
+                b"buy,TESTFUND2,mutual_fund,Test Fund 2,BROKER,550,10,INR,0,0,0,"
+                b"2023-03-01T00:00:00+00:00,,\n"
+            ),
+            "text/csv",
+        )
+    }
+    r = await client.post(
+        "/v1/imports", data={"module": "investing-orders"}, files=files, cookies=creds["cookies"]
+    )
+    assert r.status_code == 200, r.text
+    batch_id = r.json()["import_batch"]["public_id"]
+    commit = await client.post(f"/v1/imports/{batch_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code in (200, 202), commit.text
+    result = commit.json()
+    # Must not fail with insufficient balance
+    assert result["import_batch"]["status"] in ("completed", "committing"), (
+        f"Expected completed/committing, got: {result['import_batch']['status']} — "
+        f"error: {result['import_batch'].get('commit_error')}"
+    )

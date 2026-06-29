@@ -123,7 +123,7 @@ class CashBalanceRepository:
                 CashBalance.account_id == account_id,
                 CashBalance.currency == currency,
             )
-            .order_by(CashBalance.as_of.desc(), CashBalance.created_at.desc())
+            .order_by(CashBalance.created_at.desc())
             .limit(1)
         )
         return result.scalar_one_or_none()
