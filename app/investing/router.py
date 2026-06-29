@@ -44,6 +44,7 @@ from app.investing.schemas import (
     InvestingOrderBulkCreate,
     InvestingOrderCreate,
     InvestingOrderResponse,
+    InvestingOrderUpdate,
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
     PerformanceSummaryResponse,
@@ -641,6 +642,30 @@ async def delete_order(
         audit_logger=audit_logger,
     )
     await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
+
+
+@router.patch("/orders/{order_id}", response_model=InvestingOrderResponse)
+async def update_order(
+    order_id: uuid.UUID,
+    order_in: InvestingOrderUpdate,
+    order_service: Annotated[InvestingOrderService, Depends(get_investing_order_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    order = await order_service.update_order(
+        workspace_id=workspace_id,
+        user_id=user["id"],
+        order_public_id=order_id,
+        order_update=order_in,
+        audit_logger=audit_logger,
+    )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    return _order_response(order, account_cache)
 
 
 @router.post(
