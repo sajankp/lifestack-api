@@ -154,7 +154,7 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     assert summary["holdings_count"] == 1
     assert summary["portfolio_value"] == "1577.62500000000000"
     assert summary["cash_total"] == "1000.00"
-    assert summary["currency_breakdown"]["USD"] == "2577.6250000000"
+    assert summary["currency_breakdown"]["USD"] == "2577.62500000000000"
     assert summary["daily_change"] is None
     assert summary["reporting_currency"] == "USD"
     assert summary["valuation_status"] == "cost_basis_fallback"
