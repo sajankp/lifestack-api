@@ -173,13 +173,17 @@ def _snapshot_order(order: InvestingOrder) -> dict:
     return {
         "order_type": order.order_type,
         "symbol": order.symbol,
+        "currency": order.currency,
         "quantity": str(order.quantity),
         "price_per_unit": str(order.price_per_unit),
+        "gross_amount": str(order.gross_amount),
         "brokerage_fee": str(order.brokerage_fee),
         "tax_amount": str(order.tax_amount),
         "other_fees": str(order.other_fees),
         "net_amount": str(order.net_amount),
-        "occurred_at": order.occurred_at.isoformat(),
+        "occurred_at": order.occurred_at.isoformat()
+        if hasattr(order.occurred_at, "isoformat")
+        else str(order.occurred_at),
         "exchange_name": order.exchange_name,
         "notes": order.notes,
     }
