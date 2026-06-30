@@ -1672,8 +1672,16 @@ AVG_COST_PRECISION = Decimal("0.000001")
 
 
 def _order_total_fees(order: InvestingOrder) -> Decimal:
-    """Sum of all transaction costs recorded on an order."""
-    return order.brokerage_fee + order.tax_amount + order.other_fees
+    """Sum of all transaction costs recorded on an order.
+
+    The fee columns are non-nullable with a 0 default, but guard against
+    ``None`` defensively so a malformed/legacy row can't raise here.
+    """
+    return (
+        (order.brokerage_fee or Decimal("0"))
+        + (order.tax_amount or Decimal("0"))
+        + (order.other_fees or Decimal("0"))
+    )
 
 
 def _effective_buy_cost_per_unit(order: InvestingOrder) -> Decimal:

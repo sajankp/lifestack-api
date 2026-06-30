@@ -16,7 +16,7 @@ low-NAV holdings will have these figures rewritten by design. This is a
 standalone re-implementation of ``InvestingOrderService._replay_orders`` —
 migrations must not import application code.
 
-Revision ID: 0036_cost_basis_fees_and_precision
+Revision ID: 0036_cost_basis_fees_precision
 Revises: 0035_add_investing_order_lots
 Create Date: 2026-06-30 00:00:00.000000
 """
@@ -30,7 +30,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "0036_cost_basis_fees_and_precision"
+revision = "0036_cost_basis_fees_precision"
 down_revision = "0035_add_investing_order_lots"
 branch_labels = None
 depends_on = None
@@ -142,11 +142,15 @@ def _rederive_cost_basis_with_fees() -> None:
                     if lot["remaining"] == 0:
                         queue.popleft()
                 if cost_consumed > 0 or quantity > 0:
-                    # Sell-side fees reduce realized proceeds.
+                    # Sell-side fees reduce realized proceeds. Divide by the
+                    # quantity actually consumed (not the order quantity) so a
+                    # short-fill from inconsistent historical data still yields
+                    # a correct per-unit cost.
+                    consumed_qty = quantity - to_consume
                     realized_q = (realized - fees).quantize(MONEY_QUANT)
                     avg_cost_at_sale_q = (
-                        (cost_consumed / quantity).quantize(AVG_COST_PRECISION)
-                        if quantity > 0
+                        (cost_consumed / consumed_qty).quantize(AVG_COST_PRECISION)
+                        if consumed_qty > 0
                         else Decimal("0")
                     )
                     connection.execute(
