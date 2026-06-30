@@ -120,15 +120,18 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     # doesn't have to re-derive it with float arithmetic.
     assert Decimal(holding["book_value"]) == Decimal("10.50000000") * Decimal("150.25")
 
-    # Update holding
+    # Update holding — this holding is order-derived, so quantity/avg_cost are
+    # computed from orders and not directly editable (see spec-045); symbol and
+    # instrument_type remain editable.
     update_res = await client.patch(
         f"/v1/investing/holdings/{holding_id}",
-        json={"quantity": "12.00000000", "avg_cost": "140.00"},
+        json={"symbol": "AAPL2", "instrument_type": "stock"},
     )
     assert update_res.status_code == 200
     updated = update_res.json()
-    assert updated["quantity"] == "12.00000000"
-    assert updated["avg_cost"] == "140.00"
+    assert updated["symbol"] == "AAPL2"
+    assert updated["quantity"] == "10.50000000"
+    assert updated["avg_cost"] == "150.25"
 
     # Create cash balance
     create_cash = {
@@ -149,9 +152,9 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     assert summary_res.status_code == 200
     summary = summary_res.json()
     assert summary["holdings_count"] == 1
-    assert summary["portfolio_value"] == "1680.0000000000"
+    assert summary["portfolio_value"] == "1577.6250000000"
     assert summary["cash_total"] == "1000.00"
-    assert summary["currency_breakdown"]["USD"] == "2680.0000000000"
+    assert summary["currency_breakdown"]["USD"] == "2577.6250000000"
     assert summary["daily_change"] is None
     assert summary["reporting_currency"] == "USD"
     assert summary["valuation_status"] == "cost_basis_fallback"
@@ -175,7 +178,8 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
             .scalars()
             .one()
         )
-        assert db_holding.quantity == Decimal("12.00000000")
+        assert db_holding.quantity == Decimal("10.50000000")
+        assert db_holding.symbol == "AAPL2"
         assert db_cash.balance == Decimal("1000.00")
 
         # Verify account matches by DB ID
@@ -1374,6 +1378,34 @@ async def test_update_order_holding_rejects_quantity_and_avg_cost_edit(client: A
     holding_res = await client.get("/v1/investing/holdings")
     holding = next(h for h in holding_res.json()["items"] if h["public_id"] == created_id)
     assert holding["symbol"] == "REJECTQTY"
+    assert Decimal(holding["quantity"]) == Decimal("5.00000000")
+
+
+@pytest.mark.asyncio
+async def test_update_order_holding_rejects_quantity_edit_without_symbol_change(
+    client: AsyncClient,
+):
+    """Regression test: the quantity/avg_cost guard must not be bypassable by leaving
+    the symbol unchanged (only the instrument_type or no other field changing)."""
+    account_map = await _register_and_login(
+        client,
+        email="symbol-rename-reject-qty-only@example.com",
+        username="symbol-rename-reject-qty-only",
+        password="TestPass123!",
+    )
+    account_id = account_map["brokerage"]
+    created_id = await _create_holding_via_order(
+        client, account_id, "REJECTQTYONLY", "5.00000000", "10.00", "USD", "stock"
+    )
+
+    response = await client.patch(
+        f"/v1/investing/holdings/{created_id}",
+        json={"quantity": "99.00000000"},
+    )
+    assert response.status_code == 422
+
+    holding_res = await client.get("/v1/investing/holdings")
+    holding = next(h for h in holding_res.json()["items"] if h["public_id"] == created_id)
     assert Decimal(holding["quantity"]) == Decimal("5.00000000")
 
 

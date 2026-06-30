@@ -313,10 +313,8 @@ class HoldingService:
         symbol_changed = "symbol" in update_data and update_data["symbol"] != holding.symbol
         type_changed = requested_type is not None
 
-        if (
-            holding.source_type == "order"
-            and symbol_changed
-            and ("quantity" in update_data or "avg_cost" in update_data)
+        if holding.source_type == "order" and (
+            "quantity" in update_data or "avg_cost" in update_data
         ):
             raise ValidationError(
                 detail=(
@@ -336,7 +334,14 @@ class HoldingService:
                         detail="A holding already exists for this symbol/account in this workspace"
                     )
 
-                if holding.source_type == "order" and self.order_repo is not None:
+                if holding.source_type == "order":
+                    if self.order_repo is None:
+                        raise ValidationError(
+                            detail=(
+                                "Order repository is not configured; cannot rename "
+                                "order-derived holding."
+                            )
+                        )
                     await self.order_repo.rename_symbol(
                         workspace_id, holding.account_id, holding.symbol, next_symbol
                     )

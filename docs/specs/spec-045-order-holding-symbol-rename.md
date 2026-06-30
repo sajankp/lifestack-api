@@ -45,25 +45,26 @@ No schema change to `HoldingUpdate` — `symbol`, `currency`, `instrument_type` 
 
 **New behavior in `InvestingHoldingService.update_holding`** (`app/investing/service.py:295`):
 
-After the existing duplicate-check / instrument-resolution block (lines 311-339), when
-`symbol_changed` is true:
-
-1. If `holding.source_type == "order"`:
-   - Reject `quantity`/`avg_cost` in the request — return `422` with a message pointing the user
-     to edit the underlying orders instead (mirrors the existing pattern of rejecting invalid
-     input early, see `HoldingUpdate` validators).
-   - Call a new repository method `order_repository.rename_symbol(workspace_id, account_id,
-     old_symbol, new_symbol)` that bulk-updates `InvestingOrder.symbol` (and clears
-     `instrument_id` so it's re-resolved lazily, matching existing order-creation behavior) for
-     every order matching `(workspace_id, account_id, symbol=old_symbol)`, in the same DB
-     transaction as the holding save.
-   - This must run *before* the duplicate-key check against `Holding` so a 409 on the holding
-     check still leaves orders untouched (i.e., validate before mutating).
-2. If `holding.source_type != "order"` (manual holding): behavior unchanged, no order rows to
+1. If `holding.source_type == "order"` and the request includes `quantity` or `avg_cost`
+   (regardless of whether `symbol` is also being changed): reject with `422`, pointing the user
+   to edit the underlying orders instead. This check runs unconditionally, before the
+   `symbol_changed`/`type_changed` block — it must not be skippable by leaving the symbol
+   unchanged.
+2. When `symbol_changed` is true and `holding.source_type == "order"`:
+   - After the existing duplicate-key check against `Holding` passes (so a `409` leaves orders
+     untouched — validate before mutating), call a new repository method
+     `order_repository.rename_symbol(workspace_id, account_id, old_symbol, new_symbol)` that
+     bulk-updates `InvestingOrder.symbol` (and clears `instrument_id` so it's re-resolved lazily,
+     matching existing order-creation behavior) for every order matching `(workspace_id,
+     account_id, symbol=old_symbol)`, in the same DB transaction as the holding save.
+   - If `self.order_repo` is not configured (`None`), raise `422` rather than silently skipping
+     the cascade — proceeding would rename the holding while leaving its orders pointing at the
+     old symbol, recreating the exact orphan/duplicate-holding bug this spec fixes.
+3. If `holding.source_type != "order"` (manual holding): behavior unchanged, no order rows to
    touch.
 
-Existing cached-price invalidation (`holding_price_repo.delete_for_holding`, line 342) is
-unchanged — a renamed symbol means yesterday's cached price is for the wrong instrument.
+Existing cached-price invalidation (`holding_price_repo.delete_for_holding`) is unchanged — a
+renamed symbol means yesterday's cached price is for the wrong instrument.
 
 **Error cases (new):**
 - `422` — `quantity` or `avg_cost` present in the request body for a `source_type == "order"`
@@ -107,9 +108,11 @@ unchanged — a renamed symbol means yesterday's cached price is for the wrong i
    untouched.
 3. Attempt to also patch `quantity`/`avg_cost` on an order-derived holding rename → `422`, nothing
    persisted.
-4. Rename on a manual (`source_type == "manual"`) holding → unchanged existing behavior, no order
+4. Patch only `quantity` on an order-derived holding with no symbol change → `422`, nothing
+   persisted (the guard must not be bypassable by leaving the symbol unchanged).
+5. Rename on a manual (`source_type == "manual"`) holding → unchanged existing behavior, no order
    rows touched, `quantity`/`avg_cost` still editable.
-5. After rename, create a new order for the holding (using the new symbol) → recompute finds the
+6. After rename, create a new order for the holding (using the new symbol) → recompute finds the
    renamed holding (no orphan/duplicate holding created).
 
 **Frontend (Playwright / mock):**
