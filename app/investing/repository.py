@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -206,10 +206,18 @@ class InvestingOrderRepository:
         symbol: str | None = None,
         account_id: int | None = None,
         order_type: str | None = None,
+        search: str | None = None,
     ) -> tuple[Sequence[InvestingOrder], int]:
         base = select(InvestingOrder).where(InvestingOrder.workspace_id == workspace_id)
         if symbol is not None:
             base = base.where(InvestingOrder.symbol == symbol.upper())
+        if search:
+            like = f"%{search.strip()}%"
+            # Match the order's own symbol or the joined instrument's name so a
+            # mutual fund with a numeric folio symbol is searchable by name.
+            base = base.outerjoin(Instrument, InvestingOrder.instrument_id == Instrument.id).where(
+                or_(InvestingOrder.symbol.ilike(like), Instrument.name.ilike(like))
+            )
         if account_id is not None:
             base = base.where(InvestingOrder.account_id == account_id)
         if order_type is not None:
