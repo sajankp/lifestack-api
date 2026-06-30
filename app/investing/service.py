@@ -1840,10 +1840,11 @@ class InvestingOrderService:
 
         result = self._replay_orders(orders, record_sells=True)
 
-        # Persist recomputed realized gain/loss on the (mutated) sell orders
-        for order in orders:
-            if order.order_type == "sell":
-                await self.order_repository.save(order)
+        # `orders` were loaded via this same session (list_by_holding), so the
+        # in-place realized_gain_loss/avg_cost_at_sale mutations above are
+        # already tracked as dirty and will be persisted on the next flush
+        # (triggered below by the holding/lot repository calls) — no explicit
+        # per-order save() needed.
 
         if holding is None:
             instrument_id = next((o.instrument_id for o in orders if o.instrument_id), None)
@@ -1972,14 +1973,11 @@ class InvestingOrderService:
         # Recompute holding quantity, FIFO avg_cost, and (for a sell) this
         # order's own realized_gain_loss/avg_cost_at_sale from the full order
         # history — the single replay path shared with update_order/delete_order.
+        # `order` is the same session-tracked instance _recompute_holding_from_orders
+        # will load and mutate via the identity map, so no re-fetch is needed.
         await self._recompute_holding_from_orders(
             workspace_id, user_id, order_in.symbol, account.id
         )
-        refreshed_order = await self.order_repository.get_by_public_id(
-            workspace_id, order.public_id
-        )
-        assert refreshed_order is not None
-        order = refreshed_order
 
         # Update cash balance
         cash_delta = -net_amount if order_in.order_type == OrderType.buy else net_amount
