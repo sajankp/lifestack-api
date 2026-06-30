@@ -1,6 +1,8 @@
 import asyncio
 import uuid
+from collections import deque
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -25,6 +27,8 @@ from app.investing.models import (
     InstrumentConstituent,
     InstrumentType,
     InvestingOrder,
+    LotConsumption,
+    OrderLot,
     OrderType,
     PortfolioSnapshot,
 )
@@ -36,6 +40,7 @@ from app.investing.repository import (
     InstrumentConstituentRepository,
     InstrumentRepository,
     InvestingOrderRepository,
+    LotRepository,
     PortfolioSnapshotRepository,
 )
 from app.investing.schemas import (
@@ -1642,6 +1647,33 @@ class InvestingSummaryService:
 AVG_COST_PRECISION = Decimal("0.000001")
 
 
+@dataclass
+class _OpenLot:
+    """In-memory FIFO lot state during a ``_replay_orders`` pass."""
+
+    buy_order_id: int
+    original_quantity: Decimal
+    remaining: Decimal
+    cost_per_unit: Decimal
+    acquired_at: datetime
+
+
+@dataclass
+class _LotConsumptionEvent:
+    sell_order_id: int
+    buy_order_id: int
+    quantity_consumed: Decimal
+    cost_per_unit: Decimal
+
+
+@dataclass
+class _ReplayResult:
+    quantity: Decimal
+    avg_cost: Decimal
+    lots: list[_OpenLot] = field(default_factory=list)
+    consumptions: list[_LotConsumptionEvent] = field(default_factory=list)
+
+
 class InvestingOrderService:
     def __init__(
         self,
@@ -1651,6 +1683,7 @@ class InvestingOrderService:
         account_repository: AccountRepository,
         currency_repository: CurrencyRepository,
         instrument_service: InstrumentService,
+        lot_repository: LotRepository,
     ):
         self.order_repository = order_repository
         self.holding_repository = holding_repository
@@ -1658,6 +1691,7 @@ class InvestingOrderService:
         self.account_repository = account_repository
         self.currency_repository = currency_repository
         self.instrument_service = instrument_service
+        self.lot_repository = lot_repository
 
     async def _validate_brokerage_account(
         self, workspace_id: int, account_public_id: uuid.UUID
@@ -1708,42 +1742,86 @@ class InvestingOrderService:
 
     def _replay_orders(
         self, orders: Sequence[InvestingOrder], *, record_sells: bool
-    ) -> tuple[Decimal, Decimal]:
-        """Replay orders chronologically with a moving-average cost model.
+    ) -> "_ReplayResult":
+        """Replay orders chronologically with a FIFO lot cost-basis model.
 
-        Returns the resulting ``(quantity, avg_cost)``. When ``record_sells`` is
-        True, each sell order's ``realized_gain_loss`` and ``avg_cost_at_sale`` are
-        updated in place against the cost basis at the time of the sale. Raises
-        ``ValidationError`` if a sell would drive the holding negative at any
+        A sell is matched against the *oldest* open buy lot(s) first (FIFO),
+        per Section 45(2A) of the Income-tax Act, 1961 and CBDT Circular 768
+        — see spec-044. Returns the resulting position plus the lot/consumption
+        state needed to persist ``OrderLot``/``LotConsumption`` rows. When
+        ``record_sells`` is True, each sell order's ``realized_gain_loss`` and
+        ``avg_cost_at_sale`` are updated in place against the lots it consumed.
+        Raises ``ValidationError`` if a sell would exceed open lots at any
         intermediate point, not just in the final aggregate.
         """
-        qty = Decimal("0")
-        avg = Decimal("0")
+        # `queue` drives FIFO consumption order; `all_lots` retains every lot
+        # (including fully-consumed ones) so their final remaining_quantity=0
+        # state and consumption history are still persisted.
+        queue: deque[_OpenLot] = deque()
+        all_lots: dict[int, _OpenLot] = {}
+        consumptions: list[_LotConsumptionEvent] = []
+
         for order in orders:
             if order.order_type == "buy":
-                new_qty = qty + order.quantity
-                if new_qty > 0:
-                    avg = ((qty * avg + order.quantity * order.price_per_unit) / new_qty).quantize(
-                        AVG_COST_PRECISION
-                    )
-                qty = new_qty
+                assert order.id is not None
+                lot = _OpenLot(
+                    buy_order_id=order.id,
+                    original_quantity=order.quantity,
+                    remaining=order.quantity,
+                    cost_per_unit=order.price_per_unit,
+                    acquired_at=order.occurred_at,
+                )
+                queue.append(lot)
+                all_lots[order.id] = lot
             else:
-                if order.quantity > qty:
-                    raise ValidationError(
-                        detail=(
-                            "Cannot delete this order. Remaining orders would result in a "
-                            "negative holding (a sell would exceed shares held at that point)"
+                assert order.id is not None
+                to_consume = order.quantity
+                realized = Decimal("0")
+                cost_consumed = Decimal("0")
+                while to_consume > 0:
+                    if not queue:
+                        raise ValidationError(
+                            detail=(
+                                "This order would result in a negative holding "
+                                "(a sell would exceed shares held at that point in time)"
+                            )
+                        )
+                    lot = queue[0]
+                    take = min(lot.remaining, to_consume)
+                    realized += take * (order.price_per_unit - lot.cost_per_unit)
+                    cost_consumed += take * lot.cost_per_unit
+                    consumptions.append(
+                        _LotConsumptionEvent(
+                            sell_order_id=order.id,
+                            buy_order_id=lot.buy_order_id,
+                            quantity_consumed=take,
+                            cost_per_unit=lot.cost_per_unit,
                         )
                     )
+                    lot.remaining -= take
+                    to_consume -= take
+                    if lot.remaining == 0:
+                        queue.popleft()
                 if record_sells:
-                    order.realized_gain_loss = (
-                        order.quantity * (order.price_per_unit - avg)
-                    ).quantize(Decimal("0.01"))
-                    order.avg_cost_at_sale = avg
-                qty -= order.quantity
-                if qty == 0:
-                    avg = Decimal("0")
-        return qty, avg
+                    order.realized_gain_loss = realized.quantize(MONEY_QUANT)
+                    order.avg_cost_at_sale = (cost_consumed / order.quantity).quantize(
+                        AVG_COST_PRECISION
+                    )
+
+        final_qty = sum((lot.remaining for lot in queue), Decimal("0"))
+        final_avg_cost = (
+            (
+                sum((lot.remaining * lot.cost_per_unit for lot in queue), Decimal("0")) / final_qty
+            ).quantize(AVG_COST_PRECISION)
+            if final_qty > 0
+            else Decimal("0")
+        )
+        return _ReplayResult(
+            quantity=final_qty,
+            avg_cost=final_avg_cost,
+            lots=list(all_lots.values()),
+            consumptions=consumptions,
+        )
 
     async def _recompute_holding_from_orders(
         self, workspace_id: int, user_id: int, symbol: str, account_id: int
@@ -1757,31 +1835,63 @@ class InvestingOrderService:
                 await self.holding_repository.delete(holding)
             return None
 
-        new_qty, new_avg_cost = self._replay_orders(orders, record_sells=True)
+        if holding is not None and holding.id is not None:
+            await self.lot_repository.delete_for_holding(holding.id)
 
-        # Persist recomputed realized gain/loss on the (mutated) sell orders
-        for order in orders:
-            if order.order_type == "sell":
-                await self.order_repository.save(order)
+        result = self._replay_orders(orders, record_sells=True)
+
+        # `orders` were loaded via this same session (list_by_holding), so the
+        # in-place realized_gain_loss/avg_cost_at_sale mutations above are
+        # already tracked as dirty and will be persisted on the next flush
+        # (triggered below by the holding/lot repository calls) — no explicit
+        # per-order save() needed.
 
         if holding is None:
+            instrument_id = next((o.instrument_id for o in orders if o.instrument_id), None)
             holding = await self.holding_repository.create(
                 Holding(
                     workspace_id=workspace_id,
                     user_id=user_id,
                     symbol=symbol,
                     account_id=account_id,
-                    quantity=new_qty,
-                    avg_cost=new_avg_cost,
-                    currency="",
+                    quantity=result.quantity,
+                    avg_cost=result.avg_cost,
+                    currency=orders[0].currency,
                     source_type="order",
+                    instrument_id=instrument_id,
                 )
             )
         else:
-            holding.quantity = new_qty
-            holding.avg_cost = new_avg_cost
+            holding.quantity = result.quantity
+            holding.avg_cost = result.avg_cost
             holding.updated_at = datetime.now(UTC)
             holding = await self.holding_repository.save(holding)
+
+        assert holding.id is not None
+        if result.lots:
+            created_lots = await self.lot_repository.create_lots([
+                OrderLot(
+                    workspace_id=workspace_id,
+                    holding_id=holding.id,
+                    buy_order_id=lot.buy_order_id,
+                    original_quantity=lot.original_quantity,
+                    remaining_quantity=lot.remaining,
+                    cost_per_unit=lot.cost_per_unit,
+                    acquired_at=lot.acquired_at,
+                )
+                for lot in result.lots
+            ])
+            if result.consumptions:
+                lot_id_by_buy_order = {lot.buy_order_id: lot.id for lot in created_lots}
+                await self.lot_repository.create_consumptions([
+                    LotConsumption(
+                        sell_order_id=ev.sell_order_id,
+                        lot_id=lot_id_by_buy_order[ev.buy_order_id],
+                        quantity_consumed=ev.quantity_consumed,
+                        cost_per_unit=ev.cost_per_unit,
+                    )
+                    for ev in result.consumptions
+                ])
         return holding
 
     async def place_order(
@@ -1816,24 +1926,20 @@ class InvestingOrderService:
                     )
                 )
 
-        realized_gain_loss: Decimal | None = None
-        avg_cost_at_sale: Decimal | None = None
-
         holding = await self.holding_repository.get_by_unique_key(
             workspace_id, order_in.symbol, account.id
         )
 
-        if order_in.order_type == OrderType.sell:
-            if holding is None or holding.quantity < order_in.quantity:
-                current_qty = holding.quantity if holding else Decimal("0")
-                raise ValidationError(
-                    detail=(
-                        f"Cannot sell {order_in.quantity} shares of {order_in.symbol}. "
-                        f"Current holding: {current_qty} shares"
-                    )
+        if order_in.order_type == OrderType.sell and (
+            holding is None or holding.quantity < order_in.quantity
+        ):
+            current_qty = holding.quantity if holding else Decimal("0")
+            raise ValidationError(
+                detail=(
+                    f"Cannot sell {order_in.quantity} shares of {order_in.symbol}. "
+                    f"Current holding: {current_qty} shares"
                 )
-            avg_cost_at_sale = holding.avg_cost
-            realized_gain_loss = order_in.quantity * (order_in.price_per_unit - holding.avg_cost)
+            )
 
         instrument = await self.instrument_service.find_or_create_instrument(
             workspace_id,
@@ -1851,55 +1957,27 @@ class InvestingOrderService:
             instrument_id=instrument.id if instrument else None,
             quantity=order_in.quantity,
             price_per_unit=order_in.price_per_unit,
-            gross_amount=gross_amount.quantize(Decimal("0.01")),
+            gross_amount=gross_amount.quantize(MONEY_QUANT),
             brokerage_fee=order_in.brokerage_fee,
             tax_amount=order_in.tax_amount,
             other_fees=order_in.other_fees,
-            net_amount=net_amount.quantize(Decimal("0.01")),
+            net_amount=net_amount.quantize(MONEY_QUANT),
             currency=order_in.currency,
             exchange_name=order_in.exchange_name,
             occurred_at=order_in.occurred_at,
             notes=order_in.notes,
-            realized_gain_loss=realized_gain_loss.quantize(Decimal("0.01"))
-            if realized_gain_loss is not None
-            else None,
-            avg_cost_at_sale=avg_cost_at_sale,
             source_type=source_type,
         )
         order = await self.order_repository.create(order)
 
-        # Update holding avg_cost and quantity
-        if order_in.order_type == OrderType.buy:
-            if holding is None:
-                holding = Holding(
-                    workspace_id=workspace_id,
-                    user_id=user_id,
-                    symbol=order_in.symbol,
-                    account_id=account.id,
-                    quantity=order_in.quantity,
-                    avg_cost=order_in.price_per_unit.quantize(AVG_COST_PRECISION),
-                    currency=order_in.currency,
-                    source_type="order",
-                    instrument_id=instrument.id if instrument else None,
-                )
-                await self.holding_repository.create(holding)
-            else:
-                existing_qty = holding.quantity
-                existing_avg = holding.avg_cost
-                new_qty = existing_qty + order_in.quantity
-                new_avg = (
-                    (existing_qty * existing_avg + order_in.quantity * order_in.price_per_unit)
-                    / new_qty
-                ).quantize(AVG_COST_PRECISION)
-                holding.quantity = new_qty
-                holding.avg_cost = new_avg
-                holding.updated_at = datetime.now(UTC)
-                await self.holding_repository.save(holding)
-        else:
-            assert holding is not None
-            holding.quantity = holding.quantity - order_in.quantity
-            holding.updated_at = datetime.now(UTC)
-            await self.holding_repository.save(holding)
+        # Recompute holding quantity, FIFO avg_cost, and (for a sell) this
+        # order's own realized_gain_loss/avg_cost_at_sale from the full order
+        # history — the single replay path shared with update_order/delete_order.
+        # `order` is the same session-tracked instance _recompute_holding_from_orders
+        # will load and mutate via the identity map, so no re-fetch is needed.
+        await self._recompute_holding_from_orders(
+            workspace_id, user_id, order_in.symbol, account.id
+        )
 
         # Update cash balance
         cash_delta = -net_amount if order_in.order_type == OrderType.buy else net_amount

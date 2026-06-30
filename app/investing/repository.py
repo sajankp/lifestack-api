@@ -14,6 +14,8 @@ from app.investing.models import (
     Instrument,
     InstrumentConstituent,
     InvestingOrder,
+    LotConsumption,
+    OrderLot,
     PortfolioSnapshot,
 )
 
@@ -250,6 +252,28 @@ class InvestingOrderRepository:
         for o in orders:
             await self.session.refresh(o)
         return orders
+
+
+class LotRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def delete_for_holding(self, holding_id: int) -> None:
+        if holding_id is None:
+            raise ValueError("holding_id must not be None")
+        await self.session.execute(delete(OrderLot).where(OrderLot.holding_id == holding_id))
+        await self.session.flush()
+
+    async def create_lots(self, lots: list[OrderLot]) -> list[OrderLot]:
+        # flush() already populates auto-generated PKs; no refresh() needed.
+        self.session.add_all(lots)
+        await self.session.flush()
+        return lots
+
+    async def create_consumptions(self, consumptions: list[LotConsumption]) -> list[LotConsumption]:
+        self.session.add_all(consumptions)
+        await self.session.flush()
+        return consumptions
 
 
 class InstrumentRepository:

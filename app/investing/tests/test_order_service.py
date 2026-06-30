@@ -70,13 +70,49 @@ def _make_order_create(
     )
 
 
+def _make_order(
+    *,
+    id: int,
+    order_type: str,
+    quantity: str,
+    price: str,
+    occurred_at: datetime,
+    public_id: uuid.UUID | None = None,
+) -> InvestingOrder:
+    qty = Decimal(quantity)
+    unit = Decimal(price)
+    return InvestingOrder(
+        id=id,
+        public_id=public_id or uuid.uuid4(),
+        workspace_id=WS,
+        user_id=USER,
+        account_id=ACCOUNT_ID,
+        order_type=order_type,
+        symbol="AAPL",
+        quantity=qty,
+        price_per_unit=unit,
+        gross_amount=qty * unit,
+        net_amount=qty * unit,
+        currency="USD",
+        occurred_at=occurred_at,
+    )
+
+
 def _make_service(
     *,
     account: Account | None = None,
     existing_holding: Holding | None = None,
+    existing_orders: list[InvestingOrder] | None = None,
     cash_balance: Decimal = Decimal("10000"),
-    saved_order: InvestingOrder | None = None,
 ) -> InvestingOrderService:
+    """Build an InvestingOrderService backed by an in-memory fake order store.
+
+    place_order/update_order/delete_order all route through
+    ``_recompute_holding_from_orders``, which replays the *full* order
+    history (FIFO) on every write. A static AsyncMock holding stub can't
+    drive that — the mocks need a shared, mutable store so `create`/`save`/
+    `list_by_holding`/`get_by_public_id` all see the same orders.
+    """
     account = account or _make_account()
 
     order_repo = AsyncMock()
@@ -85,6 +121,7 @@ def _make_service(
     account_repo = AsyncMock()
     currency_repo = AsyncMock()
     instrument_service = AsyncMock()
+    lot_repo = AsyncMock()
 
     account_repo.get_by_public_id = AsyncMock(return_value=account)
     holding_repo.get_by_unique_key = AsyncMock(return_value=existing_holding)
@@ -96,14 +133,59 @@ def _make_service(
 
     instrument_service.find_or_create_instrument = AsyncMock(return_value=None)
 
-    def _create_order_side_effect(order: InvestingOrder) -> InvestingOrder:
-        order.id = 99
-        order.public_id = saved_order.public_id if saved_order else uuid.uuid4()
+    store: dict[int, InvestingOrder] = {o.id: o for o in (existing_orders or []) if o.id}
+    next_id = [max(store.keys(), default=0) + 1]
+
+    async def _create_order(order: InvestingOrder) -> InvestingOrder:
+        order.id = next_id[0]
+        next_id[0] += 1
+        store[order.id] = order
         return order
 
-    order_repo.create = AsyncMock(side_effect=_create_order_side_effect)
-    holding_repo.create = AsyncMock(side_effect=lambda h: h)
+    async def _save_order(order: InvestingOrder) -> InvestingOrder:
+        assert order.id is not None
+        store[order.id] = order
+        return order
+
+    async def _get_order_by_public_id(
+        workspace_id: int, public_id: uuid.UUID
+    ) -> InvestingOrder | None:
+        return next((o for o in store.values() if o.public_id == public_id), None)
+
+    async def _list_orders_by_holding(
+        workspace_id: int, symbol: str, account_id: int
+    ) -> list[InvestingOrder]:
+        rows = [o for o in store.values() if o.symbol == symbol and o.account_id == account_id]
+        return sorted(rows, key=lambda o: (o.occurred_at, o.id))
+
+    async def _delete_order(order: InvestingOrder) -> None:
+        store.pop(order.id, None)
+
+    order_repo.create = AsyncMock(side_effect=_create_order)
+    order_repo.save = AsyncMock(side_effect=_save_order)
+    order_repo.get_by_public_id = AsyncMock(side_effect=_get_order_by_public_id)
+    order_repo.list_by_holding = AsyncMock(side_effect=_list_orders_by_holding)
+    order_repo.delete = AsyncMock(side_effect=_delete_order)
+
+    def _create_holding(h: Holding) -> Holding:
+        if h.id is None:
+            h.id = 1
+        return h
+
+    holding_repo.create = AsyncMock(side_effect=_create_holding)
     holding_repo.save = AsyncMock(side_effect=lambda h: h)
+
+    lot_next_id = [1]
+
+    async def _create_lots(lots: list) -> list:
+        for lot in lots:
+            lot.id = lot_next_id[0]
+            lot_next_id[0] += 1
+        return lots
+
+    lot_repo.create_lots = AsyncMock(side_effect=_create_lots)
+    lot_repo.create_consumptions = AsyncMock(side_effect=lambda cs: cs)
+    lot_repo.delete_for_holding = AsyncMock(return_value=None)
 
     return InvestingOrderService(
         order_repository=order_repo,
@@ -112,12 +194,15 @@ def _make_service(
         account_repository=account_repo,
         currency_repository=currency_repo,
         instrument_service=instrument_service,
+        lot_repository=lot_repo,
     )
 
 
 # ---------------------------------------------------------------------------
-# avg_cost computation
+# avg_cost computation (FIFO — spec-044)
 # ---------------------------------------------------------------------------
+
+EARLY = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
@@ -135,9 +220,12 @@ async def test_first_buy_creates_holding_with_correct_avg_cost():
 
 
 @pytest.mark.asyncio
-async def test_second_buy_computes_weighted_avg_cost():
+async def test_second_buy_computes_weighted_avg_cost_across_open_lots():
+    prior_buy = _make_order(id=1, order_type="buy", quantity="10", price="150", occurred_at=EARLY)
     existing = _make_holding(qty="10", avg_cost="150.00")
-    svc = _make_service(existing_holding=existing, cash_balance=Decimal("10000"))
+    svc = _make_service(
+        existing_holding=existing, existing_orders=[prior_buy], cash_balance=Decimal("10000")
+    )
     order_in = _make_order_create(
         order_type=OrderType.buy, symbol="AAPL", quantity="5", price="170.00"
     )
@@ -146,6 +234,8 @@ async def test_second_buy_computes_weighted_avg_cost():
 
     saved = svc.holding_repository.save.call_args[0][0]
     assert saved.quantity == Decimal("15")
+    # No sells have happened, so FIFO's "average of open lots" equals the
+    # same weighted average as before across the two still-open lots.
     expected_avg = (
         (Decimal("10") * Decimal("150") + Decimal("5") * Decimal("170")) / Decimal("15")
     ).quantize(Decimal("0.000001"))
@@ -153,9 +243,12 @@ async def test_second_buy_computes_weighted_avg_cost():
 
 
 @pytest.mark.asyncio
-async def test_sell_reduces_quantity_keeps_avg_cost():
+async def test_sell_reduces_quantity_keeps_avg_cost_of_remaining_lot():
+    prior_buy = _make_order(id=1, order_type="buy", quantity="10", price="150", occurred_at=EARLY)
     existing = _make_holding(qty="10", avg_cost="150.00")
-    svc = _make_service(existing_holding=existing, cash_balance=Decimal("0"))
+    svc = _make_service(
+        existing_holding=existing, existing_orders=[prior_buy], cash_balance=Decimal("0")
+    )
     order_in = _make_order_create(
         order_type=OrderType.sell, symbol="AAPL", quantity="3", price="180.00"
     )
@@ -164,28 +257,33 @@ async def test_sell_reduces_quantity_keeps_avg_cost():
 
     saved = svc.holding_repository.save.call_args[0][0]
     assert saved.quantity == Decimal("7")
+    # Single lot, partially consumed: the remaining 7 units are still costed
+    # at that lot's original price (150), same as the old moving-average
+    # behavior in the single-lot case.
     assert saved.avg_cost == Decimal("150.00")
 
 
 @pytest.mark.asyncio
-async def test_sell_records_realized_gain_loss():
+async def test_sell_records_realized_gain_loss_against_fifo_lot():
+    prior_buy = _make_order(id=1, order_type="buy", quantity="10", price="150", occurred_at=EARLY)
     existing = _make_holding(qty="10", avg_cost="150.00")
-    svc = _make_service(existing_holding=existing)
+    svc = _make_service(existing_holding=existing, existing_orders=[prior_buy])
     order_in = _make_order_create(
         order_type=OrderType.sell, symbol="AAPL", quantity="3", price="180.00"
     )
 
     created_order = await svc.place_order(WS, USER, order_in)
 
-    # realized G/L = 3 × (180 - 150) = 90
+    # realized G/L = 3 × (180 - 150) = 90, costed against the one open lot
     assert created_order.realized_gain_loss == Decimal("90.00")
     assert created_order.avg_cost_at_sale == Decimal("150.00")
 
 
 @pytest.mark.asyncio
-async def test_sell_all_shares_sets_quantity_to_zero():
+async def test_sell_all_shares_sets_quantity_and_avg_cost_to_zero():
+    prior_buy = _make_order(id=1, order_type="buy", quantity="10", price="150", occurred_at=EARLY)
     existing = _make_holding(qty="10", avg_cost="150.00")
-    svc = _make_service(existing_holding=existing)
+    svc = _make_service(existing_holding=existing, existing_orders=[prior_buy])
     order_in = _make_order_create(
         order_type=OrderType.sell, symbol="AAPL", quantity="10", price="180.00"
     )
@@ -194,14 +292,31 @@ async def test_sell_all_shares_sets_quantity_to_zero():
 
     saved = svc.holding_repository.save.call_args[0][0]
     assert saved.quantity == Decimal("0")
-    assert saved.avg_cost == Decimal("150.00")
+    # No open lots remain once fully sold, so avg_cost resets to 0. This is
+    # a deliberate behavior change from the old place_order-only inline
+    # logic (which never touched avg_cost on sell): every write path now
+    # goes through the same full FIFO replay, so a fully-closed position
+    # has no cost basis left to report — consistent with delete/update_order's
+    # pre-existing behavior.
+    assert saved.avg_cost == Decimal("0")
 
 
 @pytest.mark.asyncio
-async def test_buy_after_selling_all_resets_avg_cost():
-    # qty=0 means "fresh start" for avg_cost
-    existing = _make_holding(qty="0", avg_cost="150.00")
-    svc = _make_service(existing_holding=existing, cash_balance=Decimal("10000"))
+async def test_buy_after_selling_all_starts_a_fresh_lot():
+    prior_buy = _make_order(id=1, order_type="buy", quantity="10", price="150", occurred_at=EARLY)
+    prior_sell = _make_order(
+        id=2,
+        order_type="sell",
+        quantity="10",
+        price="180",
+        occurred_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    existing = _make_holding(qty="0", avg_cost="0")
+    svc = _make_service(
+        existing_holding=existing,
+        existing_orders=[prior_buy, prior_sell],
+        cash_balance=Decimal("10000"),
+    )
     order_in = _make_order_create(
         order_type=OrderType.buy, symbol="AAPL", quantity="5", price="200.00"
     )
@@ -210,8 +325,94 @@ async def test_buy_after_selling_all_resets_avg_cost():
 
     saved = svc.holding_repository.save.call_args[0][0]
     assert saved.quantity == Decimal("5")
-    # new avg cost should be just the new price (0 * old_avg + 5 * 200) / 5 = 200
+    # No open lots remained, so this buy starts a fresh lot at its own price.
     assert saved.avg_cost == Decimal("200.000000")
+
+
+# ---------------------------------------------------------------------------
+# FIFO lot persistence (OrderLot / LotConsumption) — spec-044
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sell_spanning_two_lots_records_lot_and_consumptions():
+    # Mirrors the production Bandhan ELSS case from spec-044: three buys,
+    # then a sell that exactly exhausts the first two lots and leaves the
+    # third lot untouched.
+    buy1 = _make_order(
+        id=1, order_type="buy", quantity="180.573", price="110.75", occurred_at=EARLY
+    )
+    buy2 = _make_order(
+        id=2,
+        order_type="buy",
+        quantity="119.528",
+        price="108.76",
+        occurred_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    buy3 = _make_order(
+        id=3,
+        order_type="buy",
+        quantity="140.319",
+        price="142.53",
+        occurred_at=datetime(2026, 1, 3, tzinfo=UTC),
+    )
+    existing = _make_holding(qty="440.420", avg_cost="120.335")
+    svc = _make_service(existing_holding=existing, existing_orders=[buy1, buy2, buy3])
+    order_in = _make_order_create(
+        order_type=OrderType.sell, symbol="AAPL", quantity="300.101", price="182.30"
+    )
+
+    await svc.place_order(WS, USER, order_in)
+
+    # delete_for_holding is called once for the existing holding before replay.
+    svc.lot_repository.delete_for_holding.assert_called_once_with(existing.id)
+
+    created_lots = svc.lot_repository.create_lots.call_args[0][0]
+    assert {lot.buy_order_id: lot.remaining_quantity for lot in created_lots} == {
+        1: Decimal("0"),
+        2: Decimal("0"),
+        3: Decimal("140.319"),
+    }
+
+    created_consumptions = svc.lot_repository.create_consumptions.call_args[0][0]
+    # The sell drew fully from lot 1 and lot 2, never touching lot 3.
+    consumed_by_buy_order = {c.lot_id: c.quantity_consumed for c in created_consumptions}
+    lot_id_by_buy_order = {lot.buy_order_id: lot.id for lot in created_lots}
+    assert consumed_by_buy_order[lot_id_by_buy_order[1]] == Decimal("180.573")
+    assert consumed_by_buy_order[lot_id_by_buy_order[2]] == Decimal("119.528")
+    assert lot_id_by_buy_order[3] not in consumed_by_buy_order
+
+    saved_holding = svc.holding_repository.save.call_args[0][0]
+    assert saved_holding.quantity == Decimal("140.319")
+    # Open-lot avg cost is just lot 3's own price, matching what brokers
+    # like Groww show for the remaining FIFO lot (see spec-044).
+    assert saved_holding.avg_cost == Decimal("142.530000")
+
+
+@pytest.mark.asyncio
+async def test_backdated_sell_exceeding_chronological_capacity_raises():
+    # Aggregate holding quantity (10) is enough, but placing a sell of 8
+    # dated *before* the second buy would go negative at that point in the
+    # chronological replay — must be rejected even though place_order's own
+    # cheap pre-check only looks at the current aggregate.
+    buy1 = _make_order(id=1, order_type="buy", quantity="5", price="100", occurred_at=EARLY)
+    buy2 = _make_order(
+        id=2,
+        order_type="buy",
+        quantity="5",
+        price="110",
+        occurred_at=datetime(2026, 1, 10, tzinfo=UTC),
+    )
+    existing = _make_holding(qty="10", avg_cost="105.00")
+    svc = _make_service(existing_holding=existing, existing_orders=[buy1, buy2])
+    order_in = _make_order_create(
+        order_type=OrderType.sell, symbol="AAPL", quantity="8", price="120.00"
+    )
+    order_in.occurred_at = datetime(2026, 1, 5, tzinfo=UTC)  # between buy1 and buy2
+
+    with pytest.raises(ValidationError) as exc_info:
+        await svc.place_order(WS, USER, order_in)
+    assert "negative holding" in exc_info.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +437,11 @@ async def test_buy_deducts_net_amount_from_cash():
 
 @pytest.mark.asyncio
 async def test_sell_adds_net_amount_to_cash():
+    prior_buy = _make_order(id=1, order_type="buy", quantity="10", price="150", occurred_at=EARLY)
     existing = _make_holding(qty="10", avg_cost="150.00")
-    svc = _make_service(existing_holding=existing, cash_balance=Decimal("0"))
+    svc = _make_service(
+        existing_holding=existing, existing_orders=[prior_buy], cash_balance=Decimal("0")
+    )
     order_in = _make_order_create(
         order_type=OrderType.sell, quantity="5", price="180.00", fee="1.99"
     )
@@ -335,8 +539,9 @@ async def test_buy_net_amount_is_gross_plus_fees():
 
 @pytest.mark.asyncio
 async def test_sell_net_amount_is_gross_minus_fees():
+    prior_buy = _make_order(id=1, order_type="buy", quantity="10", price="150", occurred_at=EARLY)
     existing = _make_holding(qty="10", avg_cost="150.00")
-    svc = _make_service(existing_holding=existing)
+    svc = _make_service(existing_holding=existing, existing_orders=[prior_buy])
     order_in = InvestingOrderCreate(
         account_id=ACCOUNT_PUB,
         order_type=OrderType.sell,
@@ -369,34 +574,6 @@ async def test_delete_order_not_found_raises():
     with pytest.raises(NotFoundError) as exc_info:
         await svc.delete_order(WS, USER, uuid.uuid4())
     assert "not found" in exc_info.value.detail
-
-
-def _make_order(
-    *,
-    id: int,
-    order_type: str,
-    quantity: str,
-    price: str,
-    occurred_at: datetime,
-    public_id: uuid.UUID | None = None,
-) -> InvestingOrder:
-    qty = Decimal(quantity)
-    unit = Decimal(price)
-    return InvestingOrder(
-        id=id,
-        public_id=public_id or uuid.uuid4(),
-        workspace_id=WS,
-        user_id=USER,
-        account_id=ACCOUNT_ID,
-        order_type=order_type,
-        symbol="AAPL",
-        quantity=qty,
-        price_per_unit=unit,
-        gross_amount=qty * unit,
-        net_amount=qty * unit,
-        currency="USD",
-        occurred_at=occurred_at,
-    )
 
 
 @pytest.mark.asyncio

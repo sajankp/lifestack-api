@@ -43,6 +43,7 @@ from app.investing.repository import (
     HoldingRepository,
     InstrumentRepository,
     InvestingOrderRepository,
+    LotRepository,
 )
 from app.investing.schemas import InvestingOrderCreate
 from app.investing.service import InstrumentService, InvestingOrderService
@@ -1857,6 +1858,7 @@ async def run_background_commit(
             instrument_service=InstrumentService(
                 InstrumentRepository(session), CompanyRepository(session)
             ),
+            lot_repository=LotRepository(session),
         )
         service = ImportService(repo, session, order_service=order_service)
         audit_logger = AuditLogger(session)

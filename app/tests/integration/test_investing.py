@@ -1427,3 +1427,68 @@ async def test_investing_summary_market_price_and_daily_change(client: AsyncClie
     assert summary["valuation_status"] == "single_currency_native"
     assert Decimal(summary["portfolio_value"]) == Decimal("2500.00")
     assert Decimal(summary["daily_change"]) == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
+async def test_fifo_cost_basis_matches_broker_lot_consumption(client: AsyncClient):
+    """Reproduces the production discrepancy from spec-044 (Bandhan ELSS Tax
+    Saver Fund vs Groww): three buys then a sell that exactly exhausts the
+    first two lots should leave avg_cost as just the third lot's price, not
+    a moving average blended across all three buys.
+    """
+    account_map = await _register_and_login(
+        client,
+        email="fifo-e2e@example.com",
+        username="fifo-e2e",
+        password="TestPass123!",
+    )
+    account_id = account_map["brokerage"]
+
+    cash_res = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_id,
+            "balance": "100000.00",
+            "currency": "INR",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert cash_res.status_code == 201, cash_res.text
+
+    async def _place(order_type: str, quantity: str, price: str, occurred_at: datetime) -> dict:
+        res = await client.post(
+            "/v1/investing/orders",
+            json={
+                "account_id": account_id,
+                "order_type": order_type,
+                "symbol": "BANDHANELSS",
+                "quantity": quantity,
+                "price_per_unit": price,
+                "currency": "INR",
+                "occurred_at": occurred_at.isoformat(),
+                "instrument_type": "mutual_fund",
+                "instrument_name": "Bandhan ELSS Tax Saver Fund Direct Plan Growth",
+            },
+        )
+        assert res.status_code == 201, res.text
+        return res.json()
+
+    await _place("buy", "180.573", "110.75", datetime(2022, 8, 18, tzinfo=UTC))
+    await _place("buy", "119.528", "108.76", datetime(2022, 10, 14, tzinfo=UTC))
+    await _place("buy", "140.319", "142.53", datetime(2023, 12, 12, tzinfo=UTC))
+    sell = await _place("sell", "300.101", "182.30", datetime(2025, 12, 19, tzinfo=UTC))
+
+    holdings_res = await client.get("/v1/investing/holdings")
+    assert holdings_res.status_code == 200
+    holding = next(h for h in holdings_res.json()["items"] if h["symbol"] == "BANDHANELSS")
+    assert Decimal(holding["quantity"]) == Decimal("140.319")
+    # FIFO: the sell fully consumed the first two lots, leaving only the
+    # third lot's own price as the open cost basis — matching Groww's
+    # "Avg. NAV" of 142.53 in the spec-044 production comparison, not a
+    # moving average across all three buys (which would be ~120.33).
+    assert Decimal(holding["avg_cost"]) == Decimal("142.53")
+
+    assert Decimal(sell["realized_gain_loss"]) == (
+        Decimal("180.573") * (Decimal("182.30") - Decimal("110.75"))
+        + Decimal("119.528") * (Decimal("182.30") - Decimal("108.76"))
+    ).quantize(Decimal("0.01"))
