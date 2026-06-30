@@ -581,9 +581,15 @@ async def list_orders(
     pagination: Annotated[PaginationParams, Depends()],
     symbol: str | None = None,
     order_type: str | None = None,
+    search: str | None = None,
 ):
     orders, total = await order_service.list_orders(
-        workspace_id, pagination.limit, pagination.offset, symbol=symbol, order_type=order_type
+        workspace_id,
+        pagination.limit,
+        pagination.offset,
+        symbol=symbol,
+        order_type=order_type,
+        search=search,
     )
     if not orders:
         return PaginatedResponse(

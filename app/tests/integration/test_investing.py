@@ -1703,3 +1703,62 @@ async def test_fifo_cost_basis_matches_broker_lot_consumption(client: AsyncClien
         Decimal("180.573") * (Decimal("182.30") - Decimal("110.75"))
         + Decimal("119.528") * (Decimal("182.30") - Decimal("108.76"))
     ).quantize(Decimal("0.01"))
+
+
+@pytest.mark.asyncio
+async def test_orders_search_matches_symbol_and_instrument_name(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="orders-search@example.com",
+        username="orders-search",
+        password="TestPass123!",
+    )
+    # Mutual fund whose symbol is a numeric folio — only findable by name.
+    await _create_holding_via_order(
+        client,
+        account_map["brokerage"],
+        "152981",
+        "100.00000000",
+        "9.08",
+        instrument_type="mutual_fund",
+        instrument_name="Edelweiss Nifty500 Momentum",
+    )
+    await _create_holding_via_order(
+        client, account_map["brokerage"], "NVDA", "1.00000000", "100.00"
+    )
+
+    # Substring of the symbol (exact-match would have failed on "NV").
+    res = await client.get("/v1/investing/orders", params={"search": "nv"})
+    assert res.status_code == 200
+    assert {o["symbol"] for o in res.json()["items"]} == {"NVDA"}
+
+    # Substring of the instrument name finds the numeric-symbol mutual fund.
+    res = await client.get("/v1/investing/orders", params={"search": "edelweiss"})
+    assert {o["symbol"] for o in res.json()["items"]} == {"152981"}
+
+    # No match returns nothing.
+    res = await client.get("/v1/investing/orders", params={"search": "zzzznope"})
+    assert res.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_net_worth_lists_brokerage_cash_accounts(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="networth-cash@example.com",
+        username="networth-cash",
+        password="TestPass123!",
+    )
+    # Buying leaves residual cash (helper funds cost + 1000) on the brokerage account.
+    await _create_holding_via_order(
+        client, account_map["brokerage"], "AAPL", "1.00000000", "100.00"
+    )
+
+    res = await client.get("/v1/finance/net-worth")
+    assert res.status_code == 200
+    data = res.json()
+    account = next(
+        a for a in data["investing_accounts"] if a["account_public_id"] == account_map["brokerage"]
+    )
+    assert account["currency_code"] == "USD"
+    assert Decimal(account["balance"]) == Decimal("1000.00")

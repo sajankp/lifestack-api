@@ -2320,9 +2320,10 @@ class InvestingOrderService:
         symbol: str | None = None,
         account_id: int | None = None,
         order_type: str | None = None,
+        search: str | None = None,
     ) -> tuple[Sequence[InvestingOrder], int]:
         return await self.order_repository.list_by_workspace(
-            workspace_id, limit, offset, symbol, account_id, order_type
+            workspace_id, limit, offset, symbol, account_id, order_type, search
         )
 
     async def get_order(self, workspace_id: int, public_id: uuid.UUID) -> InvestingOrder:

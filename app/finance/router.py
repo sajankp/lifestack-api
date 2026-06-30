@@ -18,6 +18,7 @@ from app.core.dependencies import (
     get_finance_setting_repo,
     get_finance_setting_service,
     get_finance_transfer_service,
+    get_investing_cash_balance_repo,
     get_investing_summary_service,
     require_min_role,
 )
@@ -35,6 +36,7 @@ from app.finance.schemas import (
     CapitalTransferUpdate,
     CurrencyResponse,
     FxRateResponse,
+    InvestingAccountBalance,
     NetWorthResponse,
     ReconciliationSummary,
     SpendingAccountBalance,
@@ -50,6 +52,7 @@ from app.finance.service import (
     FinanceSettingService,
     FxRateService,
 )
+from app.investing.repository import CashBalanceRepository
 from app.investing.service import InvestingSummaryService
 
 router = APIRouter(prefix="/finance", tags=["finance"])
@@ -340,6 +343,7 @@ def _convert_to_reporting(
 async def get_net_worth(
     account_service: Annotated[AccountService, Depends(get_finance_account_service)],
     summary_service: Annotated[InvestingSummaryService, Depends(get_investing_summary_service)],
+    cash_balance_repo: Annotated[CashBalanceRepository, Depends(get_investing_cash_balance_repo)],
     setting_repo: Annotated[FinanceSettingRepository, Depends(get_finance_setting_repo)],
     fx_rate_repo: Annotated[FxRateRepository, Depends(get_finance_fx_rate_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
@@ -362,11 +366,22 @@ async def get_net_worth(
         workspace_id, spending_accounts_list
     )
 
-    # Build FX lookup for spending → reporting currency conversion
+    # Per-(brokerage account, currency) investing cash for the breakdown table.
+    # This itemizes what investing_cash_total already aggregates — no double count.
+    brokerage_by_id = {a.id: a for a in accounts if a.account_type == AccountType.brokerage}
+    cash_rows = [
+        c
+        for c in await cash_balance_repo.get_latest_per_account_currency(workspace_id)
+        if c.account_id in brokerage_by_id
+    ]
+
+    # Build FX lookup covering both spending and investing cash currencies → reporting
     fx_lookup: dict[tuple[str, str], object] = {}
-    if reporting_currency and raw_balances:
-        spending_currencies = {b["currency_code"] for b in raw_balances}
-        foreign = {c for c in spending_currencies if c != reporting_currency}
+    if reporting_currency:
+        currencies = {b["currency_code"].upper() for b in raw_balances} | {
+            c.currency.upper() for c in cash_rows
+        }
+        foreign = {c for c in currencies if c != reporting_currency}
         if foreign:
             pairs = [(c, reporting_currency) for c in foreign] + [
                 (reporting_currency, c) for c in foreign
@@ -408,6 +423,27 @@ async def get_net_worth(
     if investing_cash is not None and holdings_value is not None:
         investing_total = investing_cash + holdings_value
 
+    # Build the per-account investing cash breakdown
+    investing_accounts: list[InvestingAccountBalance] = []
+    for cash in cash_rows:
+        account = brokerage_by_id[cash.account_id]
+        currency_code = cash.currency.upper()
+        balance_in_rc = (
+            _convert_to_reporting(cash.balance, currency_code, reporting_currency, fx_lookup)
+            if reporting_currency
+            else None
+        )
+        investing_accounts.append(
+            InvestingAccountBalance(
+                account_public_id=account.public_id,
+                account_name=account.name,
+                currency_code=currency_code,
+                balance=cash.balance,
+                balance_in_reporting_currency=balance_in_rc,
+            )
+        )
+    investing_accounts.sort(key=lambda a: (a.account_name.lower(), a.currency_code))
+
     total_net_worth: Decimal | None = None
     if spending_convertible and reporting_currency and investing_total is not None:
         total_net_worth = spending_total + investing_total
@@ -434,6 +470,7 @@ async def get_net_worth(
         reporting_currency=effective_reporting,
         spending_accounts=spending_accounts,
         spending_total=spending_total if (spending_convertible and reporting_currency) else None,
+        investing_accounts=investing_accounts,
         investing_cash_total=investing_cash,
         holdings_value=holdings_value,
         investing_total=investing_total,

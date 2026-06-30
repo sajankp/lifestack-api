@@ -267,10 +267,21 @@ class SpendingAccountBalance(BaseModel):
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 
 
+class InvestingAccountBalance(BaseModel):
+    account_public_id: uuid.UUID
+    account_name: str
+    currency_code: str
+    balance: Decimal
+    balance_in_reporting_currency: Decimal | None = None
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
 class NetWorthResponse(BaseModel):
     reporting_currency: str | None
     spending_accounts: list[SpendingAccountBalance]
     spending_total: Decimal | None
+    investing_accounts: list[InvestingAccountBalance]
     investing_cash_total: Decimal | None
     holdings_value: Decimal | None
     investing_total: Decimal | None
