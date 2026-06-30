@@ -115,6 +115,7 @@ def _populate_valuation_fields(
 
     data["current_price"] = current_price
     data["current_value"] = current_value
+    data["book_value"] = book_value
     data["gain_loss"] = gain_loss
     data["gain_loss_pct"] = gain_loss_pct
 

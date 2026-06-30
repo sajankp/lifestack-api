@@ -116,6 +116,9 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     assert holding["avg_cost"] == "150.25"
     assert holding["currency"] == "USD"
     assert holding["account_id"] == account_map["brokerage"]
+    # book_value is server-computed (quantity * avg_cost) so the frontend
+    # doesn't have to re-derive it with float arithmetic.
+    assert Decimal(holding["book_value"]) == Decimal("10.50000000") * Decimal("150.25")
 
     # Update holding
     update_res = await client.patch(
