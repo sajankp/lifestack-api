@@ -337,3 +337,80 @@ class InvestingOrder(SQLModel, table=True):
         sa.Index("ix_investing_orders_workspace_occurred_at", "workspace_id", "occurred_at"),
         sa.Index("ix_investing_orders_workspace_import", "workspace_id", "source_import_id"),
     )
+
+
+class OrderLot(SQLModel, table=True):
+    """A FIFO cost-basis lot created by a single buy order.
+
+    One row per buy order on a holding. ``remaining_quantity`` is fully
+    recomputed (deleted and recreated) every time the holding's order
+    history is replayed — see ``InvestingOrderService._recompute_holding_from_orders``.
+    """
+
+    __tablename__ = "investing_order_lots"
+
+    id: int | None = Field(default=None, primary_key=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    holding_id: int = Field(index=True)
+    buy_order_id: int = Field(index=True)
+
+    original_quantity: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=8))
+    remaining_quantity: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=8))
+    cost_per_unit: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=6))
+    acquired_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["holding_id"],
+            ["investing_holdings.id"],
+            name="fk_investing_order_lots_holding",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["buy_order_id"],
+            ["investing_orders.id"],
+            name="fk_investing_order_lots_buy_order",
+            ondelete="CASCADE",
+        ),
+        sa.Index("ix_investing_order_lots_holding_acquired_at", "holding_id", "acquired_at"),
+    )
+
+
+class LotConsumption(SQLModel, table=True):
+    """Records that a sell order consumed (part of) a FIFO lot.
+
+    Audit trail of which lots a sell drew from; recreated alongside
+    ``OrderLot`` rows on every replay.
+    """
+
+    __tablename__ = "investing_lot_consumptions"
+
+    id: int | None = Field(default=None, primary_key=True)
+    sell_order_id: int = Field(index=True)
+    lot_id: int = Field(index=True)
+
+    quantity_consumed: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=8))
+    cost_per_unit: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=6))
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["sell_order_id"],
+            ["investing_orders.id"],
+            name="fk_investing_lot_consumptions_sell_order",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["lot_id"],
+            ["investing_order_lots.id"],
+            name="fk_investing_lot_consumptions_lot",
+            ondelete="CASCADE",
+        ),
+    )
