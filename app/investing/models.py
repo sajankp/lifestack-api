@@ -142,7 +142,9 @@ class Holding(SQLModel, table=True):
     symbol: str = Field(max_length=20)
     account_id: int = Field(index=True)
     quantity: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=8))
-    avg_cost: Decimal = Field(sa_type=sa.Numeric(precision=12, scale=2))
+    # 6 dp to match OrderLot.cost_per_unit and the FIFO replay's avg_cost
+    # output; storing 2 dp truncated low-NAV/high-qty cost basis (spec-046).
+    avg_cost: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=6))
     currency: str = Field(max_length=10)
     source_type: str = Field(default="manual", sa_type=sa.String(length=32), index=True)
     source_ref: str | None = Field(default=None, max_length=255)

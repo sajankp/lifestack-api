@@ -113,7 +113,7 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     holding = next(h for h in holdings_res.json()["items"] if h["public_id"] == holding_id)
     assert holding["symbol"] == "AAPL"
     assert holding["quantity"] == "10.50000000"
-    assert holding["avg_cost"] == "150.25"
+    assert holding["avg_cost"] == "150.250000"
     assert holding["currency"] == "USD"
     assert holding["account_id"] == account_map["brokerage"]
     # book_value is server-computed (quantity * avg_cost) so the frontend
@@ -131,7 +131,7 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     updated = update_res.json()
     assert updated["symbol"] == "AAPL2"
     assert updated["quantity"] == "10.50000000"
-    assert updated["avg_cost"] == "150.25"
+    assert updated["avg_cost"] == "150.250000"
 
     # Create cash balance
     create_cash = {
@@ -152,9 +152,9 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     assert summary_res.status_code == 200
     summary = summary_res.json()
     assert summary["holdings_count"] == 1
-    assert summary["portfolio_value"] == "1577.6250000000"
+    assert summary["portfolio_value"] == "1577.62500000000000"
     assert summary["cash_total"] == "1000.00"
-    assert summary["currency_breakdown"]["USD"] == "2577.6250000000"
+    assert summary["currency_breakdown"]["USD"] == "2577.62500000000000"
     assert summary["daily_change"] is None
     assert summary["reporting_currency"] == "USD"
     assert summary["valuation_status"] == "cost_basis_fallback"
@@ -1592,7 +1592,7 @@ async def test_investing_summary_market_price_and_daily_change(client: AsyncClie
     summary_res = await client.get("/v1/investing/summary")
     assert summary_res.status_code == 200
     assert summary_res.json()["valuation_status"] == "cost_basis_fallback"
-    assert summary_res.json()["portfolio_value"] == "2000.0000000000"
+    assert summary_res.json()["portfolio_value"] == "2000.00000000000000"
 
     # Fetch DB ids
     async with postgres.async_session_maker() as session:

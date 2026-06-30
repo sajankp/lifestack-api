@@ -330,6 +330,85 @@ async def test_buy_after_selling_all_starts_a_fresh_lot():
 
 
 # ---------------------------------------------------------------------------
+# Fee capitalization and book-value precision (spec-046)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_buy_capitalizes_brokerage_into_avg_cost():
+    svc = _make_service(existing_holding=None, cash_balance=Decimal("10000"))
+    order_in = _make_order_create(
+        order_type=OrderType.buy, symbol="AAPL", quantity="10", price="150.00", fee="5"
+    )
+
+    await svc.place_order(WS, USER, order_in)
+
+    created = svc.holding_repository.create.call_args[0][0]
+    # cost basis = (10 × 150 + 5 brokerage) / 10 = 150.50, not the raw 150.
+    assert created.avg_cost == Decimal("150.500000")
+    # book value the router will report = qty × avg_cost = net_amount paid.
+    assert created.quantity * created.avg_cost == Decimal("1505.000000")
+
+
+@pytest.mark.asyncio
+async def test_buy_capitalizes_all_fee_types():
+    svc = _make_service(existing_holding=None, cash_balance=Decimal("10000"))
+    order_in = InvestingOrderCreate(
+        account_id=ACCOUNT_PUB,
+        order_type=OrderType.buy,
+        symbol="AAPL",
+        quantity=Decimal("10"),
+        price_per_unit=Decimal("150.00"),
+        currency="USD",
+        brokerage_fee=Decimal("1.99"),
+        tax_amount=Decimal("0.50"),
+        other_fees=Decimal("0.25"),
+        occurred_at=datetime.now(UTC),
+    )
+
+    await svc.place_order(WS, USER, order_in)
+
+    created = svc.holding_repository.create.call_args[0][0]
+    # (150 + (1.99 + 0.50 + 0.25)/10) = 150.274
+    assert created.avg_cost == Decimal("150.274000")
+
+
+@pytest.mark.asyncio
+async def test_sell_nets_fees_from_realized_gain():
+    prior_buy = _make_order(id=1, order_type="buy", quantity="10", price="150", occurred_at=EARLY)
+    existing = _make_holding(qty="10", avg_cost="150.00")
+    svc = _make_service(existing_holding=existing, existing_orders=[prior_buy])
+    order_in = _make_order_create(
+        order_type=OrderType.sell, symbol="AAPL", quantity="3", price="180.00", fee="2"
+    )
+
+    created = await svc.place_order(WS, USER, order_in)
+
+    # gross realized = 3 × (180 - 150) = 90; sell brokerage of 2 reduces it.
+    assert created.realized_gain_loss == Decimal("88.00")
+    # avg_cost_at_sale is the (fee-inclusive) buy cost of consumed units — the
+    # prior buy had no fees, so 150 — sell-side fees do not raise it.
+    assert created.avg_cost_at_sale == Decimal("150.000000")
+
+
+@pytest.mark.asyncio
+async def test_buy_preserves_sub_two_decimal_cost_precision():
+    # Low-NAV / high-qty mutual fund: 2-dp avg_cost would round 9.0758 → 9.08
+    # and inflate book value. Cost basis must keep full precision.
+    svc = _make_service(existing_holding=None, cash_balance=Decimal("100000"))
+    order_in = _make_order_create(
+        order_type=OrderType.buy, symbol="MF", quantity="8924.397", price="9.0758"
+    )
+
+    await svc.place_order(WS, USER, order_in)
+
+    created = svc.holding_repository.create.call_args[0][0]
+    assert created.avg_cost == Decimal("9.075800")
+    # book value tracks the precise NAV (≈80,996), not 8924.397 × 9.08 = 81,033.52.
+    assert created.quantity * created.avg_cost == Decimal("80996.0422926")
+
+
+# ---------------------------------------------------------------------------
 # FIFO lot persistence (OrderLot / LotConsumption) — spec-044
 # ---------------------------------------------------------------------------
 
