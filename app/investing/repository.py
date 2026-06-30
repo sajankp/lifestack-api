@@ -1,8 +1,8 @@
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -252,6 +252,21 @@ class InvestingOrderRepository:
         for o in orders:
             await self.session.refresh(o)
         return orders
+
+    async def rename_symbol(
+        self, workspace_id: int, account_id: int, old_symbol: str, new_symbol: str
+    ) -> int:
+        result = await self.session.execute(
+            update(InvestingOrder)
+            .where(
+                InvestingOrder.workspace_id == workspace_id,
+                InvestingOrder.account_id == account_id,
+                InvestingOrder.symbol == old_symbol.upper(),
+            )
+            .values(symbol=new_symbol.upper(), instrument_id=None, updated_at=datetime.now(UTC))
+        )
+        await self.session.flush()
+        return result.rowcount or 0
 
 
 class LotRepository:

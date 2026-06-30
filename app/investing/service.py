@@ -203,6 +203,7 @@ class HoldingService:
         account_repo: AccountRepository | None = None,
         currency_repo: CurrencyRepository | None = None,
         holding_price_repo: HoldingPriceRepository | None = None,
+        order_repo: InvestingOrderRepository | None = None,
     ):
         self.repository = repository
         self.instrument_repo = instrument_repo
@@ -210,6 +211,7 @@ class HoldingService:
         self.account_repo = account_repo
         self.currency_repo = currency_repo
         self.holding_price_repo = holding_price_repo
+        self.order_repo = order_repo
 
     async def _resolve_or_create_instrument(
         self,
@@ -311,6 +313,18 @@ class HoldingService:
         symbol_changed = "symbol" in update_data and update_data["symbol"] != holding.symbol
         type_changed = requested_type is not None
 
+        if (
+            holding.source_type == "order"
+            and symbol_changed
+            and ("quantity" in update_data or "avg_cost" in update_data)
+        ):
+            raise ValidationError(
+                detail=(
+                    "Quantity and average cost are computed from orders for this holding "
+                    "and cannot be edited directly. Edit the underlying orders instead."
+                )
+            )
+
         if symbol_changed or type_changed:
             next_symbol = update_data.get("symbol") or holding.symbol
             if symbol_changed:
@@ -320,6 +334,11 @@ class HoldingService:
                 if duplicate is not None and duplicate.id != holding.id:
                     raise ConflictError(
                         detail="A holding already exists for this symbol/account in this workspace"
+                    )
+
+                if holding.source_type == "order" and self.order_repo is not None:
+                    await self.order_repo.rename_symbol(
+                        workspace_id, holding.account_id, holding.symbol, next_symbol
                     )
 
             if (
