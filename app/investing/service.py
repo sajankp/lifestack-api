@@ -169,6 +169,22 @@ def _snapshot_cash_balance(cash: CashBalance) -> dict:
     }
 
 
+def _snapshot_order(order: InvestingOrder) -> dict:
+    return {
+        "order_type": order.order_type,
+        "symbol": order.symbol,
+        "quantity": str(order.quantity),
+        "price_per_unit": str(order.price_per_unit),
+        "brokerage_fee": str(order.brokerage_fee),
+        "tax_amount": str(order.tax_amount),
+        "other_fees": str(order.other_fees),
+        "net_amount": str(order.net_amount),
+        "occurred_at": order.occurred_at.isoformat(),
+        "exchange_name": order.exchange_name,
+        "notes": order.notes,
+    }
+
+
 class HoldingService:
     def __init__(
         self,
@@ -1995,6 +2011,7 @@ class InvestingOrderService:
             raise NotFoundError(
                 detail=f"Order with id {order_public_id} not found in this workspace"
             )
+        before_snap = _snapshot_order(order)
 
         # Resolve updated values (None means keep existing)
         new_order_type = (
@@ -2114,6 +2131,8 @@ class InvestingOrderService:
         )
 
         if audit_logger:
+            after_snap = _snapshot_order(order)
+            changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
             await audit_logger.log(
                 workspace_id=workspace_id,
                 actor_id=user_id,
@@ -2121,7 +2140,12 @@ class InvestingOrderService:
                 module="investing",
                 entity_type="investing_order",
                 entity_id=order.id or 0,
-                details={"entity_public_id": str(order.public_id)},
+                details={
+                    "entity_public_id": str(order.public_id),
+                    "before": before_snap,
+                    "after": after_snap,
+                    "changed_fields": changed_fields,
+                },
             )
 
         return order

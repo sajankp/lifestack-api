@@ -7,10 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.core.audit import AuditLogger
 from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import Account
 from app.investing.models import Holding, InvestingOrder, OrderType
-from app.investing.schemas import InvestingOrderCreate
+from app.investing.schemas import InvestingOrderCreate, InvestingOrderUpdate
 from app.investing.service import InvestingOrderService
 
 # ---------------------------------------------------------------------------
@@ -489,6 +490,49 @@ async def test_delete_order_recomputes_avg_cost_chronologically():
     sell = next(o for o in history if o.order_type == "sell")
     assert sell.avg_cost_at_sale == Decimal("100.000000")
     assert sell.realized_gain_loss == Decimal("500.00")
+
+
+# ---------------------------------------------------------------------------
+# update_order
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_order_writes_valid_audit_log_with_before_and_after():
+    target = _make_order(
+        id=1,
+        order_type="buy",
+        quantity="10",
+        price="150",
+        occurred_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    svc = _make_service(existing_holding=_make_holding(qty="10", avg_cost="150.00"))
+    svc.order_repository.get_by_public_id = AsyncMock(return_value=target)
+    svc.order_repository.list_by_holding = AsyncMock(return_value=[target])
+    svc.order_repository.save = AsyncMock(side_effect=lambda o: o)
+    svc.holding_repository.get_by_unique_key = AsyncMock(
+        return_value=_make_holding(qty="10", avg_cost="150.00")
+    )
+
+    session = MagicMock()
+    session.add = MagicMock()
+    session.flush = AsyncMock()
+    audit_logger = AuditLogger(session)
+
+    updated = await svc.update_order(
+        WS,
+        USER,
+        target.public_id,
+        InvestingOrderUpdate(quantity=Decimal("12")),
+        audit_logger=audit_logger,
+    )
+
+    assert updated.quantity == Decimal("12")
+    session.add.assert_called_once()
+    audit_log = session.add.call_args[0][0]
+    assert audit_log.details["before"]["quantity"] == "10"
+    assert audit_log.details["after"]["quantity"] == "12"
+    assert "quantity" in audit_log.details["changed_fields"]
 
 
 # ---------------------------------------------------------------------------
