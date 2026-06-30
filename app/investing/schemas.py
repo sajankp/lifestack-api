@@ -46,6 +46,7 @@ class HoldingResponse(BaseModel):
 
     current_price: Decimal | None = None
     current_value: Decimal | None = None
+    book_value: Decimal | None = None
     gain_loss: Decimal | None = None
     gain_loss_pct: Decimal | None = None
 
