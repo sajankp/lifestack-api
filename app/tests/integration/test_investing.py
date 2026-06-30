@@ -120,15 +120,18 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     # doesn't have to re-derive it with float arithmetic.
     assert Decimal(holding["book_value"]) == Decimal("10.50000000") * Decimal("150.25")
 
-    # Update holding
+    # Update holding — this holding is order-derived, so quantity/avg_cost are
+    # computed from orders and not directly editable (see spec-045); symbol and
+    # instrument_type remain editable.
     update_res = await client.patch(
         f"/v1/investing/holdings/{holding_id}",
-        json={"quantity": "12.00000000", "avg_cost": "140.00"},
+        json={"symbol": "AAPL2", "instrument_type": "stock"},
     )
     assert update_res.status_code == 200
     updated = update_res.json()
-    assert updated["quantity"] == "12.00000000"
-    assert updated["avg_cost"] == "140.00"
+    assert updated["symbol"] == "AAPL2"
+    assert updated["quantity"] == "10.50000000"
+    assert updated["avg_cost"] == "150.25"
 
     # Create cash balance
     create_cash = {
@@ -149,9 +152,9 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
     assert summary_res.status_code == 200
     summary = summary_res.json()
     assert summary["holdings_count"] == 1
-    assert summary["portfolio_value"] == "1680.0000000000"
+    assert summary["portfolio_value"] == "1577.6250000000"
     assert summary["cash_total"] == "1000.00"
-    assert summary["currency_breakdown"]["USD"] == "2680.0000000000"
+    assert summary["currency_breakdown"]["USD"] == "2577.6250000000"
     assert summary["daily_change"] is None
     assert summary["reporting_currency"] == "USD"
     assert summary["valuation_status"] == "cost_basis_fallback"
@@ -175,7 +178,8 @@ async def test_investing_crud_summary_and_audit(client: AsyncClient):
             .scalars()
             .one()
         )
-        assert db_holding.quantity == Decimal("12.00000000")
+        assert db_holding.quantity == Decimal("10.50000000")
+        assert db_holding.symbol == "AAPL2"
         assert db_cash.balance == Decimal("1000.00")
 
         # Verify account matches by DB ID
@@ -1257,6 +1261,210 @@ async def test_update_holding_symbol_deletes_existing_price_history(client: Asyn
             .all()
         )
         assert prices == []
+
+
+@pytest.mark.asyncio
+async def test_update_holding_symbol_renames_linked_orders(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="symbol-rename-orders@example.com",
+        username="symbol-rename-orders",
+        password="TestPass123!",
+    )
+    account_id = account_map["brokerage"]
+    created_id = await _create_holding_via_order(
+        client, account_id, "NEFTPHARMA", "12.00000000", "25.00", "INR", "etf"
+    )
+    # A second buy order against the same (wrong) symbol so the cascade is exercised
+    # against more than one order row.
+    cash_res = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_id,
+            "balance": "1000.00",
+            "currency": "INR",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert cash_res.status_code == 201, cash_res.text
+    second_order_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": account_id,
+            "order_type": "buy",
+            "symbol": "NEFTPHARMA",
+            "quantity": "3.00000000",
+            "price_per_unit": "26.00",
+            "currency": "INR",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "instrument_type": "etf",
+        },
+    )
+    assert second_order_res.status_code == 201, second_order_res.text
+
+    old_orders_res = await client.get(
+        "/v1/investing/orders/by-holding/NEFTPHARMA", params={"account_id": account_id}
+    )
+    assert len(old_orders_res.json()) == 2
+
+    response = await client.patch(
+        f"/v1/investing/holdings/{created_id}",
+        json={"symbol": "PHARMABEES", "instrument_type": "etf"},
+    )
+    assert response.status_code == 200
+    assert response.json()["symbol"] == "PHARMABEES"
+
+    renamed_orders_res = await client.get(
+        "/v1/investing/orders/by-holding/PHARMABEES", params={"account_id": account_id}
+    )
+    assert renamed_orders_res.status_code == 200
+    renamed_orders = renamed_orders_res.json()
+    assert len(renamed_orders) == 2
+    assert {o["symbol"] for o in renamed_orders} == {"PHARMABEES"}
+
+    stale_orders_res = await client.get(
+        "/v1/investing/orders/by-holding/NEFTPHARMA", params={"account_id": account_id}
+    )
+    assert stale_orders_res.json() == []
+
+
+@pytest.mark.asyncio
+async def test_update_holding_symbol_conflict_leaves_orders_untouched(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="symbol-rename-conflict@example.com",
+        username="symbol-rename-conflict",
+        password="TestPass123!",
+    )
+    account_id = account_map["brokerage"]
+    created_id = await _create_holding_via_order(
+        client, account_id, "TARGETSYM", "5.00000000", "10.00", "USD", "stock"
+    )
+    await _create_holding_via_order(
+        client, account_id, "TAKENSYM", "1.00000000", "1.00", "USD", "stock"
+    )
+
+    response = await client.patch(
+        f"/v1/investing/holdings/{created_id}",
+        json={"symbol": "TAKENSYM", "instrument_type": "stock"},
+    )
+    assert response.status_code == 409
+
+    untouched_orders_res = await client.get(
+        "/v1/investing/orders/by-holding/TARGETSYM", params={"account_id": account_id}
+    )
+    assert len(untouched_orders_res.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_update_order_holding_rejects_quantity_and_avg_cost_edit(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="symbol-rename-reject-qty@example.com",
+        username="symbol-rename-reject-qty",
+        password="TestPass123!",
+    )
+    account_id = account_map["brokerage"]
+    created_id = await _create_holding_via_order(
+        client, account_id, "REJECTQTY", "5.00000000", "10.00", "USD", "stock"
+    )
+
+    response = await client.patch(
+        f"/v1/investing/holdings/{created_id}",
+        json={"symbol": "REJECTQTY2", "instrument_type": "stock", "quantity": "99.00000000"},
+    )
+    assert response.status_code == 422
+
+    holding_res = await client.get("/v1/investing/holdings")
+    holding = next(h for h in holding_res.json()["items"] if h["public_id"] == created_id)
+    assert holding["symbol"] == "REJECTQTY"
+    assert Decimal(holding["quantity"]) == Decimal("5.00000000")
+
+
+@pytest.mark.asyncio
+async def test_update_order_holding_rejects_quantity_edit_without_symbol_change(
+    client: AsyncClient,
+):
+    """Regression test: the quantity/avg_cost guard must not be bypassable by leaving
+    the symbol unchanged (only the instrument_type or no other field changing)."""
+    account_map = await _register_and_login(
+        client,
+        email="symbol-rename-reject-qty-only@example.com",
+        username="symbol-rename-reject-qty-only",
+        password="TestPass123!",
+    )
+    account_id = account_map["brokerage"]
+    created_id = await _create_holding_via_order(
+        client, account_id, "REJECTQTYONLY", "5.00000000", "10.00", "USD", "stock"
+    )
+
+    response = await client.patch(
+        f"/v1/investing/holdings/{created_id}",
+        json={"quantity": "99.00000000"},
+    )
+    assert response.status_code == 422
+
+    holding_res = await client.get("/v1/investing/holdings")
+    holding = next(h for h in holding_res.json()["items"] if h["public_id"] == created_id)
+    assert Decimal(holding["quantity"]) == Decimal("5.00000000")
+
+
+@pytest.mark.asyncio
+async def test_update_holding_symbol_then_new_order_recomputes_renamed_holding(
+    client: AsyncClient,
+):
+    account_map = await _register_and_login(
+        client,
+        email="symbol-rename-recompute@example.com",
+        username="symbol-rename-recompute",
+        password="TestPass123!",
+    )
+    account_id = account_map["brokerage"]
+    created_id = await _create_holding_via_order(
+        client, account_id, "OLDSYM", "5.00000000", "10.00", "USD", "stock"
+    )
+
+    response = await client.patch(
+        f"/v1/investing/holdings/{created_id}",
+        json={"symbol": "NEWSYM", "instrument_type": "stock"},
+    )
+    assert response.status_code == 200
+
+    cash_res = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_id,
+            "balance": "1000.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert cash_res.status_code == 201, cash_res.text
+    second_order_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": account_id,
+            "order_type": "buy",
+            "symbol": "NEWSYM",
+            "quantity": "5.00000000",
+            "price_per_unit": "12.00",
+            "currency": "USD",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "instrument_type": "stock",
+        },
+    )
+    assert second_order_res.status_code == 201, second_order_res.text
+
+    holdings_res = await client.get("/v1/investing/holdings")
+    matching = [
+        h
+        for h in holdings_res.json()["items"]
+        if h["account_id"] == account_id and h["symbol"] in ("OLDSYM", "NEWSYM")
+    ]
+    assert len(matching) == 1
+    assert matching[0]["public_id"] == created_id
+    assert matching[0]["symbol"] == "NEWSYM"
+    assert Decimal(matching[0]["quantity"]) == Decimal("10.00000000")
 
 
 @pytest.mark.asyncio

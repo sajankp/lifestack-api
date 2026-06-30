@@ -281,6 +281,12 @@ async def get_finance_account_repo(
     return AccountRepository(session)
 
 
+async def get_investing_order_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> InvestingOrderRepository:
+    return InvestingOrderRepository(session)
+
+
 async def get_investing_holding_service(
     repo: HoldingRepository = Depends(get_investing_holding_repo),
     instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
@@ -288,6 +294,7 @@ async def get_investing_holding_service(
     account_repo: AccountRepository = Depends(get_finance_account_repo),
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
     holding_price_repo: HoldingPriceRepository = Depends(get_investing_holding_price_repo),
+    order_repo: InvestingOrderRepository = Depends(get_investing_order_repo),
 ) -> HoldingService:
     return HoldingService(
         repo,
@@ -296,6 +303,7 @@ async def get_investing_holding_service(
         account_repo,
         currency_repo,
         holding_price_repo,
+        order_repo,
     )
 
 
@@ -376,12 +384,6 @@ async def get_investing_performance_service(
         fx_rate_repo,
         instrument_repo,
     )
-
-
-async def get_investing_order_repo(
-    session: AsyncSession = Depends(get_db_session),
-) -> InvestingOrderRepository:
-    return InvestingOrderRepository(session)
 
 
 async def get_investing_lot_repo(
