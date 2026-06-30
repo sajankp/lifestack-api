@@ -11,7 +11,7 @@ from app.spending.schemas import SourceMetadataResponse
 class HoldingUpdate(BaseModel):
     symbol: str | None = Field(default=None, min_length=1, max_length=20)
     quantity: Decimal | None = Field(default=None, gt=0, decimal_places=8)
-    avg_cost: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    avg_cost: Decimal | None = Field(default=None, ge=0, decimal_places=6)
     currency: str | None = Field(default=None, min_length=1, max_length=10)
     instrument_type: InstrumentType | None = None
 

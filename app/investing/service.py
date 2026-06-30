@@ -1671,6 +1671,26 @@ class InvestingSummaryService:
 AVG_COST_PRECISION = Decimal("0.000001")
 
 
+def _order_total_fees(order: InvestingOrder) -> Decimal:
+    """Sum of all transaction costs recorded on an order."""
+    return order.brokerage_fee + order.tax_amount + order.other_fees
+
+
+def _effective_buy_cost_per_unit(order: InvestingOrder) -> Decimal:
+    """Per-unit cost basis of a buy, with fees capitalized into the lot.
+
+    ``cost = price_per_unit + total_fees / quantity`` — the broker/tax
+    convention of folding buy-side brokerage, tax, and other fees into the
+    asset's cost of acquisition (Section 48, Income-tax Act 1961). See
+    spec-046. Sell-side fees are handled separately (they reduce realized
+    proceeds, not the cost of units sold).
+    """
+    fees = _order_total_fees(order)
+    if fees == 0 or order.quantity == 0:
+        return order.price_per_unit
+    return (order.price_per_unit + fees / order.quantity).quantize(AVG_COST_PRECISION)
+
+
 @dataclass
 class _OpenLot:
     """In-memory FIFO lot state during a ``_replay_orders`` pass."""
@@ -1792,7 +1812,7 @@ class InvestingOrderService:
                     buy_order_id=order.id,
                     original_quantity=order.quantity,
                     remaining=order.quantity,
-                    cost_per_unit=order.price_per_unit,
+                    cost_per_unit=_effective_buy_cost_per_unit(order),
                     acquired_at=order.occurred_at,
                 )
                 queue.append(lot)
@@ -1827,6 +1847,10 @@ class InvestingOrderService:
                     if lot.remaining == 0:
                         queue.popleft()
                 if record_sells:
+                    # Sell-side fees reduce realized proceeds (they are not
+                    # added to the cost of the units sold). avg_cost_at_sale
+                    # stays the fee-inclusive buy cost of the consumed lots.
+                    realized -= _order_total_fees(order)
                     order.realized_gain_loss = realized.quantize(MONEY_QUANT)
                     order.avg_cost_at_sale = (cost_consumed / order.quantity).quantize(
                         AVG_COST_PRECISION
