@@ -378,7 +378,9 @@ async def get_net_worth(
     # Build FX lookup covering both spending and investing cash currencies → reporting
     fx_lookup: dict[tuple[str, str], object] = {}
     if reporting_currency:
-        currencies = {b["currency_code"] for b in raw_balances} | {c.currency for c in cash_rows}
+        currencies = {b["currency_code"].upper() for b in raw_balances} | {
+            c.currency.upper() for c in cash_rows
+        }
         foreign = {c for c in currencies if c != reporting_currency}
         if foreign:
             pairs = [(c, reporting_currency) for c in foreign] + [
@@ -425,8 +427,9 @@ async def get_net_worth(
     investing_accounts: list[InvestingAccountBalance] = []
     for cash in cash_rows:
         account = brokerage_by_id[cash.account_id]
+        currency_code = cash.currency.upper()
         balance_in_rc = (
-            _convert_to_reporting(cash.balance, cash.currency, reporting_currency, fx_lookup)
+            _convert_to_reporting(cash.balance, currency_code, reporting_currency, fx_lookup)
             if reporting_currency
             else None
         )
@@ -434,12 +437,12 @@ async def get_net_worth(
             InvestingAccountBalance(
                 account_public_id=account.public_id,
                 account_name=account.name,
-                currency_code=cash.currency,
+                currency_code=currency_code,
                 balance=cash.balance,
                 balance_in_reporting_currency=balance_in_rc,
             )
         )
-    investing_accounts.sort(key=lambda a: a.account_name.lower())
+    investing_accounts.sort(key=lambda a: (a.account_name.lower(), a.currency_code))
 
     total_net_worth: Decimal | None = None
     if spending_convertible and reporting_currency and investing_total is not None:

@@ -211,7 +211,7 @@ class InvestingOrderRepository:
         base = select(InvestingOrder).where(InvestingOrder.workspace_id == workspace_id)
         if symbol is not None:
             base = base.where(InvestingOrder.symbol == symbol.upper())
-        if search:
+        if search and search.strip():
             like = f"%{search.strip()}%"
             # Match the order's own symbol or the joined instrument's name so a
             # mutual fund with a numeric folio symbol is searchable by name.
