@@ -36,10 +36,13 @@ Collapse Investing's top-level tabs from **Holdings · Orders · Cash Balances �
 
 Everything is scoped by the single account filter so the sections read as one connected story rather than four independent lists.
 
-### Phase 2 (follow-up, not implemented here)
+### Phase 2 (follow-up, not implemented here) — deferred deliberately
 
 - Merge orders + transfers into a single chronological **activity feed** per account.
-- Extend the reconciliation projected-balance computation to explicitly account for order cash impact, and consider moving/ sharing the reconciliation summary so brokerage and spending reconcile through one path.
+- **Orders in reconciliation is blocked on multi-currency reconciliation.** The projected-balance formula (`repository.py`, `income − expense + transfer_in − transfer_out`) is not currency-aware: the snapshot side takes the latest `CashBalance` for the account with no currency filter, and the projected side sums amounts across currencies without FX conversion. Adding a same-currency-only orders term onto this base produces a more precise-looking number on an unsound base. The correct fix is to reconcile **per (account, currency)** across transactions, transfers, orders and snapshots — a project of its own, to be specced separately. Until then:
+  - The Cash-tab reconciliation panel carries an explicit caveat that it reflects transactions & transfers only (trades and cross-currency not included), so brokerage/multi-currency figures are not presented as authoritative.
+  - Order cash impact (`cash_delta = -net_amount` for buy, `+net_amount` for sell — already applied to snapshots in `investing/service.py`) will be added to the projected side once reconciliation is per-currency.
+- Decision recorded: reconcile against the **latest snapshot of any `trigger_type`** (current behaviour), not a "last manual snapshot". Snapshots are auto-written by orders/transfers, so the latest-of-any-kind already embeds those deltas; the discrepancy then surfaces genuinely-unmodelled events (dividends, interest, untracked fees) that a user captures via a manual snapshot edit.
 
 ## Frontend impact (`lifestack-web`)
 

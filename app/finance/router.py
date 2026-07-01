@@ -155,12 +155,13 @@ async def get_account_reconciliation(
     """Compare the projected spending ledger balance against the latest cash balance snapshot.
 
     Returns:
-    - ``projected_balance``: income - expenses + transfer_in - transfer_out (all-time)
+    - ``projected_balance``: income - expenses + transfer_in - transfer_out
+      + (sell net - buy net) (all-time)
     - ``snapshot_balance``: the most recent investing cash balance snapshot, or null
     - ``discrepancy``: projected - snapshot (positive = ledger > snapshot, negative = snapshot > ledger)
-    - ``transaction_count`` / ``transfer_count``: entry breakdown
+    - ``transaction_count`` / ``transfer_count`` / ``order_count``: entry breakdown
 
-    A discrepancy indicates unrecorded transactions or transfers on one side.
+    A discrepancy indicates unrecorded transactions, transfers or trades on one side.
     A null snapshot means no cash balance has been recorded yet for this account.
     """
     return await account_service.get_reconciliation_summary(workspace_id, account_id)

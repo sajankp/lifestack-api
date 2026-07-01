@@ -238,6 +238,7 @@ class AccountService:
             projected,
             tx_count,
             transfer_count,
+            order_count,
             snapshot_balance,
             snapshot_as_of,
         ) = await self.account_repository.get_reconciliation_summary(workspace_id, account.id)
@@ -254,6 +255,7 @@ class AccountService:
             discrepancy=discrepancy,
             transaction_count=tx_count,
             transfer_count=transfer_count,
+            order_count=order_count,
         )
 
 

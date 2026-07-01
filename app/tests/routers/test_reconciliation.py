@@ -439,3 +439,58 @@ async def test_reconciliation_transfers_from_brokerage_to_bank(client: AsyncClie
     assert float(data["projected_balance"]) == 1500.0
     assert data["transaction_count"] == 0
     assert data["transfer_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_includes_investing_orders(client: AsyncClient):
+    """A buy order lowers the projected balance so brokerage reconciliation matches
+    the order-adjusted cash snapshot (spec-048). Before the fix, projected omitted
+    the trade and showed a false discrepancy equal to net trade flow."""
+    cookies = await _register_and_login(client, "recon_orders@example.com", "recon_orders")
+    bank_id = await _create_account(client, cookies, "Order Funding Bank", "bank")
+    brok_id = await _create_account(client, cookies, "Order Brokerage", "brokerage")
+
+    # Fund the brokerage with 1000 transferred in (writes ledger row + cash snapshot).
+    funded = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "investing",
+            "from_account_id": bank_id,
+            "to_account_id": brok_id,
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
+            "gross_amount": "1000.00",
+            "net_amount_received": "1000.00",
+            "occurred_at": "2026-06-01T10:00:00Z",
+        },
+        cookies=cookies,
+    )
+    assert funded.status_code == 201, funded.text
+
+    # Buy 2 @ 100 = net 200 (no fees); the order moves the snapshot 1000 -> 800.
+    order = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": brok_id,
+            "order_type": "buy",
+            "symbol": "AAPL",
+            "quantity": "2.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": "2026-06-02T10:00:00Z",
+        },
+        cookies=cookies,
+    )
+    assert order.status_code == 201, order.text
+
+    res = await client.get(f"/v1/finance/accounts/{brok_id}/reconciliation", cookies=cookies)
+    assert res.status_code == 200
+    data = res.json()
+
+    # projected = transfer_in 1000 - buy net 200 = 800; snapshot = 800 -> discrepancy 0
+    assert float(data["projected_balance"]) == 800.0
+    assert float(data["snapshot_balance"]) == 800.0
+    assert float(data["discrepancy"]) == 0.0
+    assert data["order_count"] == 1
+    assert data["transfer_count"] == 1

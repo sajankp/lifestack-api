@@ -17,7 +17,7 @@ from app.finance.models import (
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
 )
-from app.investing.models import CashBalance, Holding
+from app.investing.models import CashBalance, Holding, InvestingOrder
 from app.spending.models import SpendingTransaction
 
 
@@ -424,20 +424,52 @@ class AccountRepository:
 
     async def get_reconciliation_summary(
         self, workspace_id: int, account_id: int
-    ) -> tuple[Decimal, int, int, Decimal | None, "datetime | None"]:
-        """Return (projected_balance, tx_count, transfer_count, snapshot_balance, snapshot_as_of).
+    ) -> tuple[Decimal, int, int, int, Decimal | None, "datetime | None"]:
+        """Return (projected_balance, tx_count, transfer_count, order_count,
+        snapshot_balance, snapshot_as_of).
 
-        projected_balance is the transfer-inclusive ledger balance.
+        projected_balance = (income - expense) + (transfer_in - transfer_out)
+                          + (sell net - buy net)   ← investing order cash impact
         snapshot_balance is the most recent CashBalance.balance for this account,
         or None if no snapshot exists.
         """
         (
-            projected_balance,
+            ledger_balance,
             tx_count,
             transfer_count,
             _first,
             _last,
         ) = await self.get_spending_balance(workspace_id, account_id)
+
+        # Investing order cash impact: a buy removes net_amount (gross + fees)
+        # from the account's cash, a sell adds net_amount (gross - fees). Orders
+        # already move the cash *snapshot* (see investing/service.py), so the
+        # projected side must include them too — otherwise a brokerage account
+        # shows a false discrepancy equal to net trade flow. Summing unconverted
+        # is safe because a brokerage account holds a single currency (invariant;
+        # see docs/domain/cash-model-ledger-snapshots-reconciliation.md).
+        orders_row = await self.session.execute(
+            select(
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (InvestingOrder.order_type == "sell", InvestingOrder.net_amount),
+                            else_=-InvestingOrder.net_amount,
+                        )
+                    ),
+                    Decimal("0"),
+                ),
+                func.count(InvestingOrder.id),
+            ).where(
+                InvestingOrder.workspace_id == workspace_id,
+                InvestingOrder.account_id == account_id,
+            )
+        )
+        orders_result = orders_row.one()
+        orders_net = Decimal(str(orders_result[0] or "0"))
+        order_count = int(orders_result[1] or 0)
+
+        projected_balance = ledger_balance + orders_net
 
         snapshot_row = await self.session.execute(
             select(CashBalance.balance, CashBalance.as_of)
@@ -455,7 +487,14 @@ class AccountRepository:
             snapshot_balance = Decimal(str(snapshot[0]))
             snapshot_as_of = snapshot[1]
 
-        return projected_balance, tx_count, transfer_count, snapshot_balance, snapshot_as_of
+        return (
+            projected_balance,
+            tx_count,
+            transfer_count,
+            order_count,
+            snapshot_balance,
+            snapshot_as_of,
+        )
 
 
 class FinanceSettingRepository:

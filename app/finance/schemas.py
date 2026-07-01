@@ -231,6 +231,7 @@ class ReconciliationSummary(BaseModel):
 
     projected_balance = (income transactions - expense transactions)
                         + (transfer inflows - transfer outflows)
+                        + (sell order net - buy order net)
 
     discrepancy = projected_balance - snapshot_balance
       positive → ledger shows more than the snapshot (likely missing expense/transfer)
@@ -247,6 +248,7 @@ class ReconciliationSummary(BaseModel):
     discrepancy: Decimal | None  # projected - snapshot; None when no snapshot
     transaction_count: int
     transfer_count: int
+    order_count: int = 0
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 
