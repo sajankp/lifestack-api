@@ -322,6 +322,7 @@ async def get_investing_summary_service(
     fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
     holding_price_repo: HoldingPriceRepository = Depends(get_investing_holding_price_repo),
     snapshot_repo: PortfolioSnapshotRepository = Depends(get_investing_snapshot_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
 ) -> InvestingSummaryService:
     return InvestingSummaryService(
         holding_repo,
@@ -330,6 +331,7 @@ async def get_investing_summary_service(
         fx_rate_repo,
         holding_price_repo,
         snapshot_repo,
+        account_repo,
     )
 
 

@@ -50,6 +50,17 @@ async def _register_and_login(
     return account_map
 
 
+async def _create_brokerage_account(client: AsyncClient, name: str, currency: str) -> str:
+    """One account, one currency (spec-050): _register_and_login's account_map
+    accounts are all USD, so non-USD scenarios need their own dedicated account."""
+    res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": name, "account_type": "brokerage", "default_currency_code": currency},
+    )
+    assert res.status_code == 201, res.text
+    return res.json()["public_id"]
+
+
 async def _create_holding_via_order(
     client: AsyncClient,
     account_id: str,
@@ -471,6 +482,11 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
         password="TestPass123!",
     )
 
+    # One account, one currency (spec-050): GBP assets/cash need their own
+    # GBP-denominated brokerage account rather than sharing account_map["brokerage"]
+    # (USD) or the misleadingly-named but USD-default account_map["gbp-wallet"].
+    gbp_broker_id = await _create_brokerage_account(client, "GBP Brokerage", "GBP")
+
     # 1. Create USD asset via order on brokerage; then zero out the leftover cash
     await _create_holding_via_order(
         client, account_map["brokerage"], "AAPL", "10.00000000", "150.00", "usd"
@@ -484,14 +500,12 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
             "as_of": datetime.now(UTC).isoformat(),
         },
     )
-    # 2. Create GBP asset via order on brokerage; then zero out the leftover cash
-    await _create_holding_via_order(
-        client, account_map["brokerage"], "SAP", "5.00000000", "100.00", "gbp"
-    )
+    # 2. Create GBP asset via order on the GBP brokerage; then zero out the leftover cash
+    await _create_holding_via_order(client, gbp_broker_id, "SAP", "5.00000000", "100.00", "gbp")
     await client.post(
         "/v1/investing/cash-balances",
         json={
-            "account_id": account_map["brokerage"],
+            "account_id": gbp_broker_id,
             "balance": "0.00",
             "currency": "GBP",
             "as_of": datetime.now(UTC).isoformat(),
@@ -511,7 +525,7 @@ async def test_investing_multi_currency_summary(client: AsyncClient):
     await client.post(
         "/v1/investing/cash-balances",
         json={
-            "account_id": account_map["gbp-wallet"],
+            "account_id": gbp_broker_id,
             "balance": "500.00",
             "currency": "gbp",
             "as_of": datetime.now(UTC).isoformat(),
@@ -592,14 +606,19 @@ async def test_performance_summary_converts_multi_currency_snapshot(client: Asyn
         },
     )
 
+    # One account, one currency (spec-050): account_map's "gbp-wallet"/"eur-wallet"
+    # are USD-default despite their names, so this needs dedicated accounts.
+    gbp_broker_id = await _create_brokerage_account(client, "GBP Brokerage", "GBP")
+    eur_broker_id = await _create_brokerage_account(client, "EUR Brokerage", "EUR")
+
     gbp_holding_id = await _create_holding_via_order(
-        client, account_map["gbp-wallet"], "VUSA", "3.00000000", "10.00", "gbp"
+        client, gbp_broker_id, "VUSA", "3.00000000", "10.00", "gbp"
     )
     # Zero out the order's leftover GBP cash
     await client.post(
         "/v1/investing/cash-balances",
         json={
-            "account_id": account_map["gbp-wallet"],
+            "account_id": gbp_broker_id,
             "balance": "0.00",
             "currency": "GBP",
             "as_of": datetime.now(UTC).isoformat(),
@@ -609,7 +628,7 @@ async def test_performance_summary_converts_multi_currency_snapshot(client: Asyn
     cash_res = await client.post(
         "/v1/investing/cash-balances",
         json={
-            "account_id": account_map["eur-wallet"],
+            "account_id": eur_broker_id,
             "balance": "100.00",
             "currency": "eur",
             "as_of": datetime.now(UTC).isoformat(),
@@ -859,8 +878,10 @@ async def test_investing_lookthrough_converts_holdings_to_reporting_currency(cli
         )
     ).status_code == 201
 
+    # One account, one currency (spec-050): the GBP holding needs its own account.
+    gbp_broker_id = await _create_brokerage_account(client, "GBP Brokerage", "GBP")
     await _create_holding_via_order(
-        client, account_map["brokerage"], "VTI", "10.00000000", "100.00", "GBP", "etf"
+        client, gbp_broker_id, "VTI", "10.00000000", "100.00", "GBP", "etf"
     )
     await _create_holding_via_order(
         client, account_map["wallet"], "AAPL", "2.00000000", "150.00", "USD"
@@ -908,9 +929,11 @@ async def test_investing_lookthrough_does_not_mix_currencies_without_reporting_c
         username="investing-lookthrough-no-fx",
         password="TestPass123!",
     )
+    # One account, one currency (spec-050): the GBP holding needs its own account.
+    gbp_broker_id = await _create_brokerage_account(client, "GBP Brokerage", "GBP")
     for symbol, currency, account_id in [
         ("AAPL", "USD", account_map["brokerage"]),
-        ("VOD", "GBP", account_map["wallet"]),
+        ("VOD", "GBP", gbp_broker_id),
     ]:
         await _create_holding_via_order(
             client, account_id, symbol, "1.00000000", "100.00", currency
@@ -1122,17 +1145,16 @@ async def test_investing_prices_refresh_and_valuation_fields(client: AsyncClient
 
 @pytest.mark.asyncio
 async def test_investing_prices_refresh_indian_stock_appends_ns(client: AsyncClient):
-    account_map = await _register_and_login(
+    await _register_and_login(
         client,
         email="indian-refresh@example.com",
         username="indian-refresh",
         password="TestPass123!",
     )
+    inr_broker_id = await _create_brokerage_account(client, "INR Brokerage", "INR")
 
     # Create an INR holding with symbol TATSILV (no dot)
-    await _create_holding_via_order(
-        client, account_map["brokerage"], "TATSILV", "10.00000000", "20.00", "INR"
-    )
+    await _create_holding_via_order(client, inr_broker_id, "TATSILV", "10.00000000", "20.00", "INR")
 
     # Trigger refresh with mock fetch API
     with patch("app.investing.service._fetch_stock_price", new_callable=AsyncMock) as mock_fetch:
@@ -1151,15 +1173,16 @@ async def test_investing_prices_refresh_indian_stock_appends_ns(client: AsyncCli
 
 @pytest.mark.asyncio
 async def test_investing_prices_refresh_indian_mutual_fund_uses_amfi(client: AsyncClient):
-    account_map = await _register_and_login(
+    await _register_and_login(
         client,
         email="amfi-refresh@example.com",
         username="amfi-refresh",
         password="TestPass123!",
     )
+    inr_broker_id = await _create_brokerage_account(client, "INR Brokerage", "INR")
     await _create_holding_via_order(
         client,
-        account_map["brokerage"],
+        inr_broker_id,
         "122639",
         "10.00000000",
         "80.00",
@@ -1183,14 +1206,15 @@ async def test_investing_prices_refresh_indian_mutual_fund_uses_amfi(client: Asy
 
 @pytest.mark.asyncio
 async def test_update_holding_symbol_relinks_instrument_and_preserves_fields(client: AsyncClient):
-    account_map = await _register_and_login(
+    await _register_and_login(
         client,
         email="symbol-edit@example.com",
         username="symbol-edit",
         password="TestPass123!",
     )
+    inr_broker_id = await _create_brokerage_account(client, "INR Brokerage", "INR")
     created_id = await _create_holding_via_order(
-        client, account_map["brokerage"], "NEFTPHARMA", "12.00000000", "25.00", "INR", "etf"
+        client, inr_broker_id, "NEFTPHARMA", "12.00000000", "25.00", "INR", "etf"
     )
 
     response = await client.patch(
@@ -1209,15 +1233,16 @@ async def test_update_holding_symbol_relinks_instrument_and_preserves_fields(cli
 
 @pytest.mark.asyncio
 async def test_update_holding_symbol_deletes_existing_price_history(client: AsyncClient):
-    account_map = await _register_and_login(
+    await _register_and_login(
         client,
         email="symbol-price-reset@example.com",
         username="symbol-price-reset",
         password="TestPass123!",
     )
+    inr_broker_id = await _create_brokerage_account(client, "INR Brokerage", "INR")
     created_id = await _create_holding_via_order(
         client,
-        account_map["brokerage"],
+        inr_broker_id,
         "122639",
         "10.00000000",
         "80.00",
@@ -1265,13 +1290,13 @@ async def test_update_holding_symbol_deletes_existing_price_history(client: Asyn
 
 @pytest.mark.asyncio
 async def test_update_holding_symbol_renames_linked_orders(client: AsyncClient):
-    account_map = await _register_and_login(
+    await _register_and_login(
         client,
         email="symbol-rename-orders@example.com",
         username="symbol-rename-orders",
         password="TestPass123!",
     )
-    account_id = account_map["brokerage"]
+    account_id = await _create_brokerage_account(client, "INR Brokerage", "INR")
     created_id = await _create_holding_via_order(
         client, account_id, "NEFTPHARMA", "12.00000000", "25.00", "INR", "etf"
     )
@@ -1647,13 +1672,13 @@ async def test_fifo_cost_basis_matches_broker_lot_consumption(client: AsyncClien
     first two lots should leave avg_cost as just the third lot's price, not
     a moving average blended across all three buys.
     """
-    account_map = await _register_and_login(
+    await _register_and_login(
         client,
         email="fifo-e2e@example.com",
         username="fifo-e2e",
         password="TestPass123!",
     )
-    account_id = account_map["brokerage"]
+    account_id = await _create_brokerage_account(client, "INR Brokerage", "INR")
 
     cash_res = await client.post(
         "/v1/investing/cash-balances",
@@ -1815,3 +1840,283 @@ async def test_networth_multi_currency_does_not_double_count_cash(client: AsyncC
     assert Decimal(nw["investing_cash_total"]) == Decimal("80000")
     # holdings + cash, NOT holdings + 2 * cash (the double-count bug).
     assert Decimal(nw["investing_total"]) == Decimal("160000")
+
+
+# ---------------------------------------------------------------------------
+# spec-050: one account, one currency -- cash balances, orders and transfers
+# must match the account's default_currency_code. Plus the net-worth
+# aggregation fix (non-brokerage cash balances no longer counted in
+# investing_cash_total) and the account_id filter on GET /cash-balances.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_cash_balance_rejects_currency_mismatch(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="cash-currency-mismatch@example.com",
+        username="cash-currency-mismatch",
+        password="TestPass123!",
+    )
+    res = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_map["brokerage"],  # USD
+            "balance": "100.00",
+            "currency": "INR",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert res.status_code == 422
+    assert "does not match account" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_cash_balance_allows_any_account_type_when_currency_matches(
+    client: AsyncClient,
+):
+    """Reconciliation depends on this: a bank/wallet account must still be able
+    to have a cash-balance snapshot (spec-050 restricts currency, not account type)."""
+    account_map = await _register_and_login(
+        client,
+        email="cash-any-account-type@example.com",
+        username="cash-any-account-type",
+        password="TestPass123!",
+    )
+    res = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_map["wallet"],  # USD, account_type="brokerage" per helper
+            "balance": "100.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.asyncio
+async def test_update_cash_balance_rejects_currency_mismatch(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="cash-update-currency-mismatch@example.com",
+        username="cash-update-currency-mismatch",
+        password="TestPass123!",
+    )
+    created = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_map["brokerage"],
+            "balance": "100.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert created.status_code == 201
+    public_id = created.json()["public_id"]
+
+    res = await client.patch(f"/v1/investing/cash-balances/{public_id}", json={"currency": "INR"})
+    assert res.status_code == 422
+    assert "does not match account" in res.json()["detail"]
+
+    # Patching an unrelated field is unaffected.
+    ok = await client.patch(f"/v1/investing/cash-balances/{public_id}", json={"balance": "150.00"})
+    assert ok.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_place_order_rejects_currency_mismatch(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="order-currency-mismatch@example.com",
+        username="order-currency-mismatch",
+        password="TestPass123!",
+    )
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_map["brokerage"],
+            "balance": "10000.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": account_map["brokerage"],  # USD
+            "order_type": "buy",
+            "symbol": "TCS",
+            "quantity": "1.00000000",
+            "price_per_unit": "100.00",
+            "currency": "INR",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert res.status_code == 422
+    assert "does not match account" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_transfer_rejects_currency_mismatch_either_side(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="transfer-currency-mismatch@example.com",
+        username="transfer-currency-mismatch",
+        password="TestPass123!",
+    )
+    # to_currency_code (INR) doesn't match the brokerage's USD.
+    res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "investing",
+            "from_account_id": account_map["wallet"],
+            "to_account_id": account_map["brokerage"],
+            "from_currency_code": "USD",
+            "to_currency_code": "INR",
+            "gross_amount": "100.00",
+            "net_amount_received": "100.00",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert res.status_code == 422
+    assert "does not match account" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_update_transfer_rejects_currency_mismatch_but_allows_unrelated_edits(
+    client: AsyncClient,
+):
+    account_map = await _register_and_login(
+        client,
+        email="transfer-update-currency@example.com",
+        username="transfer-update-currency",
+        password="TestPass123!",
+    )
+    transfer = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "investing",
+            "from_account_id": account_map["wallet"],
+            "to_account_id": account_map["brokerage"],
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
+            "gross_amount": "100.00",
+            "net_amount_received": "100.00",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert transfer.status_code == 201
+    transfer_id = transfer.json()["public_id"]
+
+    mismatched = await client.patch(
+        f"/v1/finance/transfers/{transfer_id}", json={"to_currency_code": "INR"}
+    )
+    assert mismatched.status_code == 422
+    assert "does not match account" in mismatched.json()["detail"]
+
+    # Unrelated field edit still works.
+    ok = await client.patch(f"/v1/finance/transfers/{transfer_id}", json={"notes": "corrected"})
+    assert ok.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_networth_does_not_double_count_wallet_cash_balance_snapshot(
+    client: AsyncClient,
+):
+    """Regression: a cash-balance snapshot on a non-brokerage account (added
+    for reconciliation ground truth, e.g. backfilling pre-tracking history)
+    must not also be summed into investing_cash_total -- that account's
+    ledger contribution (spending_total) already counts it once."""
+    await _register_and_login(
+        client,
+        email="networth-wallet-cash@example.com",
+        username="networth-wallet-cash",
+        password="TestPass123!",
+    )
+    settings_res = await client.patch(
+        "/v1/finance/settings", json={"reporting_currency_code": "USD"}
+    )
+    assert settings_res.status_code == 200, settings_res.text
+
+    # _register_and_login's account_map is all account_type="brokerage"
+    # regardless of name, so this needs a genuinely non-brokerage account.
+    wallet_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "ICICI", "account_type": "wallet", "default_currency_code": "USD"},
+    )
+    assert wallet_res.status_code == 201
+    wallet_id = wallet_res.json()["public_id"]
+
+    cat_res = await client.get("/v1/spending/categories")
+    category_id = cat_res.json()["items"][0]["public_id"]
+
+    await client.post(
+        "/v1/spending/transactions",
+        json={
+            "amount": "5000.00",
+            "type": "income",
+            "category_id": category_id,
+            "account_id": wallet_id,
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    # Backfill a cash-balance snapshot on the wallet (non-brokerage) account.
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": wallet_id,
+            "balance": "5000.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    nw = (await client.get("/v1/finance/net-worth")).json()
+    # spending_total already includes the wallet's 5000 via the ledger; the
+    # cash-balance snapshot must not add it again via investing_cash_total.
+    assert Decimal(nw["spending_total"]) == Decimal("5000.00")
+    assert Decimal(nw["investing_cash_total"] or "0") == Decimal("0")
+    assert Decimal(nw["total_net_worth"]) == Decimal("5000.00")
+
+
+@pytest.mark.asyncio
+async def test_cash_balances_account_id_filter_scopes_server_side(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="cash-balances-account-filter@example.com",
+        username="cash-balances-account-filter",
+        password="TestPass123!",
+    )
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_map["brokerage"],
+            "balance": "100.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_map["wallet"],
+            "balance": "200.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    all_res = await client.get("/v1/investing/cash-balances")
+    assert all_res.json()["total"] == 2
+
+    filtered_res = await client.get(
+        "/v1/investing/cash-balances", params={"account_id": account_map["wallet"]}
+    )
+    assert filtered_res.status_code == 200
+    filtered = filtered_res.json()
+    assert filtered["total"] == 1
+    assert filtered["items"][0]["account_id"] == account_map["wallet"]
+    assert filtered["items"][0]["balance"] == "200.00"

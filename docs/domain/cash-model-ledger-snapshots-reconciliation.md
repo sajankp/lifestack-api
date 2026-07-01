@@ -150,3 +150,24 @@ Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**
   Not retroactive — transfers created before this fix have no from-side snapshot and are
   treated as unmanaged on that side (no-op on delete/update), same as any side whose
   module was never `"investing"`.
+- **2026-07-02 (spec-050):** Two fixes prompted by a manually-entered ICICI cash balance
+  (backfilling pre-tracking history):
+  1. **One account, one currency**, enforced going forward at cash-balance
+     create/update, order placement, and transfer create/update (both sides
+     independently). `default_currency_code` was previously decorative — nothing checked
+     a cash balance/order/transfer's currency against the account it's on, which is
+     exactly the class of bug behind the IND Money transfer incident. This removes the
+     prior ability for one account to hold cash/holdings in multiple currencies (a real
+     capability the schema allowed but nothing in the product actually needed once each
+     account is single-currency). Not retroactive.
+  2. **Net-worth aggregation no longer double-counts non-brokerage cash-balance
+     snapshots.** `get_summary`'s `cash_total` previously summed every cash-balance row
+     with no account-type filter; a bank/wallet account with both ledger activity
+     (`spending_total`) and a manually-added cash-balance snapshot (legitimate — that's
+     reconciliation's ground-truth mechanism) was counted twice. Filtered to brokerage
+     accounts only; reconciliation itself is untouched (still works for any account type).
+  Also fixed in the same pass: `GET /investing/cash-balances` had no way to query a
+  specific account — the Cash tab always fetched a fixed 200-row page (`as_of` desc) and
+  filtered client-side, so an old-dated backfill snapshot in a workspace with 200+ rows
+  (easy — every order writes one) was invisible and undeletable in the UI despite
+  existing in the DB. Added a server-side `account_id` filter.
