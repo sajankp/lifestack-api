@@ -834,21 +834,25 @@ class CapitalTransferService:
         # (which set from_currency_code to the real account currency)
         # compatible, since that's exactly what this validation requires.
         if (
-            transfer_in.from_account_id is not None or transfer_in.from_currency_code is not None
-        ) and new_from_currency != from_account.default_currency_code.upper():  # type: ignore[union-attr]
+            (transfer_in.from_account_id is not None or transfer_in.from_currency_code is not None)
+            and from_account is not None
+            and new_from_currency != from_account.default_currency_code.upper()
+        ):
             raise ValidationError(
                 detail=(
                     f"Currency '{new_from_currency}' does not match account "
-                    f"'{from_account.name}' ({from_account.default_currency_code})"  # type: ignore[union-attr]
+                    f"'{from_account.name}' ({from_account.default_currency_code})"
                 )
             )
         if (
-            transfer_in.to_account_id is not None or transfer_in.to_currency_code is not None
-        ) and new_to_currency != to_account.default_currency_code.upper():  # type: ignore[union-attr]
+            (transfer_in.to_account_id is not None or transfer_in.to_currency_code is not None)
+            and to_account is not None
+            and new_to_currency != to_account.default_currency_code.upper()
+        ):
             raise ValidationError(
                 detail=(
                     f"Currency '{new_to_currency}' does not match account "
-                    f"'{to_account.name}' ({to_account.default_currency_code})"  # type: ignore[union-attr]
+                    f"'{to_account.name}' ({to_account.default_currency_code})"
                 )
             )
 
