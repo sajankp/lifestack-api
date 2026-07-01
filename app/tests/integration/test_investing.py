@@ -1762,3 +1762,56 @@ async def test_net_worth_lists_brokerage_cash_accounts(client: AsyncClient):
     )
     assert account["currency_code"] == "USD"
     assert Decimal(account["balance"]) == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
+async def test_networth_multi_currency_does_not_double_count_cash(client: AsyncClient):
+    """Regression: in the FX-converted path, ``portfolio_value`` is holdings-only
+    (cash is reported separately as ``cash_total``). It previously folded cash
+    into ``portfolio_value``, which made net worth double-count cash because the
+    net-worth router adds ``cash_total`` to ``holdings_value``.
+    """
+    account_map = await _register_and_login(
+        client,
+        email="nw-doublecount@example.com",
+        username="nw-doublecount",
+        password="TestPass123!",
+    )
+    # USD holding: 10 @ 100 = 1000 cost; the helper funds cost + 1000, so the
+    # buy leaves 1000 USD residual cash. No price -> cost-basis fallback (1000).
+    await _create_holding_via_order(
+        client, account_map["brokerage"], "AAPL", "10.00000000", "100.00"
+    )
+
+    # Report in INR and seed USD -> INR = 80 so the FX-converted path runs.
+    setting_res = await client.patch(
+        "/v1/finance/settings", json={"reporting_currency_code": "INR"}
+    )
+    assert setting_res.status_code == 200, setting_res.text
+
+    now = datetime.now(UTC)
+    async with postgres.async_session_maker() as session:
+        session.add(
+            FxRate(
+                base_currency_code="USD",
+                quote_currency_code="INR",
+                rate=Decimal("80.0000000000"),
+                as_of=now,
+                fetched_at=now,
+                source="test",
+            )
+        )
+        await session.commit()
+
+    summary = (await client.get("/v1/investing/summary")).json()
+    assert summary["reporting_currency"] == "INR"
+    # holdings 1000 USD -> 80000 INR; cash 1000 USD -> 80000 INR, reported
+    # separately and NOT folded into portfolio_value.
+    assert Decimal(summary["portfolio_value"]) == Decimal("80000")
+    assert Decimal(summary["cash_total"]) == Decimal("80000")
+
+    nw = (await client.get("/v1/finance/net-worth")).json()
+    assert Decimal(nw["holdings_value"]) == Decimal("80000")  # holdings only
+    assert Decimal(nw["investing_cash_total"]) == Decimal("80000")
+    # holdings + cash, NOT holdings + 2 * cash (the double-count bug).
+    assert Decimal(nw["investing_total"]) == Decimal("160000")
