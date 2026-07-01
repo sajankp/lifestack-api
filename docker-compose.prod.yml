@@ -1,10 +1,20 @@
 services:
-  api:
+  migrate:
     # Requires Docker Compose v2.24.4+ for the !override merge tag.
     env_file: !override
       - path: .env.production
         required: true
     environment: !reset {}
+
+  api:
+    # Requires Docker Compose v2.24.4+ for the !override merge tag.
+    env_file: !override
+      - path: .env.production
+        required: true
+    # Clear the base env map (DATABASE_URL etc. come from .env.production),
+    # but keep in-app migrations disabled — the `migrate` service owns them.
+    environment: !override
+      RUN_MIGRATIONS: "false"
 
   cloudflared:
     # Pin to a known stable version to avoid unexpected breaking changes from 'latest'

@@ -21,7 +21,7 @@ RUN chmod +x docker-entrypoint.sh
 RUN useradd -m -u 1001 appuser && mkdir -p /app/imports_temp && chown -R appuser:appuser /app /app/imports_temp
 USER appuser
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
   CMD curl -f http://localhost:8000/health || exit 1
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
