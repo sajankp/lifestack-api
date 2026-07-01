@@ -1618,13 +1618,15 @@ class InvestingSummaryService:
                     )
                 converted_cash += converted_value
 
-            # portfolio_value is holdings-only (cash is reported separately as
-            # cash_total and added by net worth) — consistent with the
-            # single-currency paths. Including cash here made net worth
-            # double-count cash, since the net-worth router adds cash_total to
-            # portfolio_value. total_value (holdings + cash) is used only for the
-            # daily-change comparison, since snapshots store
-            # total_value = holdings_value + cash_value.
+            # portfolio_value is holdings-only, matching the portfolio_value of
+            # the single-currency paths (cash is reported separately as
+            # cash_total and added by net worth). Including cash here made net
+            # worth double-count cash, since the net-worth router adds cash_total
+            # to portfolio_value. total_value (holdings + cash) is used only for
+            # the daily-change comparison, since snapshots store
+            # total_value = holdings_value + cash_value. (The single-currency
+            # paths compare holdings-only vs snapshot total for daily_change — a
+            # separate pre-existing inconsistency, intentionally left as-is.)
             total_value = converted_portfolio + converted_cash
             daily_change = None
             if self.snapshot_repo is not None:

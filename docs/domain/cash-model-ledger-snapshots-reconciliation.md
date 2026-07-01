@@ -127,4 +127,9 @@ Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**
   router adds `cash_total` to `portfolio_value`, so multi-currency net worth counted cash
   twice (holdings + 2×cash). Now `portfolio_value` is holdings-only in all paths;
   daily-change still compares the holdings+cash total against snapshot `total_value`
-  (= holdings_value + cash_value). Single-currency workspaces were unaffected.
+  (= holdings_value + cash_value). Single-currency workspaces were unaffected **by the
+  net-worth double-count** (their `portfolio_value` was already holdings-only).
+  Separately/pre-existing: the single-currency `daily_change` compares holdings-only
+  against snapshot `total_value` (holdings+cash) — left unchanged here, since whether
+  `daily_change` should include cash movements is a product question, not part of this
+  fix.
