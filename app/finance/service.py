@@ -578,6 +578,23 @@ class CapitalTransferService:
             if not enabled:
                 raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
 
+        # One account, one currency (spec-050): each side's currency must match
+        # that account's default_currency_code, independently.
+        if transfer_in.from_currency_code != from_account.default_currency_code.upper():
+            raise ValidationError(
+                detail=(
+                    f"Currency '{transfer_in.from_currency_code}' does not match account "
+                    f"'{from_account.name}' ({from_account.default_currency_code})"
+                )
+            )
+        if transfer_in.to_currency_code != to_account.default_currency_code.upper():
+            raise ValidationError(
+                detail=(
+                    f"Currency '{transfer_in.to_currency_code}' does not match account "
+                    f"'{to_account.name}' ({to_account.default_currency_code})"
+                )
+            )
+
         transfer = CapitalTransfer(
             workspace_id=workspace_id,
             actor_id=actor_id,
@@ -808,6 +825,36 @@ class CapitalTransferService:
         old_net = transfer.net_amount_received
         new_gross = transfer_in.gross_amount
         old_gross = transfer.gross_amount
+
+        # One account, one currency (spec-050). Only enforced when the
+        # account or currency for that side is actually being touched, so
+        # patching an unrelated field (e.g. notes, net_amount_received) on a
+        # pre-existing mismatched transfer never fails on this check --
+        # this keeps fix_transfer_currency_mislabels.py-style corrections
+        # (which set from_currency_code to the real account currency)
+        # compatible, since that's exactly what this validation requires.
+        if (
+            (transfer_in.from_account_id is not None or transfer_in.from_currency_code is not None)
+            and from_account is not None
+            and new_from_currency != from_account.default_currency_code.upper()
+        ):
+            raise ValidationError(
+                detail=(
+                    f"Currency '{new_from_currency}' does not match account "
+                    f"'{from_account.name}' ({from_account.default_currency_code})"
+                )
+            )
+        if (
+            (transfer_in.to_account_id is not None or transfer_in.to_currency_code is not None)
+            and to_account is not None
+            and new_to_currency != to_account.default_currency_code.upper()
+        ):
+            raise ValidationError(
+                detail=(
+                    f"Currency '{new_to_currency}' does not match account "
+                    f"'{to_account.name}' ({to_account.default_currency_code})"
+                )
+            )
 
         to_balance_affecting = (
             (

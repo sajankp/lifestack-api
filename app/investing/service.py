@@ -457,8 +457,8 @@ class CashBalanceService:
             raise ValidationError(
                 detail=f"Account with ID {account_id} is not found in this workspace"
             )
+        code = currency.upper()
         if self.currency_repo is not None:
-            code = currency.upper()
             currency_row = await self.currency_repo.get_by_code(code)
             if not currency_row or not currency_row.is_active:
                 raise ValidationError(detail=f"Unsupported currency code '{code}'")
@@ -466,12 +466,26 @@ class CashBalanceService:
             enabled = await self.currency_repo.is_enabled_for_workspace(workspace_id, code)
             if not enabled:
                 raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
+        # One account, one currency (spec-050): a cash balance's currency must match
+        # the account's default_currency_code, whatever account type it is (this
+        # also covers reconciliation snapshots on bank/wallet accounts).
+        if code != account.default_currency_code.upper():
+            raise ValidationError(
+                detail=(
+                    f"Currency '{code}' does not match account '{account.name}' "
+                    f"({account.default_currency_code})"
+                )
+            )
         return account
 
     async def list_cash_balances(
-        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        account_id: int | None = None,
     ) -> tuple[Sequence[CashBalance], int]:
-        return await self.repository.get_all(workspace_id, limit, offset)
+        return await self.repository.get_all(workspace_id, limit, offset, account_id=account_id)
 
     async def get_cash_balance(self, workspace_id: int, public_id: uuid.UUID) -> CashBalance:
         cash = await self.repository.get_by_public_id(workspace_id, public_id)
@@ -537,6 +551,7 @@ class CashBalanceService:
             next_currency = update_data["currency"]
 
         # Validate that the associated account is still active and valid
+        account = None
         if self.account_repo is not None:
             account = await self.account_repo.get_by_id(workspace_id, cash.account_id)
             if not account or not account.is_active:
@@ -549,6 +564,20 @@ class CashBalanceService:
             enabled = await self.currency_repo.is_enabled_for_workspace(workspace_id, code)
             if not enabled:
                 raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
+        # One account, one currency (spec-050). Only enforced when currency is
+        # actually being changed, so patching an unrelated field (balance,
+        # as_of) on a pre-existing row never fails on this check.
+        if (
+            "currency" in update_data
+            and account is not None
+            and next_currency.upper() != account.default_currency_code.upper()
+        ):
+            raise ValidationError(
+                detail=(
+                    f"Currency '{next_currency.upper()}' does not match account "
+                    f"'{account.name}' ({account.default_currency_code})"
+                )
+            )
 
         for key, value in update_data.items():
             setattr(cash, key, value)
@@ -1460,6 +1489,7 @@ class InvestingSummaryService:
         fx_rate_repo: FxRateRepository | None = None,
         holding_price_repo: HoldingPriceRepository | None = None,
         snapshot_repo: PortfolioSnapshotRepository | None = None,
+        account_repo: AccountRepository | None = None,
     ):
         self.holding_repo = holding_repo
         self.cash_repo = cash_repo
@@ -1467,10 +1497,22 @@ class InvestingSummaryService:
         self.fx_rate_repo = fx_rate_repo
         self.holding_price_repo = holding_price_repo
         self.snapshot_repo = snapshot_repo
+        self.account_repo = account_repo
 
     async def get_summary(self, workspace_id: int) -> InvestingSummaryResponse:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
         cash_balances = await self.cash_repo.get_latest_per_account_currency(workspace_id)
+        # Cash balances are legitimately added to any account type (reconciliation
+        # snapshots on bank/wallet accounts), but only brokerage cash belongs in
+        # the investing total -- otherwise a wallet account with both ledger
+        # activity (spending_total) and a manual cash-balance snapshot gets
+        # double-counted in net worth (spec-050).
+        if self.account_repo is not None:
+            accounts, _ = await self.account_repo.list_workspace_accounts(
+                workspace_id, limit=10000, offset=0
+            )
+            brokerage_ids = {a.id for a in accounts if a.account_type == "brokerage"}
+            cash_balances = [c for c in cash_balances if c.account_id in brokerage_ids]
 
         today = datetime.now(UTC).date()
         latest_prices = {}
@@ -1754,7 +1796,7 @@ class InvestingOrderService:
         self.lot_repository = lot_repository
 
     async def _validate_brokerage_account(
-        self, workspace_id: int, account_public_id: uuid.UUID
+        self, workspace_id: int, account_public_id: uuid.UUID, currency: str | None = None
     ) -> "Account":
         account = await self.account_repository.get_by_public_id(workspace_id, account_public_id)
         if not account or not account.is_active:
@@ -1766,6 +1808,14 @@ class InvestingOrderService:
                 detail=(
                     f"Orders can only be placed against brokerage accounts. "
                     f"Account '{account.name}' is type '{account.account_type}'"
+                )
+            )
+        # One account, one currency (spec-050)
+        if currency is not None and currency.upper() != account.default_currency_code.upper():
+            raise ValidationError(
+                detail=(
+                    f"Currency '{currency.upper()}' does not match account '{account.name}' "
+                    f"({account.default_currency_code})"
                 )
             )
         return account
@@ -1966,7 +2016,9 @@ class InvestingOrderService:
         audit_logger: AuditLogger | None = None,
         source_type: str = "manual",
     ) -> InvestingOrder:
-        account = await self._validate_brokerage_account(workspace_id, order_in.account_id)
+        account = await self._validate_brokerage_account(
+            workspace_id, order_in.account_id, order_in.currency
+        )
         assert account.id is not None
 
         gross_amount = order_in.quantity * order_in.price_per_unit

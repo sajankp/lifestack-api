@@ -79,9 +79,15 @@ class CashBalanceRepository:
         self.session = session
 
     async def get_all(
-        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        account_id: int | None = None,
     ) -> tuple[Sequence[CashBalance], int]:
         base = select(CashBalance).where(CashBalance.workspace_id == workspace_id)
+        if account_id is not None:
+            base = base.where(CashBalance.account_id == account_id)
         total = (
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()

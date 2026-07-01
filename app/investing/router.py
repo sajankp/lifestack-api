@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.core.audit import AuditLogger
 from app.core.dependencies import (
@@ -253,9 +253,18 @@ async def list_cash_balances(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     pagination: Annotated[PaginationParams, Depends()],
+    account_id: Annotated[
+        uuid.UUID | None,
+        Query(description="Filter to a single account's full cash-balance history."),
+    ] = None,
 ):
+    account_internal_id: int | None = None
+    if account_id is not None:
+        account = await account_service.get_account(workspace_id, account_id)
+        account_internal_id = account.id
+
     balances, total = await cash_service.list_cash_balances(
-        workspace_id, pagination.limit, pagination.offset
+        workspace_id, pagination.limit, pagination.offset, account_id=account_internal_id
     )
     if not balances:
         return PaginatedResponse(
