@@ -120,3 +120,11 @@ Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**
   unaffected (brokerage cash comes from snapshots).
   Deferred: per-(account, currency) reconciliation, needed only if an account ever holds
   multiple currencies.
+- **2026-07-01:** Fixed a net-worth cash double-count. In the FX-converted investing
+  summary path (`investing/service.py`, multi-currency workspace with a reporting
+  currency), `portfolio_value` erroneously included cash (`converted_portfolio +
+  converted_cash`) while the single-currency paths returned holdings-only. The net-worth
+  router adds `cash_total` to `portfolio_value`, so multi-currency net worth counted cash
+  twice (holdings + 2×cash). Now `portfolio_value` is holdings-only in all paths;
+  daily-change still compares the holdings+cash total against snapshot `total_value`
+  (= holdings_value + cash_value). Single-currency workspaces were unaffected.

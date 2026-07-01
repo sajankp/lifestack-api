@@ -1618,16 +1618,22 @@ class InvestingSummaryService:
                     )
                 converted_cash += converted_value
 
-            # Calculate daily change
-            portfolio_value = converted_portfolio + converted_cash
+            # portfolio_value is holdings-only (cash is reported separately as
+            # cash_total and added by net worth) — consistent with the
+            # single-currency paths. Including cash here made net worth
+            # double-count cash, since the net-worth router adds cash_total to
+            # portfolio_value. total_value (holdings + cash) is used only for the
+            # daily-change comparison, since snapshots store
+            # total_value = holdings_value + cash_value.
+            total_value = converted_portfolio + converted_cash
             daily_change = None
             if self.snapshot_repo is not None:
                 prev_snapshot = await self.snapshot_repo.latest_before(workspace_id, today)
                 if prev_snapshot is not None:
-                    daily_change = portfolio_value - prev_snapshot.total_value
+                    daily_change = total_value - prev_snapshot.total_value
 
             return InvestingSummaryResponse(
-                portfolio_value=portfolio_value,
+                portfolio_value=converted_portfolio,
                 holdings_count=len(holdings),
                 cash_total=converted_cash,
                 currency_breakdown=breakdown,
