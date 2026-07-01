@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-set -euo pipefail
+set -eu
 
 # Migrations are normally run by the dedicated one-shot `migrate` service in
 # compose (RUN_MIGRATIONS=false). When the image is run standalone this
