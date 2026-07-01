@@ -30,14 +30,21 @@ confusion:
 | Event | Ledger | Cash snapshot |
 |---|---|---|
 | Spend (income/expense) | ✅ income/expense row | ❌ never |
-| Transfer **into** an investing account | ✅ transfer row | ✅ `+net_amount_received` in `to_currency`, trigger `transfer` (`finance/service.py:629`) |
-| Transfer **out of** any account | ✅ transfer row | ❌ from-side snapshot is **not** decremented (even out of a brokerage) |
+| Transfer **into** an investing account | ✅ transfer row | ✅ `+net_amount_received` in `to_currency`, trigger `transfer` (`finance/service.py`, `create_transfer`) |
+| Transfer **out of** an investing account | ✅ transfer row | ✅ `−gross_amount` in `from_currency`, trigger `transfer` (spec-049; previously not decremented at all) |
+| Transfer between two non-investing accounts | ✅ transfer row | ❌ never (neither side is snapshot-managed) |
 | Order **buy** | ❌ orders aren't ledger rows | ✅ `−net` (net = gross + fees); validated vs available cash first (`investing/service.py:1967`, `:2039`) |
 | Order **sell** | ❌ | ✅ `+net` (net = gross − fees) |
 
 Key asymmetries to remember:
 - **Spends never touch snapshots.** A wallet/bank account typically has *no* snapshot
   at all unless one is entered manually.
+- **An investing-to-investing transfer writes two snapshot rows** (from-side decrement
+  + to-side increment) sharing one `trigger_ref = transfer.public_id`. Any lookup of
+  "the snapshot for this transfer" must be scoped by `(trigger_ref, account_id)` via
+  `CashBalanceRepository.get_by_trigger_ref_and_account` — the older unscoped
+  `get_by_trigger_ref` assumes exactly one row per transfer and breaks
+  (`MultipleResultsFound`) once both sides are investing accounts.
 - **Orders never touch the ledger**, but they *do* move the snapshot.
 - **Transfer outflows** move the ledger but not the snapshot.
 
@@ -133,3 +140,13 @@ Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**
   against snapshot `total_value` (holdings+cash) — left unchanged here, since whether
   `daily_change` should include cash movements is a product question, not part of this
   fix.
+- **2026-07-01 (spec-049):** Fixed transfers **out of** a brokerage account not
+  decrementing the source account's cash snapshot (`create_transfer` only ever wrote a
+  snapshot for the *to*-side). A Groww→ICICI transfer, for example, correctly wrote the
+  ledger row but left Groww's cash balance (and therefore Net Worth's brokerage cash
+  figure) unchanged. Added a symmetric from-side branch, plus
+  `get_by_trigger_ref_and_account` so `delete_transfer`/`update_transfer` can
+  disambiguate the two snapshot rows an investing-to-investing transfer now produces.
+  Not retroactive — transfers created before this fix have no from-side snapshot and are
+  treated as unmanaged on that side (no-op on delete/update), same as any side whose
+  module was never `"investing"`.

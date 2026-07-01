@@ -928,3 +928,248 @@ async def test_patch_transfer_blocked_by_newer_cash_balance(client: AsyncClient)
     detail = patch_res.json()["detail"]
     assert "newer balance snapshot" in detail
     assert "Delete those order imports first" in detail
+
+
+# ---------------------------------------------------------------------------
+# spec-049: transfers OUT of a brokerage account (from_module == "investing")
+# must also decrement the source account's cash-balance snapshot.
+# ---------------------------------------------------------------------------
+
+
+async def _create_outflow_transfer(
+    client: AsyncClient, *, from_id: str, to_id: str, amount: str = "1000.00"
+) -> dict:
+    res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "investing",
+            "to_module": "spending",
+            "from_account_id": from_id,
+            "to_account_id": to_id,
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
+            "gross_amount": amount,
+            "net_amount_received": amount,
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "notes": "outflow",
+        },
+    )
+    assert res.status_code == 201
+    return res.json()
+
+
+@pytest.mark.asyncio
+async def test_create_outflow_transfer_decrements_brokerage_cash(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="outflow-create@example.com",
+        username="outflow-create",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-out")
+
+    # Seed the brokerage with 1000 via a to-investing transfer first.
+    await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id, amount="1000.00")
+
+    # Now transfer 300 OUT of the brokerage back to the bank.
+    await _create_outflow_transfer(client, from_id=broker_id, to_id=bank_id, amount="300.00")
+
+    cb_res = await client.get("/v1/investing/cash-balances")
+    assert cb_res.status_code == 200
+    balances = cb_res.json()["items"]
+    # Two snapshots now exist for the brokerage account: 1000 (inflow), then
+    # 700 (inflow - outflow). The latest is what matters for the current balance.
+    assert any(b["balance"] == "700.00" for b in balances)
+
+
+@pytest.mark.asyncio
+async def test_delete_outflow_transfer_removes_from_side_cash_balance(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="outflow-delete@example.com",
+        username="outflow-delete",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-outdel")
+    await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id, amount="1000.00")
+    outflow = await _create_outflow_transfer(
+        client, from_id=broker_id, to_id=bank_id, amount="300.00"
+    )
+
+    cb_before = await client.get("/v1/investing/cash-balances")
+    assert cb_before.json()["total"] == 2  # inflow snapshot + outflow snapshot
+
+    delete_res = await client.delete(f"/v1/finance/transfers/{outflow['public_id']}")
+    assert delete_res.status_code == 204
+
+    cb_after = await client.get("/v1/investing/cash-balances")
+    assert cb_after.json()["total"] == 1
+    assert cb_after.json()["items"][0]["balance"] == "1000.00"
+
+
+@pytest.mark.asyncio
+async def test_delete_outflow_transfer_blocked_by_newer_cash_balance(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="outflow-delete-blk@example.com",
+        username="outflow-delete-blk",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-outdelblk")
+    await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id, amount="1000.00")
+    outflow = await _create_outflow_transfer(
+        client, from_id=broker_id, to_id=bank_id, amount="300.00"
+    )
+
+    # Simulate a later order snapshot on the brokerage account.
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": broker_id,
+            "balance": "650.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    delete_res = await client.delete(f"/v1/finance/transfers/{outflow['public_id']}")
+    assert delete_res.status_code == 409
+    detail = delete_res.json()["detail"]
+    assert "newer balance snapshot" in detail
+    assert "Delete those order imports first" in detail
+
+    # Nothing should have been deleted -- transfer and both snapshots survive.
+    get_res = await client.get(f"/v1/finance/transfers/{outflow['public_id']}")
+    assert get_res.status_code == 200
+    cb_res = await client.get("/v1/investing/cash-balances")
+    assert cb_res.json()["total"] == 3
+
+
+@pytest.mark.asyncio
+async def test_patch_outflow_transfer_amount_updates_from_side_cash_balance(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="outflow-patch@example.com",
+        username="outflow-patch",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-outpatch")
+    await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id, amount="1000.00")
+    outflow = await _create_outflow_transfer(
+        client, from_id=broker_id, to_id=bank_id, amount="300.00"
+    )
+
+    patch_res = await client.patch(
+        f"/v1/finance/transfers/{outflow['public_id']}",
+        json={"gross_amount": "500.00", "net_amount_received": "500.00"},
+    )
+    assert patch_res.status_code == 200
+
+    cb_res = await client.get("/v1/investing/cash-balances")
+    balances = cb_res.json()["items"]
+    # In-place delta adjustment: 700 (1000 - 300) -> 500 (1000 - 500)
+    assert any(b["balance"] == "500.00" for b in balances)
+    assert not any(b["balance"] == "700.00" for b in balances)
+
+
+@pytest.mark.asyncio
+async def test_investing_to_investing_transfer_writes_two_snapshots(client: AsyncClient):
+    """An investing-to-investing transfer triggers both the to-side and
+    from-side branches, producing two CashBalance rows that share
+    trigger_ref=transfer.public_id -- exercises get_by_trigger_ref_and_account
+    disambiguation rather than the old single-row get_by_trigger_ref."""
+    await _register_and_login(
+        client,
+        email="inv-to-inv@example.com",
+        username="inv-to-inv",
+        password="TestPass123!",
+    )
+    broker_a = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "BrokerA", "account_type": "brokerage", "default_currency_code": "USD"},
+    )
+    broker_b = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "BrokerB", "account_type": "brokerage", "default_currency_code": "USD"},
+    )
+    assert broker_a.status_code == 201 and broker_b.status_code == 201
+    a_id, b_id = broker_a.json()["public_id"], broker_b.json()["public_id"]
+
+    # Seed BrokerA with 1000 first.
+    bank_id, _ = await _create_bank_and_brokerage(client, suffix="-i2ifund")
+    await _create_investing_transfer(client, from_id=bank_id, to_id=a_id, amount="1000.00")
+
+    transfer = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "investing",
+            "to_module": "investing",
+            "from_account_id": a_id,
+            "to_account_id": b_id,
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
+            "gross_amount": "400.00",
+            "net_amount_received": "400.00",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert transfer.status_code == 201
+    transfer_id = transfer.json()["public_id"]
+
+    cb_res = await client.get("/v1/investing/cash-balances")
+    # Results are ordered newest-first; BrokerA has two rows (1000 seed, then
+    # 600 from this transfer), so build the dict from oldest-first so the
+    # latest snapshot per account wins on duplicate keys.
+    balances = {b["account_name"]: b["balance"] for b in reversed(cb_res.json()["items"])}
+    assert balances.get("BrokerA") == "600.00"  # 1000 - 400
+    assert balances.get("BrokerB") == "400.00"
+
+    # Deleting must clean up BOTH snapshots (previously only get_by_trigger_ref
+    # was used, which would have raised MultipleResultsFound here).
+    delete_res = await client.delete(f"/v1/finance/transfers/{transfer_id}")
+    assert delete_res.status_code == 204
+
+    cb_after = await client.get("/v1/investing/cash-balances")
+    balances_after = {b["account_name"]: b["balance"] for b in cb_after.json()["items"]}
+    assert balances_after.get("BrokerA") == "1000.00"
+    assert "BrokerB" not in balances_after
+
+
+@pytest.mark.asyncio
+async def test_legacy_outflow_transfer_without_snapshot_is_unaffected(client: AsyncClient):
+    """A transfer created before this fix (or any from_module='spending'
+    transfer) has no from-side snapshot at all -- delete/update must treat
+    that side as unmanaged (no-op), not error."""
+    await _register_and_login(
+        client,
+        email="legacy-outflow@example.com",
+        username="legacy-outflow",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-legacy")
+    # A spending-to-spending transfer: neither side is ever snapshot-managed.
+    transfer = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "spending",
+            "from_account_id": bank_id,
+            "to_account_id": bank_id,
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
+            "gross_amount": "50.00",
+            "net_amount_received": "50.00",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert transfer.status_code == 201
+    transfer_id = transfer.json()["public_id"]
+
+    patch_res = await client.patch(
+        f"/v1/finance/transfers/{transfer_id}",
+        json={"gross_amount": "75.00", "net_amount_received": "75.00"},
+    )
+    assert patch_res.status_code == 200
+
+    delete_res = await client.delete(f"/v1/finance/transfers/{transfer_id}")
+    assert delete_res.status_code == 204

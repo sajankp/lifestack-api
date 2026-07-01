@@ -124,6 +124,25 @@ class CashBalanceRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_trigger_ref_and_account(
+        self, workspace_id: int, trigger_ref: UUID, account_id: int
+    ) -> CashBalance | None:
+        """Account-scoped variant of get_by_trigger_ref.
+
+        A single capital transfer can produce two snapshots sharing one
+        trigger_ref (an investing-to-investing transfer writes both a
+        from-side and a to-side snapshot), so callers that need one specific
+        side must disambiguate by account_id.
+        """
+        result = await self.session.execute(
+            select(CashBalance).where(
+                CashBalance.workspace_id == workspace_id,
+                CashBalance.trigger_ref == trigger_ref,
+                CashBalance.account_id == account_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def count_newer_than(
         self, workspace_id: int, account_id: int, currency: str, created_after: datetime
     ) -> int:
