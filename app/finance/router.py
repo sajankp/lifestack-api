@@ -24,7 +24,7 @@ from app.core.dependencies import (
 )
 from app.core.exceptions import NotFoundError
 from app.core.pagination import PaginatedResponse, PaginationParams
-from app.finance.models import AccountType, CurrencyDisplayPreference
+from app.finance.models import AccountType, CurrencyDisplayPreference, FxRate
 from app.finance.repository import FinanceSettingRepository, FxRateRepository
 from app.finance.schemas import (
     AccountBalanceResponse,
@@ -327,7 +327,7 @@ def _convert_to_reporting(
     amount: Decimal,
     currency: str,
     reporting_currency: str,
-    fx_lookup: dict[tuple[str, str], object],
+    fx_lookup: dict[tuple[str, str], FxRate],
 ) -> Decimal | None:
     if currency == reporting_currency:
         return amount
@@ -377,7 +377,7 @@ async def get_net_worth(
     ]
 
     # Build FX lookup covering both spending and investing cash currencies → reporting
-    fx_lookup: dict[tuple[str, str], object] = {}
+    fx_lookup: dict[tuple[str, str], FxRate] = {}
     if reporting_currency:
         currencies = {b["currency_code"].upper() for b in raw_balances} | {
             c.currency.upper() for c in cash_rows
@@ -448,13 +448,6 @@ async def get_net_worth(
     total_net_worth: Decimal | None = None
     if spending_convertible and reporting_currency and investing_total is not None:
         total_net_worth = spending_total + investing_total
-    elif (
-        spending_convertible
-        and reporting_currency
-        and not raw_balances
-        and investing_total is not None
-    ):
-        total_net_worth = investing_total
 
     # Determine valuation status
     has_any_data = bool(raw_balances) or investing_summary.holdings_count > 0

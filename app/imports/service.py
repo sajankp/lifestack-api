@@ -206,6 +206,16 @@ class ImportService:
         self.session = session
         self.order_service = order_service
         self._cash_balance_cache: dict[tuple[int, str], Decimal] = {}
+        self._cache_session: AsyncSession = session
+
+    def _ensure_cache_session(self) -> None:
+        """Clear the in-memory instance cache if the current session differs
+        from the one it was built against. Entities/values cached against a
+        stale session (e.g. a closed or replaced AsyncSession) must not leak
+        into work done under a new session."""
+        if self._cache_session is not self.session:
+            self._cash_balance_cache = {}
+            self._cache_session = self.session
 
     def template_csv(self, module: ImportModule) -> str:
         header = TEMPLATE_HEADERS[module]
@@ -913,8 +923,10 @@ class ImportService:
                         )
 
                     from_account_pub_id = None
+                    from_account_id = None
                     if from_account_raw:
                         from_account_pub_id = order_account_pub_map.get(from_account_raw.lower())
+                        from_account_id = account_map.get(from_account_raw.lower())
                         if from_account_pub_id is None:
                             add_error(
                                 "from_account",
@@ -928,8 +940,10 @@ class ImportService:
                         )
 
                     to_account_pub_id = None
+                    to_account_id = None
                     if to_account_raw:
                         to_account_pub_id = order_account_pub_map.get(to_account_raw.lower())
+                        to_account_id = account_map.get(to_account_raw.lower())
                         if to_account_pub_id is None:
                             add_error(
                                 "to_account",
@@ -1082,10 +1096,12 @@ class ImportService:
                         "from_account_public_id": str(from_account_pub_id)
                         if from_account_pub_id
                         else None,
+                        "from_account_id": from_account_id,
                         "to_account": to_account_raw,
                         "to_account_public_id": str(to_account_pub_id)
                         if to_account_pub_id
                         else None,
+                        "to_account_id": to_account_id,
                         "from_currency": from_currency,
                         "to_currency": to_currency,
                         "gross_amount": str(gross_amount) if gross_amount is not None else None,
@@ -1301,6 +1317,8 @@ class ImportService:
         if batch.status != ImportStatus.committing:
             raise ValidationError(detail="Import is not in committing state")
 
+        self._ensure_cache_session()
+
         inserted = 0
         auto_created_categories: list[str] = []
         try:
@@ -1494,11 +1512,10 @@ class ImportService:
                     )
                     inserted += len(created)
                 elif batch.module == ImportModule.finance_transfers:
-                    account_map = await self._account_map(workspace_id)
                     for row in rows:
                         p = row.payload_json
-                        from_account_id = account_map.get(p["from_account"].lower())
-                        to_account_id = account_map.get(p["to_account"].lower())
+                        from_account_id = p.get("from_account_id")
+                        to_account_id = p.get("to_account_id")
                         if from_account_id is None or to_account_id is None:
                             raise ValidationError(
                                 detail="from_account or to_account not found in workspace"

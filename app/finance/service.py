@@ -518,6 +518,48 @@ class CapitalTransferService:
             "updated_at": transfer.updated_at,
         }
 
+    def _validate_transfer_amounts(
+        self,
+        *,
+        from_currency_code: str,
+        to_currency_code: str,
+        gross_amount: Decimal,
+        fx_rate_used: Decimal | None,
+        fx_fee_amount: Decimal | None,
+        platform_fee_amount: Decimal | None,
+        tax_amount: Decimal | None,
+        net_amount_received: Decimal,
+    ) -> None:
+        """Validate FX-rate/currency consistency and gross/net arithmetic for
+        a transfer. Shared by create_transfer and update_transfer, which both
+        run this same check against the transfer's final (post-merge) values
+        before persisting."""
+        if (
+            from_currency_code == to_currency_code
+            and fx_rate_used is not None
+            and fx_rate_used != Decimal("1")
+        ):
+            raise ValidationError(
+                detail="FX rate must be 1.0 when transferring between the same currency"
+            )
+
+        fx_rate = fx_rate_used if fx_rate_used is not None else Decimal("1")
+        converted_gross = gross_amount * fx_rate
+        total_fees = (
+            (fx_fee_amount or Decimal("0"))
+            + (platform_fee_amount or Decimal("0"))
+            + (tax_amount or Decimal("0"))
+        )
+        difference = abs(converted_gross - total_fees - net_amount_received)
+        if difference > Decimal("0.01"):
+            raise ValidationError(
+                detail=(
+                    f"Transfer arithmetic inconsistent: "
+                    f"gross ({gross_amount:.2f}) * rate ({fx_rate:.4f}) - fees ({total_fees:.2f}) "
+                    f"≠ net ({net_amount_received:.2f}). Difference: {difference:.4f}"
+                )
+            )
+
     async def list_transfers(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
     ) -> tuple[Sequence[dict[str, Any]], int]:
@@ -615,33 +657,16 @@ class CapitalTransferService:
         )
 
         # Validate arithmetic consistency with Decimal precision before persistence.
-        if (
-            transfer_in.from_currency_code == transfer_in.to_currency_code
-            and transfer_in.fx_rate_used is not None
-            and transfer_in.fx_rate_used != Decimal("1")
-        ):
-            raise ValidationError(
-                detail="FX rate must be 1.0 when transferring between the same currency"
-            )
-
-        gross = transfer_in.gross_amount
-        fx_rate = transfer_in.fx_rate_used if transfer_in.fx_rate_used is not None else Decimal("1")
-        converted_gross = gross * fx_rate
-        total_fees = (
-            (transfer_in.fx_fee_amount or Decimal("0"))
-            + (transfer_in.platform_fee_amount or Decimal("0"))
-            + (transfer_in.tax_amount or Decimal("0"))
+        self._validate_transfer_amounts(
+            from_currency_code=transfer_in.from_currency_code,
+            to_currency_code=transfer_in.to_currency_code,
+            gross_amount=transfer_in.gross_amount,
+            fx_rate_used=transfer_in.fx_rate_used,
+            fx_fee_amount=transfer_in.fx_fee_amount,
+            platform_fee_amount=transfer_in.platform_fee_amount,
+            tax_amount=transfer_in.tax_amount,
+            net_amount_received=transfer_in.net_amount_received,
         )
-        net = transfer_in.net_amount_received
-        difference = abs(converted_gross - total_fees - net)
-        if difference > Decimal("0.01"):
-            raise ValidationError(
-                detail=(
-                    f"Transfer arithmetic inconsistent: "
-                    f"gross ({gross:.2f}) * rate ({fx_rate:.4f}) - fees ({total_fees:.2f}) ≠ net ({net:.2f}). "
-                    f"Difference: {difference:.4f}"
-                )
-            )
         transfer = await self.transfer_repository.create(transfer)
 
         # Auto-update brokerage cash balance when transferring TO investing
@@ -755,6 +780,34 @@ class CapitalTransferService:
                 detail=(
                     f"{account_name} ({linked.currency}) has {newer_count} "
                     f"newer balance snapshot(s) created after this transfer. "
+                    f"Delete those order imports first, then retry."
+                )
+            )
+
+    async def _check_no_newer_snapshot_for_account(
+        self,
+        workspace_id: int,
+        transfer: "CapitalTransfer",
+        account_id: int,
+        currency: str,
+    ) -> None:
+        """Raise ConflictError if the target account/currency a transfer is
+        being moved onto already has a snapshot created after this transfer.
+        Inserting a new snapshot for this transfer into that chain would land
+        it out of order, making later snapshots on that account arithmetically
+        stale. Unlike `_check_no_newer_snapshot` (which checks the account the
+        transfer's *existing* linked snapshot lives on), this checks the
+        *new* account/currency the transfer is moving to."""
+        newer_count = await self.cash_balance_repository.count_newer_than(
+            workspace_id, account_id, currency, transfer.created_at
+        )
+        if newer_count > 0:
+            account = await self.account_repository.get_by_id(workspace_id, account_id)
+            account_name = account.name if account else str(account_id)
+            raise ConflictError(
+                detail=(
+                    f"{account_name} ({currency}) has {newer_count} "
+                    f"newer balance snapshot(s) than this transfer. "
                     f"Delete those order imports first, then retry."
                 )
             )
@@ -882,9 +935,10 @@ class CapitalTransferService:
         )
 
         # Safety check: block if newer snapshots exist on either side's
-        # existing account/currency. Both sides are resolved+checked before
-        # any field update, so a conflict on one side never leaves the other
-        # side already mutated.
+        # existing account/currency, OR on the target account/currency when
+        # the transfer is being moved to a different one. Both sides are
+        # resolved+checked before any field update, so a conflict on one side
+        # never leaves the other side already mutated.
         to_linked = None
         from_linked = None
         if self.cash_balance_repository is not None:
@@ -893,11 +947,37 @@ class CapitalTransferService:
                     workspace_id, transfer.public_id, transfer.to_account_id
                 )
                 await self._check_no_newer_snapshot(workspace_id, to_linked)
+                to_account_changed = to_account is not None and (
+                    to_linked is None or to_account.id != to_linked.account_id
+                )
+                to_currency_changed = (
+                    to_linked is not None and new_to_currency != to_linked.currency
+                )
+                if to_account is not None and (to_account_changed or to_currency_changed):
+                    await self._check_no_newer_snapshot_for_account(
+                        workspace_id,
+                        transfer,
+                        to_account.id,
+                        new_to_currency,  # type: ignore[arg-type]
+                    )
             if from_balance_affecting:
                 from_linked = await self.cash_balance_repository.get_by_trigger_ref_and_account(
                     workspace_id, transfer.public_id, transfer.from_account_id
                 )
                 await self._check_no_newer_snapshot(workspace_id, from_linked)
+                from_account_changed = from_account is not None and (
+                    from_linked is None or from_account.id != from_linked.account_id
+                )
+                from_currency_changed = (
+                    from_linked is not None and new_from_currency != from_linked.currency
+                )
+                if from_account is not None and (from_account_changed or from_currency_changed):
+                    await self._check_no_newer_snapshot_for_account(
+                        workspace_id,
+                        transfer,
+                        from_account.id,
+                        new_from_currency,  # type: ignore[arg-type]
+                    )
 
         # Apply field updates to transfer record
         if from_account:
@@ -926,32 +1006,16 @@ class CapitalTransferService:
             transfer.notes = transfer_in.notes
 
         # Arithmetic consistency check (same rule as create_transfer)
-        if (
-            transfer.from_currency_code == transfer.to_currency_code
-            and transfer.fx_rate_used is not None
-            and transfer.fx_rate_used != Decimal("1")
-        ):
-            raise ValidationError(
-                detail="FX rate must be 1.0 when transferring between the same currency"
-            )
-        gross = transfer.gross_amount
-        fx_rate = transfer.fx_rate_used if transfer.fx_rate_used is not None else Decimal("1")
-        converted_gross = gross * fx_rate
-        total_fees = (
-            (transfer.fx_fee_amount or Decimal("0"))
-            + (transfer.platform_fee_amount or Decimal("0"))
-            + (transfer.tax_amount or Decimal("0"))
+        self._validate_transfer_amounts(
+            from_currency_code=transfer.from_currency_code,
+            to_currency_code=transfer.to_currency_code,
+            gross_amount=transfer.gross_amount,
+            fx_rate_used=transfer.fx_rate_used,
+            fx_fee_amount=transfer.fx_fee_amount,
+            platform_fee_amount=transfer.platform_fee_amount,
+            tax_amount=transfer.tax_amount,
+            net_amount_received=transfer.net_amount_received,
         )
-        net = transfer.net_amount_received
-        difference = abs(converted_gross - total_fees - net)
-        if difference > Decimal("0.01"):
-            raise ValidationError(
-                detail=(
-                    f"Transfer arithmetic inconsistent: "
-                    f"gross ({gross:.2f}) * rate ({fx_rate:.4f}) - fees ({total_fees:.2f}) ≠ net ({net:.2f}). "
-                    f"Difference: {difference:.4f}"
-                )
-            )
 
         transfer = await self.transfer_repository.save(transfer)
 

@@ -12,6 +12,9 @@ from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account, Currency, FxRate, WorkspaceCurrency
 from app.investing.models import CashBalance, Holding, HoldingPrice, Instrument, PortfolioSnapshot
+from app.investing.repository import CompanyRepository, InstrumentRepository
+from app.investing.schemas import InstrumentType
+from app.investing.service import InstrumentService
 
 
 async def _register_and_login(
@@ -2120,3 +2123,122 @@ async def test_cash_balances_account_id_filter_scopes_server_side(client: AsyncC
     assert filtered["total"] == 1
     assert filtered["items"][0]["account_id"] == account_map["wallet"]
     assert filtered["items"][0]["balance"] == "200.00"
+
+
+@pytest.mark.asyncio
+async def test_update_order_writes_single_combined_cash_balance_snapshot(client: AsyncClient):
+    """update_order should reverse the old cash impact and apply the new one
+    as a single combined delta -- one new CashBalance row per edit, not two."""
+    account_map = await _register_and_login(
+        client,
+        email="update-order-single-snapshot@example.com",
+        username="update-order-single-snapshot",
+        password="TestPass123!",
+    )
+    account_id = account_map["brokerage"]
+
+    cash_res = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_id,
+            "balance": "10000.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert cash_res.status_code == 201, cash_res.text
+
+    order_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": account_id,
+            "order_type": "buy",
+            "symbol": "AAPL",
+            "quantity": "10.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert order_res.status_code == 201, order_res.text
+    order = order_res.json()
+    order_id = order["public_id"]
+
+    async with postgres.async_session_maker() as session:
+        pre_update_count = (
+            (
+                await session.execute(
+                    select(CashBalance).where(CashBalance.trigger_ref == uuid.UUID(order_id))
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(pre_update_count) == 1
+
+    # Edit the order's quantity -- this reverses the old cash impact (+1000
+    # buy reversal) and applies the new one (-1500 for 15 units @ 100) in a
+    # single combined delta.
+    update_res = await client.patch(
+        f"/v1/investing/orders/{order_id}",
+        json={"quantity": "15.00000000"},
+    )
+    assert update_res.status_code == 200, update_res.text
+
+    async with postgres.async_session_maker() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(CashBalance)
+                    .where(CashBalance.trigger_ref == uuid.UUID(order_id))
+                    .order_by(CashBalance.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    # One row from order placement + exactly ONE new row from the edit (was 2).
+    assert len(rows) == 2
+    final_balance = rows[-1].balance
+    # 10000 starting cash - 1500 (15 * 100) = 8500
+    assert final_balance == Decimal("8500.00")
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_instrument_normalizes_symbol_case(client: AsyncClient):
+    """find_or_create_instrument must normalize the symbol to uppercase at the
+    very start, so callers that bypass the InvestingOrderCreate schema's own
+    normalize_symbol validator (e.g. internal/bulk-import callers) still
+    resolve 'aapl' and 'AAPL' to the same Instrument record."""
+    account_map = await _register_and_login(
+        client,
+        email="symbol-case-normalize@example.com",
+        username="symbol-case-normalize",
+        password="TestPass123!",
+    )
+
+    async with postgres.async_session_maker() as session:
+        account = (
+            await session.execute(
+                select(Account).where(Account.public_id == uuid.UUID(account_map["brokerage"]))
+            )
+        ).scalar_one()
+        workspace_id = account.workspace_id
+
+        service = InstrumentService(InstrumentRepository(session), CompanyRepository(session))
+        lower = await service.find_or_create_instrument(workspace_id, "aapl", InstrumentType.stock)
+        await session.commit()
+        assert lower is not None
+        assert lower.symbol == "AAPL"
+
+        upper = await service.find_or_create_instrument(workspace_id, "AAPL", InstrumentType.stock)
+        await session.commit()
+        assert upper is not None
+        assert upper.id == lower.id
+
+        instruments = (
+            (await session.execute(select(Instrument).where(Instrument.symbol == "AAPL")))
+            .scalars()
+            .all()
+        )
+    assert len(instruments) == 1
