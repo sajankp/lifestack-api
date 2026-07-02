@@ -947,37 +947,31 @@ class CapitalTransferService:
                     workspace_id, transfer.public_id, transfer.to_account_id
                 )
                 await self._check_no_newer_snapshot(workspace_id, to_linked)
-                to_account_changed = to_account is not None and (
-                    to_linked is None or to_account.id != to_linked.account_id
-                )
-                to_currency_changed = (
-                    to_linked is not None and new_to_currency != to_linked.currency
-                )
-                if to_account is not None and (to_account_changed or to_currency_changed):
-                    await self._check_no_newer_snapshot_for_account(
-                        workspace_id,
-                        transfer,
-                        to_account.id,
-                        new_to_currency,  # type: ignore[arg-type]
-                    )
+                if to_linked is not None and to_account is not None:
+                    to_account_changed = to_account.id != to_linked.account_id
+                    to_currency_changed = new_to_currency != to_linked.currency
+                    if to_account_changed or to_currency_changed:
+                        await self._check_no_newer_snapshot_for_account(
+                            workspace_id,
+                            transfer,
+                            to_account.id,
+                            new_to_currency,  # type: ignore[arg-type]
+                        )
             if from_balance_affecting:
                 from_linked = await self.cash_balance_repository.get_by_trigger_ref_and_account(
                     workspace_id, transfer.public_id, transfer.from_account_id
                 )
                 await self._check_no_newer_snapshot(workspace_id, from_linked)
-                from_account_changed = from_account is not None and (
-                    from_linked is None or from_account.id != from_linked.account_id
-                )
-                from_currency_changed = (
-                    from_linked is not None and new_from_currency != from_linked.currency
-                )
-                if from_account is not None and (from_account_changed or from_currency_changed):
-                    await self._check_no_newer_snapshot_for_account(
-                        workspace_id,
-                        transfer,
-                        from_account.id,
-                        new_from_currency,  # type: ignore[arg-type]
-                    )
+                if from_linked is not None and from_account is not None:
+                    from_account_changed = from_account.id != from_linked.account_id
+                    from_currency_changed = new_from_currency != from_linked.currency
+                    if from_account_changed or from_currency_changed:
+                        await self._check_no_newer_snapshot_for_account(
+                            workspace_id,
+                            transfer,
+                            from_account.id,
+                            new_from_currency,  # type: ignore[arg-type]
+                        )
 
         # Apply field updates to transfer record
         if from_account:

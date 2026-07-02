@@ -989,6 +989,47 @@ async def test_patch_transfer_to_new_account_blocked_by_newer_snapshot_on_target
     assert balances.get("Broker2-tblk") == "5000.00"
 
 
+@pytest.mark.asyncio
+async def test_patch_transfer_from_account_not_blocked_when_from_side_unlinked(
+    client: AsyncClient,
+):
+    """Regression test for a bug caught in PR #99's own review
+    (PRRT_kwDORhelTM6Nxv4r / PRRT_kwDORhelTM6Nxv4u): the from_module="spending"
+    side of a spending->investing transfer has no linked cash-balance
+    snapshot (from_linked is None), so changing from_account_id to a
+    *different* account must NOT be blocked just because that new account
+    happens to have unrelated newer investing cash-balance snapshots --
+    there is no snapshot chain on the spending side to protect."""
+    await _register_and_login(
+        client,
+        email="patch-transfer-unlinked-from@example.com",
+        username="patch-transfer-unlinked-from",
+        password="TestPass123!",
+    )
+    bank1_id, broker_id = await _create_bank_and_brokerage(client, suffix="-ufrom1")
+    bank2 = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Bank2-ufrom", "account_type": "bank", "default_currency_code": "USD"},
+    )
+    assert bank2.status_code == 201
+    bank2_id = bank2.json()["public_id"]
+
+    # from_module defaults to "spending" in _create_investing_transfer, so the
+    # from-side never gets a linked InvestingCashBalance snapshot.
+    transfer = await _create_investing_transfer(client, from_id=bank1_id, to_id=broker_id)
+    transfer_id = transfer["public_id"]
+
+    # bank2 has no cash-balance snapshots (bank accounts aren't investing
+    # accounts), but even if some unrelated investing account did have newer
+    # snapshots, moving the unlinked from-side must not be blocked by them.
+    patch_res = await client.patch(
+        f"/v1/finance/transfers/{transfer_id}",
+        json={"from_account_id": bank2_id},
+    )
+    assert patch_res.status_code == 200, patch_res.text
+    assert patch_res.json()["from_account_public_id"] == bank2_id
+
+
 # ---------------------------------------------------------------------------
 # spec-049: transfers OUT of a brokerage account (from_module == "investing")
 # must also decrement the source account's cash-balance snapshot.
