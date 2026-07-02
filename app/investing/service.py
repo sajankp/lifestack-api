@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import httpx
+from pydantic import ValidationError as PydanticValidationError
 
 from app.config import settings
 from app.core.audit import AuditLogger
@@ -1069,6 +1070,7 @@ class InstrumentService:
         instrument_type: InstrumentType,
         instrument_name: str | None = None,
     ) -> Instrument | None:
+        symbol = symbol.strip().upper()
         instrument = await self.instrument_repo.get_by_symbol(workspace_id, symbol)
         if instrument is not None:
             if instrument_name and instrument.name == instrument.symbol:
@@ -2254,13 +2256,17 @@ class InvestingOrderService:
         for o in all_orders:
             if o.id == order.id:
                 # Replace with in-memory copy reflecting proposed edits
-                sim = InvestingOrder(
-                    **{col: getattr(o, col) for col in o.model_fields},
-                )
-                sim.order_type = new_order_type
-                sim.quantity = new_quantity
-                sim.price_per_unit = new_price
-                sim.occurred_at = new_occurred_at
+                try:
+                    sim = o.model_copy(
+                        update={
+                            "order_type": new_order_type,
+                            "quantity": new_quantity,
+                            "price_per_unit": new_price,
+                            "occurred_at": new_occurred_at,
+                        }
+                    )
+                except PydanticValidationError as exc:
+                    raise ValidationError(detail=f"Invalid order update values: {exc}") from exc
                 simulated_orders.append(sim)
             else:
                 simulated_orders.append(o)
@@ -2268,23 +2274,20 @@ class InvestingOrderService:
         simulated_orders.sort(key=lambda o: (o.occurred_at, o.id or 0))
         self._replay_orders(simulated_orders, record_sells=False)
 
-        # Reverse old cash impact
+        # Reverse old cash impact and apply the new cash impact in a single
+        # combined delta so an edit produces exactly one CashBalance snapshot
+        # row instead of two (one for the reversal, one for the new impact).
         old_cash_reversal = order.net_amount if order.order_type == "buy" else -order.net_amount
-        await self._update_cash_balance(
-            workspace_id=workspace_id,
-            user_id=user_id,
-            account_id=order.account_id,
-            currency=order.currency,
-            delta=old_cash_reversal,
-            trigger_type="order",
-            trigger_ref=order.public_id,
-        )
+        new_cash_delta = -new_net if new_order_type == "buy" else new_net
+        combined_cash_delta = old_cash_reversal + new_cash_delta
 
-        # For buy orders validate sufficient cash after reversal
+        # For buy orders validate sufficient cash as-if the reversal had already
+        # been applied, without actually writing it to the DB yet.
         if new_order_type == "buy":
-            available_cash = await self._get_cash_balance(
+            current_cash = await self._get_cash_balance(
                 workspace_id, order.account_id, order.currency
             )
+            available_cash = current_cash + old_cash_reversal
             if available_cash < new_net:
                 raise ValidationError(
                     detail=(
@@ -2311,14 +2314,13 @@ class InvestingOrderService:
         order.updated_at = datetime.now(UTC)
         order = await self.order_repository.save(order)
 
-        # Apply new cash impact
-        new_cash_delta = -new_net if new_order_type == "buy" else new_net
+        # Apply the combined cash impact in a single snapshot write
         await self._update_cash_balance(
             workspace_id=workspace_id,
             user_id=user_id,
             account_id=order.account_id,
             currency=order.currency,
-            delta=new_cash_delta,
+            delta=combined_cash_delta,
             trigger_type="order",
             trigger_ref=order.public_id,
         )

@@ -115,3 +115,25 @@ async def test_delete_cash_balances_fail_closed_on_missing_workspace():
         await repo.delete_cash_balances_by_trigger_refs(None, "order", [uuid.uuid4()])
 
     session.execute.assert_not_called()
+
+
+def test_import_service_clears_instance_cache_on_session_change():
+    """Regression test for PR #81 thread PRRT_kwDORhelTM6M3Zvi: the in-memory
+    per-instance cash-balance cache must be cleared whenever the service's
+    session identity changes, so stale cache entries built against a closed
+    or replaced session can never leak into work done under a new session."""
+    repo = AsyncMock()
+    session_a = AsyncMock()
+    svc = ImportService(repo, session_a, order_service=None)
+
+    svc._cash_balance_cache[(1, "USD")] = Decimal("500")
+    svc._ensure_cache_session()
+    # Same session -- cache untouched.
+    assert svc._cash_balance_cache == {(1, "USD"): Decimal("500")}
+
+    session_b = AsyncMock()
+    svc.session = session_b
+    svc._ensure_cache_session()
+    # Session identity changed -- cache must be cleared.
+    assert svc._cash_balance_cache == {}
+    assert svc._cache_session is session_b

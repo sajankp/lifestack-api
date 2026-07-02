@@ -930,6 +930,106 @@ async def test_patch_transfer_blocked_by_newer_cash_balance(client: AsyncClient)
     assert "Delete those order imports first" in detail
 
 
+@pytest.mark.asyncio
+async def test_patch_transfer_to_new_account_blocked_by_newer_snapshot_on_target(
+    client: AsyncClient,
+):
+    """Regression test for PR #85 thread PRRT_kwDORhelTM6M7fa1: moving a
+    transfer's to_account_id to a *different* account must be blocked if that
+    target account already has a newer cash balance snapshot -- otherwise the
+    new transfer-linked snapshot would be inserted mid-chain on the target
+    account, making its later snapshots arithmetically stale."""
+    await _register_and_login(
+        client,
+        email="patch-transfer-target-blk@example.com",
+        username="patch-transfer-target-blk",
+        password="TestPass123!",
+    )
+    bank_id, broker1_id = await _create_bank_and_brokerage(client, suffix="-tblk1")
+    broker2 = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Broker2-tblk",
+            "account_type": "brokerage",
+            "default_currency_code": "USD",
+        },
+    )
+    assert broker2.status_code == 201
+    broker2_id = broker2.json()["public_id"]
+
+    transfer = await _create_investing_transfer(client, from_id=bank_id, to_id=broker1_id)
+    transfer_id = transfer["public_id"]
+
+    # broker2 (the target we're about to move the transfer onto) already has
+    # a newer, unrelated snapshot (e.g. from a since-committed order import).
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": broker2_id,
+            "balance": "5000.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    patch_res = await client.patch(
+        f"/v1/finance/transfers/{transfer_id}",
+        json={"to_account_id": broker2_id},
+    )
+    assert patch_res.status_code == 409
+    detail = patch_res.json()["detail"]
+    assert "newer balance snapshot" in detail
+
+    # The transfer and its original cash balance must be untouched.
+    get_res = await client.get(f"/v1/finance/transfers/{transfer_id}")
+    assert get_res.json()["to_account_public_id"] == broker1_id
+    cb_res = await client.get("/v1/investing/cash-balances")
+    balances = {b["account_name"]: b["balance"] for b in cb_res.json()["items"]}
+    assert balances.get("Broker-tblk1") == "1000.00"
+    assert balances.get("Broker2-tblk") == "5000.00"
+
+
+@pytest.mark.asyncio
+async def test_patch_transfer_from_account_not_blocked_when_from_side_unlinked(
+    client: AsyncClient,
+):
+    """Regression test for a bug caught in PR #99's own review
+    (PRRT_kwDORhelTM6Nxv4r / PRRT_kwDORhelTM6Nxv4u): the from_module="spending"
+    side of a spending->investing transfer has no linked cash-balance
+    snapshot (from_linked is None), so changing from_account_id to a
+    *different* account must NOT be blocked just because that new account
+    happens to have unrelated newer investing cash-balance snapshots --
+    there is no snapshot chain on the spending side to protect."""
+    await _register_and_login(
+        client,
+        email="patch-transfer-unlinked-from@example.com",
+        username="patch-transfer-unlinked-from",
+        password="TestPass123!",
+    )
+    bank1_id, broker_id = await _create_bank_and_brokerage(client, suffix="-ufrom1")
+    bank2 = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Bank2-ufrom", "account_type": "bank", "default_currency_code": "USD"},
+    )
+    assert bank2.status_code == 201
+    bank2_id = bank2.json()["public_id"]
+
+    # from_module defaults to "spending" in _create_investing_transfer, so the
+    # from-side never gets a linked InvestingCashBalance snapshot.
+    transfer = await _create_investing_transfer(client, from_id=bank1_id, to_id=broker_id)
+    transfer_id = transfer["public_id"]
+
+    # bank2 has no cash-balance snapshots (bank accounts aren't investing
+    # accounts), but even if some unrelated investing account did have newer
+    # snapshots, moving the unlinked from-side must not be blocked by them.
+    patch_res = await client.patch(
+        f"/v1/finance/transfers/{transfer_id}",
+        json={"from_account_id": bank2_id},
+    )
+    assert patch_res.status_code == 200, patch_res.text
+    assert patch_res.json()["from_account_public_id"] == bank2_id
+
+
 # ---------------------------------------------------------------------------
 # spec-049: transfers OUT of a brokerage account (from_module == "investing")
 # must also decrement the source account's cash-balance snapshot.

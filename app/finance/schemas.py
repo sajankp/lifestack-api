@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -162,7 +163,7 @@ class CapitalTransferUpdate(BaseModel):
     @field_validator("from_currency_code", "to_currency_code", mode="before")
     @classmethod
     def normalize_currency(cls, value: str | None) -> str | None:
-        return value.strip().upper() if value else value
+        return value.strip().upper() if isinstance(value, str) else value
 
 
 class CapitalTransferResponse(BaseModel):
@@ -288,7 +289,7 @@ class NetWorthResponse(BaseModel):
     holdings_value: Decimal | None
     investing_total: Decimal | None
     total_net_worth: Decimal | None
-    valuation_status: str
+    valuation_status: Literal["empty", "ok", "no_reporting_currency", "partial"]
     fx_as_of: datetime | None
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
