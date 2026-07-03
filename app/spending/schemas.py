@@ -3,8 +3,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
+from app.core.recurrence import MonthlyModeLiteral, OrdinalLiteral, validate_recurrence_fields
 from app.imports.models import ImportModule
 from app.spending.models import TransactionSourceType, TransactionType
 
@@ -215,6 +216,16 @@ class RecurringTransactionCreate(BaseModel):
     interval: int = Field(default=1, ge=1)
     anchor_date: date
     end_date: date | None = None
+    monthly_mode: MonthlyModeLiteral = Field(default="day_of_month")
+    by_weekday: int | None = Field(default=None, ge=0, le=6)
+    by_ordinal: OrdinalLiteral | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def _validate_monthly_mode(self) -> "RecurringTransactionCreate":
+        validate_recurrence_fields(
+            self.frequency, self.monthly_mode, self.by_weekday, self.by_ordinal
+        )
+        return self
 
 
 class RecurringTransactionUpdate(BaseModel):
@@ -224,6 +235,9 @@ class RecurringTransactionUpdate(BaseModel):
     interval: int | None = Field(default=None, ge=1)
     end_date: date | None = None
     is_active: bool | None = None
+    monthly_mode: MonthlyModeLiteral | None = Field(default=None)
+    by_weekday: int | None = Field(default=None, ge=0, le=6)
+    by_ordinal: OrdinalLiteral | None = Field(default=None)
 
 
 class RecurringTransactionResponse(BaseModel):
@@ -239,6 +253,9 @@ class RecurringTransactionResponse(BaseModel):
     end_date: date | None
     is_active: bool
     last_generated_at: datetime | None
+    monthly_mode: str
+    by_weekday: int | None
+    by_ordinal: int | None
     created_at: datetime
     updated_at: datetime
 

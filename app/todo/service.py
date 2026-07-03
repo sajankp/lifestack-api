@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from app.core.audit import AuditLogger
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
+from app.core.recurrence import validate_recurrence_fields
 from app.todo.models import PriorityEnum, RecurringTodoRule, Todo
 from app.todo.repository import TodoRepository
 from app.todo.schemas import (
@@ -40,6 +41,9 @@ def _snapshot_recurring_rule(rule: RecurringTodoRule) -> dict:
         "next_due_date": rule.next_due_date.isoformat() if rule.next_due_date else None,
         "end_date": rule.end_date.isoformat() if rule.end_date else None,
         "is_active": rule.is_active,
+        "monthly_mode": rule.monthly_mode,
+        "by_weekday": rule.by_weekday,
+        "by_ordinal": rule.by_ordinal,
     }
 
 
@@ -306,6 +310,9 @@ class TodoService:
             timezone=rule_in.timezone,
             next_due_date=next_due,
             end_date=rule_in.end_date,
+            monthly_mode=rule_in.monthly_mode,
+            by_weekday=rule_in.by_weekday,
+            by_ordinal=rule_in.by_ordinal,
         )
         rule = await self.repository.create_recurring_rule(rule)
         if audit_logger:
@@ -351,6 +358,12 @@ class TodoService:
             raise ValidationError(detail=f"Unknown timezone: {rule.timezone}") from exc
         if rule.end_date and rule.anchor_date > rule.end_date:
             raise ValidationError(detail="anchor_date cannot be after end_date")
+        try:
+            validate_recurrence_fields(
+                rule.frequency, rule.monthly_mode, rule.by_weekday, rule.by_ordinal
+            )
+        except ValueError as exc:
+            raise ValidationError(detail=str(exc)) from exc
 
         if rule.end_date and rule.next_due_date > rule.end_date:
             rule.is_active = False

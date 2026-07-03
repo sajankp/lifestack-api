@@ -1,4 +1,3 @@
-import calendar
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
@@ -15,6 +14,7 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.core.pagination import DEFAULT_LIMIT
+from app.core.recurrence import advance_due_date, validate_recurrence_fields
 from app.finance.repository import AccountRepository
 from app.spending.models import (
     RecurringTransaction,
@@ -1176,24 +1176,6 @@ class BudgetService:
         )
 
 
-def _advance_due_date(current: date, frequency: str, interval: int) -> date:
-    if frequency == "daily":
-        return current + timedelta(days=interval)
-    if frequency == "weekly":
-        return current + timedelta(weeks=interval)
-    if frequency == "yearly":
-        try:
-            return current.replace(year=current.year + interval)
-        except ValueError:
-            return date(current.year + interval, 2, 28)
-    # monthly default
-    month = current.month - 1 + interval
-    year = current.year + month // 12
-    month = month % 12 + 1
-    day = min(current.day, calendar.monthrange(year, month)[1])
-    return date(year, month, day)
-
-
 class RecurringTransactionService:
     def __init__(
         self,
@@ -1232,6 +1214,9 @@ class RecurringTransactionService:
             anchor_date=payload.anchor_date,
             next_due_date=payload.anchor_date,
             end_date=payload.end_date,
+            monthly_mode=payload.monthly_mode,
+            by_weekday=payload.by_weekday,
+            by_ordinal=payload.by_ordinal,
         )
         return await self.recurring_repo.create(recurring)
 
@@ -1260,6 +1245,15 @@ class RecurringTransactionService:
             raise ValidationError(detail="end_date cannot be before anchor_date")
         for key, value in update_data.items():
             setattr(recurring, key, value)
+        try:
+            validate_recurrence_fields(
+                recurring.frequency,
+                recurring.monthly_mode,
+                recurring.by_weekday,
+                recurring.by_ordinal,
+            )
+        except ValueError as exc:
+            raise ValidationError(detail=str(exc)) from exc
         recurring.updated_at = datetime.now(UTC)
         return await self.recurring_repo.save(recurring)
 
@@ -1314,7 +1308,15 @@ class RecurringTransactionService:
                             interval=recurrence.interval,
                         )
                     )
-                projected = _advance_due_date(projected, recurrence.frequency, recurrence.interval)
+                projected = advance_due_date(
+                    projected,
+                    recurrence.frequency,
+                    recurrence.interval,
+                    anchor_day=recurrence.anchor_date.day,
+                    monthly_mode=recurrence.monthly_mode,
+                    by_weekday=recurrence.by_weekday,
+                    by_ordinal=recurrence.by_ordinal,
+                )
 
         items.sort(key=lambda x: x.projected_date)
         return UpcomingPreviewResponse(

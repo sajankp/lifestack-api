@@ -14,6 +14,7 @@ from app.auth.schemas import UserCreate
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.audit import AuditLogger
+from app.core.recurrence import advance_due_date
 from app.dashboard.schemas import (
     DashboardSummary,
     InvestingSummary,
@@ -45,7 +46,6 @@ from app.spending.service import (
     BudgetService,
     CategoryService,
     TransactionService,
-    _advance_due_date,
 )
 from app.todo.models import PriorityEnum, RecurringTodoRule, Todo
 from app.todo.repository import TodoRepository
@@ -461,8 +461,14 @@ async def process_workspace_recurring_transactions(
                 )
                 catchup_warned = True
             while recurrence.next_due_date < catchup_boundary:
-                next_due = _advance_due_date(
-                    recurrence.next_due_date, recurrence.frequency, recurrence.interval
+                next_due = advance_due_date(
+                    recurrence.next_due_date,
+                    recurrence.frequency,
+                    recurrence.interval,
+                    anchor_day=recurrence.anchor_date.day,
+                    monthly_mode=recurrence.monthly_mode,
+                    by_weekday=recurrence.by_weekday,
+                    by_ordinal=recurrence.by_ordinal,
                 )
                 if next_due <= recurrence.next_due_date:
                     logger.error(
@@ -503,8 +509,14 @@ async def process_workspace_recurring_transactions(
 
             # Advance to next occurrence
             prev_due = recurrence.next_due_date
-            recurrence.next_due_date = _advance_due_date(
-                recurrence.next_due_date, recurrence.frequency, recurrence.interval
+            recurrence.next_due_date = advance_due_date(
+                recurrence.next_due_date,
+                recurrence.frequency,
+                recurrence.interval,
+                anchor_day=recurrence.anchor_date.day,
+                monthly_mode=recurrence.monthly_mode,
+                by_weekday=recurrence.by_weekday,
+                by_ordinal=recurrence.by_ordinal,
             )
             if recurrence.next_due_date <= prev_due:
                 logger.error(
@@ -605,7 +617,15 @@ async def process_workspace_recurring_todos(session: AsyncSession, workspace: Wo
     for rule in rules:
         if rule.next_due_date < catchup_boundary:
             while rule.next_due_date < catchup_boundary:
-                next_due = _advance_due_date(rule.next_due_date, rule.frequency, rule.interval)
+                next_due = advance_due_date(
+                    rule.next_due_date,
+                    rule.frequency,
+                    rule.interval,
+                    anchor_day=rule.anchor_date.day,
+                    monthly_mode=rule.monthly_mode,
+                    by_weekday=rule.by_weekday,
+                    by_ordinal=rule.by_ordinal,
+                )
                 if next_due <= rule.next_due_date:
                     logger.error(
                         "recurring_todo_catchup_advance_failed",
@@ -648,8 +668,14 @@ async def process_workspace_recurring_todos(session: AsyncSession, workspace: Wo
             )
             generated += 1
             prev_due = rule.next_due_date
-            rule.next_due_date = _advance_due_date(
-                rule.next_due_date, rule.frequency, rule.interval
+            rule.next_due_date = advance_due_date(
+                rule.next_due_date,
+                rule.frequency,
+                rule.interval,
+                anchor_day=rule.anchor_date.day,
+                monthly_mode=rule.monthly_mode,
+                by_weekday=rule.by_weekday,
+                by_ordinal=rule.by_ordinal,
             )
             if rule.next_due_date <= prev_due:
                 logger.error(

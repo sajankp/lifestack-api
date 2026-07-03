@@ -20,6 +20,7 @@ All background jobs are subject to **advisory lock coordination** (`pg_try_advis
 - **Schedule**: Daily at the hour defined by `RECURRING_TXN_GENERATION_HOUR` (UTC)
 - **Job Function**: `recurring_transactions_job`
 - **Workflow Function**: `process_workspace_recurring_transactions`
+- **Recurrence advance (spec-053)**: both this job and recurring-todo generation advance `next_due_date` via the shared `app/core/recurrence.advance_due_date` (moved out of `app/spending/service.py`, which previously held a private copy `app/application/workflows.py` reached across module boundaries to apply to todo rules too). Supports three monthly modes — `day_of_month` (default, now clamped against the rule's *anchor* day rather than the current date's day, fixing a permanent-drift bug for anchors on days 29-31), `last_day`, and `nth_weekday` (e.g. "first Friday", "last Sunday") — selected per-rule via `monthly_mode`/`by_weekday`/`by_ordinal` on both `recurring_todo_rules` and `recurring_transactions`.
 - **Purpose**: Scans active recurring transaction rules due on or before today. It automatically generates and commits corresponding spending transaction records in the database, updating the `next_due_date` and setting `last_generated_at`.
 
 ## 3. FX Rate Ingestion Job

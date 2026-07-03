@@ -5,6 +5,8 @@ from enum import StrEnum
 import sqlalchemy as sa
 from sqlmodel import Field, SQLModel
 
+from app.core.recurrence import MonthlyRecurrenceMode
+
 
 class PriorityEnum(StrEnum):
     low = "low"
@@ -68,9 +70,43 @@ class RecurringTodoRule(SQLModel, table=True):
     is_active: bool = Field(default=True)
     last_generated_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
 
+    # Calendar recurrence modes (spec-053) — only meaningful when
+    # frequency="monthly"; enforced by a DB CHECK, not just app validation.
+    monthly_mode: str = Field(
+        default=MonthlyRecurrenceMode.day_of_month.value,
+        sa_column=sa.Column(
+            sa.Enum(
+                "day_of_month",
+                "last_day",
+                "nth_weekday",
+                name="recurrence_monthly_mode",
+                create_type=False,
+            ),
+            nullable=False,
+            server_default="day_of_month",
+        ),
+    )
+    by_weekday: int | None = Field(default=None, sa_type=sa.SmallInteger())
+    by_ordinal: int | None = Field(default=None, sa_type=sa.SmallInteger())
+
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            "(monthly_mode = 'nth_weekday') = (by_weekday IS NOT NULL AND by_ordinal IS NOT NULL)",
+            name="ck_recurring_todo_rules_nth_weekday_fields",
+        ),
+        sa.CheckConstraint(
+            "by_weekday IS NULL OR by_weekday BETWEEN 0 AND 6",
+            name="ck_recurring_todo_rules_by_weekday_range",
+        ),
+        sa.CheckConstraint(
+            "by_ordinal IS NULL OR by_ordinal IN (-1, 1, 2, 3, 4)",
+            name="ck_recurring_todo_rules_by_ordinal_range",
+        ),
     )
