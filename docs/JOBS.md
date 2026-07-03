@@ -72,3 +72,19 @@ All background jobs are subject to **advisory lock coordination** (`pg_try_advis
 - **Workflow Function**: `generate_workspace_insights` (`app/application/insights.py`)
 - **Purpose**: Runs three detectors per workspace and writes `Notification` rows (`category="insight"`): spending anomaly vs a trailing 4-week average, budget pace forecast for the current month, and new recurring-charge detection (a same-category, similar-amount charge recurring across 2+ months with no matching active `RecurringTransaction` rule). Surfaced today via the existing `GET /v1/notifications?category=insight` endpoint; delivered over push automatically once web push (spec-052) ships, via the existing per-category `NotificationPreference.channel_push` toggle — no code in this job references push.
 - **Idempotency**: No unique DB constraint (unlike `Todo.system_key`) — each detector does a targeted existence check against `Notification` (`entity_type` + `entity_public_id`, scoped to the relevant period) before writing, so re-running the job the same week/month does not duplicate a notification.
+
+## 11. Push Delivery Job
+- **Job ID**: `push_delivery`
+- **Interval**: Every `PUSH_DELIVERY_INTERVAL_MINUTES` minutes (default: 1)
+- **Job Function**: `push_delivery_job`
+- **Workflow Function**: `deliver_pending_push_notifications` (`app/application/workflows.py`)
+- **Purpose**: Drains pending `NotificationDelivery` rows with `channel="push"`, sending each notification's title/body to every active `PushSubscription` of the target user via `pywebpush`. Global, not per-workspace — a delivery queue has no natural workspace-iteration shape. One delivery row fans out to all of a user's active subscriptions (phone + tablet + desktop); the row's status folds all per-subscription outcomes together (`sent` if any endpoint accepted, `failed` with detail if all failed). A 404/410 from a push service means that subscription no longer exists — it is deactivated (`is_active=False`) and the run continues. No-ops cleanly (returns immediately) when `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` are unset.
+- **Idempotency**: Only `pending` delivery rows are ever picked up; a re-run after a successful drain finds nothing to do.
+
+## 12. Todo Reminder Job
+- **Job ID**: `todo_reminder`
+- **Interval**: Every `TODO_REMINDER_INTERVAL_MINUTES` minutes (default: 5)
+- **Job Function**: `todo_reminder_job`
+- **Workflow Function**: `process_workspace_todo_reminders` (`app/application/workflows.py`)
+- **Purpose**: The first real notification source for push (spec-052) — finds incomplete todos with `due_date` inside the look-ahead window (now → now + interval) that haven't been reminded yet, and creates a `Notification` (`category="todo_reminder"`) for each via the existing `NotificationService.notify`. Push delivery then happens for free through that method's existing enqueue step.
+- **Idempotency**: `Todo.reminded_at` — set when the reminder notification is created; a re-run only picks up todos where it's still `NULL`. Reset to `NULL` whenever a todo's `due_date` changes, so moving a reminder later re-arms it.

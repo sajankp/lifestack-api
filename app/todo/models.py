@@ -28,6 +28,12 @@ class Todo(SQLModel, table=True):
 
     system_key: str | None = Field(default=None, max_length=100, index=True)
 
+    # Set when todo_reminder_job creates the due-reminder Notification
+    # (spec-052) — makes the job idempotent without a joins-based "does a
+    # notification already exist" probe. Reset to None on any due_date
+    # change so a moved-later todo re-arms its reminder.
+    reminded_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )

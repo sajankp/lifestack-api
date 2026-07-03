@@ -29,6 +29,9 @@ from app.finance.schemas import FxRateUpsert
 from app.finance.service import FxRateService
 from app.imports.models import ImportBatch, ImportPreviewRow
 from app.investing.performance_service import PerformanceService
+from app.notifications.push import send_web_push
+from app.notifications.repository import NotificationRepository, PushSubscriptionRepository
+from app.notifications.service import NotificationService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.platform.service import WorkspaceService
 from app.spending.models import (
@@ -858,3 +861,112 @@ async def cleanup_import_previews(session: AsyncSession) -> int:
     statement = delete(ImportPreviewRow).where(ImportPreviewRow.import_batch_id.in_(subquery))
     result = await session.execute(statement)
     return result.rowcount or 0
+
+
+async def process_workspace_todo_reminders(
+    session: AsyncSession, workspace: Workspace, window_end: datetime
+) -> int:
+    """Create a due-reminder Notification for each incomplete todo whose
+    due_date falls within the look-ahead window and hasn't been reminded yet
+    (spec-052). Push delivery then happens for free via NotificationService.notify's
+    existing enqueue step. Returns the number of reminders created."""
+    if workspace.id is None:
+        return 0
+
+    todo_repo = TodoRepository(session)
+    todos = await todo_repo.get_due_for_reminder(workspace.id, window_end)
+    if not todos:
+        return 0
+
+    notification_service = NotificationService(NotificationRepository(session))
+    reminded = 0
+    for todo in todos:
+        notification = await notification_service.notify(
+            workspace_id=workspace.id,
+            user_id=todo.user_id,
+            category="todo_reminder",
+            severity="info",
+            title=f"Reminder: {todo.title}",
+            body=todo.description or None,
+            module="todo",
+            entity_type="todo",
+            entity_public_id=todo.public_id,
+        )
+        if notification is not None:
+            todo.reminded_at = datetime.now(UTC)
+            session.add(todo)
+            reminded += 1
+    if reminded:
+        await session.flush()
+    return reminded
+
+
+async def deliver_pending_push_notifications(session: AsyncSession, limit: int = 100) -> dict:
+    """Drain the pending push-delivery queue (spec-052): one Notification can
+    fan out to every active subscription of its user; the single delivery
+    row's status folds all per-subscription outcomes together (`sent` if any
+    endpoint accepted, `failed` with detail if all failed). A 404/410 from a
+    push service means that subscription no longer exists — deactivate it and
+    continue, never fail the whole run over one dead endpoint."""
+    notification_repo = NotificationRepository(session)
+    subscription_repo = PushSubscriptionRepository(session)
+
+    pending = await notification_repo.list_pending_push_deliveries(limit)
+    sent_count = 0
+    failed_count = 0
+
+    for delivery, notification in pending:
+        try:
+            subscriptions = await subscription_repo.list_active_for_user(
+                notification.workspace_id, notification.user_id
+            )
+            if not subscriptions:
+                await notification_repo.mark_delivery(
+                    delivery, "failed", "no active push subscriptions"
+                )
+                failed_count += 1
+                continue
+
+            payload = {
+                "title": notification.title,
+                "body": notification.body,
+                "entity_type": notification.entity_type,
+                "entity_public_id": str(notification.entity_public_id)
+                if notification.entity_public_id
+                else None,
+            }
+
+            any_success = False
+            last_error: str | None = None
+            for subscription in subscriptions:
+                result = await asyncio.to_thread(
+                    send_web_push,
+                    subscription.endpoint,
+                    subscription.p256dh,
+                    subscription.auth,
+                    payload,
+                )
+                if result.success:
+                    any_success = True
+                    await subscription_repo.mark_success(subscription)
+                else:
+                    last_error = result.error_detail
+                    await subscription_repo.mark_failure(subscription, deactivate=result.gone)
+
+            if any_success:
+                await notification_repo.mark_delivery(delivery, "sent")
+                sent_count += 1
+            else:
+                await notification_repo.mark_delivery(delivery, "failed", last_error)
+                failed_count += 1
+        except Exception:
+            logger.error(
+                "push_delivery_row_failed",
+                notification_id=notification.id,
+                delivery_id=delivery.id,
+                exc_info=True,
+            )
+            await notification_repo.mark_delivery(delivery, "failed", "internal error")
+            failed_count += 1
+
+    return {"sent": sent_count, "failed": failed_count}

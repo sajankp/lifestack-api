@@ -71,6 +71,20 @@ class TodoRepository(BaseRepository[Todo]):
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
+    async def get_due_for_reminder(self, workspace_id: int, window_end: datetime) -> Sequence[Todo]:
+        """Incomplete todos due within the look-ahead window that haven't
+        already had a reminder notification created (spec-052)."""
+        result = await self.session.execute(
+            select(Todo).where(
+                Todo.workspace_id == workspace_id,
+                Todo.completed.is_(False),
+                Todo.due_date.is_not(None),
+                Todo.due_date <= window_end,
+                Todo.reminded_at.is_(None),
+            )
+        )
+        return result.scalars().all()
+
     async def get_recurring_rules(
         self,
         workspace_id: int,

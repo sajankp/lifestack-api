@@ -199,6 +199,11 @@ class TodoService:
         if not update_data:
             return todo
 
+        # A moved due_date re-arms the reminder (spec-052) — reset the dedup
+        # marker so todo_reminder_job treats it as not-yet-reminded.
+        if "due_date" in update_data and update_data["due_date"] != todo.due_date:
+            todo.reminded_at = None
+
         for key, value in update_data.items():
             setattr(todo, key, value)
 

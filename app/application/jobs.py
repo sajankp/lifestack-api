@@ -25,11 +25,14 @@ from app.application.workflows import (
     cleanup_expired_exports,
     cleanup_expired_sessions,
     cleanup_import_previews,
+    deliver_pending_push_notifications,
     evaluate_workspace_budget_guardrails,
     ingest_fx_rates,
     process_workspace_recurring_todos,
     process_workspace_recurring_transactions,
+    process_workspace_todo_reminders,
 )
+from app.config import settings
 from app.core.constants import (
     ADVISORY_LOCK_BHAVCOPY_PRICE_FEED,
     ADVISORY_LOCK_BUDGET_GUARDRAILS,
@@ -37,8 +40,10 @@ from app.core.constants import (
     ADVISORY_LOCK_EXPORT_CLEANUP,
     ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
+    ADVISORY_LOCK_PUSH_DELIVERY,
     ADVISORY_LOCK_RECURRING_TRANSACTIONS,
     ADVISORY_LOCK_SESSION_CLEANUP,
+    ADVISORY_LOCK_TODO_REMINDER,
     ADVISORY_LOCK_WEEKLY_SUMMARY,
 )
 from app.core.database import postgres
@@ -726,3 +731,67 @@ async def import_preview_cleanup_job() -> None:
                 exc_info=True,
             )
             raise
+
+
+# Advisory lock key — see app.core.constants for the full registry
+PUSH_DELIVERY_LOCK_KEY = ADVISORY_LOCK_PUSH_DELIVERY
+
+
+async def push_delivery_job() -> None:
+    """Cron-triggered job that drains pending push-channel NotificationDelivery
+    rows (spec-052). Global, not per-workspace — a delivery queue has no
+    natural workspace-iteration shape, so this follows fx_rate_ingestion_job's
+    single-lock/single-session pattern rather than run_workspace_job."""
+    if not settings.VAPID_PRIVATE_KEY or not settings.VAPID_PUBLIC_KEY:
+        return
+
+    start_time = datetime.now(UTC)
+    logger.info("push_delivery_job_start", job_name="push_delivery_job")
+
+    async with postgres.async_session_maker() as session, session.begin():
+        lock_res = await session.execute(
+            select(func.pg_try_advisory_xact_lock(PUSH_DELIVERY_LOCK_KEY))
+        )
+        has_lock = lock_res.scalar()
+        if not has_lock:
+            logger.info("push_delivery_job_skipped_lock_held", job_name="push_delivery_job")
+            return
+
+        try:
+            counts = await deliver_pending_push_notifications(session)
+
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info(
+                "push_delivery_job_completed",
+                job_name="push_delivery_job",
+                duration_ms=total_ms,
+                **counts,
+            )
+        except Exception:
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.error(
+                "push_delivery_job_failed",
+                job_name="push_delivery_job",
+                duration_ms=total_ms,
+                status="failed",
+                exc_info=True,
+            )
+            raise
+
+
+# Advisory lock key — see app.core.constants for the full registry
+TODO_REMINDER_LOCK_KEY = ADVISORY_LOCK_TODO_REMINDER
+
+
+async def todo_reminder_job(workspace_id: int | None = None) -> None:
+    """Cron-triggered job that creates due-reminder Notifications for
+    incomplete todos (spec-052) — the first real notification source that
+    makes push delivery worth having. Idempotent via Todo.reminded_at."""
+    window_end = datetime.now(UTC) + timedelta(minutes=settings.TODO_REMINDER_INTERVAL_MINUTES)
+
+    await run_workspace_job(
+        job_name="todo_reminder_job",
+        lock_key=TODO_REMINDER_LOCK_KEY,
+        workspace_id=workspace_id,
+        process_workspace=lambda s, ws: process_workspace_todo_reminders(s, ws, window_end),
+    )

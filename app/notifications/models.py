@@ -58,3 +58,33 @@ class NotificationDelivery(SQLModel, table=True):
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
+
+
+class PushSubscription(SQLModel, table=True):
+    """A browser-issued Web Push subscription (spec-052).
+
+    ``endpoint`` is a capability URL — treated like a secret token: never
+    logged, only ever returned to the client truncated. ``is_active`` is
+    flipped false by ``push_delivery_job`` on a permanent push-service
+    rejection (404/410), the standard Web Push contract for "this
+    subscription no longer exists."
+    """
+
+    __tablename__ = "push_subscriptions"
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    endpoint: str = Field(max_length=1000, unique=True)
+    p256dh: str = Field(max_length=255)
+    auth: str = Field(max_length=255)
+    device_label: str | None = Field(default=None, max_length=100)
+    is_active: bool = Field(default=True)
+    last_success_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    last_failure_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )

@@ -52,8 +52,8 @@ from app.investing.service import (
     HoldingService,
     InstrumentService,
 )
-from app.notifications.repository import NotificationRepository
-from app.notifications.service import NotificationService
+from app.notifications.repository import NotificationRepository, PushSubscriptionRepository
+from app.notifications.service import NotificationService, PushSubscriptionService
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
 from app.spending.repository import (
@@ -505,6 +505,18 @@ async def get_notification_service(
     repo: NotificationRepository = Depends(get_notification_repo),
 ) -> NotificationService:
     return NotificationService(repo)
+
+
+async def get_push_subscription_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> PushSubscriptionRepository:
+    return PushSubscriptionRepository(session)
+
+
+async def get_push_subscription_service(
+    repo: PushSubscriptionRepository = Depends(get_push_subscription_repo),
+) -> PushSubscriptionService:
+    return PushSubscriptionService(repo)
 
 
 async def get_weekly_summary_repo(

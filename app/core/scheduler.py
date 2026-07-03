@@ -13,7 +13,8 @@ def register_interval_job(
     job_func,
     *,
     job_id: str,
-    hours: int,
+    hours: int = 0,
+    minutes: int = 0,
     idempotent: bool = True,
 ) -> None:
     """Register an interval job with safety checks for non-idempotent work."""
@@ -36,6 +37,7 @@ def register_interval_job(
         job_func,
         "interval",
         hours=hours,
+        minutes=minutes,
         id=job_id,
         replace_existing=True,
     )
