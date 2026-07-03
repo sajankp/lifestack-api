@@ -20,6 +20,7 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.insights import generate_workspace_insights
 from app.application.workflows import (
     cleanup_expired_exports,
     cleanup_expired_sessions,
@@ -32,6 +33,7 @@ from app.application.workflows import (
 from app.core.constants import (
     ADVISORY_LOCK_BHAVCOPY_PRICE_FEED,
     ADVISORY_LOCK_BUDGET_GUARDRAILS,
+    ADVISORY_LOCK_DASHBOARD_INSIGHTS,
     ADVISORY_LOCK_EXPORT_CLEANUP,
     ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
@@ -271,6 +273,22 @@ async def budget_guardrails_job(workspace_id: int | None = None) -> None:
         lock_key=BUDGET_GUARDRAILS_LOCK_KEY,
         workspace_id=workspace_id,
         process_workspace=lambda s, ws: evaluate_workspace_budget_guardrails(s, ws),
+    )
+
+
+# Advisory lock key — see app.core.constants for the full registry
+DASHBOARD_INSIGHTS_LOCK_KEY = ADVISORY_LOCK_DASHBOARD_INSIGHTS
+
+
+async def dashboard_insights_job(workspace_id: int | None = None) -> None:
+    """Cron-triggered job that runs the three dashboard-insight detectors
+    (spending anomaly, budget pace, new recurring charge — spec-058) across
+    all active workspaces, writing `Notification` rows (category="insight")."""
+    await run_workspace_job(
+        job_name="dashboard_insights_job",
+        lock_key=DASHBOARD_INSIGHTS_LOCK_KEY,
+        workspace_id=workspace_id,
+        process_workspace=lambda s, ws: generate_workspace_insights(s, ws),
     )
 
 

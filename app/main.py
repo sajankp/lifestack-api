@@ -13,6 +13,7 @@ from sqlalchemy import text
 from app.application.jobs import (
     bhavcopy_price_feed_job,
     budget_guardrails_job,
+    dashboard_insights_job,
     export_cleanup_job,
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
@@ -135,6 +136,11 @@ async def lifespan(_app: FastAPI):
             import_preview_cleanup_job,
             job_id="import_preview_cleanup",
             hour_utc=5,
+        )
+        register_daily_job(
+            dashboard_insights_job,
+            job_id="dashboard_insights",
+            hour_utc=6,
         )
         scheduler.add_job(
             weekly_summary_job,

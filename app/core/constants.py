@@ -17,6 +17,7 @@
 #   1006 – session_cleanup_job
 #   1007 – import_preview_cleanup_job
 #   1008 – bhavcopy_price_feed_job
+#   1009 – dashboard_insights_job
 # ---------------------------------------------------------------------------
 
 ADVISORY_LOCK_BUDGET_GUARDRAILS: int = 1001
@@ -27,3 +28,4 @@ ADVISORY_LOCK_EXPORT_CLEANUP: int = 1005
 ADVISORY_LOCK_SESSION_CLEANUP: int = 1006
 ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP: int = 1007
 ADVISORY_LOCK_BHAVCOPY_PRICE_FEED: int = 1008
+ADVISORY_LOCK_DASHBOARD_INSIGHTS: int = 1009
