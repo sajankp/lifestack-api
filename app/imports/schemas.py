@@ -122,6 +122,8 @@ class ImportValidateResponse(BaseModel):
     errors: list[ImportErrorResponse]
     error_summary: ImportErrorSummary
     preview_rows: list[ImportPreviewRowResponse] = Field(default_factory=list)
+    skipped: list[dict] = Field(default_factory=list)
+    corporate_action_suspected: list[dict] = Field(default_factory=list)
 
 
 class ImportCommitResponse(BaseModel):

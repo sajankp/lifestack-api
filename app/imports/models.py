@@ -14,6 +14,7 @@ class ImportModule(StrEnum):
     investing_constituents = "investing-constituents"
     investing_orders = "investing-orders"
     finance_transfers = "finance-transfers"
+    investing_cams_cas = "investing-cams-cas"
 
 
 class ImportStatus(StrEnum):
@@ -51,6 +52,13 @@ class ImportBatch(SQLModel, table=True):
     error_rows: int = Field(default=0)
 
     commit_error: str | None = Field(default=None, max_length=2048)
+
+    # Generic advisory-only preview metadata, populated by parsers that have
+    # more to say than "here are the rows" (e.g. CAMS CAS: skipped
+    # transaction lines, suspected-un-applied-corporate-action warnings).
+    # Not module-specific by design — any future parser can use it the same
+    # way without a schema change.
+    extra_json: dict | None = Field(default=None, sa_type=sa.JSON, nullable=True)
 
     started_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

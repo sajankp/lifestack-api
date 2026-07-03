@@ -3,7 +3,7 @@ import contextlib
 import csv
 import hashlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -19,6 +19,7 @@ from app.core.database import postgres
 from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import Account, CapitalTransfer, Currency, TransferModule
 from app.finance.repository import AccountRepository, CurrencyRepository
+from app.imports.cams_cas_parser import parse_cams_cas
 from app.imports.models import (
     ImportBatch,
     ImportError,
@@ -220,6 +221,11 @@ class ImportService:
             self._cache_session = self.session
 
     def template_csv(self, module: ImportModule) -> str:
+        if module == ImportModule.investing_cams_cas:
+            raise ValidationError(
+                detail="CAMS CAS imports do not use a CSV template — upload the "
+                "Consolidated Account Statement PDF directly"
+            )
         header = TEMPLATE_HEADERS[module]
         lines = [",".join(header)]
         if module == ImportModule.spending_transactions:
@@ -423,15 +429,50 @@ class ImportService:
         module: ImportModule,
         upload: UploadFile,
         audit_logger: AuditLogger,
+        target_account_id: uuid.UUID | None = None,
     ) -> tuple[ImportBatch, str]:
         if module == ImportModule.investing_holdings:
             raise ValidationError(detail="investing-holdings imports are no longer supported")
         if not upload.filename:
             raise ValidationError(detail="filename is required")
-        if not (
-            upload.filename.lower().endswith(".csv") or upload.filename.lower().endswith(".xlsx")
-        ):
-            raise ValidationError(detail="Only .csv and .xlsx files are supported")
+
+        extra_json: dict | None = None
+        if module == ImportModule.investing_cams_cas:
+            if not upload.filename.lower().endswith(".pdf"):
+                raise ValidationError(detail="Only .pdf files are supported for CAMS CAS imports")
+            if target_account_id is None:
+                raise ValidationError(detail="target_account_id is required for CAMS CAS imports")
+            account = (
+                await self.session.execute(
+                    select(Account).where(
+                        Account.workspace_id == workspace_id,
+                        Account.public_id == target_account_id,
+                        Account.is_active,
+                    )
+                )
+            ).scalar_one_or_none()
+            if account is None:
+                raise NotFoundError(
+                    detail=f"Account with id {target_account_id} not found in this workspace"
+                )
+            if account.account_type != "brokerage":
+                raise ValidationError(
+                    detail=(
+                        f"CAMS CAS imports can only target brokerage accounts. "
+                        f"Account '{account.name}' is type '{account.account_type}'"
+                    )
+                )
+            extra_json = {"target_account_id": str(target_account_id)}
+        else:
+            if target_account_id is not None:
+                raise ValidationError(
+                    detail="target_account_id is only supported for CAMS CAS imports"
+                )
+            if not (
+                upload.filename.lower().endswith(".csv")
+                or upload.filename.lower().endswith(".xlsx")
+            ):
+                raise ValidationError(detail="Only .csv and .xlsx files are supported")
 
         file_hash, file_size = await self._hash_file(upload)
         batch = ImportBatch(
@@ -443,6 +484,7 @@ class ImportService:
             content_type=upload.content_type,
             file_size_bytes=file_size,
             file_sha256=file_hash,
+            extra_json=extra_json,
         )
         batch = await self.repository.create_batch(batch)
         await self._store_file_if_configured(batch, upload)
@@ -473,6 +515,11 @@ class ImportService:
         file_path: str,
         audit_logger: AuditLogger,
     ) -> tuple[ImportBatch, list[ImportError]]:
+        if batch.module == ImportModule.investing_cams_cas:
+            return await self._validate_cams_cas_batch(
+                workspace_id, user_id, batch, file_path, audit_logger
+            )
+
         by_name, by_public = await self._category_maps(workspace_id)
         account_map = await self._account_map(workspace_id)
         currency_set = await self._currency_set()
@@ -1285,6 +1332,113 @@ class ImportService:
 
         return batch, list(persisted_errors)[:200]
 
+    async def _filter_recorded_corporate_actions(
+        self, workspace_id: int, target_account_id: uuid.UUID, suspected: list[dict]
+    ) -> list[dict]:
+        """Drop discontinuity warnings already covered by a recorded CorporateAction (spec-051)."""
+        if not suspected:
+            return suspected
+        account = (
+            await self.session.execute(
+                select(Account).where(
+                    Account.workspace_id == workspace_id,
+                    Account.public_id == target_account_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if account is None or account.id is None:
+            return suspected
+
+        ca_repo = CorporateActionRepository(self.session)
+        filtered: list[dict] = []
+        for entry in suspected:
+            actions = await ca_repo.list_by_holding(workspace_id, entry["symbol"], account.id)
+            from_date = date.fromisoformat(entry["from_date"])
+            to_date = date.fromisoformat(entry["to_date"])
+            already_recorded = any(from_date <= action.ex_date <= to_date for action in actions)
+            if not already_recorded:
+                filtered.append(entry)
+        return filtered
+
+    async def _validate_cams_cas_batch(
+        self,
+        workspace_id: int,
+        user_id: int,
+        batch: ImportBatch,
+        file_path: str,
+        audit_logger: AuditLogger,
+    ) -> tuple[ImportBatch, list[ImportError]]:
+        target_account_id = (batch.extra_json or {}).get("target_account_id")
+        if not target_account_id:
+            raise ValidationError(detail="target_account_id is required for CAMS CAS imports")
+
+        parse_result = await asyncio.to_thread(parse_cams_cas, file_path)
+
+        previews: list[ImportPreviewRow] = []
+        for row_no, order in enumerate(parse_result.orders, start=1):
+            payload = {
+                "order_type": order["order_type"],
+                "symbol": order["symbol"],
+                "instrument_type": order["instrument_type"],
+                "instrument_name": order["instrument_name"],
+                "account_name": None,
+                "account_public_id": target_account_id,
+                "quantity": order["quantity"],
+                "price_per_unit": order["price_per_unit"],
+                "currency": order["currency"],
+                "brokerage_fee": "0",
+                "tax_amount": "0",
+                "other_fees": "0",
+                "occurred_at": order["occurred_at"],
+                "exchange_name": None,
+                "notes": order["notes"],
+            }
+            previews.append(
+                ImportPreviewRow(import_batch_id=batch.id, row_number=row_no, payload_json=payload)
+            )
+        if previews:
+            await self.repository.add_preview_rows(previews)
+
+        corporate_action_suspected = await self._filter_recorded_corporate_actions(
+            workspace_id, uuid.UUID(target_account_id), parse_result.corporate_action_suspected
+        )
+
+        batch.extra_json = {
+            **(batch.extra_json or {}),
+            "skipped": parse_result.skipped,
+            "corporate_action_suspected": corporate_action_suspected,
+        }
+        batch.total_rows = len(parse_result.orders) + len(parse_result.skipped)
+        batch.valid_rows = len(parse_result.orders)
+        batch.error_rows = 0
+        batch.validated_at = datetime.now(UTC)
+        batch.status = ImportStatus.validated
+        batch.updated_at = datetime.now(UTC)
+        batch = await self.repository.save_batch(batch)
+
+        await audit_logger.log(
+            workspace_id=workspace_id,
+            actor_id=user_id,
+            action="import_validated",
+            module="import",
+            entity_type="import_batch",
+            entity_id=batch.id,  # type: ignore[arg-type]
+            details={
+                "entity_public_id": str(batch.public_id),
+                "before": None,
+                "after": {
+                    "module": self._enum_value(batch.module),
+                    "status": self._enum_value(batch.status),
+                    "total_rows": batch.total_rows,
+                    "valid_rows": batch.valid_rows,
+                    "error_rows": batch.error_rows,
+                },
+                "changed_fields": ["module", "status", "total_rows", "valid_rows", "error_rows"],
+            },
+        )
+
+        return batch, []
+
     async def start_commit(
         self,
         workspace_id: int,
@@ -1466,7 +1620,10 @@ class ImportService:
                             self.session.add(budget)
                             existing_budgets[budget_key] = budget
                         inserted += 1
-                elif batch.module == ImportModule.investing_orders:
+                elif batch.module in {
+                    ImportModule.investing_orders,
+                    ImportModule.investing_cams_cas,
+                }:
                     if self.order_service is None:
                         raise ValidationError(
                             detail="Order service is not available for this import type"
@@ -1787,7 +1944,10 @@ class ImportService:
                 deleted_records = await self.repository.delete_spending_budgets_for_batch(
                     workspace_id, batch.id
                 )
-            elif batch.module == ImportModule.investing_orders:
+            elif batch.module in {
+                ImportModule.investing_orders,
+                ImportModule.investing_cams_cas,
+            }:
                 deleted_records = await self._rollback_investing_orders(
                     workspace_id, user_id, batch.id
                 )
