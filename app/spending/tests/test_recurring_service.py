@@ -1,4 +1,10 @@
-"""Unit tests for RecurringTransactionService and _advance_due_date."""
+"""Unit tests for RecurringTransactionService.
+
+The advance_due_date arithmetic itself (including the calendar-recurrence-
+modes cases added by spec-053) is covered by app/tests/test_recurrence.py
+now that it lives in app.core.recurrence — this file only re-tests the
+basic daily/weekly/yearly/monthly cases still directly relevant here.
+"""
 
 import uuid
 from datetime import UTC, date, datetime
@@ -8,32 +14,33 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.core.exceptions import NotFoundError, ValidationError
+from app.core.recurrence import advance_due_date
 from app.spending.models import RecurringTransaction, SpendingCategory, TransactionType
 from app.spending.schemas import RecurringTransactionCreate
-from app.spending.service import RecurringTransactionService, _advance_due_date
+from app.spending.service import RecurringTransactionService
 
 
 def test_advance_due_date_daily():
-    assert _advance_due_date(date(2026, 1, 1), "daily", 1) == date(2026, 1, 2)
-    assert _advance_due_date(date(2026, 1, 1), "daily", 5) == date(2026, 1, 6)
+    assert advance_due_date(date(2026, 1, 1), "daily", 1) == date(2026, 1, 2)
+    assert advance_due_date(date(2026, 1, 1), "daily", 5) == date(2026, 1, 6)
 
 
 def test_advance_due_date_weekly():
-    assert _advance_due_date(date(2026, 1, 1), "weekly", 1) == date(2026, 1, 8)
-    assert _advance_due_date(date(2026, 1, 1), "weekly", 2) == date(2026, 1, 15)
+    assert advance_due_date(date(2026, 1, 1), "weekly", 1) == date(2026, 1, 8)
+    assert advance_due_date(date(2026, 1, 1), "weekly", 2) == date(2026, 1, 15)
 
 
 def test_advance_due_date_yearly():
-    assert _advance_due_date(date(2026, 1, 1), "yearly", 1) == date(2027, 1, 1)
+    assert advance_due_date(date(2026, 1, 1), "yearly", 1) == date(2027, 1, 1)
     # Leap year handling
-    assert _advance_due_date(date(2024, 2, 29), "yearly", 1) == date(2025, 2, 28)
-    assert _advance_due_date(date(2024, 2, 29), "yearly", 4) == date(2028, 2, 29)
+    assert advance_due_date(date(2024, 2, 29), "yearly", 1) == date(2025, 2, 28)
+    assert advance_due_date(date(2024, 2, 29), "yearly", 4) == date(2028, 2, 29)
 
 
 def test_advance_due_date_monthly():
-    assert _advance_due_date(date(2026, 1, 15), "monthly", 1) == date(2026, 2, 15)
-    assert _advance_due_date(date(2026, 1, 31), "monthly", 1) == date(2026, 2, 28)
-    assert _advance_due_date(date(2026, 1, 31), "monthly", 3) == date(2026, 4, 30)
+    assert advance_due_date(date(2026, 1, 15), "monthly", 1) == date(2026, 2, 15)
+    assert advance_due_date(date(2026, 1, 31), "monthly", 1) == date(2026, 2, 28)
+    assert advance_due_date(date(2026, 1, 31), "monthly", 3) == date(2026, 4, 30)
 
 
 @pytest.fixture
