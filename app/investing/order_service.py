@@ -236,8 +236,19 @@ class InvestingOrderService:
         all_lots: dict[int | str, _OpenLot] = {}
         consumptions: list[_LotConsumptionEvent] = []
 
+        # order.occurred_at is a DateTime(timezone=True) column and always comes
+        # back tz-aware when read from Postgres, but normalize defensively so an
+        # in-memory naive datetime (e.g. from a not-yet-persisted simulated order
+        # in update_order) can't raise a naive/aware comparison TypeError here.
         events: list[tuple[datetime, int, InvestingOrder | CorporateAction]] = [
-            (order.occurred_at, 1, order) for order in orders
+            (
+                order.occurred_at
+                if order.occurred_at.tzinfo
+                else order.occurred_at.replace(tzinfo=UTC),
+                1,
+                order,
+            )
+            for order in orders
         ] + [
             (datetime.combine(action.ex_date, time.min, tzinfo=UTC), 0, action)
             for action in corporate_actions
@@ -252,8 +263,10 @@ class InvestingOrderService:
                     factor_qty = action.ratio_quote / action.ratio_base
                     factor_cost = action.ratio_base / action.ratio_quote
                     for lot in all_lots.values():
-                        lot.original_quantity *= factor_qty
-                        lot.remaining *= factor_qty
+                        lot.original_quantity = (lot.original_quantity * factor_qty).quantize(
+                            LOT_QTY_PRECISION
+                        )
+                        lot.remaining = (lot.remaining * factor_qty).quantize(LOT_QTY_PRECISION)
                         lot.cost_per_unit = (lot.cost_per_unit * factor_cost).quantize(
                             AVG_COST_PRECISION
                         )
@@ -895,8 +908,19 @@ class InvestingOrderService:
                 detail=f"Corporate action with id {action_public_id} not found in this workspace"
             )
 
+        # Extract everything needed below before delete() flushes the row —
+        # the ORM instance transitions to "deleted" state after flush, and
+        # accessing an attribute not already loaded can raise ObjectDeletedError.
+        symbol = action.symbol
+        account_id = action.account_id
+        action_id = action.id or 0
+        public_id = action.public_id
+        action_type = action.action_type
+        ratio_base = action.ratio_base
+        ratio_quote = action.ratio_quote
+
         await self.corporate_action_repository.delete(action)
-        await self._recompute_holding(workspace_id, user_id, action.symbol, action.account_id)
+        await self._recompute_holding(workspace_id, user_id, symbol, account_id)
 
         if audit_logger:
             await audit_logger.log(
@@ -905,14 +929,14 @@ class InvestingOrderService:
                 action="investing_corporate_action_deleted",
                 module="investing",
                 entity_type="corporate_action",
-                entity_id=action.id or 0,
+                entity_id=action_id,
                 details={
-                    "entity_public_id": str(action.public_id),
+                    "entity_public_id": str(public_id),
                     "before": {
-                        "action_type": action.action_type,
-                        "symbol": action.symbol,
-                        "ratio_base": str(action.ratio_base),
-                        "ratio_quote": str(action.ratio_quote),
+                        "action_type": action_type,
+                        "symbol": symbol,
+                        "ratio_base": str(ratio_base),
+                        "ratio_quote": str(ratio_quote),
                     },
                     "after": None,
                     "changed_fields": [],
