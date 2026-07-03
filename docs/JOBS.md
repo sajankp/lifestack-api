@@ -64,3 +64,11 @@ All background jobs are subject to **advisory lock coordination** (`pg_try_advis
 - **Schedule**: Weekly on Mondays at 01:30 UTC
 - **Job Function**: `weekly_summary_job`
 - **Workflow Function**: Generates a weekly productivity and financial summary report for active workspace memberships, combining completed todo counts and categories spend metrics.
+
+## 10. Dashboard Insights Job
+- **Job ID**: `dashboard_insights`
+- **Schedule**: Daily at 06:00 UTC
+- **Job Function**: `dashboard_insights_job`
+- **Workflow Function**: `generate_workspace_insights` (`app/application/insights.py`)
+- **Purpose**: Runs three detectors per workspace and writes `Notification` rows (`category="insight"`): spending anomaly vs a trailing 4-week average, budget pace forecast for the current month, and new recurring-charge detection (a same-category, similar-amount charge recurring across 2+ months with no matching active `RecurringTransaction` rule). Surfaced today via the existing `GET /v1/notifications?category=insight` endpoint; delivered over push automatically once web push (spec-052) ships, via the existing per-category `NotificationPreference.channel_push` toggle — no code in this job references push.
+- **Idempotency**: No unique DB constraint (unlike `Todo.system_key`) — each detector does a targeted existence check against `Notification` (`entity_type` + `entity_public_id`, scoped to the relevant period) before writing, so re-running the job the same week/month does not duplicate a notification.
