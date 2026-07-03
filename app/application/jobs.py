@@ -11,10 +11,12 @@ Boundary rules:
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
 
 import structlog
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.workflows import (
     cleanup_expired_exports,
@@ -59,6 +61,98 @@ BUDGET_GUARDRAILS_LOCK_KEY = ADVISORY_LOCK_BUDGET_GUARDRAILS
 # Maximum seconds allowed for a single workspace evaluation before it is
 # abandoned. Prevents a stuck workspace from blocking scheduler shutdown.
 WORKSPACE_EVALUATION_TIMEOUT_SECONDS = 300.0
+
+
+async def run_workspace_job(
+    *,
+    job_name: str,
+    lock_key: int,
+    process_workspace: Callable[[AsyncSession, Workspace], Awaitable[None]],
+    timeout_seconds: float = WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
+    workspace_id: int | None = None,
+) -> None:
+    """Run ``process_workspace`` for each active workspace under an advisory
+    lock, isolating failures per workspace.
+
+    Mirrors the scaffolding shared by the per-workspace cron jobs exactly:
+    acquire a Postgres advisory transaction lock, fetch the active workspace
+    list (optionally scoped to a single ``workspace_id``), then evaluate each
+    workspace in its own isolated, timeout-bounded transaction — one
+    workspace's failure is logged and skipped, others continue. Log event
+    names (``{job_name}_start``, ``_skipped_lock_held``,
+    ``_workspace_not_found_or_inactive``, ``_workspace_success``,
+    ``_workspace_timeout``, ``_workspace_failed``, ``_completed``) match what
+    the jobs logged before extraction — do not rename them without checking
+    ``test_scheduler.py`` and any log-based alerting.
+    """
+    start_time = datetime.now(UTC)
+    logger.info(f"{job_name}_start", job_name=job_name)
+
+    async with postgres.async_session_maker() as session, session.begin():
+        lock_res = await session.execute(select(func.pg_try_advisory_xact_lock(lock_key)))
+        has_lock = lock_res.scalar()
+        if not has_lock:
+            logger.info(f"{job_name}_skipped_lock_held", job_name=job_name)
+            return
+
+        if workspace_id is not None:
+            workspaces_res = await session.execute(
+                select(Workspace).where(Workspace.id == workspace_id, Workspace.is_active)
+            )
+        else:
+            workspaces_res = await session.execute(select(Workspace).where(Workspace.is_active))
+        workspaces = workspaces_res.scalars().all()
+        if workspace_id is not None and not workspaces:
+            logger.warning(
+                f"{job_name}_workspace_not_found_or_inactive",
+                workspace_id=workspace_id,
+            )
+
+        for workspace in workspaces:
+            ws_start = datetime.now(UTC)
+            try:
+                async with postgres.async_session_maker() as ws_session:  # noqa: SIM117
+                    async with ws_session.begin():
+                        await asyncio.wait_for(
+                            process_workspace(ws_session, workspace),
+                            timeout=timeout_seconds,
+                        )
+
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.info(
+                    f"{job_name}_workspace_success",
+                    job_name=job_name,
+                    workspace_id=workspace.id,
+                    duration_ms=duration_ms,
+                    status="success",
+                )
+            except TimeoutError:
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.error(
+                    f"{job_name}_workspace_timeout",
+                    job_name=job_name,
+                    workspace_id=workspace.id,
+                    duration_ms=duration_ms,
+                    status="timeout",
+                )
+            except Exception:
+                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                logger.error(
+                    f"{job_name}_workspace_failed",
+                    job_name=job_name,
+                    workspace_id=workspace.id,
+                    duration_ms=duration_ms,
+                    status="failed",
+                    exc_info=True,
+                )
+
+        total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+        logger.info(
+            f"{job_name}_completed",
+            job_name=job_name,
+            duration_ms=total_ms,
+            workspace_count=len(workspaces),
+        )
 
 
 async def investment_closing_prices_job() -> None:
@@ -108,81 +202,12 @@ async def budget_guardrails_job(workspace_id: int | None = None) -> None:
       4. Each workspace evaluation has a bounded timeout to avoid unbounded
          drain on application shutdown.
     """
-    start_time = datetime.now(UTC)
-    logger.info("budget_guardrails_job_start", job_name="budget_guardrails_job")
-
-    # --- Step 1: Advisory lock + workspace list fetch ---
-    async with postgres.async_session_maker() as session, session.begin():
-        lock_res = await session.execute(
-            select(func.pg_try_advisory_xact_lock(BUDGET_GUARDRAILS_LOCK_KEY))
-        )
-        has_lock = lock_res.scalar()
-        if not has_lock:
-            logger.info(
-                "budget_guardrails_job_skipped_lock_held",
-                job_name="budget_guardrails_job",
-            )
-            return
-
-        if workspace_id is not None:
-            workspaces_res = await session.execute(
-                select(Workspace).where(Workspace.id == workspace_id, Workspace.is_active)
-            )
-        else:
-            workspaces_res = await session.execute(select(Workspace).where(Workspace.is_active))
-        workspaces = workspaces_res.scalars().all()
-        if workspace_id is not None and not workspaces:
-            logger.warning(
-                "budget_guardrails_job_workspace_not_found_or_inactive",
-                workspace_id=workspace_id,
-            )
-
-        # --- Step 2: Per-workspace evaluation with isolated transactions ---
-        for workspace in workspaces:
-            ws_start = datetime.now(UTC)
-            try:
-                async with postgres.async_session_maker() as ws_session:  # noqa: SIM117
-                    async with ws_session.begin():
-                        await asyncio.wait_for(
-                            evaluate_workspace_budget_guardrails(ws_session, workspace),
-                            timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
-                        )
-
-                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-                logger.info(
-                    "budget_guardrails_workspace_success",
-                    job_name="budget_guardrails_job",
-                    workspace_id=workspace.id,
-                    duration_ms=duration_ms,
-                    status="success",
-                )
-            except TimeoutError:
-                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-                logger.error(
-                    "budget_guardrails_workspace_timeout",
-                    job_name="budget_guardrails_job",
-                    workspace_id=workspace.id,
-                    duration_ms=duration_ms,
-                    status="timeout",
-                )
-            except Exception:
-                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-                logger.error(
-                    "budget_guardrails_workspace_failed",
-                    job_name="budget_guardrails_job",
-                    workspace_id=workspace.id,
-                    duration_ms=duration_ms,
-                    status="failed",
-                    exc_info=True,
-                )
-
-        total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
-        logger.info(
-            "budget_guardrails_job_completed",
-            job_name="budget_guardrails_job",
-            duration_ms=total_ms,
-            workspace_count=len(workspaces),
-        )
+    await run_workspace_job(
+        job_name="budget_guardrails_job",
+        lock_key=BUDGET_GUARDRAILS_LOCK_KEY,
+        workspace_id=workspace_id,
+        process_workspace=lambda s, ws: evaluate_workspace_budget_guardrails(s, ws),
+    )
 
 
 # Advisory lock key — separate from budget_guardrails to allow concurrent runs
