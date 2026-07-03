@@ -75,7 +75,13 @@ class RecurringTodoRule(SQLModel, table=True):
     monthly_mode: str = Field(
         default=MonthlyRecurrenceMode.day_of_month.value,
         sa_column=sa.Column(
-            sa.Enum("day_of_month", "last_day", "nth_weekday", name="recurrence_monthly_mode"),
+            sa.Enum(
+                "day_of_month",
+                "last_day",
+                "nth_weekday",
+                name="recurrence_monthly_mode",
+                create_type=False,
+            ),
             nullable=False,
             server_default="day_of_month",
         ),
