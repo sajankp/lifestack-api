@@ -19,6 +19,11 @@ class OrderType(StrEnum):
     sell = "sell"
 
 
+class CorporateActionType(StrEnum):
+    split = "split"
+    bonus = "bonus"
+
+
 class Company(SQLModel, table=True):
     __tablename__ = "investing_companies"
 
@@ -342,11 +347,15 @@ class InvestingOrder(SQLModel, table=True):
 
 
 class OrderLot(SQLModel, table=True):
-    """A FIFO cost-basis lot created by a single buy order.
+    """A FIFO cost-basis lot created by a single buy order, or by a bonus
+    corporate action (spec-051).
 
-    One row per buy order on a holding. ``remaining_quantity`` is fully
-    recomputed (deleted and recreated) every time the holding's order
-    history is replayed — see ``InvestingOrderService._recompute_holding_from_orders``.
+    One row per buy order (or bonus issue) on a holding. ``remaining_quantity``
+    is fully recomputed (deleted and recreated) every time the holding's order
+    history is replayed — see ``InvestingOrderService._recompute_holding``.
+    Exactly one of ``buy_order_id``/``corporate_action_id`` is set: a split
+    scales an existing buy-derived lot in place (no new lot), while a bonus
+    issue creates a new lot with no originating buy order.
     """
 
     __tablename__ = "investing_order_lots"
@@ -354,7 +363,8 @@ class OrderLot(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     workspace_id: int = Field(foreign_key="workspaces.id", index=True)
     holding_id: int = Field(index=True)
-    buy_order_id: int = Field(index=True)
+    buy_order_id: int | None = Field(default=None, index=True, nullable=True)
+    corporate_action_id: int | None = Field(default=None, index=True, nullable=True)
 
     original_quantity: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=8))
     remaining_quantity: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=8))
@@ -378,7 +388,80 @@ class OrderLot(SQLModel, table=True):
             name="fk_investing_order_lots_buy_order",
             ondelete="CASCADE",
         ),
+        sa.ForeignKeyConstraint(
+            ["corporate_action_id"],
+            ["investing_corporate_actions.id"],
+            name="fk_investing_order_lots_corporate_action",
+            ondelete="CASCADE",
+        ),
+        sa.CheckConstraint(
+            "(buy_order_id IS NOT NULL AND corporate_action_id IS NULL) OR "
+            "(buy_order_id IS NULL AND corporate_action_id IS NOT NULL)",
+            name="ck_investing_order_lots_exactly_one_origin",
+        ),
         sa.Index("ix_investing_order_lots_holding_acquired_at", "holding_id", "acquired_at"),
+    )
+
+
+class CorporateAction(SQLModel, table=True):
+    """A stock split, reverse split, or bonus issue (spec-051).
+
+    Replayed inside ``InvestingOrderService._replay_orders`` alongside buy/
+    sell orders, ordered by ``ex_date``. A split/reverse-split scales every
+    open ``OrderLot`` in place; a bonus issue creates a new zero-cost lot.
+    Never touches ``investing_cash_balances`` — cash-neutral by construction.
+    """
+
+    __tablename__ = "investing_corporate_actions"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    account_id: int = Field(index=True)
+    symbol: str = Field(max_length=20)
+    action_type: str = Field(
+        sa_column=sa.Column(
+            sa.Enum("split", "bonus", name="investing_corporate_action_type"),
+            nullable=False,
+        )
+    )
+    # Semantics are action_type-dependent (see spec-051): for a split,
+    # ratio_base "old" units become ratio_quote "new" units (existing lots
+    # scaled in place); for a bonus, ratio_quote units are granted free per
+    # ratio_base units held (a new zero-cost lot is added).
+    ratio_base: Decimal = Field(sa_type=sa.Numeric(precision=12, scale=4))
+    ratio_quote: Decimal = Field(sa_type=sa.Numeric(precision=12, scale=4))
+    ex_date: date = Field(sa_type=sa.Date())
+    notes: str | None = Field(default=None, max_length=255, nullable=True)
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_investing_corporate_actions_account_workspace",
+        ),
+        sa.UniqueConstraint(
+            "workspace_id",
+            "account_id",
+            "symbol",
+            "ex_date",
+            "action_type",
+            name="uq_corporate_action_workspace_account_symbol_exdate_type",
+        ),
+        sa.Index(
+            "ix_investing_corporate_actions_workspace_symbol_account",
+            "workspace_id",
+            "symbol",
+            "account_id",
+        ),
     )
 
 

@@ -41,6 +41,7 @@ from app.investing.order_service import InvestingOrderService
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
+    CorporateActionRepository,
     HoldingRepository,
     InstrumentRepository,
     InvestingOrderRepository,
@@ -1749,9 +1750,7 @@ class ImportService:
             workspace_id, import_batch_id
         )
         for symbol, account_id in affected:
-            await self.order_service._recompute_holding_from_orders(
-                workspace_id, user_id, symbol, account_id
-            )
+            await self.order_service._recompute_holding(workspace_id, user_id, symbol, account_id)
         return deleted_records
 
     async def delete_batch(
@@ -1877,6 +1876,7 @@ async def run_background_commit(
                 InstrumentRepository(session), CompanyRepository(session)
             ),
             lot_repository=LotRepository(session),
+            corporate_action_repository=CorporateActionRepository(session),
         )
         service = ImportService(repo, session, order_service=order_service)
         audit_logger = AuditLogger(session)

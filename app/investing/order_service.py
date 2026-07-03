@@ -8,7 +8,7 @@ import uuid
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from decimal import Decimal
 
 from pydantic import ValidationError as PydanticValidationError
@@ -20,6 +20,7 @@ from app.finance.models import Account
 from app.finance.repository import AccountRepository, CurrencyRepository
 from app.investing.models import (
     CashBalance,
+    CorporateAction,
     Holding,
     InvestingOrder,
     LotConsumption,
@@ -28,14 +29,19 @@ from app.investing.models import (
 )
 from app.investing.repository import (
     CashBalanceRepository,
+    CorporateActionRepository,
     HoldingRepository,
     InvestingOrderRepository,
     LotRepository,
 )
-from app.investing.schemas import InvestingOrderCreate, InvestingOrderUpdate
+from app.investing.schemas import CorporateActionCreate, InvestingOrderCreate, InvestingOrderUpdate
 from app.investing.service import MONEY_QUANT, InstrumentService
 
 AVG_COST_PRECISION = Decimal("0.000001")
+# Matches the Numeric(18, 8) scale of every quantity column (InvestingOrder.quantity,
+# OrderLot.original_quantity/remaining_quantity) — used to quantize a computed bonus-issue
+# share count before it's persisted.
+LOT_QTY_PRECISION = Decimal("0.00000001")
 
 
 def _snapshot_order(order: InvestingOrder) -> dict:
@@ -88,9 +94,18 @@ def _effective_buy_cost_per_unit(order: InvestingOrder) -> Decimal:
 
 @dataclass
 class _OpenLot:
-    """In-memory FIFO lot state during a ``_replay_orders`` pass."""
+    """In-memory FIFO lot state during a ``_replay_orders`` pass.
 
-    buy_order_id: int
+    ``lot_key`` identifies the lot within a single replay pass — the buy
+    order's id for a buy-derived lot, or ``f"bonus:{corporate_action.id}"``
+    for a bonus-issue lot (which has no originating buy order). Exactly one
+    of ``buy_order_id``/``corporate_action_id`` is set, matching the
+    ``OrderLot`` CHECK constraint (spec-051).
+    """
+
+    lot_key: int | str
+    buy_order_id: int | None
+    corporate_action_id: int | None
     original_quantity: Decimal
     remaining: Decimal
     cost_per_unit: Decimal
@@ -100,7 +115,7 @@ class _OpenLot:
 @dataclass
 class _LotConsumptionEvent:
     sell_order_id: int
-    buy_order_id: int
+    lot_key: int | str
     quantity_consumed: Decimal
     cost_per_unit: Decimal
 
@@ -123,6 +138,7 @@ class InvestingOrderService:
         currency_repository: CurrencyRepository,
         instrument_service: InstrumentService,
         lot_repository: LotRepository,
+        corporate_action_repository: CorporateActionRepository,
     ):
         self.order_repository = order_repository
         self.holding_repository = holding_repository
@@ -131,6 +147,7 @@ class InvestingOrderService:
         self.currency_repository = currency_repository
         self.instrument_service = instrument_service
         self.lot_repository = lot_repository
+        self.corporate_action_repository = corporate_action_repository
 
     async def _validate_brokerage_account(
         self, workspace_id: int, account_public_id: uuid.UUID, currency: str | None = None
@@ -188,9 +205,14 @@ class InvestingOrderService:
         return await self.cash_balance_repository.create(cash)
 
     def _replay_orders(
-        self, orders: Sequence[InvestingOrder], *, record_sells: bool
+        self,
+        orders: Sequence[InvestingOrder],
+        corporate_actions: Sequence[CorporateAction] = (),
+        *,
+        record_sells: bool,
     ) -> "_ReplayResult":
-        """Replay orders chronologically with a FIFO lot cost-basis model.
+        """Replay orders and corporate actions chronologically with a FIFO
+        lot cost-basis model.
 
         A sell is matched against the *oldest* open buy lot(s) first (FIFO),
         per Section 45(2A) of the Income-tax Act, 1961 and CBDT Circular 768
@@ -200,26 +222,88 @@ class InvestingOrderService:
         ``avg_cost_at_sale`` are updated in place against the lots it consumed.
         Raises ``ValidationError`` if a sell would exceed open lots at any
         intermediate point, not just in the final aggregate.
+
+        Corporate actions (spec-051) are merged into the same chronological
+        stream, ordered by ``ex_date``. A corporate action on the same
+        calendar date as an order is applied *first* — splits/bonus
+        allotments take effect before market open, so same-day trades already
+        see the post-action price/quantity.
         """
         # `queue` drives FIFO consumption order; `all_lots` retains every lot
         # (including fully-consumed ones) so their final remaining_quantity=0
         # state and consumption history are still persisted.
         queue: deque[_OpenLot] = deque()
-        all_lots: dict[int, _OpenLot] = {}
+        all_lots: dict[int | str, _OpenLot] = {}
         consumptions: list[_LotConsumptionEvent] = []
 
-        for order in orders:
+        # order.occurred_at is a DateTime(timezone=True) column and always comes
+        # back tz-aware when read from Postgres, but normalize defensively so an
+        # in-memory naive datetime (e.g. from a not-yet-persisted simulated order
+        # in update_order) can't raise a naive/aware comparison TypeError here.
+        events: list[tuple[datetime, int, InvestingOrder | CorporateAction]] = [
+            (
+                order.occurred_at
+                if order.occurred_at.tzinfo
+                else order.occurred_at.replace(tzinfo=UTC),
+                1,
+                order,
+            )
+            for order in orders
+        ] + [
+            (datetime.combine(action.ex_date, time.min, tzinfo=UTC), 0, action)
+            for action in corporate_actions
+        ]
+        events.sort(key=lambda e: (e[0], e[1], e[2].id or 0))
+
+        for _when, _priority, event in events:
+            if isinstance(event, CorporateAction):
+                action = event
+                assert action.id is not None
+                if action.action_type == "split":
+                    factor_qty = action.ratio_quote / action.ratio_base
+                    factor_cost = action.ratio_base / action.ratio_quote
+                    for lot in all_lots.values():
+                        lot.original_quantity = (lot.original_quantity * factor_qty).quantize(
+                            LOT_QTY_PRECISION
+                        )
+                        lot.remaining = (lot.remaining * factor_qty).quantize(LOT_QTY_PRECISION)
+                        lot.cost_per_unit = (lot.cost_per_unit * factor_cost).quantize(
+                            AVG_COST_PRECISION
+                        )
+                elif action.action_type == "bonus":
+                    held_qty = sum((lot.remaining for lot in queue), Decimal("0"))
+                    bonus_qty = (held_qty * action.ratio_quote / action.ratio_base).quantize(
+                        LOT_QTY_PRECISION
+                    )
+                    if bonus_qty > 0:
+                        bonus_key = f"bonus:{action.id}"
+                        bonus_lot = _OpenLot(
+                            lot_key=bonus_key,
+                            buy_order_id=None,
+                            corporate_action_id=action.id,
+                            original_quantity=bonus_qty,
+                            remaining=bonus_qty,
+                            cost_per_unit=Decimal("0"),
+                            acquired_at=datetime.combine(action.ex_date, time.min, tzinfo=UTC),
+                        )
+                        queue.append(bonus_lot)
+                        all_lots[bonus_key] = bonus_lot
+                continue
+
+            order = event
             if order.order_type == "buy":
                 assert order.id is not None
                 lot = _OpenLot(
+                    lot_key=order.id,
                     buy_order_id=order.id,
+                    corporate_action_id=None,
                     original_quantity=order.quantity,
                     remaining=order.quantity,
                     cost_per_unit=_effective_buy_cost_per_unit(order),
                     acquired_at=order.occurred_at,
                 )
                 queue.append(lot)
-                all_lots[order.id] = lot
+                all_lots[lot.lot_key] = lot
             else:
                 assert order.id is not None
                 to_consume = order.quantity
@@ -240,7 +324,7 @@ class InvestingOrderService:
                     consumptions.append(
                         _LotConsumptionEvent(
                             sell_order_id=order.id,
-                            buy_order_id=lot.buy_order_id,
+                            lot_key=lot.lot_key,
                             quantity_consumed=take,
                             cost_per_unit=lot.cost_per_unit,
                         )
@@ -274,14 +358,18 @@ class InvestingOrderService:
             consumptions=consumptions,
         )
 
-    async def _recompute_holding_from_orders(
+    async def _recompute_holding(
         self, workspace_id: int, user_id: int, symbol: str, account_id: int
     ) -> Holding | None:
         orders = await self.order_repository.list_by_holding(workspace_id, symbol, account_id)
+        corporate_actions = await self.corporate_action_repository.list_by_holding(
+            workspace_id, symbol, account_id
+        )
         holding = await self.holding_repository.get_by_unique_key(workspace_id, symbol, account_id)
 
         if not orders:
-            # No orders remain; delete the holding if it exists
+            # No orders remain; delete the holding if it exists. A corporate
+            # action with no underlying orders has nothing to act on.
             if holding is not None:
                 await self.holding_repository.delete(holding)
             return None
@@ -289,7 +377,7 @@ class InvestingOrderService:
         if holding is not None and holding.id is not None:
             await self.lot_repository.delete_for_holding(holding.id)
 
-        result = self._replay_orders(orders, record_sells=True)
+        result = self._replay_orders(orders, corporate_actions, record_sells=True)
 
         # `orders` were loaded via this same session (list_by_holding), so the
         # in-place realized_gain_loss/avg_cost_at_sale mutations above are
@@ -325,6 +413,7 @@ class InvestingOrderService:
                     workspace_id=workspace_id,
                     holding_id=holding.id,
                     buy_order_id=lot.buy_order_id,
+                    corporate_action_id=lot.corporate_action_id,
                     original_quantity=lot.original_quantity,
                     remaining_quantity=lot.remaining,
                     cost_per_unit=lot.cost_per_unit,
@@ -333,11 +422,17 @@ class InvestingOrderService:
                 for lot in result.lots
             ])
             if result.consumptions:
-                lot_id_by_buy_order = {lot.buy_order_id: lot.id for lot in created_lots}
+                # `created_lots` was built from `result.lots` in the same order
+                # (one row per source lot), so zip preserves the lot_key -> id
+                # mapping without needing a lot_key column on OrderLot itself.
+                lot_id_by_key = {
+                    src.lot_key: created.id
+                    for src, created in zip(result.lots, created_lots, strict=True)
+                }
                 await self.lot_repository.create_consumptions([
                     LotConsumption(
                         sell_order_id=ev.sell_order_id,
-                        lot_id=lot_id_by_buy_order[ev.buy_order_id],
+                        lot_id=lot_id_by_key[ev.lot_key],
                         quantity_consumed=ev.quantity_consumed,
                         cost_per_unit=ev.cost_per_unit,
                     )
@@ -426,11 +521,9 @@ class InvestingOrderService:
         # Recompute holding quantity, FIFO avg_cost, and (for a sell) this
         # order's own realized_gain_loss/avg_cost_at_sale from the full order
         # history — the single replay path shared with update_order/delete_order.
-        # `order` is the same session-tracked instance _recompute_holding_from_orders
-        # will load and mutate via the identity map, so no re-fetch is needed.
-        await self._recompute_holding_from_orders(
-            workspace_id, user_id, order_in.symbol, account.id
-        )
+        # `order` is the same session-tracked instance _recompute_holding will
+        # load and mutate via the identity map, so no re-fetch is needed.
+        await self._recompute_holding(workspace_id, user_id, order_in.symbol, account.id)
 
         # Update cash balance
         cash_delta = -net_amount if order_in.order_type == OrderType.buy else net_amount
@@ -484,7 +577,9 @@ class InvestingOrderService:
 
         # Replay the remaining orders chronologically to ensure deleting this one
         # never drives the holding negative at any point in time (not just in the
-        # final aggregate).
+        # final aggregate). Corporate actions must be included here too — a sell
+        # that's only valid post-split would otherwise look like it exceeds the
+        # (pre-split) holding.
         remaining_orders = [
             o
             for o in await self.order_repository.list_by_holding(
@@ -492,7 +587,10 @@ class InvestingOrderService:
             )
             if o.public_id != order.public_id
         ]
-        self._replay_orders(remaining_orders, record_sells=False)
+        corporate_actions = await self.corporate_action_repository.list_by_holding(
+            workspace_id, order.symbol, order.account_id
+        )
+        self._replay_orders(remaining_orders, corporate_actions, record_sells=False)
 
         # Reverse the cash balance impact
         cash_delta = order.net_amount if order.order_type == "buy" else -order.net_amount
@@ -509,9 +607,7 @@ class InvestingOrderService:
         await self.order_repository.delete(order)
 
         # Recompute holding from remaining orders
-        await self._recompute_holding_from_orders(
-            workspace_id, user_id, order.symbol, order.account_id
-        )
+        await self._recompute_holding(workspace_id, user_id, order.symbol, order.account_id)
 
         if audit_logger:
             await audit_logger.log(
@@ -607,7 +703,10 @@ class InvestingOrderService:
                 simulated_orders.append(o)
         # Re-sort by occurred_at since the date may have changed
         simulated_orders.sort(key=lambda o: (o.occurred_at, o.id or 0))
-        self._replay_orders(simulated_orders, record_sells=False)
+        corporate_actions = await self.corporate_action_repository.list_by_holding(
+            workspace_id, order.symbol, order.account_id
+        )
+        self._replay_orders(simulated_orders, corporate_actions, record_sells=False)
 
         # Reverse old cash impact and apply the new cash impact in a single
         # combined delta so an edit produces exactly one CashBalance snapshot
@@ -661,9 +760,7 @@ class InvestingOrderService:
         )
 
         # Recompute holding quantity and avg cost from full order history
-        await self._recompute_holding_from_orders(
-            workspace_id, user_id, order.symbol, order.account_id
-        )
+        await self._recompute_holding(workspace_id, user_id, order.symbol, order.account_id)
 
         if audit_logger:
             after_snap = _snapshot_order(order)
@@ -732,3 +829,116 @@ class InvestingOrderService:
         self, workspace_id: int, symbol: str, account_id: int
     ) -> Sequence[InvestingOrder]:
         return await self.order_repository.list_by_holding(workspace_id, symbol, account_id)
+
+    async def create_corporate_action(
+        self,
+        workspace_id: int,
+        user_id: int,
+        action_in: CorporateActionCreate,
+        audit_logger: AuditLogger | None = None,
+    ) -> CorporateAction:
+        account = await self._validate_brokerage_account(workspace_id, action_in.account_id)
+        assert account.id is not None
+
+        action = CorporateAction(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            account_id=account.id,
+            symbol=action_in.symbol,
+            action_type=action_in.action_type.value,
+            ratio_base=action_in.ratio_base,
+            ratio_quote=action_in.ratio_quote,
+            ex_date=action_in.ex_date,
+            notes=action_in.notes,
+        )
+        action = await self.corporate_action_repository.create(action)
+
+        # Cash-neutral by construction: no _update_cash_balance call, no new
+        # investing_cash_balances row (spec-051).
+        await self._recompute_holding(workspace_id, user_id, action_in.symbol, account.id)
+
+        if audit_logger:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action=f"investing_corporate_action_{action_in.action_type.value}",
+                module="investing",
+                entity_type="corporate_action",
+                entity_id=action.id or 0,
+                details={
+                    "entity_public_id": str(action.public_id),
+                    "before": None,
+                    "after": {
+                        "action_type": action_in.action_type.value,
+                        "symbol": action_in.symbol,
+                        "ratio_base": str(action_in.ratio_base),
+                        "ratio_quote": str(action_in.ratio_quote),
+                        "ex_date": action_in.ex_date.isoformat(),
+                    },
+                    "changed_fields": ["quantity", "avg_cost"],
+                },
+            )
+
+        return action
+
+    async def list_corporate_actions(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        symbol: str | None = None,
+        account_id: int | None = None,
+    ) -> tuple[Sequence[CorporateAction], int]:
+        return await self.corporate_action_repository.list_by_workspace(
+            workspace_id, limit, offset, symbol=symbol, account_id=account_id
+        )
+
+    async def delete_corporate_action(
+        self,
+        workspace_id: int,
+        user_id: int,
+        action_public_id: uuid.UUID,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
+        action = await self.corporate_action_repository.get_by_public_id(
+            workspace_id, action_public_id
+        )
+        if not action:
+            raise NotFoundError(
+                detail=f"Corporate action with id {action_public_id} not found in this workspace"
+            )
+
+        # Extract everything needed below before delete() flushes the row —
+        # the ORM instance transitions to "deleted" state after flush, and
+        # accessing an attribute not already loaded can raise ObjectDeletedError.
+        symbol = action.symbol
+        account_id = action.account_id
+        action_id = action.id or 0
+        public_id = action.public_id
+        action_type = action.action_type
+        ratio_base = action.ratio_base
+        ratio_quote = action.ratio_quote
+
+        await self.corporate_action_repository.delete(action)
+        await self._recompute_holding(workspace_id, user_id, symbol, account_id)
+
+        if audit_logger:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action="investing_corporate_action_deleted",
+                module="investing",
+                entity_type="corporate_action",
+                entity_id=action_id,
+                details={
+                    "entity_public_id": str(public_id),
+                    "before": {
+                        "action_type": action_type,
+                        "symbol": symbol,
+                        "ratio_base": str(ratio_base),
+                        "ratio_quote": str(ratio_quote),
+                    },
+                    "after": None,
+                    "changed_fields": [],
+                },
+            )

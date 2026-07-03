@@ -108,7 +108,7 @@ def _make_service(
     """Build an InvestingOrderService backed by an in-memory fake order store.
 
     place_order/update_order/delete_order all route through
-    ``_recompute_holding_from_orders``, which replays the *full* order
+    ``_recompute_holding``, which replays the *full* order
     history (FIFO) on every write. A static AsyncMock holding stub can't
     drive that — the mocks need a shared, mutable store so `create`/`save`/
     `list_by_holding`/`get_by_public_id` all see the same orders.
@@ -122,6 +122,8 @@ def _make_service(
     currency_repo = AsyncMock()
     instrument_service = AsyncMock()
     lot_repo = AsyncMock()
+    corporate_action_repo = AsyncMock()
+    corporate_action_repo.list_by_holding = AsyncMock(return_value=[])
 
     account_repo.get_by_public_id = AsyncMock(return_value=account)
     holding_repo.get_by_unique_key = AsyncMock(return_value=existing_holding)
@@ -195,6 +197,7 @@ def _make_service(
         currency_repository=currency_repo,
         instrument_service=instrument_service,
         lot_repository=lot_repo,
+        corporate_action_repository=corporate_action_repo,
     )
 
 

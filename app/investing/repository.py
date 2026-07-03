@@ -9,6 +9,7 @@ from app.core.pagination import DEFAULT_LIMIT
 from app.investing.models import (
     CashBalance,
     Company,
+    CorporateAction,
     Holding,
     HoldingPrice,
     Instrument,
@@ -322,6 +323,65 @@ class LotRepository:
         self.session.add_all(consumptions)
         await self.session.flush()
         return consumptions
+
+
+class CorporateActionRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, action: CorporateAction) -> CorporateAction:
+        self.session.add(action)
+        await self.session.flush()
+        await self.session.refresh(action)
+        return action
+
+    async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> CorporateAction | None:
+        result = await self.session.execute(
+            select(CorporateAction).where(
+                CorporateAction.workspace_id == workspace_id,
+                CorporateAction.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_by_holding(
+        self, workspace_id: int, symbol: str, account_id: int
+    ) -> Sequence[CorporateAction]:
+        result = await self.session.execute(
+            select(CorporateAction)
+            .where(
+                CorporateAction.workspace_id == workspace_id,
+                CorporateAction.symbol == symbol.upper(),
+                CorporateAction.account_id == account_id,
+            )
+            .order_by(CorporateAction.ex_date.asc(), CorporateAction.id.asc())
+        )
+        return result.scalars().all()
+
+    async def list_by_workspace(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        symbol: str | None = None,
+        account_id: int | None = None,
+    ) -> tuple[Sequence[CorporateAction], int]:
+        base = select(CorporateAction).where(CorporateAction.workspace_id == workspace_id)
+        if symbol is not None:
+            base = base.where(CorporateAction.symbol == symbol.upper())
+        if account_id is not None:
+            base = base.where(CorporateAction.account_id == account_id)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(CorporateAction.ex_date.desc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), total
+
+    async def delete(self, action: CorporateAction) -> None:
+        await self.session.delete(action)
+        await self.session.flush()
 
 
 class InstrumentRepository:

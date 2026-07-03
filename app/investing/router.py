@@ -34,6 +34,8 @@ from app.investing.schemas import (
     CashBalanceCreate,
     CashBalanceResponse,
     CashBalanceUpdate,
+    CorporateActionCreate,
+    CorporateActionResponse,
     ExposureAnalyticsResponse,
     HoldingPriceBulkCreate,
     HoldingResponse,
@@ -723,3 +725,105 @@ async def bulk_import_orders(
     await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
     account_cache = await _build_account_cache(account_service, workspace_id)
     return [_order_response(o, account_cache) for o in created]
+
+
+def _corporate_action_response(
+    action, account_cache: dict[int, tuple[uuid.UUID, str]]
+) -> CorporateActionResponse:
+    pub_id, name = account_cache.get(action.account_id, (uuid.UUID(int=0), "Unknown"))
+    data = {
+        "public_id": action.public_id,
+        "account_id": pub_id,
+        "account_name": name,
+        "symbol": action.symbol,
+        "action_type": action.action_type,
+        "ratio_base": action.ratio_base,
+        "ratio_quote": action.ratio_quote,
+        "ex_date": action.ex_date,
+        "notes": action.notes,
+        "created_at": action.created_at,
+    }
+    return CorporateActionResponse.model_validate(data)
+
+
+@router.post(
+    "/corporate-actions",
+    response_model=CorporateActionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_corporate_action(
+    action_in: CorporateActionCreate,
+    order_service: Annotated[InvestingOrderService, Depends(get_investing_order_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    action = await order_service.create_corporate_action(
+        workspace_id=workspace_id,
+        user_id=user["id"],
+        action_in=action_in,
+        audit_logger=audit_logger,
+    )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    return _corporate_action_response(action, account_cache)
+
+
+@router.get("/corporate-actions", response_model=PaginatedResponse[CorporateActionResponse])
+async def list_corporate_actions(
+    order_service: Annotated[InvestingOrderService, Depends(get_investing_order_service)],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+    symbol: str | None = None,
+    account_id: uuid.UUID | None = None,
+):
+    account_internal_id: int | None = None
+    if account_id is not None:
+        account = await account_service.account_repository.get_by_public_id(
+            workspace_id, account_id
+        )
+        if not account or account.id is None:
+            return PaginatedResponse(
+                items=[], total=0, limit=pagination.limit, offset=pagination.offset
+            )
+        account_internal_id = account.id
+    actions, total = await order_service.list_corporate_actions(
+        workspace_id,
+        pagination.limit,
+        pagination.offset,
+        symbol=symbol,
+        account_id=account_internal_id,
+    )
+    if not actions:
+        return PaginatedResponse(
+            items=[], total=total, limit=pagination.limit, offset=pagination.offset
+        )
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    items = [_corporate_action_response(a, account_cache) for a in actions]
+    return PaginatedResponse(
+        items=items, total=total, limit=pagination.limit, offset=pagination.offset
+    )
+
+
+@router.delete("/corporate-actions/{action_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_corporate_action(
+    action_id: uuid.UUID,
+    order_service: Annotated[InvestingOrderService, Depends(get_investing_order_service)],
+    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    await order_service.delete_corporate_action(
+        workspace_id=workspace_id,
+        user_id=user["id"],
+        action_public_id=action_id,
+        audit_logger=audit_logger,
+    )
+    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())

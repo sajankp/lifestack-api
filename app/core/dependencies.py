@@ -36,6 +36,7 @@ from app.investing.performance_service import InvestingSummaryService, Performan
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
+    CorporateActionRepository,
     HoldingPriceRepository,
     HoldingRepository,
     InstrumentConstituentRepository,
@@ -393,6 +394,12 @@ async def get_investing_lot_repo(
     return LotRepository(session)
 
 
+async def get_investing_corporate_action_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> CorporateActionRepository:
+    return CorporateActionRepository(session)
+
+
 async def get_investing_order_service(
     order_repo: InvestingOrderRepository = Depends(get_investing_order_repo),
     holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
@@ -401,6 +408,7 @@ async def get_investing_order_service(
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
     instrument_service: InstrumentService = Depends(get_investing_instrument_service),
     lot_repo: LotRepository = Depends(get_investing_lot_repo),
+    corporate_action_repo: CorporateActionRepository = Depends(get_investing_corporate_action_repo),
 ) -> InvestingOrderService:
     return InvestingOrderService(
         order_repo,
@@ -410,6 +418,7 @@ async def get_investing_order_service(
         currency_repo,
         instrument_service,
         lot_repo,
+        corporate_action_repo,
     )
 
 

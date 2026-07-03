@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.investing.models import InstrumentType, OrderType
+from app.investing.models import CorporateActionType, InstrumentType, OrderType
 from app.spending.schemas import SourceMetadataResponse
 
 
@@ -167,6 +167,39 @@ class InvestingOrderUpdate(BaseModel):
 class InvestingOrderBulkCreate(BaseModel):
     account_id: uuid.UUID
     orders: list[InvestingOrderCreate]
+
+
+class CorporateActionCreate(BaseModel):
+    account_id: uuid.UUID
+    symbol: str = Field(..., min_length=1, max_length=20)
+    action_type: CorporateActionType
+    # Semantics are action_type-dependent (spec-051): for a split, ratio_base
+    # "old" units become ratio_quote "new" units; for a bonus, ratio_quote
+    # units are granted free per ratio_base units held.
+    ratio_base: Decimal = Field(..., gt=0, decimal_places=4)
+    ratio_quote: Decimal = Field(..., gt=0, decimal_places=4)
+    ex_date: date
+    notes: str | None = Field(default=None, max_length=255)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class CorporateActionResponse(BaseModel):
+    public_id: uuid.UUID
+    account_id: uuid.UUID
+    account_name: str
+    symbol: str
+    action_type: CorporateActionType
+    ratio_base: Decimal
+    ratio_quote: Decimal
+    ex_date: date
+    notes: str | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 
 
 class InvestingSummaryResponse(BaseModel):
