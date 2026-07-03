@@ -11,6 +11,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
 from app.application.jobs import (
+    bhavcopy_price_feed_job,
     budget_guardrails_job,
     export_cleanup_job,
     fx_rate_ingestion_job,
@@ -107,6 +108,12 @@ async def lifespan(_app: FastAPI):
             fx_rate_ingestion_job,
             job_id="fx_rate_ingestion",
             hour_utc=2,
+        )
+        register_daily_job(
+            bhavcopy_price_feed_job,
+            job_id="bhavcopy_price_feed",
+            hour_utc=2,
+            minute_utc=0,
         )
         register_daily_job(
             investment_closing_prices_job,

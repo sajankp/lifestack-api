@@ -1,7 +1,8 @@
+import csv
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import httpx
 
@@ -666,6 +667,52 @@ def _get_amfi_nav(
     if not code.isdigit():
         return None
     return navs.get(code)
+
+
+async def _fetch_nse_bhavcopy(
+    client: httpx.AsyncClient, trade_date: date
+) -> dict[str, tuple[date, Decimal]]:
+    """Official NSE end-of-day security-wise price CSV (spec-057).
+
+    NSE has rotated the bhavcopy URL/format before and requires session
+    cookies from a prior request to the main site before archive requests
+    reliably succeed; this returns {} on any failure (feed outage, trading
+    holiday, unparseable format) so callers degrade to the existing
+    Yahoo-backed fallback rather than blocking the whole refresh cycle —
+    same failure contract as ``_fetch_all_amfi_navs``.
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/csv,application/csv,*/*",
+    }
+    navs: dict[str, tuple[date, Decimal]] = {}
+    try:
+        await client.get("https://www.nseindia.com", headers=headers)
+        url = (
+            "https://archives.nseindia.com/products/content/"
+            f"sec_bhavdata_full_{trade_date.strftime('%d%m%Y')}.csv"
+        )
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        for raw_row in csv.DictReader(resp.text.splitlines()):
+            row = {(k or "").strip().upper(): (v or "").strip() for k, v in raw_row.items()}
+            if row.get("SERIES") != "EQ":
+                continue
+            symbol = row.get("SYMBOL", "")
+            close_raw = row.get("CLOSE_PRICE") or row.get("CLOSE")
+            if not symbol or not close_raw:
+                continue
+            try:
+                close = Decimal(close_raw)
+            except InvalidOperation:
+                continue
+            navs[symbol.upper()] = (trade_date, close)
+    except Exception:
+        return {}
+    return navs
 
 
 class InstrumentService:

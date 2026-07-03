@@ -8,6 +8,7 @@ from httpx import AsyncClient
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from app.application.jobs import bhavcopy_price_feed_job
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account, Currency, FxRate, WorkspaceCurrency
@@ -1214,6 +1215,175 @@ async def test_investing_prices_refresh_indian_mutual_fund_uses_amfi(client: Asy
     assert refresh_res.json()["updated"] == ["122639"]
     stock_fetch.assert_not_called()
     amfi_fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_bhavcopy_price_feed_job_prices_inr_stock_holding(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="bhavcopy-hit@example.com",
+        username="bhavcopy-hit",
+        password="TestPass123!",
+    )
+    inr_broker_id = await _create_brokerage_account(client, "INR Brokerage", "INR")
+    await _create_holding_via_order(
+        client, inr_broker_id, "RELIANCE", "5.00000000", "2500.00", "INR"
+    )
+
+    with patch(
+        "app.investing.service._fetch_nse_bhavcopy", new_callable=AsyncMock
+    ) as bhavcopy_fetch:
+        bhavcopy_fetch.return_value = {"RELIANCE": (date(2026, 6, 19), Decimal("2601.50"))}
+        await bhavcopy_price_feed_job()
+
+    holdings_res = await client.get("/v1/investing/holdings")
+    holding = next(h for h in holdings_res.json()["items"] if h["symbol"] == "RELIANCE")
+    assert Decimal(holding["current_price"]) == Decimal("2601.50")
+
+    async with postgres.async_session_maker() as session:
+        db_holding = (
+            (
+                await session.execute(
+                    select(Holding).where(Holding.public_id == uuid.UUID(holding["public_id"]))
+                )
+            )
+            .scalars()
+            .one()
+        )
+        price_row = (
+            (
+                await session.execute(
+                    select(HoldingPrice).where(HoldingPrice.holding_id == db_holding.id)
+                )
+            )
+            .scalars()
+            .one()
+        )
+        assert price_row.source == "bhavcopy"
+        assert price_row.unit_price == Decimal("2601.500000")
+
+
+@pytest.mark.asyncio
+async def test_bhavcopy_price_feed_job_miss_falls_back_to_yahoo(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="bhavcopy-miss@example.com",
+        username="bhavcopy-miss",
+        password="TestPass123!",
+    )
+    inr_broker_id = await _create_brokerage_account(client, "INR Brokerage", "INR")
+    await _create_holding_via_order(client, inr_broker_id, "TCS", "3.00000000", "3800.00", "INR")
+
+    with patch(
+        "app.investing.service._fetch_nse_bhavcopy", new_callable=AsyncMock
+    ) as bhavcopy_fetch:
+        bhavcopy_fetch.return_value = {}
+        await bhavcopy_price_feed_job()
+
+    async with postgres.async_session_maker() as session:
+        db_holding = (
+            (await session.execute(select(Holding).where(Holding.symbol == "TCS"))).scalars().one()
+        )
+        price_rows = (
+            (
+                await session.execute(
+                    select(HoldingPrice).where(HoldingPrice.holding_id == db_holding.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert price_rows == []
+
+    with patch("app.investing.service._fetch_stock_price", new_callable=AsyncMock) as stock_fetch:
+        stock_fetch.return_value = (date(2026, 6, 19), Decimal("3900.00"))
+        refresh_res = await client.post("/v1/investing/prices/refresh")
+
+    assert refresh_res.status_code == 200
+    assert "TCS" in refresh_res.json()["updated"]
+    stock_fetch.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_bhavcopy_price_feed_job_hit_prevents_yahoo_fallback(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="bhavcopy-skip@example.com",
+        username="bhavcopy-skip",
+        password="TestPass123!",
+    )
+    inr_broker_id = await _create_brokerage_account(client, "INR Brokerage", "INR")
+    await _create_holding_via_order(client, inr_broker_id, "INFY", "4.00000000", "1500.00", "INR")
+
+    with patch(
+        "app.investing.service._fetch_nse_bhavcopy", new_callable=AsyncMock
+    ) as bhavcopy_fetch:
+        bhavcopy_fetch.return_value = {"INFY": (date(2026, 6, 19), Decimal("1555.25"))}
+        await bhavcopy_price_feed_job()
+
+    with patch("app.investing.service._fetch_stock_price", new_callable=AsyncMock) as stock_fetch:
+        refresh_res = await client.post("/v1/investing/prices/refresh")
+
+    assert refresh_res.status_code == 200
+    assert refresh_res.json()["updated"] == []
+    stock_fetch.assert_not_called()
+
+    holdings_res = await client.get("/v1/investing/holdings")
+    holding = next(h for h in holdings_res.json()["items"] if h["symbol"] == "INFY")
+    assert Decimal(holding["current_price"]) == Decimal("1555.25")
+
+
+@pytest.mark.asyncio
+async def test_bhavcopy_price_feed_job_skips_mutual_funds_and_non_inr(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="bhavcopy-guard@example.com",
+        username="bhavcopy-guard",
+        password="TestPass123!",
+    )
+    inr_broker_id = await _create_brokerage_account(client, "INR Brokerage", "INR")
+    usd_broker_id = account_map["brokerage"]
+
+    # Mutual fund with a symbol that happens to collide with a bhavcopy row.
+    await _create_holding_via_order(
+        client,
+        inr_broker_id,
+        "COLLIDE",
+        "10.00000000",
+        "100.00",
+        "INR",
+        "mutual_fund",
+        "Colliding Fund Direct Growth",
+    )
+    # USD stock with a symbol that also happens to collide.
+    await _create_holding_via_order(
+        client, usd_broker_id, "COLLIDE", "10.00000000", "100.00", "USD"
+    )
+
+    with patch(
+        "app.investing.service._fetch_nse_bhavcopy", new_callable=AsyncMock
+    ) as bhavcopy_fetch:
+        bhavcopy_fetch.return_value = {"COLLIDE": (date(2026, 6, 19), Decimal("999.99"))}
+        await bhavcopy_price_feed_job()
+
+    async with postgres.async_session_maker() as session:
+        colliding_holdings = (
+            (await session.execute(select(Holding).where(Holding.symbol == "COLLIDE")))
+            .scalars()
+            .all()
+        )
+        assert len(colliding_holdings) == 2
+        for db_holding in colliding_holdings:
+            price_rows = (
+                (
+                    await session.execute(
+                        select(HoldingPrice).where(HoldingPrice.holding_id == db_holding.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert price_rows == []
 
 
 @pytest.mark.asyncio
