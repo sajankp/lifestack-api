@@ -34,6 +34,30 @@ _TXN_RE = re.compile(
 _DISCONTINUITY_LOW = Decimal("0.6")
 _DISCONTINUITY_HIGH = Decimal("1.67")
 
+# CAMS CAS PDFs always use English month abbreviations regardless of the
+# generating locale; parse them directly rather than via strptime's "%b",
+# which is locale-dependent and would raise ValueError under a non-English
+# locale (e.g. LC_TIME=hi_IN).
+_MONTHS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+
+def _parse_txn_date(value: str) -> datetime:
+    day_str, month_str, year_str = value.split("-")
+    return datetime(int(year_str), _MONTHS[month_str.lower()], int(day_str), tzinfo=UTC)
+
 
 def _classify(description: str) -> str | None:
     lowered = description.lower()
@@ -91,10 +115,10 @@ def parse_cams_cas(file_path: str) -> CamsCasParseResult:
             continue
 
         try:
-            txn_date = datetime.strptime(txn_match.group("date"), "%d-%b-%Y").replace(tzinfo=UTC)
+            txn_date = _parse_txn_date(txn_match.group("date"))
             units = _to_decimal(txn_match.group("units"))
             nav = _to_decimal(txn_match.group("nav"))
-        except (InvalidOperation, ValueError):
+        except (InvalidOperation, ValueError, KeyError):
             continue
 
         description = txn_match.group("description").strip()

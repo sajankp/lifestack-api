@@ -34,6 +34,7 @@ from app.investing.models import (
 )
 from app.investing.models import (
     Company,
+    CorporateAction,
     Instrument,
     InstrumentConstituent,
     InstrumentType,
@@ -1349,13 +1350,32 @@ class ImportService:
         if account is None or account.id is None:
             return suspected
 
-        ca_repo = CorporateActionRepository(self.session)
+        symbols = {entry["symbol"].upper() for entry in suspected}
+        actions = (
+            (
+                await self.session.execute(
+                    select(CorporateAction).where(
+                        CorporateAction.workspace_id == workspace_id,
+                        CorporateAction.account_id == account.id,
+                        CorporateAction.symbol.in_(symbols),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        actions_by_symbol: dict[str, list[CorporateAction]] = {}
+        for action in actions:
+            actions_by_symbol.setdefault(action.symbol, []).append(action)
+
         filtered: list[dict] = []
         for entry in suspected:
-            actions = await ca_repo.list_by_holding(workspace_id, entry["symbol"], account.id)
             from_date = date.fromisoformat(entry["from_date"])
             to_date = date.fromisoformat(entry["to_date"])
-            already_recorded = any(from_date <= action.ex_date <= to_date for action in actions)
+            already_recorded = any(
+                from_date <= action.ex_date <= to_date
+                for action in actions_by_symbol.get(entry["symbol"].upper(), [])
+            )
             if not already_recorded:
                 filtered.append(entry)
         return filtered
@@ -1372,7 +1392,15 @@ class ImportService:
         if not target_account_id:
             raise ValidationError(detail="target_account_id is required for CAMS CAS imports")
 
-        parse_result = await asyncio.to_thread(parse_cams_cas, file_path)
+        try:
+            parse_result = await asyncio.to_thread(parse_cams_cas, file_path)
+        except Exception as exc:
+            raise ValidationError(
+                detail=(
+                    "Failed to parse CAMS CAS PDF. If the file is password-protected, "
+                    "remove the password before uploading."
+                )
+            ) from exc
 
         previews: list[ImportPreviewRow] = []
         for row_no, order in enumerate(parse_result.orders, start=1):
