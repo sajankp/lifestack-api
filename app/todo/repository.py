@@ -3,16 +3,13 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import case, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
+from app.core.repository import BaseRepository
 from app.todo.models import RecurringTodoRule, Todo
 
 
-class TodoRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
+class TodoRepository(BaseRepository[Todo]):
     async def get_all(
         self,
         workspace_id: int,
@@ -73,22 +70,6 @@ class TodoRepository:
         query = select(Todo).where(Todo.workspace_id == workspace_id, Todo.public_id == public_id)
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
-
-    async def create(self, todo: Todo) -> Todo:
-        self.session.add(todo)
-        await self.session.flush()
-        await self.session.refresh(todo)
-        return todo
-
-    async def delete(self, todo: Todo) -> None:
-        await self.session.delete(todo)
-        await self.session.flush()
-
-    async def save(self, todo: Todo) -> Todo:
-        self.session.add(todo)
-        await self.session.flush()
-        await self.session.refresh(todo)
-        return todo
 
     async def get_recurring_rules(
         self,
