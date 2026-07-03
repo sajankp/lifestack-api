@@ -2,22 +2,13 @@ import uuid
 from collections.abc import Sequence
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
+from app.core.repository import BaseRepository
 from app.exports.models import ExportRecord, ExportStatus
 
 
-class ExportRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
-    async def create(self, record: ExportRecord) -> ExportRecord:
-        self.session.add(record)
-        await self.session.flush()
-        await self.session.refresh(record)
-        return record
-
+class ExportRepository(BaseRepository[ExportRecord]):
     async def save(self, record: ExportRecord, refresh: bool = True) -> ExportRecord:
         self.session.add(record)
         await self.session.flush()
@@ -56,7 +47,3 @@ class ExportRepository:
             .limit(limit)
         )
         return result.scalars().all()
-
-    async def delete(self, record: ExportRecord) -> None:
-        await self.session.delete(record)
-        await self.session.flush()

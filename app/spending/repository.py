@@ -6,9 +6,9 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy import and_, case, func, literal, or_, select, union_all
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
+from app.core.repository import BaseRepository
 from app.finance.models import CapitalTransfer
 from app.spending.models import (
     RecurringTransaction,
@@ -37,10 +37,7 @@ class LedgerRow:
     created_at: datetime
 
 
-class CategoryRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
+class CategoryRepository(BaseRepository[SpendingCategory]):
     async def get_all(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
     ) -> tuple[Sequence[SpendingCategory], int]:
@@ -82,22 +79,6 @@ class CategoryRepository:
         )
         return result.scalar_one_or_none()
 
-    async def create(self, category: SpendingCategory) -> SpendingCategory:
-        self.session.add(category)
-        await self.session.flush()
-        await self.session.refresh(category)
-        return category
-
-    async def save(self, category: SpendingCategory) -> SpendingCategory:
-        self.session.add(category)
-        await self.session.flush()
-        await self.session.refresh(category)
-        return category
-
-    async def delete(self, category: SpendingCategory) -> None:
-        await self.session.delete(category)
-        await self.session.flush()
-
     async def has_usage(self, category_id: int) -> bool:
         tx_exists = (
             await self.session.execute(
@@ -133,10 +114,7 @@ class CategoryRepository:
         await self.session.flush()
 
 
-class TransactionRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
+class TransactionRepository(BaseRepository[SpendingTransaction]):
     async def get_all(
         self,
         workspace_id: int,
@@ -228,22 +206,6 @@ class TransactionRepository:
             )
         )
         return result.scalar_one_or_none()
-
-    async def create(self, transaction: SpendingTransaction) -> SpendingTransaction:
-        self.session.add(transaction)
-        await self.session.flush()
-        await self.session.refresh(transaction)
-        return transaction
-
-    async def save(self, transaction: SpendingTransaction) -> SpendingTransaction:
-        self.session.add(transaction)
-        await self.session.flush()
-        await self.session.refresh(transaction)
-        return transaction
-
-    async def delete(self, transaction: SpendingTransaction) -> None:
-        await self.session.delete(transaction)
-        await self.session.flush()
 
     async def get_ledger_page(
         self,
@@ -460,10 +422,7 @@ class TransactionRepository:
         return tx_net + inflow - outflow
 
 
-class BudgetRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
+class BudgetRepository(BaseRepository[SpendingBudget]):
     async def get_all(
         self,
         workspace_id: int,
@@ -503,18 +462,6 @@ class BudgetRepository:
         )
         return result.scalar_one_or_none()
 
-    async def create(self, budget: SpendingBudget) -> SpendingBudget:
-        self.session.add(budget)
-        await self.session.flush()
-        await self.session.refresh(budget)
-        return budget
-
-    async def save(self, budget: SpendingBudget) -> SpendingBudget:
-        self.session.add(budget)
-        await self.session.flush()
-        await self.session.refresh(budget)
-        return budget
-
     async def get_month_total(self, workspace_id: int, month_start: date) -> Decimal:
         query = select(func.sum(SpendingBudget.amount)).where(
             SpendingBudget.workspace_id == workspace_id,
@@ -525,10 +472,7 @@ class BudgetRepository:
         return Decimal(total or 0)
 
 
-class RecurringTransactionRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
+class RecurringTransactionRepository(BaseRepository[RecurringTransaction]):
     async def get_all(
         self,
         workspace_id: int,
@@ -558,15 +502,3 @@ class RecurringTransactionRepository:
                 )
             )
         ).scalar_one_or_none()
-
-    async def create(self, recurring: RecurringTransaction) -> RecurringTransaction:
-        self.session.add(recurring)
-        await self.session.flush()
-        await self.session.refresh(recurring)
-        return recurring
-
-    async def save(self, recurring: RecurringTransaction) -> RecurringTransaction:
-        self.session.add(recurring)
-        await self.session.flush()
-        await self.session.refresh(recurring)
-        return recurring

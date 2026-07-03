@@ -1,21 +1,12 @@
 import uuid
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.core.repository import BaseRepository
 from app.platform.models import Workspace, WorkspaceMembership
 
 
-class WorkspaceRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
-    async def create(self, workspace: Workspace) -> Workspace:
-        self.session.add(workspace)
-        await self.session.flush()
-        await self.session.refresh(workspace)
-        return workspace
-
+class WorkspaceRepository(BaseRepository[Workspace]):
     async def get_by_id(self, workspace_id: int) -> Workspace | None:
         result = await self.session.execute(select(Workspace).where(Workspace.id == workspace_id))
         return result.scalar_one_or_none()
@@ -35,16 +26,7 @@ class WorkspaceRepository:
         return list(result.scalars().all())
 
 
-class MembershipRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
-    async def create(self, membership: WorkspaceMembership) -> WorkspaceMembership:
-        self.session.add(membership)
-        await self.session.flush()
-        await self.session.refresh(membership)
-        return membership
-
+class MembershipRepository(BaseRepository[WorkspaceMembership]):
     async def get_membership(self, workspace_id: int, user_id: int) -> WorkspaceMembership | None:
         result = await self.session.execute(
             select(WorkspaceMembership).where(

@@ -7,6 +7,7 @@ from sqlalchemy import case, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
+from app.core.repository import BaseRepository
 from app.finance.models import (
     Account,
     CapitalTransfer,
@@ -83,10 +84,7 @@ class CurrencyRepository:
         return result.scalar_one_or_none() is not None
 
 
-class AccountRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
+class AccountRepository(BaseRepository[Account]):
     async def list_workspace_accounts(
         self,
         workspace_id: int,
@@ -143,18 +141,6 @@ class AccountRepository:
         )
         return result.scalars().all()
 
-    async def create(self, account: Account) -> Account:
-        self.session.add(account)
-        await self.session.flush()
-        await self.session.refresh(account)
-        return account
-
-    async def save(self, account: Account) -> Account:
-        self.session.add(account)
-        await self.session.flush()
-        await self.session.refresh(account)
-        return account
-
     async def has_usage(self, workspace_id: int, account_id: int) -> bool:
         spending_usage_exists = (
             await self.session.execute(
@@ -209,10 +195,6 @@ class AccountRepository:
             )
         ).scalar_one_or_none()
         return cash_balance_usage_exists is not None
-
-    async def delete(self, account: Account) -> None:
-        await self.session.delete(account)
-        await self.session.flush()
 
     async def get_spending_balance(
         self, workspace_id: int, account_id: int
@@ -677,10 +659,7 @@ class FxRateRepository:
         return latest
 
 
-class CapitalTransferRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
+class CapitalTransferRepository(BaseRepository[CapitalTransfer]):
     async def list_workspace_transfers(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
     ) -> tuple[Sequence[CapitalTransfer], int]:
@@ -701,19 +680,3 @@ class CapitalTransferRepository:
             )
         )
         return result.scalar_one_or_none()
-
-    async def create(self, transfer: CapitalTransfer) -> CapitalTransfer:
-        self.session.add(transfer)
-        await self.session.flush()
-        await self.session.refresh(transfer)
-        return transfer
-
-    async def save(self, transfer: CapitalTransfer) -> CapitalTransfer:
-        self.session.add(transfer)
-        await self.session.flush()
-        await self.session.refresh(transfer)
-        return transfer
-
-    async def delete(self, transfer: CapitalTransfer) -> None:
-        await self.session.delete(transfer)
-        await self.session.flush()

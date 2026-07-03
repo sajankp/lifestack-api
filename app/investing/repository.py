@@ -6,6 +6,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
+from app.core.repository import BaseRepository
 from app.investing.models import (
     CashBalance,
     Company,
@@ -21,10 +22,7 @@ from app.investing.models import (
 )
 
 
-class HoldingRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
+class HoldingRepository(BaseRepository[Holding]):
     async def get_all(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
     ) -> tuple[Sequence[Holding], int]:
@@ -58,27 +56,8 @@ class HoldingRepository:
         )
         return result.scalar_one_or_none()
 
-    async def create(self, holding: Holding) -> Holding:
-        self.session.add(holding)
-        await self.session.flush()
-        await self.session.refresh(holding)
-        return holding
 
-    async def save(self, holding: Holding) -> Holding:
-        self.session.add(holding)
-        await self.session.flush()
-        await self.session.refresh(holding)
-        return holding
-
-    async def delete(self, holding: Holding) -> None:
-        await self.session.delete(holding)
-        await self.session.flush()
-
-
-class CashBalanceRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
+class CashBalanceRepository(BaseRepository[CashBalance]):
     async def get_all(
         self,
         workspace_id: int,
@@ -105,22 +84,6 @@ class CashBalanceRepository:
             )
         )
         return result.scalar_one_or_none()
-
-    async def create(self, cash_balance: CashBalance) -> CashBalance:
-        self.session.add(cash_balance)
-        await self.session.flush()
-        await self.session.refresh(cash_balance)
-        return cash_balance
-
-    async def save(self, cash_balance: CashBalance) -> CashBalance:
-        self.session.add(cash_balance)
-        await self.session.flush()
-        await self.session.refresh(cash_balance)
-        return cash_balance
-
-    async def delete(self, cash_balance: CashBalance) -> None:
-        await self.session.delete(cash_balance)
-        await self.session.flush()
 
     async def get_by_trigger_ref(self, workspace_id: int, trigger_ref: UUID) -> CashBalance | None:
         result = await self.session.execute(
@@ -205,16 +168,7 @@ class CashBalanceRepository:
         return result.scalars().all()
 
 
-class InvestingOrderRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
-    async def create(self, order: InvestingOrder) -> InvestingOrder:
-        self.session.add(order)
-        await self.session.flush()
-        await self.session.refresh(order)
-        return order
-
+class InvestingOrderRepository(BaseRepository[InvestingOrder]):
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> InvestingOrder | None:
         result = await self.session.execute(
             select(InvestingOrder).where(
@@ -270,16 +224,6 @@ class InvestingOrderRepository:
         )
         return result.scalars().all()
 
-    async def save(self, order: InvestingOrder) -> InvestingOrder:
-        self.session.add(order)
-        await self.session.flush()
-        await self.session.refresh(order)
-        return order
-
-    async def delete(self, order: InvestingOrder) -> None:
-        await self.session.delete(order)
-        await self.session.flush()
-
     async def bulk_create(self, orders: list[InvestingOrder]) -> list[InvestingOrder]:
         self.session.add_all(orders)
         await self.session.flush()
@@ -325,16 +269,7 @@ class LotRepository:
         return consumptions
 
 
-class CorporateActionRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
-    async def create(self, action: CorporateAction) -> CorporateAction:
-        self.session.add(action)
-        await self.session.flush()
-        await self.session.refresh(action)
-        return action
-
+class CorporateActionRepository(BaseRepository[CorporateAction]):
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> CorporateAction | None:
         result = await self.session.execute(
             select(CorporateAction).where(
@@ -379,15 +314,8 @@ class CorporateActionRepository:
         )
         return result.scalars().all(), total
 
-    async def delete(self, action: CorporateAction) -> None:
-        await self.session.delete(action)
-        await self.session.flush()
 
-
-class InstrumentRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
+class InstrumentRepository(BaseRepository[Instrument]):
     async def list_workspace(self, workspace_id: int) -> Sequence[Instrument]:
         result = await self.session.execute(
             select(Instrument)
@@ -463,23 +391,8 @@ class InstrumentRepository:
         rows = result.scalars().all()
         return {row.id: row for row in rows if row.id is not None}
 
-    async def create(self, instrument: Instrument) -> Instrument:
-        self.session.add(instrument)
-        await self.session.flush()
-        await self.session.refresh(instrument)
-        return instrument
 
-    async def save(self, instrument: Instrument) -> Instrument:
-        self.session.add(instrument)
-        await self.session.flush()
-        await self.session.refresh(instrument)
-        return instrument
-
-
-class CompanyRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
+class CompanyRepository(BaseRepository[Company]):
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> Company | None:
         result = await self.session.execute(
             select(Company).where(
@@ -538,12 +451,6 @@ class CompanyRepository:
             if row.name not in res:
                 res[row.name] = row
         return res
-
-    async def create(self, company: Company) -> Company:
-        self.session.add(company)
-        await self.session.flush()
-        await self.session.refresh(company)
-        return company
 
 
 class InstrumentConstituentRepository:

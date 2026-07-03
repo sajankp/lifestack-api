@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.models import AuthSession, PasswordResetToken, User
 from app.auth.schemas import UserCreate
 from app.core.auth import hash_password
+from app.core.repository import BaseRepository
 
 
 class UserRepository:
@@ -40,16 +41,7 @@ class UserRepository:
         return db_user
 
 
-class AuthSessionRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
-    async def create(self, auth_session: AuthSession) -> AuthSession:
-        self.session.add(auth_session)
-        await self.session.flush()
-        await self.session.refresh(auth_session)
-        return auth_session
-
+class AuthSessionRepository(BaseRepository[AuthSession]):
     async def get_active_by_sid(self, sid: str, user_id: int | None = None) -> AuthSession | None:
         statement = select(AuthSession).where(
             AuthSession.sid == sid,
@@ -113,16 +105,7 @@ class AuthSessionRepository:
         return result.rowcount or 0
 
 
-class PasswordResetTokenRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
-    async def create(self, token: PasswordResetToken) -> PasswordResetToken:
-        self.session.add(token)
-        await self.session.flush()
-        await self.session.refresh(token)
-        return token
-
+class PasswordResetTokenRepository(BaseRepository[PasswordResetToken]):
     async def get_by_hash(self, token_hash: str) -> PasswordResetToken | None:
         statement = select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
         result = await self.session.execute(statement)
