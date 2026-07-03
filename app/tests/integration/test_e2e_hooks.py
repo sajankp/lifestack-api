@@ -187,24 +187,23 @@ async def test_e2e_weekly_summary_hook_returns_generated_summary(client: AsyncCl
 
 
 @pytest.mark.asyncio
-async def test_e2e_fx_rate_hook_seeds_rate_used_by_performance_snapshot(client: AsyncClient):
+async def test_e2e_fx_rate_hook_seeds_rate_used_by_performance_snapshot(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
     creds = await _register_and_login(client, "e2efxrate")
 
-    settings.ENABLE_E2E_TEST_HOOKS = True
-    settings.ENV = "local"
-    try:
-        async with await _e2e_hook_client() as hook_client:
-            hook_client.cookies.update(creds["cookies"])
-            response = await hook_client.post(
-                "/v1/e2e/fx-rates",
-                json={
-                    "base_currency_code": "GBP",
-                    "quote_currency_code": "USD",
-                    "rate": "1.25",
-                },
-            )
-    finally:
-        settings.ENABLE_E2E_TEST_HOOKS = False
+    monkeypatch.setattr(settings, "ENABLE_E2E_TEST_HOOKS", True)
+    monkeypatch.setattr(settings, "ENV", "local")
+    async with await _e2e_hook_client() as hook_client:
+        hook_client.cookies.update(creds["cookies"])
+        response = await hook_client.post(
+            "/v1/e2e/fx-rates",
+            json={
+                "base_currency_code": "GBP",
+                "quote_currency_code": "USD",
+                "rate": "1.25",
+            },
+        )
 
     assert response.status_code == 200, response.text
 
