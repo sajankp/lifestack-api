@@ -6,7 +6,9 @@ each writing plain ``Notification`` rows (``category="insight"``). No new
 tables: dedup is a targeted existence check against ``Notification``
 (``entity_type`` + ``entity_public_id`` + a period marker embedded in
 ``body``) rather than a unique constraint, since ``Notification`` is a
-shared table used by every other notification category too.
+shared table used by every other notification category too. Each detector
+pre-fetches its candidate data and existing-notification set in batch
+queries up front, then loops in memory — no per-category/per-budget query.
 
 Called from ``app.application.jobs.dashboard_insights_job`` via
 ``run_workspace_job``; contains no locking/session-boundary concerns of its
@@ -55,25 +57,33 @@ async def _resolve_primary_user_id(session: AsyncSession, workspace_id: int) -> 
     return result.scalar()
 
 
-async def _insight_already_exists(
+async def _existing_entity_ids(
     session: AsyncSession,
     workspace_id: int,
     user_id: int,
     entity_type: str,
-    entity_public_id,
     since: datetime | None,
-) -> bool:
-    query = select(Notification.id).where(
+) -> set:
+    """Batch-fetch the set of entity_public_ids already notified for this
+    detector (optionally scoped to a period), so the per-candidate loop can
+    do an in-memory membership check instead of one query per candidate."""
+    query = select(Notification.entity_public_id).where(
         Notification.workspace_id == workspace_id,
         Notification.user_id == user_id,
         Notification.category == "insight",
         Notification.entity_type == entity_type,
-        Notification.entity_public_id == entity_public_id,
     )
     if since is not None:
         query = query.where(Notification.created_at >= since)
-    result = await session.execute(query.limit(1))
-    return result.scalar() is not None
+    result = await session.execute(query)
+    return set(result.scalars().all())
+
+
+def _sum_amounts_by_category(rows: list[tuple[int, Decimal]]) -> dict[int, Decimal]:
+    totals: dict[int, Decimal] = {}
+    for category_id, amount in rows:
+        totals[category_id] = totals.get(category_id, Decimal("0")) + amount
+    return totals
 
 
 def _week_start(today: date) -> date:
@@ -101,52 +111,54 @@ async def _detect_spending_anomalies(
         .scalars()
         .all()
     )
+    if not categories:
+        return
+
+    current_rows = (
+        await session.execute(
+            select(SpendingTransaction.category_id, SpendingTransaction.amount).where(
+                SpendingTransaction.workspace_id == workspace.id,
+                SpendingTransaction.type == TransactionType.expense,
+                SpendingTransaction.occurred_at >= current_start,
+                SpendingTransaction.occurred_at < current_end,
+            )
+        )
+    ).all()
+    current_totals = _sum_amounts_by_category(list(current_rows))
+
+    baseline_rows = (
+        await session.execute(
+            select(SpendingTransaction.category_id, SpendingTransaction.amount).where(
+                SpendingTransaction.workspace_id == workspace.id,
+                SpendingTransaction.type == TransactionType.expense,
+                SpendingTransaction.occurred_at >= baseline_start,
+                SpendingTransaction.occurred_at < current_start,
+            )
+        )
+    ).all()
+    baseline_totals = _sum_amounts_by_category(list(baseline_rows))
+
+    already_notified = await _existing_entity_ids(
+        session,
+        workspace.id,
+        user_id,
+        "spending_category_anomaly",
+        datetime.combine(week_start, datetime.min.time(), tzinfo=UTC),
+    )
 
     for category in categories:
-        current_week_total = (
-            await session.execute(
-                select(SpendingTransaction.amount).where(
-                    SpendingTransaction.workspace_id == workspace.id,
-                    SpendingTransaction.category_id == category.id,
-                    SpendingTransaction.type == TransactionType.expense,
-                    SpendingTransaction.occurred_at >= current_start,
-                    SpendingTransaction.occurred_at < current_end,
-                )
-            )
-        ).scalars()
-        current_total = sum(current_week_total, Decimal("0"))
+        current_total = current_totals.get(category.id, Decimal("0"))
         if current_total <= 0:
             continue
 
-        baseline_amounts = (
-            await session.execute(
-                select(SpendingTransaction.amount).where(
-                    SpendingTransaction.workspace_id == workspace.id,
-                    SpendingTransaction.category_id == category.id,
-                    SpendingTransaction.type == TransactionType.expense,
-                    SpendingTransaction.occurred_at >= baseline_start,
-                    SpendingTransaction.occurred_at < current_start,
-                )
-            )
-        ).scalars()
-        baseline_total = sum(baseline_amounts, Decimal("0"))
-        baseline_avg = baseline_total / Decimal("4")
-
+        baseline_avg = baseline_totals.get(category.id, Decimal("0")) / Decimal("4")
         if baseline_avg <= 0:
             continue
         if current_total < baseline_avg * _ANOMALY_RATIO:
             continue
         if current_total < baseline_avg + _ANOMALY_FLOOR:
             continue
-
-        if await _insight_already_exists(
-            session,
-            workspace.id,
-            user_id,
-            "spending_category_anomaly",
-            category.public_id,
-            datetime.combine(week_start, datetime.min.time(), tzinfo=UTC),
-        ):
+        if category.public_id in already_notified:
             continue
 
         await notification_service.notify(
@@ -172,10 +184,14 @@ async def _detect_budget_pace(
     notification_service: NotificationService,
     today: date,
 ) -> None:
-    days_in_month = calendar.monthrange(today.year, today.month)[1]
-    days_elapsed = today.day
-    if days_elapsed < _PACE_MIN_DAYS_ELAPSED:
+    if today.day < _PACE_MIN_DAYS_ELAPSED:
         return
+
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
+    # spent_so_far only ever covers occurred_at < today (today isn't over
+    # yet), i.e. days 1..(today.day - 1) — divide by that, not today.day,
+    # or the pace projection is under-counted by one day's worth of spend.
+    days_elapsed = today.day - 1
 
     month_start = today.replace(day=1)
     month_start_dt = datetime.combine(month_start, datetime.min.time(), tzinfo=UTC)
@@ -207,38 +223,35 @@ async def _detect_budget_pace(
         .all()
     }
 
+    spent_rows = (
+        await session.execute(
+            select(SpendingTransaction.category_id, SpendingTransaction.amount).where(
+                SpendingTransaction.workspace_id == workspace.id,
+                SpendingTransaction.type == TransactionType.expense,
+                SpendingTransaction.occurred_at >= month_start_dt,
+                SpendingTransaction.occurred_at < today_dt,
+            )
+        )
+    ).all()
+    spent_by_category = _sum_amounts_by_category(list(spent_rows))
+
+    already_notified = await _existing_entity_ids(
+        session, workspace.id, user_id, "spending_budget_pace", month_start_dt
+    )
+
     for budget in budgets:
         category = category_map.get(budget.category_id)
         if category is None:
             continue
 
-        spent_amounts = (
-            await session.execute(
-                select(SpendingTransaction.amount).where(
-                    SpendingTransaction.workspace_id == workspace.id,
-                    SpendingTransaction.category_id == budget.category_id,
-                    SpendingTransaction.type == TransactionType.expense,
-                    SpendingTransaction.occurred_at >= month_start_dt,
-                    SpendingTransaction.occurred_at < today_dt,
-                )
-            )
-        ).scalars()
-        spent_so_far = sum(spent_amounts, Decimal("0"))
+        spent_so_far = spent_by_category.get(budget.category_id, Decimal("0"))
         if spent_so_far <= 0:
             continue
 
         projected = spent_so_far / Decimal(days_elapsed) * Decimal(days_in_month)
         if projected <= budget.amount * _PACE_BUFFER_RATIO:
             continue
-
-        if await _insight_already_exists(
-            session,
-            workspace.id,
-            user_id,
-            "spending_budget_pace",
-            budget.public_id,
-            month_start_dt,
-        ):
+        if budget.public_id in already_notified:
             continue
 
         await notification_service.notify(
@@ -321,9 +334,15 @@ async def _detect_recurring_candidates(
         .all()
     }
 
+    already_notified = await _existing_entity_ids(
+        session, workspace.id, user_id, "spending_category_recurring", None
+    )
+
     for category_id, txns in by_category.items():
         category = category_map.get(category_id)
         if category is None:
+            continue
+        if category.public_id in already_notified:
             continue
 
         # Bucket by mutual amount tolerance (greedy — each transaction joins
@@ -348,16 +367,6 @@ async def _detect_recurring_candidates(
                 for rule in rules_by_category.get(category_id, [])
             )
             if already_tracked:
-                continue
-
-            if await _insight_already_exists(
-                session,
-                workspace.id,
-                user_id,
-                "spending_category_recurring",
-                category.public_id,
-                None,
-            ):
                 continue
 
             await notification_service.notify(
