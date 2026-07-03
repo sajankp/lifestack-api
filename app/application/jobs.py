@@ -13,7 +13,9 @@ Boundary rules:
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
+import httpx
 import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +30,7 @@ from app.application.workflows import (
     process_workspace_recurring_transactions,
 )
 from app.core.constants import (
+    ADVISORY_LOCK_BHAVCOPY_PRICE_FEED,
     ADVISORY_LOCK_BUDGET_GUARDRAILS,
     ADVISORY_LOCK_EXPORT_CLEANUP,
     ADVISORY_LOCK_FX_RATE_INGESTION,
@@ -38,6 +41,8 @@ from app.core.constants import (
 )
 from app.core.database import postgres
 from app.finance.repository import FinanceSettingRepository, FxRateRepository
+from app.investing import service as investing_service
+from app.investing.models import InstrumentType
 from app.investing.performance_service import PerformanceService
 from app.investing.repository import (
     CashBalanceRepository,
@@ -186,6 +191,65 @@ async def investment_closing_prices_job() -> None:
                 workspace_id=workspace_id,
                 exc_info=True,
             )
+
+
+# Advisory lock key — see app.core.constants for the full registry
+BHAVCOPY_PRICE_FEED_LOCK_KEY = ADVISORY_LOCK_BHAVCOPY_PRICE_FEED
+
+
+async def bhavcopy_price_feed_job() -> None:
+    """Pre-fill HoldingPrice from NSE's official bhavcopy for INR stock
+    holdings (spec-057), before investment_closing_prices_job's Yahoo-backed
+    refresh runs. That job already skips holdings priced for the expected
+    close date, so a bhavcopy hit here means it never falls through to
+    Yahoo for that symbol; a bhavcopy miss (feed outage, delisted, BSE-only)
+    is unaffected and still gets priced by the existing Yahoo path.
+    """
+    trade_date = investing_service._previous_weekday(datetime.now(UTC).date())
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        bhavcopy = await investing_service._fetch_nse_bhavcopy(client, trade_date)
+
+    if not bhavcopy:
+        logger.info("bhavcopy_price_feed_no_data", trade_date=trade_date.isoformat())
+        return
+
+    async def _process_workspace(session: AsyncSession, workspace: Workspace) -> None:
+        holding_repo = HoldingRepository(session)
+        holdings, _ = await holding_repo.get_all(workspace.id, limit=10000, offset=0)
+        if not holdings:
+            return
+
+        instrument_repo = InstrumentRepository(session)
+        instruments = await instrument_repo.get_by_ids([
+            h.instrument_id for h in holdings if h.instrument_id
+        ])
+
+        to_price: list[tuple[int, Decimal]] = []
+        for holding in holdings:
+            if holding.id is None or holding.currency.upper().strip() != "INR":
+                continue
+            instrument = instruments.get(holding.instrument_id)
+            kind = instrument.instrument_type if instrument else InstrumentType.stock.value
+            if kind == InstrumentType.mutual_fund.value:
+                continue
+            match = bhavcopy.get(holding.symbol.upper().strip())
+            if match is None:
+                continue
+            _, close = match
+            to_price.append((holding.id, close))
+
+        if to_price:
+            price_repo = HoldingPriceRepository(session)
+            await price_repo.bulk_upsert_prices(
+                workspace.id, trade_date, to_price, source="bhavcopy"
+            )
+
+    await run_workspace_job(
+        job_name="bhavcopy_price_feed_job",
+        lock_key=BHAVCOPY_PRICE_FEED_LOCK_KEY,
+        process_workspace=_process_workspace,
+    )
 
 
 async def budget_guardrails_job(workspace_id: int | None = None) -> None:
