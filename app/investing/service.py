@@ -690,15 +690,18 @@ async def _fetch_nse_bhavcopy(
     }
     navs: dict[str, tuple[date, Decimal]] = {}
     try:
-        await client.get("https://www.nseindia.com", headers=headers)
+        await client.get("https://www.nseindia.com", headers=headers, follow_redirects=True)
         url = (
             "https://archives.nseindia.com/products/content/"
             f"sec_bhavdata_full_{trade_date.strftime('%d%m%Y')}.csv"
         )
-        resp = await client.get(url, headers=headers)
+        resp = await client.get(url, headers=headers, follow_redirects=True)
         resp.raise_for_status()
         for raw_row in csv.DictReader(resp.text.splitlines()):
-            row = {(k or "").strip().upper(): (v or "").strip() for k, v in raw_row.items()}
+            row = {
+                (k or "").strip().upper(): (v.strip() if isinstance(v, str) else v)
+                for k, v in raw_row.items()
+            }
             if row.get("SERIES") != "EQ":
                 continue
             symbol = row.get("SYMBOL", "")
