@@ -11,6 +11,7 @@ from app.investing.order_service import InvestingOrderService
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
+    CorporateActionRepository,
     HoldingRepository,
     InstrumentRepository,
     InvestingOrderRepository,
@@ -71,6 +72,7 @@ class AgentTools:
         self.holding_repo = HoldingRepository(session)
         self.order_repo = InvestingOrderRepository(session)
         self.lot_repo = LotRepository(session)
+        self.corporate_action_repo = CorporateActionRepository(session)
         self.instrument_service = InstrumentService(
             InstrumentRepository(session), CompanyRepository(session)
         )
@@ -82,6 +84,7 @@ class AgentTools:
             currency_repository=self.currency_repo,
             instrument_service=self.instrument_service,
             lot_repository=self.lot_repo,
+            corporate_action_repository=self.corporate_action_repo,
         )
 
         self.audit_logger = AuditLogger(session)

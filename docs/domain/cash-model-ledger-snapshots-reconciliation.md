@@ -171,3 +171,21 @@ Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**
   filtered client-side, so an old-dated backfill snapshot in a workspace with 200+ rows
   (easy — every order writes one) was invisible and undeletable in the UI despite
   existing in the DB. Added a server-side `account_id` filter.
+- **2026-07-03 (spec-051):** Added corporate actions (stock splits, reverse splits, bonus
+  issues) as a new `investing_corporate_actions` table, replayed inside
+  `InvestingOrderService._replay_orders` (`order_service.py`) in the same chronological
+  event stream as buy/sell orders, ordered by `ex_date`. **Cash-neutral by construction:**
+  `create_corporate_action`/`delete_corporate_action` call the FIFO-lot recompute path
+  only — neither has a cash-balance dependency, so a corporate action never writes an
+  `investing_cash_balances` row and adds no term to either side of the reconciliation
+  identity (asserted directly by a golden reconciliation test: a split recorded between a
+  funding transfer and offsetting orders still reconciles to `discrepancy == 0`). A split
+  or reverse split scales every open `OrderLot` in place (same lot identity, same
+  `acquired_at`, preserving holding-period continuity — Indian tax law treats a split as
+  the same investment subdivided, not a new acquisition); a bonus issue creates a new
+  zero-cost lot dated at allotment instead (a bonus *is* tax-law a new, separate
+  acquisition at nil cost — Section 55(2)(aa)(iiia)/Explanation 1(i)(h) to Section 2(42A)),
+  which required `OrderLot.buy_order_id` to become nullable with a sibling
+  `corporate_action_id` FK (exactly one of the two set). Not retroactive: existing
+  un-split holdings (e.g. imported NVDA/GOOGL rows with real-world un-applied splits)
+  stay wrong until a user records the corporate action via the new endpoints.

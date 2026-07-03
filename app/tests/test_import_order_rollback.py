@@ -59,9 +59,7 @@ async def test_rollback_orders_clears_cash_balances_and_recomputes_holdings():
     assert sorted(refs) == sorted(o.public_id for o in orders)
     assert repo.delete_cash_balances_by_trigger_refs.call_args.args[1] == "order"
     # Holdings recomputed once per affected (symbol, account) pair.
-    recomputed = {
-        (c.args[2], c.args[3]) for c in order_service._recompute_holding_from_orders.call_args_list
-    }
+    recomputed = {(c.args[2], c.args[3]) for c in order_service._recompute_holding.call_args_list}
     assert recomputed == {("AAPL", 10), ("MSFT", 11)}
 
 
@@ -75,7 +73,7 @@ async def test_rollback_orders_no_orders_is_noop():
     assert await svc._rollback_investing_orders(WS, USER, BATCH_ID) == 0
     repo.delete_cash_balances_by_trigger_refs.assert_not_called()
     repo.delete_investing_orders_for_batch.assert_not_called()
-    order_service._recompute_holding_from_orders.assert_not_called()
+    order_service._recompute_holding.assert_not_called()
 
 
 @pytest.mark.asyncio

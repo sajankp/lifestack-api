@@ -11,7 +11,14 @@ from sqlalchemy import select
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account, Currency, FxRate, WorkspaceCurrency
-from app.investing.models import CashBalance, Holding, HoldingPrice, Instrument, PortfolioSnapshot
+from app.investing.models import (
+    CashBalance,
+    Holding,
+    HoldingPrice,
+    Instrument,
+    OrderLot,
+    PortfolioSnapshot,
+)
 from app.investing.repository import CompanyRepository, InstrumentRepository
 from app.investing.schemas import InstrumentType
 from app.investing.service import InstrumentService
@@ -73,9 +80,11 @@ async def _create_holding_via_order(
     currency: str = "USD",
     instrument_type: str = "stock",
     instrument_name: str | None = None,
+    occurred_at: str | None = None,
 ) -> str:
     """Create a holding by placing a buy order (the only supported path)."""
     cost = float(quantity) * float(price)
+    occurred_at = occurred_at or datetime.now(UTC).isoformat()
     cash_res = await client.post(
         "/v1/investing/cash-balances",
         json={
@@ -93,7 +102,7 @@ async def _create_holding_via_order(
         "quantity": quantity,
         "price_per_unit": price,
         "currency": currency.upper(),
-        "occurred_at": datetime.now(UTC).isoformat(),
+        "occurred_at": occurred_at,
         "instrument_type": instrument_type,
     }
     if instrument_name is not None:
@@ -2242,3 +2251,322 @@ async def test_find_or_create_instrument_normalizes_symbol_case(client: AsyncCli
             .all()
         )
     assert len(instruments) == 1
+
+
+# ---------------------------------------------------------------------------
+# Spec-051: corporate actions (splits, reverse splits, bonus issues)
+# ---------------------------------------------------------------------------
+
+
+async def _cash_balance_count(client: AsyncClient, account_id: str) -> int:
+    res = await client.get("/v1/investing/cash-balances", params={"account_id": account_id})
+    assert res.status_code == 200, res.text
+    return res.json()["total"]
+
+
+@pytest.mark.asyncio
+async def test_corporate_action_split_scales_lot_and_allows_post_split_sell(client: AsyncClient):
+    """Spec-051 golden scenario 1 (2:1 split).
+
+    Today, without a recorded split, a sell for the true post-split share
+    count fails with a negative-holding ValidationError because the replay
+    still thinks the position is the smaller, un-split quantity. This proves
+    the fix: the split brings the holding to 20 @ avg_cost 500 (10 @ 1000
+    scaled 2x qty / 0.5x cost, same total cost of 10,000), the post-split sell
+    of all 20 shares succeeds, and its realized gain matches exactly what the
+    old manual-edit workaround (rewriting the buy to qty=20, price=500) would
+    have produced: 20 * (600 - 500) = 2,000.00.
+    """
+    account_map = await _register_and_login(
+        client, email="split-basic@example.com", username="split-basic", password="TestPass123!"
+    )
+    broker_id = account_map["brokerage"]
+
+    await _create_holding_via_order(
+        client, broker_id, "AAPL", "10.00000000", "1000.00", occurred_at="2026-01-15T10:00:00Z"
+    )
+
+    holdings_before = (await client.get("/v1/investing/holdings")).json()["items"]
+    pre_split = next(h for h in holdings_before if h["symbol"] == "AAPL")
+    assert Decimal(pre_split["quantity"]) == Decimal("10.00000000")
+    assert Decimal(pre_split["avg_cost"]) == Decimal("1000.000000")
+
+    count_before_split = await _cash_balance_count(client, broker_id)
+
+    split_res = await client.post(
+        "/v1/investing/corporate-actions",
+        json={
+            "account_id": broker_id,
+            "symbol": "AAPL",
+            "action_type": "split",
+            "ratio_base": "1",
+            "ratio_quote": "2",
+            "ex_date": "2026-03-01",
+        },
+    )
+    assert split_res.status_code == 201, split_res.text
+    action_public_id = split_res.json()["public_id"]
+
+    # Cash neutrality: the split itself writes no investing_cash_balances row.
+    assert await _cash_balance_count(client, broker_id) == count_before_split
+
+    holdings_after_split = (await client.get("/v1/investing/holdings")).json()["items"]
+    post_split = next(h for h in holdings_after_split if h["symbol"] == "AAPL")
+    assert Decimal(post_split["quantity"]) == Decimal("20.00000000")
+    assert Decimal(post_split["avg_cost"]) == Decimal("500.000000")
+
+    # Idempotent replay: deleting the split (before any order depends on the
+    # post-split quantity) must exactly reverse it.
+    delete_res = await client.delete(f"/v1/investing/corporate-actions/{action_public_id}")
+    assert delete_res.status_code == 204, delete_res.text
+    holdings_after_delete = (await client.get("/v1/investing/holdings")).json()["items"]
+    reverted = next(h for h in holdings_after_delete if h["symbol"] == "AAPL")
+    assert Decimal(reverted["quantity"]) == Decimal("10.00000000")
+    assert Decimal(reverted["avg_cost"]) == Decimal("1000.000000")
+
+    # Re-record the same split to continue the scenario.
+    split_res_2 = await client.post(
+        "/v1/investing/corporate-actions",
+        json={
+            "account_id": broker_id,
+            "symbol": "AAPL",
+            "action_type": "split",
+            "ratio_base": "1",
+            "ratio_quote": "2",
+            "ex_date": "2026-03-01",
+        },
+    )
+    assert split_res_2.status_code == 201, split_res_2.text
+    count_before_sell = await _cash_balance_count(client, broker_id)
+
+    # Today (pre-fix) this sell would raise ValidationError: the replay still
+    # believes the holding is 10 shares.
+    sell_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "sell",
+            "symbol": "AAPL",
+            "quantity": "20.00000000",
+            "price_per_unit": "600.00",
+            "currency": "USD",
+            "occurred_at": "2026-06-01T10:00:00Z",
+        },
+    )
+    assert sell_res.status_code == 201, sell_res.text
+    sell_data = sell_res.json()
+    assert Decimal(sell_data["realized_gain_loss"]) == Decimal("2000.00")
+    assert Decimal(sell_data["avg_cost_at_sale"]) == Decimal("500.000000")
+
+    # The sell (and only the sell) writes a cash-balance row here.
+    assert await _cash_balance_count(client, broker_id) == count_before_sell + 1
+
+    holdings_final = (await client.get("/v1/investing/holdings")).json()["items"]
+    closed = next(h for h in holdings_final if h["symbol"] == "AAPL")
+    assert Decimal(closed["quantity"]) == Decimal("0")
+    assert Decimal(closed["avg_cost"]) == Decimal("0.000000")
+
+
+@pytest.mark.asyncio
+async def test_corporate_action_reverse_split_scales_lot_down(client: AsyncClient):
+    """Spec-051 golden scenario 2: a reverse split is the same transform as a
+    forward split, just with ratio_base > ratio_quote (1-for-10 here)."""
+    account_map = await _register_and_login(
+        client,
+        email="reverse-split@example.com",
+        username="reverse-split",
+        password="TestPass123!",
+    )
+    broker_id = account_map["brokerage"]
+
+    await _create_holding_via_order(
+        client, broker_id, "PENNY", "100.00000000", "50.00", occurred_at="2026-01-15T10:00:00Z"
+    )
+
+    reverse_split_res = await client.post(
+        "/v1/investing/corporate-actions",
+        json={
+            "account_id": broker_id,
+            "symbol": "PENNY",
+            "action_type": "split",
+            "ratio_base": "10",
+            "ratio_quote": "1",
+            "ex_date": "2026-03-01",
+        },
+    )
+    assert reverse_split_res.status_code == 201, reverse_split_res.text
+
+    holdings = (await client.get("/v1/investing/holdings")).json()["items"]
+    holding = next(h for h in holdings if h["symbol"] == "PENNY")
+    # Same total cost (100 * 50 = 5,000), 1/10th the shares: 10 @ 500.00.
+    assert Decimal(holding["quantity"]) == Decimal("10.00000000")
+    assert Decimal(holding["avg_cost"]) == Decimal("500.000000")
+
+
+@pytest.mark.asyncio
+async def test_corporate_action_bonus_issue_creates_zero_cost_lot(client: AsyncClient):
+    """Spec-051 golden scenario 3: a bonus issue creates a *new* zero-cost lot
+    (distinct acquired_at from the original buy), not a scaling transform on
+    the existing lot — the tax treatment differs from a split (nil cost
+    basis, holding period starts at allotment). A sell crossing both lots via
+    FIFO nets the loss on the original lot against the full-gain bonus lot."""
+    account_map = await _register_and_login(
+        client, email="bonus-basic@example.com", username="bonus-basic", password="TestPass123!"
+    )
+    broker_id = account_map["brokerage"]
+
+    holding_public_id = await _create_holding_via_order(
+        client, broker_id, "BONUSCO", "10.00000000", "1000.00", occurred_at="2026-01-15T10:00:00Z"
+    )
+
+    count_before_bonus = await _cash_balance_count(client, broker_id)
+
+    bonus_res = await client.post(
+        "/v1/investing/corporate-actions",
+        json={
+            "account_id": broker_id,
+            "symbol": "BONUSCO",
+            "action_type": "bonus",
+            "ratio_base": "2",
+            "ratio_quote": "1",
+            "ex_date": "2026-03-01",
+        },
+    )
+    assert bonus_res.status_code == 201, bonus_res.text
+
+    # Cash neutrality: the bonus issue itself writes no investing_cash_balances row.
+    assert await _cash_balance_count(client, broker_id) == count_before_bonus
+
+    async with postgres.async_session_maker() as session:
+        holding = (
+            await session.execute(
+                select(Holding).where(Holding.public_id == uuid.UUID(holding_public_id))
+            )
+        ).scalar_one()
+        lots = (
+            (await session.execute(select(OrderLot).where(OrderLot.holding_id == holding.id)))
+            .scalars()
+            .all()
+        )
+    assert len(lots) == 2
+    buy_lot = next(lot for lot in lots if lot.buy_order_id is not None)
+    bonus_lot = next(lot for lot in lots if lot.corporate_action_id is not None)
+    assert buy_lot.acquired_at != bonus_lot.acquired_at
+    assert bonus_lot.cost_per_unit == Decimal("0")
+    assert bonus_lot.remaining_quantity == Decimal("5.00000000")  # 10 held * (1/2)
+
+    sell_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "sell",
+            "symbol": "BONUSCO",
+            "quantity": "12.00000000",
+            "price_per_unit": "800.00",
+            "currency": "USD",
+            "occurred_at": "2026-06-01T10:00:00Z",
+        },
+    )
+    assert sell_res.status_code == 201, sell_res.text
+    # FIFO: 10 from the original lot (loss of 200/share) + 2 from the
+    # zero-cost bonus lot (full 800/share gain): 10*(800-1000) + 2*(800-0).
+    assert Decimal(sell_res.json()["realized_gain_loss"]) == Decimal("-400.00")
+
+    holdings = (await client.get("/v1/investing/holdings")).json()["items"]
+    holding_after_sell = next(h for h in holdings if h["symbol"] == "BONUSCO")
+    assert Decimal(holding_after_sell["quantity"]) == Decimal("3.00000000")
+    assert Decimal(holding_after_sell["avg_cost"]) == Decimal("0.000000")
+
+
+@pytest.mark.asyncio
+async def test_corporate_action_split_is_reconciliation_neutral(client: AsyncClient):
+    """Spec-051 golden scenario 4 (cash-correctness campaign G4 gate): a split
+    recorded mid-history must add no term to either side of the reconciliation
+    identity. Funding via a capital transfer (not a manual cash-balance edit,
+    which is itself an unmodelled event and would produce its own
+    discrepancy) isolates the split's effect specifically."""
+    account_map = await _register_and_login(
+        client, email="split-recon@example.com", username="split-recon", password="TestPass123!"
+    )
+    broker_id = account_map["brokerage"]
+
+    bank_res = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Recon Funding Bank",
+            "account_type": "bank",
+            "default_currency_code": "USD",
+        },
+    )
+    assert bank_res.status_code == 201, bank_res.text
+    bank_id = bank_res.json()["public_id"]
+
+    transfer_res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "investing",
+            "from_account_id": bank_id,
+            "to_account_id": broker_id,
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
+            "gross_amount": "1000.00",
+            "net_amount_received": "1000.00",
+            "occurred_at": "2026-06-01T10:00:00Z",
+        },
+    )
+    assert transfer_res.status_code == 201, transfer_res.text
+
+    buy_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "buy",
+            "symbol": "NVDA",
+            "quantity": "2.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": "2026-06-02T10:00:00Z",
+        },
+    )
+    assert buy_res.status_code == 201, buy_res.text
+
+    split_res = await client.post(
+        "/v1/investing/corporate-actions",
+        json={
+            "account_id": broker_id,
+            "symbol": "NVDA",
+            "action_type": "split",
+            "ratio_base": "1",
+            "ratio_quote": "2",
+            "ex_date": "2026-06-03",
+        },
+    )
+    assert split_res.status_code == 201, split_res.text
+
+    # Sell the full post-split position (4 shares) at a price that would have
+    # been invalid pre-split (a sell of 4 against a nominal 2-share holding).
+    sell_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "sell",
+            "symbol": "NVDA",
+            "quantity": "4.00000000",
+            "price_per_unit": "60.00",
+            "currency": "USD",
+            "occurred_at": "2026-06-04T10:00:00Z",
+        },
+    )
+    assert sell_res.status_code == 201, sell_res.text
+
+    recon_res = await client.get(f"/v1/finance/accounts/{broker_id}/reconciliation")
+    assert recon_res.status_code == 200, recon_res.text
+    data = recon_res.json()
+    # projected = transfer_in 1000 - buy net 200 + sell net 240 = 1040;
+    # snapshot is written only by the transfer/buy/sell, never the split.
+    assert float(data["projected_balance"]) == 1040.0
+    assert float(data["snapshot_balance"]) == 1040.0
+    assert float(data["discrepancy"]) == 0.0
+    assert data["order_count"] == 2
+    assert data["transfer_count"] == 1
