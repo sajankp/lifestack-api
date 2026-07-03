@@ -705,7 +705,6 @@ class InvestingOrderService:
             )
             if source_import_id is not None:
                 order.source_import_id = source_import_id
-                await self.order_repository.create(order)
             created.append(order)
         return created
 
