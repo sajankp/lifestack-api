@@ -36,6 +36,7 @@ from app.core.constants import (
 )
 from app.core.database import postgres
 from app.finance.repository import FinanceSettingRepository, FxRateRepository
+from app.investing.performance_service import PerformanceService
 from app.investing.repository import (
     CashBalanceRepository,
     HoldingPriceRepository,
@@ -43,7 +44,6 @@ from app.investing.repository import (
     InstrumentRepository,
     PortfolioSnapshotRepository,
 )
-from app.investing.service import PerformanceService
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole

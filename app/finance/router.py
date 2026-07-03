@@ -52,8 +52,8 @@ from app.finance.service import (
     FinanceSettingService,
     FxRateService,
 )
+from app.investing.performance_service import InvestingSummaryService
 from app.investing.repository import CashBalanceRepository
-from app.investing.service import InvestingSummaryService
 
 router = APIRouter(prefix="/finance", tags=["finance"])
 

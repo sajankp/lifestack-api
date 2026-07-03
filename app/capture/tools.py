@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditLogger
 from app.finance.repository import AccountRepository, CurrencyRepository
+from app.investing.order_service import InvestingOrderService
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
@@ -16,7 +17,7 @@ from app.investing.repository import (
     LotRepository,
 )
 from app.investing.schemas import CashBalanceCreate, InvestingOrderCreate
-from app.investing.service import CashBalanceService, InstrumentService, InvestingOrderService
+from app.investing.service import CashBalanceService, InstrumentService
 from app.spending.models import TransactionType
 from app.spending.repository import CategoryRepository, TransactionRepository
 from app.spending.schemas import TransactionCreate

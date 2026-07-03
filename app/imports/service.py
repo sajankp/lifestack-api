@@ -37,6 +37,7 @@ from app.investing.models import (
     InstrumentConstituent,
     InstrumentType,
 )
+from app.investing.order_service import InvestingOrderService
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
@@ -46,7 +47,7 @@ from app.investing.repository import (
     LotRepository,
 )
 from app.investing.schemas import InvestingOrderCreate
-from app.investing.service import InstrumentService, InvestingOrderService
+from app.investing.service import InstrumentService
 from app.spending.models import (
     SpendingBudget,
     SpendingCategory,

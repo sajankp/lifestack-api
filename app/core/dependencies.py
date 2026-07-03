@@ -31,6 +31,8 @@ from app.finance.service import (
 )
 from app.imports.repository import ImportRepository
 from app.imports.service import ImportService
+from app.investing.order_service import InvestingOrderService
+from app.investing.performance_service import InvestingSummaryService, PerformanceService
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
@@ -48,9 +50,6 @@ from app.investing.service import (
     ExposureAnalyticsService,
     HoldingService,
     InstrumentService,
-    InvestingOrderService,
-    InvestingSummaryService,
-    PerformanceService,
 )
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService

@@ -28,7 +28,7 @@ from app.finance.repository import CurrencyRepository, FxRateRepository
 from app.finance.schemas import FxRateUpsert
 from app.finance.service import FxRateService
 from app.imports.models import ImportBatch, ImportPreviewRow
-from app.investing.service import PerformanceService
+from app.investing.performance_service import PerformanceService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.platform.service import WorkspaceService
 from app.spending.models import (
