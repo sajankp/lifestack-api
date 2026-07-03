@@ -186,6 +186,36 @@ async def test_e2e_weekly_summary_hook_returns_generated_summary(client: AsyncCl
     assert unread.json()["count"] == 1
 
 
+@pytest.mark.asyncio
+async def test_e2e_fx_rate_hook_seeds_rate_used_by_performance_snapshot(client: AsyncClient):
+    creds = await _register_and_login(client, "e2efxrate")
+
+    settings.ENABLE_E2E_TEST_HOOKS = True
+    settings.ENV = "local"
+    try:
+        async with await _e2e_hook_client() as hook_client:
+            hook_client.cookies.update(creds["cookies"])
+            response = await hook_client.post(
+                "/v1/e2e/fx-rates",
+                json={
+                    "base_currency_code": "GBP",
+                    "quote_currency_code": "USD",
+                    "rate": "1.25",
+                },
+            )
+    finally:
+        settings.ENABLE_E2E_TEST_HOOKS = False
+
+    assert response.status_code == 200, response.text
+
+    fx_rates = await client.get(
+        "/v1/finance/fx-rates?base=GBP&quote=USD",
+        cookies=creds["cookies"],
+    )
+    assert fx_rates.status_code == 200, fx_rates.text
+    assert fx_rates.json()["rate"] == "1.2500000000"
+
+
 def test_e2e_hooks_production_gating_settings():
     # Should raise error if we try to set ENABLE_E2E_TEST_HOOKS=True in production
     with pytest.raises(
