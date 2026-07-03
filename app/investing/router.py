@@ -27,6 +27,8 @@ from app.core.dependencies import (
 from app.core.pagination import PaginatedResponse, PaginationParams
 from app.finance.service import AccountService
 from app.imports.repository import ImportRepository
+from app.investing.order_service import InvestingOrderService
+from app.investing.performance_service import InvestingSummaryService, PerformanceService
 from app.investing.repository import HoldingPriceRepository, PortfolioSnapshotRepository
 from app.investing.schemas import (
     CashBalanceCreate,
@@ -55,9 +57,6 @@ from app.investing.service import (
     ExposureAnalyticsService,
     HoldingService,
     InstrumentService,
-    InvestingOrderService,
-    InvestingSummaryService,
-    PerformanceService,
 )
 from app.spending.router import _build_import_batch_cache, _source_metadata_response
 

@@ -11,8 +11,8 @@ from app.core.audit import AuditLogger
 from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import Account
 from app.investing.models import Holding, InvestingOrder, OrderType
+from app.investing.order_service import InvestingOrderService
 from app.investing.schemas import InvestingOrderCreate, InvestingOrderUpdate
-from app.investing.service import InvestingOrderService
 
 # ---------------------------------------------------------------------------
 # Helpers

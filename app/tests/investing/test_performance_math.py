@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from app.investing.service import _value_change
+from app.investing.performance_service import _value_change
 
 
 def test_value_change_calculates_positive_and_negative_returns():
