@@ -18,8 +18,10 @@ from app.application.jobs import (
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
     investment_closing_prices_job,
+    push_delivery_job,
     recurring_transactions_job,
     session_cleanup_job,
+    todo_reminder_job,
     weekly_summary_job,
 )
 from app.auth.router import router as auth_router
@@ -141,6 +143,18 @@ async def lifespan(_app: FastAPI):
             dashboard_insights_job,
             job_id="dashboard_insights",
             hour_utc=6,
+        )
+        register_interval_job(
+            push_delivery_job,
+            job_id="push_delivery",
+            minutes=settings.PUSH_DELIVERY_INTERVAL_MINUTES,
+            idempotent=True,
+        )
+        register_interval_job(
+            todo_reminder_job,
+            job_id="todo_reminder",
+            minutes=settings.TODO_REMINDER_INTERVAL_MINUTES,
+            idempotent=True,
         )
         scheduler.add_job(
             weekly_summary_job,

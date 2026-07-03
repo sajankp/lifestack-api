@@ -1,9 +1,15 @@
+import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.notifications.models import Notification, NotificationDelivery, NotificationPreference
+from app.notifications.models import (
+    Notification,
+    NotificationDelivery,
+    NotificationPreference,
+    PushSubscription,
+)
 
 
 class NotificationRepository:
@@ -155,3 +161,154 @@ class NotificationRepository:
         )
         await self.session.flush()
         return n
+
+    async def has_active_push_subscription(self, workspace_id: int, user_id: int) -> bool:
+        result = await self.session.execute(
+            select(PushSubscription.id)
+            .where(
+                PushSubscription.workspace_id == workspace_id,
+                PushSubscription.user_id == user_id,
+                PushSubscription.is_active,
+            )
+            .limit(1)
+        )
+        return result.scalar() is not None
+
+    async def create_pending_push_delivery(self, notification_id: int) -> NotificationDelivery:
+        delivery = NotificationDelivery(
+            notification_id=notification_id, channel="push", status="pending"
+        )
+        self.session.add(delivery)
+        await self.session.flush()
+        return delivery
+
+    async def list_pending_push_deliveries(
+        self, limit: int
+    ) -> list[tuple[NotificationDelivery, Notification]]:
+        result = await self.session.execute(
+            select(NotificationDelivery, Notification)
+            .join(Notification, Notification.id == NotificationDelivery.notification_id)
+            .where(NotificationDelivery.channel == "push", NotificationDelivery.status == "pending")
+            .order_by(NotificationDelivery.created_at.asc())
+            .limit(limit)
+        )
+        return [(delivery, notification) for delivery, notification in result.all()]
+
+    async def mark_delivery(
+        self, delivery: NotificationDelivery, status: str, error_detail: str | None = None
+    ) -> NotificationDelivery:
+        delivery.status = status
+        delivery.attempted_at = datetime.now(UTC)
+        delivery.error_detail = error_detail
+        self.session.add(delivery)
+        await self.session.flush()
+        return delivery
+
+
+class PushSubscriptionRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_by_endpoint(self, endpoint: str) -> PushSubscription | None:
+        return (
+            await self.session.execute(
+                select(PushSubscription).where(PushSubscription.endpoint == endpoint)
+            )
+        ).scalar_one_or_none()
+
+    async def upsert(
+        self,
+        workspace_id: int,
+        user_id: int,
+        endpoint: str,
+        p256dh: str,
+        auth: str,
+        device_label: str | None,
+    ) -> PushSubscription:
+        """Create a new subscription, or reactivate/refresh one already
+        registered for this endpoint — re-subscribing the same browser must
+        not create a duplicate row."""
+        existing = await self.get_by_endpoint(endpoint)
+        if existing is not None:
+            existing.workspace_id = workspace_id
+            existing.user_id = user_id
+            existing.p256dh = p256dh
+            existing.auth = auth
+            existing.device_label = device_label
+            existing.is_active = True
+            existing.updated_at = datetime.now(UTC)
+            self.session.add(existing)
+            await self.session.flush()
+            return existing
+
+        subscription = PushSubscription(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            endpoint=endpoint,
+            p256dh=p256dh,
+            auth=auth,
+            device_label=device_label,
+        )
+        self.session.add(subscription)
+        await self.session.flush()
+        return subscription
+
+    async def list_for_user(self, workspace_id: int, user_id: int) -> list[PushSubscription]:
+        return list(
+            (
+                await self.session.execute(
+                    select(PushSubscription)
+                    .where(
+                        PushSubscription.workspace_id == workspace_id,
+                        PushSubscription.user_id == user_id,
+                    )
+                    .order_by(PushSubscription.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def list_active_for_user(self, workspace_id: int, user_id: int) -> list[PushSubscription]:
+        return list(
+            (
+                await self.session.execute(
+                    select(PushSubscription).where(
+                        PushSubscription.workspace_id == workspace_id,
+                        PushSubscription.user_id == user_id,
+                        PushSubscription.is_active,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    async def get_by_public_id(
+        self, workspace_id: int, user_id: int, public_id: uuid.UUID
+    ) -> PushSubscription | None:
+        return (
+            await self.session.execute(
+                select(PushSubscription).where(
+                    PushSubscription.workspace_id == workspace_id,
+                    PushSubscription.user_id == user_id,
+                    PushSubscription.public_id == public_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def delete(self, subscription: PushSubscription) -> None:
+        await self.session.delete(subscription)
+        await self.session.flush()
+
+    async def mark_success(self, subscription: PushSubscription) -> None:
+        subscription.last_success_at = datetime.now(UTC)
+        self.session.add(subscription)
+        await self.session.flush()
+
+    async def mark_failure(self, subscription: PushSubscription, *, deactivate: bool) -> None:
+        subscription.last_failure_at = datetime.now(UTC)
+        if deactivate:
+            subscription.is_active = False
+        self.session.add(subscription)
+        await self.session.flush()

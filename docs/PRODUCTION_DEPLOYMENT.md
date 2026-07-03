@@ -34,6 +34,12 @@ Create a `.env.production` file on the deployment VM with the following keys:
 ### AI Integration
 * `GEMINI_API_KEY`: API key for Google Gemini voice capture transcripts.
 
+### Web Push Notifications (spec-052)
+* `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY`: VAPID keypair for Web Push. Generate with `vapid --gen` (from the `py-vapid` package, a `pywebpush` dependency) or `npx web-push generate-vapid-keys`. **Push is disabled (feature-off, not broken) when either key is unset** — subscription endpoints return 503 and `push_delivery_job` no-ops.
+* `VAPID_SUBJECT`: A `mailto:` contact address required by the Web Push spec, e.g. `mailto:support@lifestack.app`.
+* `PUSH_DELIVERY_INTERVAL_MINUTES`: How often the push-delivery queue drains. Default `1`.
+* `TODO_REMINDER_INTERVAL_MINUTES`: How often due todos are scanned for reminders. Default `5`.
+
 ---
 
 ## 2. Ingress & Cloudflare Tunnel

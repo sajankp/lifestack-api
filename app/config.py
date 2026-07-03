@@ -110,6 +110,14 @@ class Settings(BaseSettings):
     RECURRING_TXN_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up generation
     RECURRING_TODO_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up todo generation
 
+    # Web Push notification delivery (spec-052) — push disabled when the VAPID
+    # keys are unset; this is the safe default (feature-off, not silently broken).
+    VAPID_PUBLIC_KEY: str | None = None
+    VAPID_PRIVATE_KEY: str | None = None
+    VAPID_SUBJECT: str | None = None  # e.g. "mailto:support@example.com"
+    PUSH_DELIVERY_INTERVAL_MINUTES: int = 1
+    TODO_REMINDER_INTERVAL_MINUTES: int = 5
+
     # Bulk import storage (Spec 020)
     MAX_MULTIPART_BODY_BYTES: int = 10 * 1024 * 1024
     IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3

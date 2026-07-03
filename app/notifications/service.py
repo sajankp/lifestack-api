@@ -1,5 +1,7 @@
-from app.core.exceptions import NotFoundError
-from app.notifications.repository import NotificationRepository
+import uuid
+
+from app.core.exceptions import NotFoundError, ValidationError
+from app.notifications.repository import NotificationRepository, PushSubscriptionRepository
 
 
 class NotificationService:
@@ -21,7 +23,7 @@ class NotificationService:
         pref = await self.repository.get_preference(workspace_id, user_id, category)
         if pref and pref.is_muted:
             return None
-        return await self.repository.create_notification({
+        notification = await self.repository.create_notification({
             "workspace_id": workspace_id,
             "user_id": user_id,
             "category": category,
@@ -32,6 +34,17 @@ class NotificationService:
             "entity_type": entity_type,
             "entity_public_id": entity_public_id,
         })
+
+        # Push is opt-in: no preference row means channel_push defaults to
+        # False, same as the model default (spec-052).
+        if pref and pref.channel_push:
+            has_subscription = await self.repository.has_active_push_subscription(
+                workspace_id, user_id
+            )
+            if has_subscription:
+                await self.repository.create_pending_push_delivery(notification.id)
+
+        return notification
 
     async def list_notifications(
         self, workspace_id: int, user_id: int, is_read, category, severity, limit, offset
@@ -63,3 +76,38 @@ class NotificationService:
 
     async def update_preference(self, workspace_id: int, user_id: int, category: str, data: dict):
         return await self.repository.upsert_preference(workspace_id, user_id, category, data)
+
+
+class PushSubscriptionService:
+    def __init__(self, repository: PushSubscriptionRepository):
+        self.repository = repository
+
+    async def subscribe(
+        self,
+        workspace_id: int,
+        user_id: int,
+        endpoint: str,
+        p256dh: str,
+        auth: str,
+        device_label: str | None,
+    ):
+        existing = await self.repository.get_by_endpoint(endpoint)
+        if existing is not None and (
+            existing.workspace_id != workspace_id or existing.user_id != user_id
+        ):
+            # An endpoint is a browser+origin capability URL, not a per-user
+            # secret, but re-registering it for a different workspace/user
+            # would silently move push delivery to the wrong account.
+            raise ValidationError(detail="This push endpoint is already registered")
+        return await self.repository.upsert(
+            workspace_id, user_id, endpoint, p256dh, auth, device_label
+        )
+
+    async def list_subscriptions(self, workspace_id: int, user_id: int):
+        return await self.repository.list_for_user(workspace_id, user_id)
+
+    async def unsubscribe(self, workspace_id: int, user_id: int, public_id: uuid.UUID) -> None:
+        subscription = await self.repository.get_by_public_id(workspace_id, user_id, public_id)
+        if not subscription:
+            raise NotFoundError(detail=f"Push subscription with id {public_id} not found")
+        await self.repository.delete(subscription)

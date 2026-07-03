@@ -132,6 +132,12 @@ class CSRFFailedError(APIError):
     status_code = 403
 
 
+class ServiceUnavailableError(APIError):
+    type_str = "service-unavailable"
+    title = "Service Unavailable"
+    status_code = 503
+
+
 # --- Module-specific subclasses ---
 
 
@@ -140,6 +146,13 @@ class CategoryInUseError(ConflictError):
 
     type_str = "category-in-use"
     title = "Category In Use"
+
+
+class PushNotConfiguredError(ServiceUnavailableError):
+    """Notifications module: VAPID keys unset — push is a safe, optional feature-off."""
+
+    type_str = "push-not-configured"
+    title = "Push Not Configured"
 
 
 # ---------------------------------------------------------------------------
