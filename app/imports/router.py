@@ -34,6 +34,11 @@ router = APIRouter(
 )
 
 
+def _extra_lists(extra_json: dict | None) -> tuple[list, list]:
+    extra = extra_json or {}
+    return extra.get("skipped", []), extra.get("corporate_action_suspected", [])
+
+
 def _build_error_summary(
     total_errors: int,
     errors: list[ImportErrorResponse],
@@ -68,13 +73,14 @@ async def upload_and_validate(
     background_tasks: BackgroundTasks,
     module: ImportModule = Form(...),
     file: UploadFile = File(...),
+    target_account_id: uuid.UUID | None = Form(None),
     service: ImportService = Depends(get_import_service),
     workspace_id: int = Depends(get_current_workspace_id),
     user: dict = Depends(get_current_user),
     audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
     batch, temp_path = await service.validate_upload(
-        workspace_id, user["id"], module, file, audit_logger
+        workspace_id, user["id"], module, file, audit_logger, target_account_id
     )
     if settings.RUN_BACKGROUND_TASKS_SYNCHRONOUSLY:
         try:
@@ -89,11 +95,14 @@ async def upload_and_validate(
         if batch.status == ImportStatus.validated:
             rows = await service.repository.iter_preview_rows_chunk(batch.id, limit=100, offset=0)
             preview_rows = [ImportPreviewRowResponse.model_validate(r) for r in rows]
+        skipped, corporate_action_suspected = _extra_lists(batch.extra_json)
         return ImportValidateResponse(
             import_batch=ImportBatchResponse.model_validate(batch),
             errors=response_errors,
             error_summary=_build_error_summary(batch.error_rows, response_errors),
             preview_rows=preview_rows,
+            skipped=skipped,
+            corporate_action_suspected=corporate_action_suspected,
         )
     else:
         # The batch was flushed but not committed — FastAPI's generator dependency
@@ -194,11 +203,14 @@ async def get_import_detail(
         rows = await service.repository.iter_preview_rows_chunk(batch.id, limit=100, offset=0)
         preview_rows = [ImportPreviewRowResponse.model_validate(r) for r in rows]
 
+    skipped, corporate_action_suspected = _extra_lists(batch.extra_json)
     return ImportValidateResponse(
         import_batch=ImportBatchResponse.model_validate(batch),
         errors=response_errors,
         error_summary=_build_error_summary(batch.error_rows, response_errors),
         preview_rows=preview_rows,
+        skipped=skipped,
+        corporate_action_suspected=corporate_action_suspected,
     )
 
 
