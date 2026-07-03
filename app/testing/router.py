@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -14,10 +15,13 @@ from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
     get_db_session,
+    get_finance_fx_rate_service,
     get_workspace_repo,
     require_min_role,
 )
 from app.core.exceptions import NotFoundError
+from app.finance.schemas import FxRateUpsert
+from app.finance.service import FxRateService
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.platform.repository import WorkspaceRepository
@@ -46,6 +50,12 @@ class RecurringTransactionTriggerRequest(BaseModel):
 
 class WeeklySummaryTriggerRequest(BaseModel):
     week_start: date | None = None
+
+
+class FxRateSeedRequest(BaseModel):
+    base_currency_code: str = Field(..., min_length=1, max_length=10)
+    quote_currency_code: str = Field(..., min_length=1, max_length=10)
+    rate: Decimal = Field(..., gt=0, decimal_places=10)
 
 
 async def _active_workspace_or_404(workspace_id: int, workspace_repo: WorkspaceRepository):
@@ -95,6 +105,35 @@ async def trigger_recurring_transactions(
 
     generated_count = await process_workspace_recurring_transactions(session, workspace)
     return WorkflowRunResponse(generated_count=generated_count)
+
+
+@router.post("/fx-rates", response_model=WorkflowRunResponse)
+async def seed_fx_rate(
+    payload: FxRateSeedRequest,
+    _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("owner"))],
+    fx_rate_service: Annotated[FxRateService, Depends(get_finance_fx_rate_service)],
+) -> WorkflowRunResponse:
+    """
+    Seed a globally scoped FX rate for e2e tests.
+
+    Normal ingestion (`ingest_fx_rates`) requires a live ExchangeRate-API call and
+    EXCHANGERATE_API_KEY, neither available in the e2e stack, so this hook lets
+    FX-dependent flows (reporting-currency conversion, look-through analytics) be
+    tested deterministically without hitting a real external API.
+    """
+    now = datetime.now(UTC)
+    await fx_rate_service.upsert(
+        FxRateUpsert(
+            base_currency_code=payload.base_currency_code,
+            quote_currency_code=payload.quote_currency_code,
+            rate=payload.rate,
+            as_of=now,
+            fetched_at=now,
+            source="e2e_seed",
+        )
+    )
+    return WorkflowRunResponse()
 
 
 @router.post("/workflows/weekly-summary", response_model=WeeklySummaryWorkflowRunResponse)
