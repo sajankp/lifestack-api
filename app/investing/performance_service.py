@@ -15,6 +15,15 @@ from decimal import Decimal
 
 import httpx
 
+from app.core.currency import (
+    build_required_pairs as _build_required_pairs,
+)
+from app.core.currency import (
+    convert_amount as _convert_amount,
+)
+from app.core.currency import (
+    fx_rates_used as _fx_rates_used,
+)
 from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import FxRate
 from app.finance.repository import AccountRepository, FinanceSettingRepository, FxRateRepository
@@ -32,12 +41,7 @@ from app.investing.schemas import (
     InvestingSummaryResponse,
     PerformanceSummaryResponse,
 )
-from app.investing.service import (
-    MONEY_QUANT,
-    _build_required_pairs,
-    _convert_amount,
-    _fx_rates_used,
-)
+from app.investing.service import MONEY_QUANT
 
 
 def _value_change(current: Decimal, baseline: Decimal) -> tuple[Decimal, Decimal | None]:
