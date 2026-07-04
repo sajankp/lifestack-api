@@ -57,6 +57,12 @@ class AudioDecoder:
                 pass
             try:
                 self.process.terminate()
-                await self.process.wait()
+                # Don't wait forever — if ffmpeg ignores SIGTERM or is wedged,
+                # force-kill after a short grace window so close() can't hang.
+                try:
+                    await asyncio.wait_for(self.process.wait(), timeout=2.0)
+                except TimeoutError:
+                    self.process.kill()
+                    await self.process.wait()
             except Exception:
                 pass
