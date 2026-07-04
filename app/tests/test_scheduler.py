@@ -10,15 +10,21 @@ Test coverage:
     remaining workspaces still complete successfully.
 """
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import sqlalchemy as sa
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
-from app.application.jobs import budget_guardrails_job
+from app.application.jobs import (
+    budget_guardrails_job,
+    recurring_transactions_job,
+    run_workspace_job,
+    weekly_summary_job,
+)
 from app.application.workflows import evaluate_workspace_budget_guardrails
 from app.auth.models import User
 from app.config import settings
@@ -27,6 +33,7 @@ from app.core.database import postgres
 from app.core.scheduler import register_interval_job, scheduler
 from app.platform.models import Workspace, WorkspaceMembership
 from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction
+from app.summaries.service import WeeklySummaryService
 from app.todo.models import Todo
 
 # ---------------------------------------------------------------------------
@@ -546,3 +553,114 @@ async def test_budget_guardrails_per_workspace_failure_isolation(override_databa
             "Workspace 502 must still get its guardrail todo despite workspace 501 failing"
         )
         assert "[Budget] Warning" in b_todos[0].title
+
+
+# ---------------------------------------------------------------------------
+# Connection-pool discipline — per-workspace jobs must hold ONE connection
+# ---------------------------------------------------------------------------
+#
+# Regression guard for the latent pool-deadlock surfaced in PR #104 review:
+# the per-workspace jobs used to hold an outer advisory-lock connection open
+# for the whole run while checking out a SECOND connection per workspace.
+# Under a constrained pool (pool_size=5) with concurrent job runs, the outer
+# connections can exhaust the pool and every inner checkout then blocks on a
+# connection that no (also-blocked) outer holder will ever release.
+#
+# These tests attach pool checkout/checkin listeners and assert the peak
+# number of simultaneously checked-out connections during a job run is 1.
+
+
+@contextmanager
+def _track_pool_checkouts():
+    """Track the peak number of simultaneously checked-out pool connections."""
+    state = {"current": 0, "peak": 0}
+    sync_engine = postgres.engine.sync_engine
+
+    def on_checkout(dbapi_connection, connection_record, connection_proxy):
+        state["current"] += 1
+        state["peak"] = max(state["peak"], state["current"])
+
+    def on_checkin(dbapi_connection, connection_record):
+        state["current"] -= 1
+
+    sa.event.listen(sync_engine, "checkout", on_checkout)
+    sa.event.listen(sync_engine, "checkin", on_checkin)
+    try:
+        yield state
+    finally:
+        sa.event.remove(sync_engine, "checkout", on_checkout)
+        sa.event.remove(sync_engine, "checkin", on_checkin)
+
+
+@pytest.mark.asyncio
+async def test_run_workspace_job_holds_single_connection(override_database_url):
+    """run_workspace_job must do lock + workspace processing on one connection."""
+
+    async def probe(session, workspace):
+        # Prove the session passed to the callback is usable for real queries.
+        await session.execute(select(Workspace.id).where(Workspace.id == workspace.id))
+
+    with _track_pool_checkouts() as state:
+        await run_workspace_job(
+            job_name="single_conn_probe",
+            lock_key=987_654,
+            process_workspace=probe,
+        )
+
+    assert state["peak"] == 1, (
+        f"run_workspace_job checked out {state['peak']} connections at once; "
+        "the advisory lock and the per-workspace work must share ONE connection "
+        "(pool-deadlock risk, see PR #104 review)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_workspace_job_releases_lock_after_run(override_database_url):
+    """A completed run must release the advisory lock so the next run proceeds."""
+    calls: list[int] = []
+
+    async def probe(session, workspace):
+        calls.append(workspace.id)
+
+    await run_workspace_job(
+        job_name="lock_release_probe", lock_key=987_655, process_workspace=probe
+    )
+    await run_workspace_job(
+        job_name="lock_release_probe", lock_key=987_655, process_workspace=probe
+    )
+
+    # Workspace 501 is seeded by the autouse fixture; both runs must process it.
+    assert calls.count(501) == 2, (
+        "Second run was skipped — the advisory lock leaked past the end of the first run"
+    )
+
+
+@pytest.mark.asyncio
+async def test_recurring_transactions_job_holds_single_connection(override_database_url):
+    with (
+        patch(
+            "app.application.jobs.process_workspace_recurring_transactions",
+            new=AsyncMock(return_value=0),
+        ),
+        patch(
+            "app.application.jobs.process_workspace_recurring_todos",
+            new=AsyncMock(return_value=0),
+        ),
+        _track_pool_checkouts() as state,
+    ):
+        await recurring_transactions_job()
+
+    assert state["peak"] == 1, (
+        f"recurring_transactions_job checked out {state['peak']} connections at once"
+    )
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_job_holds_single_connection(override_database_url):
+    with (
+        patch.object(WeeklySummaryService, "generate_for_workspace_week", new=AsyncMock()),
+        _track_pool_checkouts() as state,
+    ):
+        await weekly_summary_job()
+
+    assert state["peak"] == 1, f"weekly_summary_job checked out {state['peak']} connections at once"
