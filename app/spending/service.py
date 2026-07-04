@@ -15,7 +15,7 @@ from app.core.exceptions import (
 )
 from app.core.pagination import DEFAULT_LIMIT
 from app.core.recurrence import advance_due_date, validate_recurrence_fields
-from app.finance.repository import AccountRepository
+from app.finance.repository import AccountRepository, FinanceSettingRepository
 from app.spending.models import (
     RecurringTransaction,
     SpendingBudget,
@@ -268,10 +268,12 @@ class TransactionService:
         transaction_repo: TransactionRepository,
         category_repo: CategoryRepository,
         account_repo: AccountRepository,
+        setting_repo: FinanceSettingRepository | None = None,
     ):
         self.transaction_repo = transaction_repo
         self.category_repo = category_repo
         self.account_repo = account_repo
+        self.setting_repo = setting_repo
 
     async def _resolve_category(
         self, workspace_id: int, category_public_id: uuid.UUID
@@ -299,11 +301,46 @@ class TransactionService:
             )
         return account.id
 
+    async def _resolve_create_account_id(
+        self, workspace_id: int, account_public_id: uuid.UUID | None
+    ) -> int:
+        """Every new transaction must resolve to an account (spec-054):
+        explicit account_id, else the workspace default, else a 422 telling
+        the caller how to fix it. Historical NULL-account rows are untouched
+        — this only governs creates."""
+        if account_public_id is not None:
+            account = await self.account_repo.get_by_public_id(workspace_id, account_public_id)
+            if not account or not account.is_active:
+                raise NotFoundError(
+                    detail=(
+                        f"Account with id {account_public_id} not found in this workspace. "
+                        "Cross-workspace account references are not permitted."
+                    )
+                )
+            return account.id  # type: ignore[return-value]
+
+        if self.setting_repo is not None:
+            setting = await self.setting_repo.get_by_workspace(workspace_id)
+            if setting and setting.default_spending_account_id is not None:
+                # Defense in depth: the default is cleared when its account
+                # is deactivated through the API (AccountService.update_account),
+                # but don't trust that path alone — re-check is_active here.
+                default_account = await self.account_repo.get_by_id(
+                    workspace_id, setting.default_spending_account_id
+                )
+                if default_account and default_account.is_active:
+                    return setting.default_spending_account_id
+
+        raise ValidationError(
+            detail=("Provide account_id or set a default spending account in Finance Settings.")
+        )
+
     async def list_transactions(
         self,
         workspace_id: int,
         category_public_id: uuid.UUID | None = None,
         account_public_id: uuid.UUID | None = None,
+        unassigned_only: bool = False,
         type_filter: TransactionType | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
@@ -320,6 +357,7 @@ class TransactionService:
             workspace_id,
             category_id=category_id,
             account_id=account_id,
+            unassigned_only=unassigned_only,
             type_filter=type_filter,
             from_date=from_date,
             to_date=to_date,
@@ -513,17 +551,7 @@ class TransactionService:
         audit_logger: AuditLogger | None = None,
     ) -> SpendingTransaction:
         category = await self._resolve_category(workspace_id, tx_in.category_id)
-        account_id: int | None = None
-        if tx_in.account_id is not None:
-            account = await self.account_repo.get_by_public_id(workspace_id, tx_in.account_id)
-            if not account:
-                raise NotFoundError(
-                    detail=(
-                        f"Account with id {tx_in.account_id} not found in this workspace. "
-                        "Cross-workspace account references are not permitted."
-                    )
-                )
-            account_id = account.id  # type: ignore[assignment]
+        account_id = await self._resolve_create_account_id(workspace_id, tx_in.account_id)
         transaction = SpendingTransaction(
             workspace_id=workspace_id,
             user_id=user_id,

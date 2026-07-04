@@ -294,6 +294,7 @@ async def list_transactions(
     pagination: Annotated[PaginationParams, Depends()],
     category_id: uuid.UUID | None = Query(None),
     account_id: uuid.UUID | None = Query(None),
+    unassigned: bool = Query(False, description="Return only transactions with no account set"),
     type: TransactionType | None = Query(None),
     from_date: datetime | None = Query(None),
     to_date: datetime | None = Query(None),
@@ -302,6 +303,7 @@ async def list_transactions(
         workspace_id,
         category_public_id=category_id,
         account_public_id=account_id,
+        unassigned_only=unassigned,
         type_filter=type,
         from_date=from_date,
         to_date=to_date,
@@ -462,7 +464,18 @@ async def create_transaction(
         user["id"], workspace_id, tx_in, audit_logger=audit_logger
     )
     cat = await category_service.get_category(workspace_id, tx_in.category_id)
-    account_public_id = tx_in.account_id if tx.account_id is not None else None
+    account_public_id = None
+    if tx.account_id is not None:
+        if tx_in.account_id is not None:
+            # Explicit account_id round-trips as-is — no lookup needed.
+            account_public_id = tx_in.account_id
+        else:
+            # Resolved via the workspace default; look up just that one
+            # account instead of caching every account in the workspace.
+            account = await account_service.account_repository.get_by_id(
+                workspace_id, tx.account_id
+            )
+            account_public_id = account.public_id if account else None
     return _transaction_response(tx, cat.public_id, account_public_id)
 
 

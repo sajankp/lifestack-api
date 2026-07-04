@@ -498,6 +498,7 @@ class FinanceSettingRepository:
         reporting_currency_code: str | None,
         currency_display_preference: CurrencyDisplayPreference | None,
         lookthrough_min_weight_pct: Decimal = Decimal("0.5"),
+        default_spending_account_id: int | None = None,
     ) -> WorkspaceFinanceSetting:
         existing = await self.get_by_workspace(workspace_id)
         now = datetime.now(UTC)
@@ -506,6 +507,7 @@ class FinanceSettingRepository:
             if currency_display_preference is not None:
                 existing.currency_display_preference = currency_display_preference
             existing.lookthrough_min_weight_pct = lookthrough_min_weight_pct
+            existing.default_spending_account_id = default_spending_account_id
             existing.updated_at = now
             self.session.add(existing)
             await self.session.flush()
@@ -519,11 +521,22 @@ class FinanceSettingRepository:
                 currency_display_preference or CurrencyDisplayPreference.symbol
             ),
             lookthrough_min_weight_pct=lookthrough_min_weight_pct,
+            default_spending_account_id=default_spending_account_id,
         )
         self.session.add(row)
         await self.session.flush()
         await self.session.refresh(row)
         return row
+
+    async def clear_default_spending_account(self, workspace_id: int, account_id: int) -> None:
+        """Called when an account is deactivated (spec-054) — a deactivated
+        account can no longer serve as the fallback for new transactions."""
+        existing = await self.get_by_workspace(workspace_id)
+        if existing and existing.default_spending_account_id == account_id:
+            existing.default_spending_account_id = None
+            existing.updated_at = datetime.now(UTC)
+            self.session.add(existing)
+            await self.session.flush()
 
     async def get_user_setting(self, workspace_id: int, user_id: int) -> UserFinanceSetting | None:
         result = await self.session.execute(

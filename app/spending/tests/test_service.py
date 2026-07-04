@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.core.exceptions import APIError
+from app.finance.models import Account, AccountType
 from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
@@ -204,9 +205,20 @@ async def test_create_transaction_cross_workspace_category_rejected(
 
 
 @pytest.mark.asyncio
-async def test_create_transaction_success(tx_service, mock_tx_repo, mock_cat_repo_for_tx):
+async def test_create_transaction_success(
+    tx_service, mock_tx_repo, mock_cat_repo_for_tx, mock_account_repo_for_tx
+):
     cat = _make_category()
     mock_cat_repo_for_tx.get_by_public_id.return_value = cat
+    account = Account(
+        id=20,
+        public_id=uuid.uuid4(),
+        workspace_id=1,
+        name="Wallet",
+        account_type=AccountType.wallet,
+        default_currency_code="USD",
+    )
+    mock_account_repo_for_tx.get_by_public_id.return_value = account
     tx = _make_transaction()
     mock_tx_repo.create.return_value = tx
 
@@ -215,6 +227,7 @@ async def test_create_transaction_success(tx_service, mock_tx_repo, mock_cat_rep
         workspace_id=1,
         tx_in=TransactionCreate(
             category_id=cat.public_id,
+            account_id=account.public_id,
             amount=Decimal("99.99"),
             type=TransactionType.expense,
             occurred_at=datetime.now(UTC),

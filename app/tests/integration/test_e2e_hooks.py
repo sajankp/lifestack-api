@@ -64,10 +64,19 @@ async def test_e2e_budget_guardrail_hook_runs_current_workspace_workflow(client:
     )
     assert budget.status_code == 201, budget.text
 
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     transaction = await client.post(
         "/v1/spending/transactions",
         json={
             "category_id": category_id,
+            "account_id": account_id,
             "amount": "95.00",
             "type": "expense",
             "occurred_at": datetime.now(UTC).isoformat(),

@@ -16,9 +16,20 @@ async def _register_and_login(client: AsyncClient, email: str, username: str) ->
     return dict(login_res.cookies)
 
 
+async def _create_account(client: AsyncClient, cookies: dict) -> str:
+    response = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=cookies,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["public_id"]
+
+
 @pytest.mark.asyncio
 async def test_category_breakdown_endpoint(client: AsyncClient):
     cookies = await _register_and_login(client, "breakdown@example.com", "breakdown")
+    account_id = await _create_account(client, cookies)
 
     # 1. Get default category public IDs
     list_res = await client.get("/v1/spending/categories", cookies=cookies)
@@ -34,6 +45,7 @@ async def test_category_breakdown_endpoint(client: AsyncClient):
         json={
             "amount": 100.00,
             "category_id": cat_1_id,
+            "account_id": account_id,
             "type": "expense",
             "occurred_at": "2026-06-05T12:00:00Z",
             "description": "Food expense",
@@ -45,6 +57,7 @@ async def test_category_breakdown_endpoint(client: AsyncClient):
         json={
             "amount": 200.00,
             "category_id": cat_2_id,
+            "account_id": account_id,
             "type": "expense",
             "occurred_at": "2026-06-06T12:00:00Z",
             "description": "Travel expense",
@@ -57,6 +70,7 @@ async def test_category_breakdown_endpoint(client: AsyncClient):
         json={
             "amount": 500.00,
             "category_id": cat_1_id,
+            "account_id": account_id,
             "type": "income",
             "occurred_at": "2026-06-07T12:00:00Z",
             "description": "Salary",
@@ -88,6 +102,7 @@ async def test_category_breakdown_endpoint(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_budget_performance_endpoint(client: AsyncClient):
     cookies = await _register_and_login(client, "budgetperf@example.com", "budgetperf")
+    account_id = await _create_account(client, cookies)
 
     # 1. Get a category ID
     list_res = await client.get("/v1/spending/categories", cookies=cookies)
@@ -106,6 +121,7 @@ async def test_budget_performance_endpoint(client: AsyncClient):
         json={
             "amount": 95.00,
             "category_id": category_id,
+            "account_id": account_id,
             "type": "expense",
             "occurred_at": "2026-06-05T12:00:00Z",
         },
@@ -137,6 +153,7 @@ async def test_budget_performance_endpoint(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_savings_rate_endpoint(client: AsyncClient):
     cookies = await _register_and_login(client, "savings@example.com", "savings")
+    account_id = await _create_account(client, cookies)
 
     # 1. Get a category ID
     list_res = await client.get("/v1/spending/categories", cookies=cookies)
@@ -148,6 +165,7 @@ async def test_savings_rate_endpoint(client: AsyncClient):
         json={
             "amount": 1000.00,
             "category_id": category_id,
+            "account_id": account_id,
             "type": "income",
             "occurred_at": "2026-06-05T12:00:00Z",
         },
@@ -158,6 +176,7 @@ async def test_savings_rate_endpoint(client: AsyncClient):
         json={
             "amount": 400.00,
             "category_id": category_id,
+            "account_id": account_id,
             "type": "expense",
             "occurred_at": "2026-06-10T12:00:00Z",
         },
@@ -170,6 +189,7 @@ async def test_savings_rate_endpoint(client: AsyncClient):
         json={
             "amount": 2000.00,
             "category_id": category_id,
+            "account_id": account_id,
             "type": "income",
             "occurred_at": "2026-07-05T12:00:00Z",
         },
@@ -180,6 +200,7 @@ async def test_savings_rate_endpoint(client: AsyncClient):
         json={
             "amount": 1500.00,
             "category_id": category_id,
+            "account_id": account_id,
             "type": "expense",
             "occurred_at": "2026-07-15T12:00:00Z",
         },

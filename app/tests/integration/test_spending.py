@@ -167,10 +167,19 @@ async def test_manual_transaction_exposes_manual_source_metadata(client: AsyncCl
     assert categories.status_code == 200
     category_id = categories.json()["items"][0]["public_id"]
 
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     create = await client.post(
         "/v1/spending/transactions",
         json={
             "category_id": category_id,
+            "account_id": account_id,
             "amount": "12.50",
             "type": "expense",
             "occurred_at": datetime.now(UTC).isoformat(),
@@ -415,6 +424,14 @@ async def test_spending_month_summary_uses_full_month_totals(client: AsyncClient
     food_cat = next(c for c in cats if c["name"] == "Food & Dining")
     month_start = datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     budget_res = await client.post(
         "/v1/spending/budgets",
         json={
@@ -431,6 +448,7 @@ async def test_spending_month_summary_uses_full_month_totals(client: AsyncClient
             "/v1/spending/transactions",
             json={
                 "category_id": food_cat["public_id"],
+                "account_id": account_id,
                 "amount": "1.00",
                 "type": "expense",
                 "occurred_at": month_start.replace(day=min(idx + 1, 28)).isoformat(),
@@ -513,17 +531,27 @@ async def test_cannot_delete_category_with_transactions(client: AsyncClient):
     )
     cat_id = cat_resp.json()["public_id"]
 
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     # Create a transaction against it
-    await client.post(
+    tx_resp = await client.post(
         "/v1/spending/transactions",
         json={
             "category_id": cat_id,
+            "account_id": account_id,
             "amount": "10.00",
             "type": "expense",
             "occurred_at": datetime.now(UTC).isoformat(),
         },
         cookies=creds["cookies"],
     )
+    assert tx_resp.status_code == 201, tx_resp.text
 
     # Delete must be rejected
     del_resp = await client.delete(f"/v1/spending/categories/{cat_id}", cookies=creds["cookies"])

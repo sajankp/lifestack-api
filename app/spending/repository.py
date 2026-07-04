@@ -120,6 +120,7 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         workspace_id: int,
         category_id: int | None = None,
         account_id: int | None = None,
+        unassigned_only: bool = False,
         type_filter: str | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
@@ -129,7 +130,9 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         base = select(SpendingTransaction).where(SpendingTransaction.workspace_id == workspace_id)
         if category_id is not None:
             base = base.where(SpendingTransaction.category_id == category_id)
-        if account_id is not None:
+        if unassigned_only:
+            base = base.where(SpendingTransaction.account_id.is_(None))
+        elif account_id is not None:
             base = base.where(SpendingTransaction.account_id == account_id)
         if type_filter is not None:
             base = base.where(SpendingTransaction.type == type_filter)

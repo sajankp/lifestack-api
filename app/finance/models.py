@@ -100,11 +100,24 @@ class WorkspaceFinanceSetting(SQLModel, table=True):
     )
     lookthrough_min_weight_pct: Decimal = Field(default=Decimal("0.5"), sa_type=sa.Numeric(7, 4))
 
+    # Fallback account for spending-transaction creates that don't specify one
+    # (spec-054) — every new transaction must resolve to an account somehow.
+    # Nullable: workspaces need no default until they set one.
+    default_spending_account_id: int | None = Field(default=None, index=True)
+
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["default_spending_account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_workspace_finance_settings_default_spending_account",
+        ),
     )
 
 

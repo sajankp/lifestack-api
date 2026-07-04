@@ -8,7 +8,13 @@ from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
-from app.finance.models import Account, CapitalTransfer, Currency, CurrencyDisplayPreference
+from app.finance.models import (
+    Account,
+    CapitalTransfer,
+    Currency,
+    CurrencyDisplayPreference,
+    WorkspaceFinanceSetting,
+)
 from app.finance.repository import (
     AccountRepository,
     CapitalTransferRepository,
@@ -65,9 +71,11 @@ class AccountService:
         self,
         account_repository: AccountRepository,
         currency_repository: CurrencyRepository,
+        setting_repository: FinanceSettingRepository | None = None,
     ):
         self.account_repository = account_repository
         self.currency_repository = currency_repository
+        self.setting_repository = setting_repository
 
     async def list_accounts(
         self,
@@ -128,7 +136,14 @@ class AccountService:
         for key, value in update_data.items():
             setattr(account, key, value)
         account.updated_at = datetime.now(UTC)
-        return await self.account_repository.save(account)
+        saved = await self.account_repository.save(account)
+
+        # Deactivating the workspace's default spending account clears the
+        # default (spec-054) — a paused account can't be a live fallback.
+        if update_data.get("is_active") is False and self.setting_repository and saved.id:
+            await self.setting_repository.clear_default_spending_account(workspace_id, saved.id)
+
+        return saved
 
     async def delete_account(
         self,
@@ -264,12 +279,24 @@ class FinanceSettingService:
         self,
         setting_repository: FinanceSettingRepository,
         currency_repository: CurrencyRepository,
+        account_repository: AccountRepository | None = None,
     ):
         self.setting_repository = setting_repository
         self.currency_repository = currency_repository
+        self.account_repository = account_repository
 
     async def get_setting(self, workspace_id: int):
         return await self.setting_repository.get_by_workspace(workspace_id)
+
+    async def resolve_default_account_public_id(
+        self, workspace_id: int, row: WorkspaceFinanceSetting | None
+    ) -> uuid.UUID | None:
+        if row is None or row.default_spending_account_id is None or not self.account_repository:
+            return None
+        account = await self.account_repository.get_by_id(
+            workspace_id, row.default_spending_account_id
+        )
+        return account.public_id if account else None
 
     async def _validate_workspace_currency(
         self, workspace_id: int, currency_code: str, *, label: str
@@ -297,6 +324,7 @@ class FinanceSettingService:
             if existing
             else settings.LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT
         )
+        default_spending_account_id = existing.default_spending_account_id if existing else None
 
         if "reporting_currency_code" in updates:
             reporting_currency_code = updates["reporting_currency_code"]
@@ -314,11 +342,32 @@ class FinanceSettingService:
         if updates.get("lookthrough_min_weight_pct") is not None:
             lookthrough_min_weight_pct = updates["lookthrough_min_weight_pct"]
 
+        if "default_spending_account_id" in updates:
+            account_public_id = updates["default_spending_account_id"]
+            if account_public_id is None:
+                default_spending_account_id = None
+            else:
+                if self.account_repository is None:
+                    raise ValidationError(detail="Account lookup is unavailable")
+                account = await self.account_repository.get_by_public_id(
+                    workspace_id, account_public_id
+                )
+                if not account or not account.is_active:
+                    raise NotFoundError(
+                        detail=f"Account with id {account_public_id} not found in this workspace"
+                    )
+                if account.account_type == "brokerage":
+                    raise ValidationError(
+                        detail="The default spending account cannot be a brokerage account"
+                    )
+                default_spending_account_id = account.id
+
         return await self.setting_repository.upsert_workspace_settings(
             workspace_id,
             reporting_currency_code=reporting_currency_code,
             currency_display_preference=currency_display_preference,
             lookthrough_min_weight_pct=lookthrough_min_weight_pct,
+            default_spending_account_id=default_spending_account_id,
         )
 
     async def get_user_settings(self, workspace_id: int, user_id: int) -> dict:

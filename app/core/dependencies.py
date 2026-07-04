@@ -186,7 +186,8 @@ async def get_spending_transaction_service(
     session: AsyncSession = Depends(get_db_session),
 ) -> TransactionService:
     account_repo = AccountRepository(session)
-    return TransactionService(tx_repo, cat_repo, account_repo)
+    setting_repo = FinanceSettingRepository(session)
+    return TransactionService(tx_repo, cat_repo, account_repo, setting_repo)
 
 
 async def get_spending_budget_service(
@@ -455,15 +456,17 @@ async def get_finance_currency_service(
 async def get_finance_account_service(
     account_repo: AccountRepository = Depends(get_finance_account_repo),
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+    setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
 ) -> AccountService:
-    return AccountService(account_repo, currency_repo)
+    return AccountService(account_repo, currency_repo, setting_repo)
 
 
 async def get_finance_setting_service(
     setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
 ) -> FinanceSettingService:
-    return FinanceSettingService(setting_repo, currency_repo)
+    return FinanceSettingService(setting_repo, currency_repo, account_repo)
 
 
 async def get_finance_fx_rate_service(
