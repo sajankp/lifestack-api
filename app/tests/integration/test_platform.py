@@ -506,6 +506,65 @@ async def test_workspace_demo_reset(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_workspace_demo_reset_with_default_spending_account(client: AsyncClient):
+    """A default spending account on the workspace (spec-054) must not make the
+    next demo reset fail: clearing accounts while
+    workspace_finance_settings.default_spending_account_id still points at one
+    violates fk_workspace_finance_settings_default_spending_account (PR #117
+    review finding)."""
+    owner = await _register_and_login(client, "platformresetdefault")
+
+    settings.ENABLE_DEMO_RESET = True
+    try:
+        first_reset = await client.post(
+            f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo",
+            cookies=owner["cookies"],
+        )
+        assert first_reset.status_code == 200
+
+        # Point the workspace default at a seeded account, as a demo user would.
+        async with postgres.async_session_maker() as session:
+            wallet = (
+                await session.execute(
+                    select(Account).where(
+                        Account.workspace_id == owner["workspace_id"],
+                        Account.name == "wallet",
+                    )
+                )
+            ).scalar_one()
+            finance_setting = (
+                await session.execute(
+                    select(WorkspaceFinanceSetting).where(
+                        WorkspaceFinanceSetting.workspace_id == owner["workspace_id"]
+                    )
+                )
+            ).scalar_one()
+            finance_setting.default_spending_account_id = wallet.id
+            await session.commit()
+
+        second_reset = await client.post(
+            f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo",
+            cookies=owner["cookies"],
+        )
+        assert second_reset.status_code == 200
+
+        async with postgres.async_session_maker() as session:
+            finance_setting = (
+                await session.execute(
+                    select(WorkspaceFinanceSetting).where(
+                        WorkspaceFinanceSetting.workspace_id == owner["workspace_id"]
+                    )
+                )
+            ).scalar_one()
+            # The old default pointed at a deleted account — it must be cleared,
+            # while the reporting currency is (re)set by the seed.
+            assert finance_setting.default_spending_account_id is None
+            assert finance_setting.reporting_currency_code == "USD"
+    finally:
+        settings.ENABLE_DEMO_RESET = False
+
+
+@pytest.mark.asyncio
 async def test_workspace_demo_reset_requires_active_workspace(client: AsyncClient):
     owner = await _register_and_login(client, "platformresetactive")
 
