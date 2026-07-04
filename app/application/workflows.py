@@ -907,18 +907,22 @@ async def process_workspace_todo_reminders(
     notification_repo = NotificationRepository(session)
     notification_service = NotificationService(notification_repo)
 
-    # Multiple due todos commonly share a user; fetch each distinct user's
-    # preference/subscription status once instead of once per todo (N+1).
+    # Multiple due todos commonly share a user; batch-fetch every distinct
+    # user's preference/subscription status in two queries total instead of
+    # one (or two) per todo (N+1).
     distinct_user_ids = {todo.user_id for todo in todos}
-    preference_cache = {
-        user_id: await notification_repo.get_preference(workspace.id, user_id, "todo_reminder")
+    preference_cache = await notification_repo.get_preferences_for_users(
+        workspace.id, distinct_user_ids, "todo_reminder"
+    )
+    users_needing_push = {
+        user_id
         for user_id in distinct_user_ids
+        if (pref := preference_cache.get(user_id)) and pref.channel_push
     }
-    subscription_cache = {
-        user_id: await notification_repo.has_active_push_subscription(workspace.id, user_id)
-        for user_id, pref in preference_cache.items()
-        if pref and pref.channel_push
-    }
+    users_with_push = await notification_repo.users_with_active_push_subscription(
+        workspace.id, users_needing_push
+    )
+    subscription_cache = {user_id: user_id in users_with_push for user_id in users_needing_push}
 
     reminded = 0
     for todo in todos:
@@ -932,7 +936,7 @@ async def process_workspace_todo_reminders(
             module="todo",
             entity_type="todo",
             entity_public_id=todo.public_id,
-            preference=preference_cache[todo.user_id],
+            preference=preference_cache.get(todo.user_id),
             has_push_subscription=subscription_cache.get(todo.user_id),
         )
         if notification is not None:

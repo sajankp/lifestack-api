@@ -132,6 +132,28 @@ class NotificationRepository:
             )
         ).scalar_one_or_none()
 
+    async def get_preferences_for_users(
+        self, workspace_id: int, user_ids: set[int], category: str
+    ) -> dict[int, NotificationPreference]:
+        """Batch equivalent of ``get_preference`` for a set of users — one
+        query instead of one per user (used by per-workspace loops)."""
+        if not user_ids:
+            return {}
+        rows = (
+            (
+                await self.session.execute(
+                    select(NotificationPreference).where(
+                        NotificationPreference.workspace_id == workspace_id,
+                        NotificationPreference.user_id.in_(user_ids),
+                        NotificationPreference.category == category,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {pref.user_id: pref for pref in rows}
+
     async def upsert_preference(
         self, workspace_id: int, user_id: int, category: str, data: dict
     ) -> NotificationPreference:
@@ -173,6 +195,22 @@ class NotificationRepository:
             .limit(1)
         )
         return result.scalar() is not None
+
+    async def users_with_active_push_subscription(
+        self, workspace_id: int, user_ids: set[int]
+    ) -> set[int]:
+        """Batch equivalent of ``has_active_push_subscription`` for a set of
+        users — one query instead of one per user."""
+        if not user_ids:
+            return set()
+        result = await self.session.execute(
+            select(PushSubscription.user_id.distinct()).where(
+                PushSubscription.workspace_id == workspace_id,
+                PushSubscription.user_id.in_(user_ids),
+                PushSubscription.is_active,
+            )
+        )
+        return set(result.scalars().all())
 
     async def create_pending_push_delivery(self, notification_id: int) -> NotificationDelivery:
         delivery = NotificationDelivery(
