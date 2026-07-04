@@ -17,10 +17,15 @@ from app.core.exceptions import NotFoundError
 from app.exports.schemas import ExportCreate, ExportResponse
 from app.exports.service import ExportService
 
+# RBAC is applied per-endpoint (matching every other router) rather than at
+# the router prefix (G5). Kept at `member` on the read endpoints too — the
+# prefix dependency previously required `member` for reads as well, so
+# endpoint-level checks preserve that exact access (viewers still can't read
+# exports); loosening reads to any authenticated user would be a behavior
+# change, out of scope for a refactor.
 router = APIRouter(
     prefix="/exports",
     tags=["exports"],
-    dependencies=[Depends(require_min_role("member"))],
 )
 
 
@@ -31,6 +36,7 @@ async def create_export(
     workspace_id: int = Depends(get_current_workspace_id),
     user: dict = Depends(get_current_user),
     audit_logger: AuditLogger = Depends(get_audit_logger),
+    _role: object = Depends(require_min_role("member")),
 ):
     record = await service.create_export(
         workspace_id=workspace_id,
@@ -47,6 +53,7 @@ async def get_export(
     service: ExportService = Depends(get_export_service),
     workspace_id: int = Depends(get_current_workspace_id),
     _user: dict = Depends(get_current_user),
+    _role: object = Depends(require_min_role("member")),
 ):
     record = await service.get_export(workspace_id, export_public_id)
     return ExportResponse.model_validate(record)
@@ -58,6 +65,7 @@ async def download_export(
     service: ExportService = Depends(get_export_service),
     workspace_id: int = Depends(get_current_workspace_id),
     _user: dict = Depends(get_current_user),
+    _role: object = Depends(require_min_role("member")),
 ):
     backend, mime_type, filename, data = await service.get_export_download(
         workspace_id, export_public_id
@@ -104,6 +112,7 @@ async def delete_export(
     service: ExportService = Depends(get_export_service),
     workspace_id: int = Depends(get_current_workspace_id),
     _user: dict = Depends(get_current_user),
+    _role: object = Depends(require_min_role("member")),
 ):
     """Delete an export record (completed or failed exports only).
 
