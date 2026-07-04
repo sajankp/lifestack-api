@@ -9,19 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditLogger
 from app.core.exceptions import APIError
-from app.finance.repository import AccountRepository, CurrencyRepository, FinanceSettingRepository
-from app.investing.order_service import InvestingOrderService
+from app.finance.models import Account, AccountType
+from app.finance.repository import AccountRepository, FinanceSettingRepository, FxRateRepository
+from app.investing.performance_service import InvestingSummaryService
 from app.investing.repository import (
     CashBalanceRepository,
-    CompanyRepository,
-    CorporateActionRepository,
+    HoldingPriceRepository,
     HoldingRepository,
-    InstrumentRepository,
-    InvestingOrderRepository,
-    LotRepository,
+    PortfolioSnapshotRepository,
 )
-from app.investing.schemas import CashBalanceCreate, InvestingOrderCreate
-from app.investing.service import CashBalanceService, InstrumentService
 from app.spending.models import TransactionType
 from app.spending.repository import CategoryRepository, TransactionRepository
 from app.spending.schemas import TransactionCreate
@@ -46,6 +42,15 @@ def _parse_due_datetime(value: str) -> datetime:
 def _parse_due_time(value: str) -> time:
     """Parse an 'HH:MM' (or 'HH:MM:SS') clock time for a recurring rule."""
     return time.fromisoformat(value.strip())
+
+
+# Voice spending targets: every account type except brokerage (spec-059) —
+# investing is read-only on the voice surface.
+_SPENDING_ACCOUNT_TYPES = frozenset(t for t in AccountType if t is not AccountType.brokerage)
+
+
+def _normalize_name(value: str) -> str:
+    return " ".join(value.strip().lower().split())
 
 
 class AgentTools:
@@ -74,28 +79,16 @@ class AgentTools:
         )
         self.category_service = CategoryService(self.cat_repo)
 
-        self.cash_repo = CashBalanceRepository(session)
-        self.currency_repo = CurrencyRepository(session)
-        self.cash_service = CashBalanceService(
-            self.cash_repo, self.account_repo, self.currency_repo
-        )
-
-        self.holding_repo = HoldingRepository(session)
-        self.order_repo = InvestingOrderRepository(session)
-        self.lot_repo = LotRepository(session)
-        self.corporate_action_repo = CorporateActionRepository(session)
-        self.instrument_service = InstrumentService(
-            InstrumentRepository(session), CompanyRepository(session)
-        )
-        self.order_service = InvestingOrderService(
-            order_repository=self.order_repo,
-            holding_repository=self.holding_repo,
-            cash_balance_repository=self.cash_repo,
-            account_repository=self.account_repo,
-            currency_repository=self.currency_repo,
-            instrument_service=self.instrument_service,
-            lot_repository=self.lot_repo,
-            corporate_action_repository=self.corporate_action_repo,
+        # Investing is read-only on the voice surface (spec-059): mirror the
+        # REST /investing/summary wiring so voice answers match the dashboard.
+        self.summary_service = InvestingSummaryService(
+            HoldingRepository(session),
+            CashBalanceRepository(session),
+            self.setting_repo,
+            FxRateRepository(session),
+            HoldingPriceRepository(session),
+            PortfolioSnapshotRepository(session),
+            self.account_repo,
         )
 
         self.audit_logger = AuditLogger(session)
@@ -386,6 +379,66 @@ class AgentTools:
             }
         return {"status": "success", "entity_public_id": public_id}
 
+    async def _resolve_spending_account(
+        self, account_name: str
+    ) -> tuple[Account | None, dict | None]:
+        """Resolve a spoken account reference against active spending-eligible
+        accounts (spec-059). Voice transcripts rarely reproduce stored casing,
+        so match in loosening order: normalized exact → unique containment →
+        unique account-type word ("wallet", "card"). Ambiguity or a miss
+        returns a structured `needs_account` error so the agent asks one short
+        question instead of failing on the exact name.
+        """
+        accounts, _ = await self.account_repo.list_workspace_accounts(
+            self.workspace_id, limit=200, offset=0
+        )
+        candidates = [
+            a for a in accounts if a.is_active and a.account_type in _SPENDING_ACCOUNT_TYPES
+        ]
+        query = _normalize_name(account_name)
+
+        matched = [a for a in candidates if _normalize_name(a.name) == query]
+        if not matched:
+            matched = [
+                a
+                for a in candidates
+                if query in _normalize_name(a.name) or _normalize_name(a.name) in query
+            ]
+        if not matched:
+            # Whole-phrase type match first ("gift card"), then a type word
+            # anywhere in the reference ("the card", "my wallet").
+            tokens = set(query.split())
+            type_matches = {
+                t for t in _SPENDING_ACCOUNT_TYPES if t.value.replace("_", " ") == query
+            }
+            if not type_matches:
+                type_matches = {t for t in _SPENDING_ACCOUNT_TYPES if t.value in tokens}
+            matched = [a for a in candidates if a.account_type in type_matches]
+
+        if len(matched) == 1:
+            return matched[0], None
+        if matched:
+            names = sorted(a.name for a in matched)
+            return None, {
+                "status": "error",
+                "needs_account": True,
+                "candidates": names,
+                "message": (
+                    f"Multiple accounts match '{account_name}'. "
+                    f"Ask the user to pick one of: {', '.join(names)}."
+                ),
+            }
+        names = sorted(a.name for a in candidates)
+        return None, {
+            "status": "error",
+            "needs_account": True,
+            "available_accounts": names,
+            "message": (
+                f"No spending account matches '{account_name}'. "
+                f"Ask the user to pick one of: {', '.join(names) or '(no spending accounts exist)'}."
+            ),
+        }
+
     async def log_spending_transaction(
         self,
         amount: str,
@@ -430,16 +483,14 @@ class AgentTools:
 
         # Resolve account in spec-054 order: named account → workspace default →
         # ask the user. A missing account is a structured `needs_account` error,
-        # not a silently account-less row.
+        # not a silently account-less row. Named references match fuzzily
+        # against spending-eligible accounts (spec-059).
         account_public_id = None
         resolved_account_name = None
         if account_name:
-            account = await self.account_repo.get_by_name(self.workspace_id, account_name)
-            if not account or not account.is_active:
-                return {
-                    "status": "error",
-                    "message": f"Account '{account_name}' is not found or is inactive in this workspace",
-                }
+            account, resolution_error = await self._resolve_spending_account(account_name)
+            if resolution_error is not None or account is None:
+                return resolution_error
             account_public_id = account.public_id
             resolved_account_name = account.name
         else:
@@ -488,140 +539,21 @@ class AgentTools:
             "account_name": resolved_account_name,
         }
 
-    async def log_cash_balance(self, account_name: str, balance: str, currency: str) -> dict:
-        """Record/update cash balance for an investing account.
+    async def get_investing_summary(self) -> dict:
+        """Read-only portfolio summary (spec-059): total value, holdings count,
+        cash total, and reporting currency — the same numbers as the dashboard's
+        /investing/summary endpoint."""
+        summary = await self.summary_service.get_summary(self.workspace_id)
 
-        Args:
-            account_name: The name of the brokerage or bank account (e.g., 'Brokerage Cash').
-            balance: The cash balance amount as a string (e.g. '1200.50').
-            currency: The currency code (e.g. 'USD', 'EUR', 'GBP').
-        """
-        try:
-            val = Decimal(balance)
-        except Exception:
-            return {
-                "status": "error",
-                "message": "Invalid balance format. Must be a decimal number.",
-            }
+        def _dec(value) -> str | None:
+            return str(value) if value is not None else None
 
-        account = await self.account_repo.get_by_name(self.workspace_id, account_name)
-        if not account or not account.is_active:
-            return {
-                "status": "error",
-                "message": f"Account '{account_name}' is not found or is inactive in this workspace",
-            }
-
-        payload = CashBalanceCreate(
-            account_id=account.public_id,
-            balance=val,
-            currency=currency.upper(),
-            as_of=datetime.now(UTC),
-        )
-        cash = await self.cash_service.create_cash_balance(
-            user_id=self.user_id,
-            workspace_id=self.workspace_id,
-            cash_in=payload,
-            audit_logger=self.audit_logger,
-        )
         return {
             "status": "success",
-            "entity_public_id": str(cash.public_id),
-            "entity_type": "cash_balance",
-            "account_name": account.name,
-            "balance": str(cash.balance),
-            "currency": cash.currency,
+            "portfolio_value": _dec(summary.portfolio_value),
+            "holdings_count": summary.holdings_count,
+            "cash_total": _dec(summary.cash_total),
+            "daily_change": _dec(summary.daily_change),
+            "reporting_currency": summary.reporting_currency,
+            "valuation_status": summary.valuation_status,
         }
-
-    async def place_stock_order(
-        self,
-        order_type: str,
-        symbol: str,
-        quantity: str,
-        price_per_unit: str,
-        account_name: str,
-        currency: str = "USD",
-        brokerage_fee: str = "0",
-    ) -> dict:
-        """Place a buy or sell order for a stock in a brokerage account.
-
-        Args:
-            order_type: Either 'buy' or 'sell'.
-            symbol: The stock ticker symbol (e.g., 'AAPL', 'INFY.NS').
-            quantity: Number of shares as a string (e.g., '10').
-            price_per_unit: Price per share as a string (e.g., '150.00').
-            account_name: Name of the brokerage account to use.
-            currency: Currency code (default 'USD').
-            brokerage_fee: Brokerage commission as a string (default '0').
-        """
-        order_type_lower = order_type.strip().lower()
-        if order_type_lower not in {"buy", "sell"}:
-            return {"status": "error", "message": "order_type must be 'buy' or 'sell'"}
-
-        try:
-            qty = Decimal(quantity)
-            if qty <= 0:
-                raise ValueError
-        except Exception:
-            return {"status": "error", "message": "quantity must be a positive number"}
-
-        try:
-            price = Decimal(price_per_unit)
-            if price <= 0:
-                raise ValueError
-        except Exception:
-            return {"status": "error", "message": "price_per_unit must be a positive number"}
-
-        try:
-            fee = Decimal(brokerage_fee)
-            if fee < 0:
-                raise ValueError
-        except Exception:
-            return {"status": "error", "message": "brokerage_fee must be a non-negative number"}
-
-        account = await self.account_repo.get_by_name(self.workspace_id, account_name)
-        if not account or not account.is_active:
-            return {
-                "status": "error",
-                "message": f"Account '{account_name}' not found or inactive",
-            }
-
-        order_in = InvestingOrderCreate(
-            account_id=account.public_id,
-            order_type=order_type_lower,  # type: ignore[arg-type]
-            symbol=symbol.upper(),
-            quantity=qty,
-            price_per_unit=price,
-            currency=currency.upper(),
-            brokerage_fee=fee,
-            occurred_at=datetime.now(UTC),
-        )
-
-        try:
-            order = await self.order_service.place_order(
-                workspace_id=self.workspace_id,
-                user_id=self.user_id,
-                order_in=order_in,
-                audit_logger=self.audit_logger,
-                source_type="voice_agent",
-            )
-        except Exception as exc:
-            detail = getattr(exc, "detail", str(exc))
-            return {"status": "error", "message": detail}
-
-        response: dict = {
-            "status": "success",
-            "entity_public_id": str(order.public_id),
-            "entity_type": "investing_order",
-            "order_type": order.order_type,
-            "symbol": order.symbol,
-            "quantity": str(order.quantity),
-            "price_per_unit": str(order.price_per_unit),
-            "gross_amount": str(order.gross_amount),
-            "net_amount": str(order.net_amount),
-            "currency": order.currency,
-            "account_name": account_name,
-        }
-        if order.realized_gain_loss is not None:
-            response["realized_gain_loss"] = str(order.realized_gain_loss)
-            response["avg_cost_at_sale"] = str(order.avg_cost_at_sale)
-        return response

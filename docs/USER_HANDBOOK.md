@@ -73,7 +73,7 @@ Placing a buy or sell order does **not** automatically adjust the cash balance s
 You can bulk-import historical orders via **Bulk Imports** using a CSV with the `investing-orders` module. Required columns: `symbol`, `order_type` (`buy`/`sell`), `quantity`, `price_per_unit`, `currency`, `occurred_at`. Optional: `brokerage_fee`, `tax_amount`, `other_fees`, `exchange_name`, `notes`.
 
 ### Voice Agent
-You can say *"Buy 10 shares of AAPL at $150"* to the voice agent and it will call `place_stock_order` directly.
+Investing is read-only on the voice agent (spec-059): orders and cash balances are entered through the UI or imports, but you can ask *"How is my portfolio doing?"* and the agent will call `get_investing_summary`.
 
 ---
 

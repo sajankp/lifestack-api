@@ -1,6 +1,6 @@
 # Spec 059 — Voice Agent Usability: Fuzzy Spending Accounts, Read-Only Investing, Barge-In
 
-**Status:** Approved (maintainer directive, 2026-07-05)
+**Status:** Implemented (maintainer directive, 2026-07-05)
 **Repos:** lifestack-api, lifestack-web
 **Depends on:** spec-021 (voice agent function calling), spec-054 (mandatory transaction account), spec-055 (workspace awareness)
 

@@ -177,6 +177,10 @@ class Settings(BaseSettings):
     # Google can silently rotate or deprecate -latest aliases. If a specific versioned
     # model becomes unavailable, update this default or set GEMINI_MODEL in .env.
     GEMINI_MODEL: str = "models/gemini-2.5-flash-preview-native-audio-18-12"
+    # Thinking-token budget for the live model's tool-call reasoning (spec-059).
+    # A modest budget improves tool-argument quality; set 0 to disable thinking
+    # entirely if the configured model rejects a non-zero value.
+    GEMINI_THINKING_BUDGET: int = 256
     CAPTURE_MAX_WS_FRAME_BYTES: int = 256 * 1024
     CAPTURE_MAX_SESSION_BYTES: int = 15 * 1024 * 1024
     CAPTURE_MAX_SESSION_SECONDS: int = 5 * 60

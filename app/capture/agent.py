@@ -62,8 +62,7 @@ async def execute_agent_tool(
                 "create_todo_task": tools.create_todo_task,
                 "create_recurring_todo": tools.create_recurring_todo,
                 "log_spending_transaction": tools.log_spending_transaction,
-                "log_cash_balance": tools.log_cash_balance,
-                "place_stock_order": tools.place_stock_order,
+                "get_investing_summary": tools.get_investing_summary,
                 "list_todos": tools.list_todos,
                 "get_todo": tools.get_todo,
                 "update_todo": tools.update_todo,
@@ -209,6 +208,13 @@ async def _handle_gemini_message(
     # ── serverContent ────────────────────────────────────────────────────────
     server_content = msg.get("serverContent")
     if server_content:
+        # Barge-in (spec-059): Gemini's VAD heard the user talk over the model
+        # and stopped generating. The client schedules audio ahead of real
+        # time, so it must be told to flush its queue or buffered speech keeps
+        # playing to the end.
+        if server_content.get("interrupted"):
+            await client_ws.send_json({"type": "interrupted"})
+
         model_turn = server_content.get("modelTurn")
         if model_turn:
             parts = model_turn.get("parts") or []
