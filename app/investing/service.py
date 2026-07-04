@@ -3,6 +3,10 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.imports.models import ImportBatch
 
 import httpx
 
@@ -17,6 +21,7 @@ from app.finance.repository import (
     FinanceSettingRepository,
     FxRateRepository,
 )
+from app.imports.repository import ImportRepository
 from app.investing.models import (
     CashBalance,
     Company,
@@ -33,20 +38,25 @@ from app.investing.repository import (
     InstrumentConstituentRepository,
     InstrumentRepository,
     InvestingOrderRepository,
+    PortfolioSnapshotRepository,
 )
+from app.investing.response_helpers import instrument_response, populate_valuation_fields
 from app.investing.schemas import (
     CashBalanceCreate,
     CashBalanceUpdate,
     ExposureAnalyticsResponse,
     ExposureCompanyRow,
+    HoldingResponse,
     HoldingUpdate,
     InstrumentConstituentResponse,
     InstrumentConstituentUpsert,
     InstrumentCreate,
+    InstrumentResponse,
     InstrumentUpdate,
     OverlapAnalyticsResponse,
     OverlapRow,
 )
+from app.spending.response_helpers import source_metadata_response
 
 MONEY_QUANT = Decimal("0.01")
 
@@ -261,6 +271,125 @@ class HoldingService:
             if not enabled:
                 raise ValidationError(detail=f"Currency '{code}' is not enabled for this workspace")
         return account
+
+    async def _build_account_cache(self, workspace_id: int) -> dict[int, tuple[uuid.UUID, str]]:
+        if self.account_repo is None:
+            return {}
+        accounts, _ = await self.account_repo.list_workspace_accounts(
+            workspace_id, limit=10000, offset=0
+        )
+        return {a.id: (a.public_id, a.name) for a in accounts if a.id is not None}
+
+    async def _build_instrument_type_cache(
+        self, workspace_id: int, holdings: list | tuple
+    ) -> dict[int, str]:
+        if self.instrument_repo is None:
+            return {}
+        instrument_ids = [h.instrument_id for h in holdings if h.instrument_id is not None]
+        instruments = await self.instrument_repo.get_by_ids(instrument_ids)
+        return {
+            instrument_id: instrument.instrument_type
+            for instrument_id, instrument in instruments.items()
+        }
+
+    async def _build_import_batch_cache(
+        self, workspace_id: int, holdings: list | tuple
+    ) -> dict[int, "ImportBatch"]:
+        import_batch_ids = {h.source_import_id for h in holdings if h.source_import_id is not None}
+        if not import_batch_ids:
+            return {}
+        import_repo = ImportRepository(self.repository.session)
+        return await import_repo.get_by_ids(workspace_id, import_batch_ids)
+
+    async def list_holdings_with_details(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[list[HoldingResponse], int]:
+        holdings, total = await self.list_holdings(workspace_id, limit, offset)
+        if not holdings:
+            return [], total
+
+        account_cache = await self._build_account_cache(workspace_id)
+        import_cache = await self._build_import_batch_cache(workspace_id, holdings)
+        instrument_type_cache = await self._build_instrument_type_cache(workspace_id, holdings)
+
+        holding_ids = [h.id for h in holdings if h.id is not None]
+        today = datetime.now(UTC).date()
+        latest_prices = {}
+        if self.holding_price_repo is not None:
+            latest_prices = await self.holding_price_repo.latest_prices_on_or_before_bulk(
+                workspace_id, holding_ids, today
+            )
+
+        items = []
+        for h in holdings:
+            pub_id, name = account_cache.get(h.account_id, (None, "Unknown"))
+            data = h.model_dump()
+            data["instrument_type"] = (
+                instrument_type_cache.get(h.instrument_id, "stock")
+                if h.instrument_id is not None
+                else "stock"
+            )
+            data["account_id"] = pub_id
+            data["account_name"] = name
+            data["source_metadata"] = source_metadata_response(
+                h.source_type, h.source_ref, import_cache.get(h.source_import_id)
+            )
+
+            price_row = latest_prices.get(h.id) if h.id is not None else None
+            unit_price = price_row.unit_price if price_row is not None else None
+            populate_valuation_fields(data, h.quantity, h.avg_cost, unit_price)
+
+            items.append(HoldingResponse.model_validate(data))
+        return items, total
+
+    async def update_holding_with_details(
+        self,
+        workspace_id: int,
+        holding_id: uuid.UUID,
+        holding_in: HoldingUpdate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> HoldingResponse:
+        holding = await self.update_holding(
+            workspace_id,
+            holding_id,
+            holding_in,
+            actor_id=actor_id,
+            audit_logger=audit_logger,
+        )
+        snapshot_repo = PortfolioSnapshotRepository(self.repository.session)
+        await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
+
+        account = None
+        if self.account_repo is not None:
+            account = await self.account_repo.get_by_id(workspace_id, holding.account_id)
+
+        data = holding.model_dump()
+        instrument_type_cache = await self._build_instrument_type_cache(workspace_id, [holding])
+        data["instrument_type"] = (
+            instrument_type_cache.get(holding.instrument_id, "stock")
+            if holding.instrument_id is not None
+            else "stock"
+        )
+        data["account_id"] = account.public_id if account else None
+        data["account_name"] = account.name if account else "Unknown"
+        data["source_metadata"] = source_metadata_response(
+            holding.source_type, holding.source_ref, None
+        )
+
+        today = datetime.now(UTC).date()
+        price_row = None
+        if self.holding_price_repo is not None:
+            price_row = await self.holding_price_repo.latest_price_on_or_before(
+                workspace_id, holding.id, today
+            )
+        unit_price = price_row.unit_price if price_row is not None else None
+        populate_valuation_fields(data, holding.quantity, holding.avg_cost, unit_price)
+
+        return HoldingResponse.model_validate(data)
 
     async def list_holdings(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
@@ -745,6 +874,40 @@ class InstrumentService:
     ):
         self.instrument_repo = instrument_repo
         self.company_repo = company_repo
+
+    async def get_instrument(self, workspace_id: int, public_id: uuid.UUID) -> Instrument:
+        instrument = await self.instrument_repo.get_by_public_id(workspace_id, public_id)
+        if instrument is None:
+            raise NotFoundError(detail=f"Instrument '{public_id}' not found")
+        return instrument
+
+    async def list_instruments_with_details(self, workspace_id: int) -> list[InstrumentResponse]:
+        instruments = await self.list_instruments(workspace_id)
+        company_ids = [item.company_id for item in instruments if item.company_id is not None]
+        companies = await self.company_repo.get_by_ids(company_ids)
+        company_cache = {c.id: c for c in companies.values()}
+        return [
+            await instrument_response(self, workspace_id, item, company_cache)
+            for item in instruments
+        ]
+
+    async def create_instrument_with_details(
+        self, workspace_id: int, payload: InstrumentCreate
+    ) -> InstrumentResponse:
+        instrument = await self.create_instrument(workspace_id, payload)
+        return await instrument_response(self, workspace_id, instrument)
+
+    async def get_instrument_with_details(
+        self, workspace_id: int, public_id: uuid.UUID
+    ) -> InstrumentResponse:
+        instrument = await self.get_instrument(workspace_id, public_id)
+        return await instrument_response(self, workspace_id, instrument)
+
+    async def update_instrument_with_details(
+        self, workspace_id: int, public_id: uuid.UUID, payload: InstrumentUpdate
+    ) -> InstrumentResponse:
+        instrument = await self.update_instrument(workspace_id, public_id, payload)
+        return await instrument_response(self, workspace_id, instrument)
 
     async def list_instruments(self, workspace_id: int) -> Sequence[Instrument]:
         return await self.instrument_repo.list_workspace(workspace_id)

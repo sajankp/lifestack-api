@@ -19,7 +19,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.core.exceptions import NotFoundError
-from app.spending.router import _category_public_id_or_404
+from app.spending.response_helpers import category_public_id_or_404 as _category_public_id_or_404
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -1,7 +1,6 @@
 import uuid
 from datetime import UTC, date, datetime
-from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
 
@@ -11,11 +10,9 @@ from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
     get_finance_account_service,
-    get_import_repo,
     get_investing_analytics_service,
     get_investing_cash_balance_service,
     get_investing_constituent_service,
-    get_investing_holding_price_repo,
     get_investing_holding_service,
     get_investing_instrument_service,
     get_investing_order_service,
@@ -26,10 +23,9 @@ from app.core.dependencies import (
 )
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.finance.service import AccountService
-from app.imports.repository import ImportRepository
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService, PerformanceService
-from app.investing.repository import HoldingPriceRepository, PortfolioSnapshotRepository
+from app.investing.repository import PortfolioSnapshotRepository
 from app.investing.schemas import (
     CashBalanceCreate,
     CashBalanceResponse,
@@ -60,7 +56,6 @@ from app.investing.service import (
     HoldingService,
     InstrumentService,
 )
-from app.spending.router import _build_import_batch_cache, _source_metadata_response
 
 router = APIRouter(prefix="/investing", tags=["investing"])
 
@@ -72,104 +67,17 @@ async def _build_account_cache(
     return {a.id: (a.public_id, a.name) for a in accounts if a.id is not None}
 
 
-async def _build_instrument_type_cache(
-    holding_service: HoldingService, workspace_id: int, holdings: list | tuple
-) -> dict[int, str]:
-    if holding_service.instrument_repo is None:
-        return {}
-    instrument_ids = [h.instrument_id for h in holdings if h.instrument_id is not None]
-    instruments = await holding_service.instrument_repo.get_by_ids(instrument_ids)
-    return {
-        instrument_id: instrument.instrument_type
-        for instrument_id, instrument in instruments.items()
-    }
-
-
-async def _instrument_response(
-    instrument_service: InstrumentService,
-    workspace_id: int,
-    instrument,
-    company_cache: dict[int, Any] | None = None,
-) -> InstrumentResponse:
-    data = instrument.model_dump()
-    if instrument.company_id is not None:
-        company = (
-            company_cache.get(instrument.company_id)
-            if company_cache is not None
-            else await instrument_service.company_repo.get_by_id(instrument.company_id)
-        )
-        if company is not None and company.workspace_id == workspace_id:
-            data["company_id"] = company.public_id
-        else:
-            data["company_id"] = None
-    return InstrumentResponse.model_validate(data)
-
-
-def _populate_valuation_fields(
-    data: dict, quantity: Decimal, avg_cost: Decimal, unit_price: Decimal | None
-) -> None:
-    current_price = unit_price if unit_price is not None else avg_cost
-    current_value = quantity * current_price
-    book_value = quantity * avg_cost
-    gain_loss = current_value - book_value
-    gain_loss_pct = (gain_loss / book_value * Decimal("100")) if book_value else Decimal("0")
-
-    data["current_price"] = current_price
-    data["current_value"] = current_value
-    data["book_value"] = book_value
-    data["gain_loss"] = gain_loss
-    data["gain_loss_pct"] = gain_loss_pct
-
-
 @router.get("/holdings", response_model=PaginatedResponse[HoldingResponse])
 async def list_holdings(
     holding_service: Annotated[HoldingService, Depends(get_investing_holding_service)],
-    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
-    import_repo: Annotated[ImportRepository, Depends(get_import_repo)],
-    price_repo: Annotated[HoldingPriceRepository, Depends(get_investing_holding_price_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     pagination: Annotated[PaginationParams, Depends()],
 ):
-    holdings, total = await holding_service.list_holdings(
+    detailed_items, total = await holding_service.list_holdings_with_details(
         workspace_id, pagination.limit, pagination.offset
     )
-    if not holdings:
-        return build_page([], total, pagination)
-
-    account_cache = await _build_account_cache(account_service, workspace_id)
-    import_cache = await _build_import_batch_cache(import_repo, workspace_id, holdings)
-    instrument_type_cache = await _build_instrument_type_cache(
-        holding_service, workspace_id, holdings
-    )
-
-    holding_ids = [h.id for h in holdings if h.id is not None]
-    today = datetime.now(UTC).date()
-    latest_prices = await price_repo.latest_prices_on_or_before_bulk(
-        workspace_id, holding_ids, today
-    )
-
-    items = []
-    for h in holdings:
-        pub_id, name = account_cache.get(h.account_id, (None, "Unknown"))
-        data = h.model_dump()
-        data["instrument_type"] = (
-            instrument_type_cache.get(h.instrument_id, "stock")
-            if h.instrument_id is not None
-            else "stock"
-        )
-        data["account_id"] = pub_id
-        data["account_name"] = name
-        data["source_metadata"] = _source_metadata_response(
-            h.source_type, h.source_ref, import_cache.get(h.source_import_id)
-        )
-
-        price_row = latest_prices.get(h.id) if h.id is not None else None
-        unit_price = price_row.unit_price if price_row is not None else None
-        _populate_valuation_fields(data, h.quantity, h.avg_cost, unit_price)
-
-        items.append(HoldingResponse.model_validate(data))
-    return build_page(items, total, pagination)
+    return build_page(detailed_items, total, pagination)
 
 
 @router.patch("/holdings/{holding_id}", response_model=HoldingResponse)
@@ -177,48 +85,18 @@ async def update_holding(
     holding_id: uuid.UUID,
     holding_in: HoldingUpdate,
     holding_service: Annotated[HoldingService, Depends(get_investing_holding_service)],
-    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
-    price_repo: Annotated[HoldingPriceRepository, Depends(get_investing_holding_price_repo)],
-    snapshot_repo: Annotated[PortfolioSnapshotRepository, Depends(get_investing_snapshot_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
     _role: Annotated[object, Depends(require_min_role("member"))],
 ):
-    holding = await holding_service.update_holding(
+    return await holding_service.update_holding_with_details(
         workspace_id,
         holding_id,
         holding_in,
         actor_id=user["id"],
         audit_logger=audit_logger,
     )
-    await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
-    account = await account_service.account_repository.get_by_id(workspace_id, holding.account_id)
-    data = holding.model_dump()
-    instrument_type_cache = await _build_instrument_type_cache(
-        holding_service, workspace_id, [holding]
-    )
-    data["instrument_type"] = (
-        instrument_type_cache.get(holding.instrument_id, "stock")
-        if holding.instrument_id is not None
-        else "stock"
-    )
-    data["account_id"] = account.public_id if account else None
-    data["account_name"] = account.name if account else "Unknown"
-    data["source_metadata"] = _source_metadata_response(
-        holding.source_type, holding.source_ref, None
-    )
-
-    today = datetime.now(UTC).date()
-    price_row = (
-        await price_repo.latest_price_on_or_before(workspace_id, holding.id, today)
-        if holding.id is not None
-        else None
-    )
-    unit_price = price_row.unit_price if price_row is not None else None
-    _populate_valuation_fields(data, holding.quantity, holding.avg_cost, unit_price)
-
-    return HoldingResponse.model_validate(data)
 
 
 @router.delete("/holdings/{holding_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -353,13 +231,7 @@ async def list_instruments(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
 ):
-    instruments = await instrument_service.list_instruments(workspace_id)
-    company_ids = [item.company_id for item in instruments if item.company_id is not None]
-    company_cache = await instrument_service.company_repo.get_by_ids(company_ids)
-    return [
-        await _instrument_response(instrument_service, workspace_id, item, company_cache)
-        for item in instruments
-    ]
+    return await instrument_service.list_instruments_with_details(workspace_id)
 
 
 @router.post("/instruments", response_model=InstrumentResponse, status_code=status.HTTP_201_CREATED)
@@ -370,8 +242,7 @@ async def create_instrument(
     _user: Annotated[dict, Depends(get_current_user)],
     _role: Annotated[object, Depends(require_min_role("member"))],
 ):
-    instrument = await instrument_service.create_instrument(workspace_id, payload)
-    return await _instrument_response(instrument_service, workspace_id, instrument)
+    return await instrument_service.create_instrument_with_details(workspace_id, payload)
 
 
 @router.patch("/instruments/{instrument_id}", response_model=InstrumentResponse)
@@ -383,8 +254,9 @@ async def update_instrument(
     _user: Annotated[dict, Depends(get_current_user)],
     _role: Annotated[object, Depends(require_min_role("member"))],
 ):
-    instrument = await instrument_service.update_instrument(workspace_id, instrument_id, payload)
-    return await _instrument_response(instrument_service, workspace_id, instrument)
+    return await instrument_service.update_instrument_with_details(
+        workspace_id, instrument_id, payload
+    )
 
 
 @router.get(

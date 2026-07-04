@@ -2,8 +2,19 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import case, desc, func, select
+
+from app.imports.repository import ImportRepository
+from app.spending.response_helpers import (
+    budget_response,
+    recurring_response,
+    transaction_response,
+)
+
+if TYPE_CHECKING:
+    from app.imports.models import ImportBatch
 
 from app.core.audit import AuditLogger, snapshot_columns
 from app.core.exceptions import (
@@ -36,6 +47,7 @@ from app.spending.schemas import (
     BudgetPerformanceItem,
     BudgetPerformanceResponse,
     BudgetPerformanceTotals,
+    BudgetResponse,
     BudgetUpdate,
     CategoryBreakdownItem,
     CategoryBreakdownOther,
@@ -45,6 +57,7 @@ from app.spending.schemas import (
     LedgerEntry,
     LedgerResponse,
     RecurringTransactionCreate,
+    RecurringTransactionResponse,
     RecurringTransactionUpdate,
     SavingsRatePoint,
     SavingsRateResponse,
@@ -52,6 +65,7 @@ from app.spending.schemas import (
     SpendingTrendPoint,
     SpendingTrendResponse,
     TransactionCreate,
+    TransactionResponse,
     TransactionUpdate,
     UpcomingPreviewResponse,
     UpcomingTransactionItem,
@@ -293,6 +307,136 @@ class TransactionService:
         self.category_repo = category_repo
         self.account_repo = account_repo
         self.setting_repo = setting_repo
+
+    async def _build_category_cache(self, workspace_id: int) -> dict[int, uuid.UUID]:
+        cats, _ = await self.category_repo.get_all(workspace_id, limit=10000, offset=0)
+        return {c.id: c.public_id for c in cats}
+
+    async def _build_account_cache(self, workspace_id: int) -> dict[int, uuid.UUID]:
+        accounts, _ = await self.account_repo.list_workspace_accounts(
+            workspace_id, limit=10000, offset=0
+        )
+        return {a.id: a.public_id for a in accounts}
+
+    async def _build_import_batch_cache(
+        self, workspace_id: int, transactions: Sequence[SpendingTransaction]
+    ) -> dict[int, "ImportBatch"]:
+        import_batch_ids = {
+            tx.source_import_id for tx in transactions if tx.source_import_id is not None
+        }
+        if not import_batch_ids:
+            return {}
+        import_repo = ImportRepository(self.transaction_repo.session)
+        return await import_repo.get_by_ids(workspace_id, import_batch_ids)
+
+    async def list_transactions_with_details(
+        self,
+        workspace_id: int,
+        category_public_id: uuid.UUID | None = None,
+        account_public_id: uuid.UUID | None = None,
+        unassigned_only: bool = False,
+        type_filter: TransactionType | None = None,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[list[TransactionResponse], int]:
+        txs, total = await self.list_transactions(
+            workspace_id,
+            category_public_id=category_public_id,
+            account_public_id=account_public_id,
+            unassigned_only=unassigned_only,
+            type_filter=type_filter,
+            from_date=from_date,
+            to_date=to_date,
+            limit=limit,
+            offset=offset,
+        )
+        cat_cache = await self._build_category_cache(workspace_id)
+        account_cache = await self._build_account_cache(workspace_id)
+        import_cache = await self._build_import_batch_cache(workspace_id, txs)
+
+        missing_category_ids = {tx.category_id for tx in txs if tx.category_id not in cat_cache}
+        if missing_category_ids:
+            raise NotFoundError(detail="One or more transaction categories were not found")
+
+        detailed_items = [
+            transaction_response(
+                tx,
+                cat_cache[tx.category_id],
+                account_cache.get(tx.account_id) if tx.account_id is not None else None,
+                import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None,
+            )
+            for tx in txs
+        ]
+        return detailed_items, total
+
+    async def get_transaction_with_details(
+        self, workspace_id: int, public_id: uuid.UUID
+    ) -> TransactionResponse:
+        tx = await self.get_transaction(workspace_id, public_id)
+        cat_cache = await self._build_category_cache(workspace_id)
+        account_cache = await self._build_account_cache(workspace_id)
+        import_cache = await self._build_import_batch_cache(workspace_id, [tx])
+
+        category_public_id = cat_cache.get(tx.category_id)
+        if category_public_id is None:
+            raise NotFoundError(detail="Transaction category was not found")
+
+        return transaction_response(
+            tx,
+            category_public_id,
+            account_cache.get(tx.account_id) if tx.account_id is not None else None,
+            import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None,
+        )
+
+    async def create_transaction_with_details(
+        self,
+        actor_id: int,
+        workspace_id: int,
+        tx_in: TransactionCreate,
+        audit_logger: AuditLogger | None = None,
+    ) -> TransactionResponse:
+        tx = await self.create_transaction(actor_id, workspace_id, tx_in, audit_logger)
+        category = await self.category_repo.get_by_public_id(workspace_id, tx_in.category_id)
+        if not category:
+            raise NotFoundError(detail="Transaction category was not found")
+
+        account_public_id = None
+        if tx.account_id is not None:
+            if tx_in.account_id is not None:
+                account_public_id = tx_in.account_id
+            else:
+                account = await self.account_repo.get_by_id(workspace_id, tx.account_id)
+                account_public_id = account.public_id if account else None
+
+        return transaction_response(tx, category.public_id, account_public_id)
+
+    async def update_transaction_with_details(
+        self,
+        workspace_id: int,
+        transaction_id: uuid.UUID,
+        tx_in: TransactionUpdate,
+        actor_id: int,
+        audit_logger: AuditLogger | None = None,
+    ) -> TransactionResponse:
+        tx = await self.update_transaction(
+            workspace_id, transaction_id, tx_in, actor_id=actor_id, audit_logger=audit_logger
+        )
+        cat_cache = await self._build_category_cache(workspace_id)
+        account_cache = await self._build_account_cache(workspace_id)
+        import_cache = await self._build_import_batch_cache(workspace_id, [tx])
+
+        category_public_id = cat_cache.get(tx.category_id)
+        if category_public_id is None:
+            raise NotFoundError(detail="Transaction category was not found")
+
+        return transaction_response(
+            tx,
+            category_public_id,
+            account_cache.get(tx.account_id) if tx.account_id is not None else None,
+            import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None,
+        )
 
     async def _resolve_category(
         self, workspace_id: int, category_public_id: uuid.UUID
@@ -983,6 +1127,66 @@ class BudgetService:
         self.budget_repo = budget_repo
         self.category_repo = category_repo
 
+    async def _build_category_cache(self, workspace_id: int) -> dict[int, uuid.UUID]:
+        cats, _ = await self.category_repo.get_all(workspace_id, limit=10000, offset=0)
+        return {c.id: c.public_id for c in cats}
+
+    async def _build_import_batch_cache(
+        self, workspace_id: int, budgets: Sequence[SpendingBudget]
+    ) -> dict[int, "ImportBatch"]:
+        import_batch_ids = {b.source_import_id for b in budgets if b.source_import_id is not None}
+        if not import_batch_ids:
+            return {}
+        import_repo = ImportRepository(self.budget_repo.session)
+        return await import_repo.get_by_ids(workspace_id, import_batch_ids)
+
+    async def list_budgets_with_details(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        month_start: date | None = None,
+    ) -> tuple[list[BudgetResponse], int]:
+        budgets, total = await self.list_budgets(
+            workspace_id, limit=limit, offset=offset, month_start=month_start
+        )
+        cat_cache = await self._build_category_cache(workspace_id)
+        import_cache = await self._build_import_batch_cache(workspace_id, budgets)
+        detailed = [
+            budget_response(b, cat_cache.get(b.category_id), import_cache.get(b.source_import_id))
+            for b in budgets
+        ]
+        return detailed, total
+
+    async def create_budget_with_details(
+        self,
+        workspace_id: int,
+        budget_in: BudgetCreate,
+        actor_id: int,
+        audit_logger: AuditLogger | None = None,
+    ) -> BudgetResponse:
+        budget = await self.create_budget(
+            workspace_id, budget_in, actor_id=actor_id, audit_logger=audit_logger
+        )
+        category = await self.category_repo.get_by_public_id(workspace_id, budget_in.category_id)
+        category_public_id = category.public_id if category else None
+        return budget_response(budget, category_public_id)
+
+    async def update_budget_with_details(
+        self,
+        workspace_id: int,
+        budget_id: uuid.UUID,
+        budget_in: BudgetUpdate,
+        actor_id: int,
+        audit_logger: AuditLogger | None = None,
+    ) -> BudgetResponse:
+        budget = await self.update_budget(
+            workspace_id, budget_id, budget_in, actor_id=actor_id, audit_logger=audit_logger
+        )
+        category = await self.category_repo.get_by_id(workspace_id, budget.category_id)
+        category_public_id = category.public_id if category else None
+        return budget_response(budget, category_public_id)
+
     async def _resolve_category(
         self, workspace_id: int, category_public_id: uuid.UUID
     ) -> SpendingCategory:
@@ -1233,6 +1437,50 @@ class RecurringTransactionService:
         self.recurring_repo = recurring_repo
         self.tx_repo = tx_repo
         self.category_repo = category_repo
+
+    async def _build_category_cache(self, workspace_id: int) -> dict[int, uuid.UUID]:
+        cats, _ = await self.category_repo.get_all(workspace_id, limit=10000, offset=0)
+        return {c.id: c.public_id for c in cats}
+
+    async def list_recurring_with_details(
+        self,
+        workspace_id: int,
+        is_active: bool | None = True,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[list[RecurringTransactionResponse], int]:
+        items, total = await self.list_recurring(workspace_id, is_active, limit, offset)
+        cat_cache = await self._build_category_cache(workspace_id)
+        detailed = [recurring_response(item, cat_cache.get(item.category_id)) for item in items]
+        return detailed, total
+
+    async def create_recurring_with_details(
+        self,
+        workspace_id: int,
+        actor_id: int,
+        payload: RecurringTransactionCreate,
+    ) -> RecurringTransactionResponse:
+        item = await self.create_recurring(workspace_id, actor_id, payload)
+        return recurring_response(item, payload.category_id)
+
+    async def get_recurring_with_details(
+        self,
+        workspace_id: int,
+        recurring_id: uuid.UUID,
+    ) -> RecurringTransactionResponse:
+        item = await self.get_recurring(workspace_id, recurring_id)
+        cat_cache = await self._build_category_cache(workspace_id)
+        return recurring_response(item, cat_cache.get(item.category_id))
+
+    async def update_recurring_with_details(
+        self,
+        workspace_id: int,
+        recurring_id: uuid.UUID,
+        payload: RecurringTransactionUpdate,
+    ) -> RecurringTransactionResponse:
+        item = await self.update_recurring(workspace_id, recurring_id, payload)
+        cat_cache = await self._build_category_cache(workspace_id)
+        return recurring_response(item, cat_cache.get(item.category_id))
 
     async def list_recurring(
         self, workspace_id: int, is_active: bool | None, limit: int, offset: int
