@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -169,6 +169,15 @@ class DemoResetService:
         await self.session.execute(delete(Company).where(Company.workspace_id == workspace_id))
         await self.session.execute(
             delete(CapitalTransfer).where(CapitalTransfer.workspace_id == workspace_id)
+        )
+        # The workspace finance setting may point a default spending account
+        # (spec-054) at a row about to be deleted — clear the reference first
+        # or the delete violates
+        # fk_workspace_finance_settings_default_spending_account.
+        await self.session.execute(
+            update(WorkspaceFinanceSetting)
+            .where(WorkspaceFinanceSetting.workspace_id == workspace_id)
+            .values(default_spending_account_id=None)
         )
         await self.session.execute(delete(Account).where(Account.workspace_id == workspace_id))
         await self.session.flush()
@@ -398,8 +407,8 @@ class DemoResetService:
             )
         ).scalar_one_or_none()
         if existing is not None:
+            # Already session-tracked — mutating the attribute is enough.
             existing.reporting_currency_code = "USD"
-            self.session.add(existing)
         else:
             self.session.add(
                 WorkspaceFinanceSetting(workspace_id=workspace_id, reporting_currency_code="USD")
