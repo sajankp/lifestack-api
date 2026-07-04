@@ -10,6 +10,8 @@ import from a single authoritative location, and makes them available to the
 ``finance`` module if currency helpers are needed there in future.
 """
 
+from __future__ import annotations
+
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
