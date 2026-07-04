@@ -398,10 +398,6 @@ class TransactionService:
         audit_logger: AuditLogger | None = None,
     ) -> TransactionResponse:
         tx = await self.create_transaction(actor_id, workspace_id, tx_in, audit_logger)
-        category = await self.category_repo.get_by_public_id(workspace_id, tx_in.category_id)
-        if not category:
-            raise NotFoundError(detail="Transaction category was not found")
-
         account_public_id = None
         if tx.account_id is not None:
             if tx_in.account_id is not None:
@@ -410,7 +406,7 @@ class TransactionService:
                 account = await self.account_repo.get_by_id(workspace_id, tx.account_id)
                 account_public_id = account.public_id if account else None
 
-        return transaction_response(tx, category.public_id, account_public_id)
+        return transaction_response(tx, tx_in.category_id, account_public_id)
 
     async def update_transaction_with_details(
         self,
@@ -423,19 +419,25 @@ class TransactionService:
         tx = await self.update_transaction(
             workspace_id, transaction_id, tx_in, actor_id=actor_id, audit_logger=audit_logger
         )
-        cat_cache = await self._build_category_cache(workspace_id)
-        account_cache = await self._build_account_cache(workspace_id)
-        import_cache = await self._build_import_batch_cache(workspace_id, [tx])
-
-        category_public_id = cat_cache.get(tx.category_id)
-        if category_public_id is None:
+        category = await self.category_repo.get_by_id(workspace_id, tx.category_id)
+        if not category:
             raise NotFoundError(detail="Transaction category was not found")
+
+        account_public_id = None
+        if tx.account_id is not None:
+            account = await self.account_repo.get_by_id(workspace_id, tx.account_id)
+            account_public_id = account.public_id if account else None
+
+        import_batch = None
+        if tx.source_import_id is not None:
+            import_repo = ImportRepository(self.repository.session)
+            import_batch = await import_repo.get_by_id(workspace_id, tx.source_import_id)
 
         return transaction_response(
             tx,
-            category_public_id,
-            account_cache.get(tx.account_id) if tx.account_id is not None else None,
-            import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None,
+            category.public_id,
+            account_public_id,
+            import_batch,
         )
 
     async def _resolve_category(
@@ -1168,9 +1170,7 @@ class BudgetService:
         budget = await self.create_budget(
             workspace_id, budget_in, actor_id=actor_id, audit_logger=audit_logger
         )
-        category = await self.category_repo.get_by_public_id(workspace_id, budget_in.category_id)
-        category_public_id = category.public_id if category else None
-        return budget_response(budget, category_public_id)
+        return budget_response(budget, budget_in.category_id)
 
     async def update_budget_with_details(
         self,
@@ -1469,8 +1469,9 @@ class RecurringTransactionService:
         recurring_id: uuid.UUID,
     ) -> RecurringTransactionResponse:
         item = await self.get_recurring(workspace_id, recurring_id)
-        cat_cache = await self._build_category_cache(workspace_id)
-        return recurring_response(item, cat_cache.get(item.category_id))
+        category = await self.category_repo.get_by_id(workspace_id, item.category_id)
+        category_public_id = category.public_id if category else None
+        return recurring_response(item, category_public_id)
 
     async def update_recurring_with_details(
         self,
@@ -1479,8 +1480,9 @@ class RecurringTransactionService:
         payload: RecurringTransactionUpdate,
     ) -> RecurringTransactionResponse:
         item = await self.update_recurring(workspace_id, recurring_id, payload)
-        cat_cache = await self._build_category_cache(workspace_id)
-        return recurring_response(item, cat_cache.get(item.category_id))
+        category = await self.category_repo.get_by_id(workspace_id, item.category_id)
+        category_public_id = category.public_id if category else None
+        return recurring_response(item, category_public_id)
 
     async def list_recurring(
         self, workspace_id: int, is_active: bool | None, limit: int, offset: int

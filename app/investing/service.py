@@ -885,10 +885,8 @@ class InstrumentService:
         instruments = await self.list_instruments(workspace_id)
         company_ids = [item.company_id for item in instruments if item.company_id is not None]
         companies = await self.company_repo.get_by_ids(company_ids)
-        company_cache = {c.id: c for c in companies.values()}
         return [
-            await instrument_response(self, workspace_id, item, company_cache)
-            for item in instruments
+            await instrument_response(self, workspace_id, item, companies) for item in instruments
         ]
 
     async def create_instrument_with_details(
