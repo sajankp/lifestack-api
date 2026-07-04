@@ -107,6 +107,7 @@ lifestack-api/
 |   |   |-- exceptions.py
 |   |   |-- scheduler.py
 |   |   |-- audit.py
+|   |   |-- currency.py           # stateless currency & FX helpers
 |   |   `-- database/
 |   |       `-- postgres.py
 |   |
@@ -129,6 +130,7 @@ lifestack-api/
 |   |   |-- router.py
 |   |   |-- service.py
 |   |   |-- repository.py
+|   |   |-- response_helpers.py  # response schema transformations
 |   |   |-- models.py
 |   |   |-- schemas.py
 |   |   `-- tests/
@@ -137,6 +139,7 @@ lifestack-api/
 |   |   |-- router.py
 |   |   |-- service.py
 |   |   |-- repository.py
+|   |   |-- response_helpers.py  # response schema transformations
 |   |   |-- models.py
 |   |   |-- schemas.py
 |   |   `-- tests/

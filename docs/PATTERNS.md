@@ -865,4 +865,18 @@ async def request_validation_exception_handler(request, exc):
             "instance": str(request.url.path),
         },
     )
+
+
+## Response Helpers & FK Resolution in Services
+
+To keep router files slim and isolate HTTP concerns from domain mapping, all foreign key resolution, cache building, and entity-to-response mapping should be handled within service helper functions or dedicated `response_helpers.py` files.
+
+### Naming Conventions
+
+- **`_to_response` mapping helper**: For simple entities, use a helper of the signature `_to_response(entity: Model, **caches) -> ResponseSchema`.
+- **`_build_X_cache` cache builder**: When resolving batch relationships (e.g. looking up accounts or import batches to prevent N+1 queries), implement internal cache builders returning a mapping:
+  `async def _build_X_cache(self, workspace_id: int, items: list) -> dict`
+- **Detailed wrapper methods**: Expose methods on the service class named `[action]_with_details` (e.g., `list_holdings_with_details`) that fetch the raw entities, build the necessary caches, construct the detailed response schemas using helpers, and return them directly to the router.
+
+This ensures routers only delegate to a single service call and return the validated response model directly.
 ```
