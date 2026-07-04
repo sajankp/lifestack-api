@@ -197,11 +197,12 @@ class NotificationRepository:
     async def mark_delivery(
         self, delivery: NotificationDelivery, status: str, error_detail: str | None = None
     ) -> NotificationDelivery:
+        """Mutates the already session-tracked ``delivery`` in place; caller
+        flushes once after the batch (see ``deliver_pending_push_notifications``)
+        instead of round-tripping per row."""
         delivery.status = status
         delivery.attempted_at = datetime.now(UTC)
         delivery.error_detail = error_detail
-        self.session.add(delivery)
-        await self.session.flush()
         return delivery
 
 
@@ -224,11 +225,14 @@ class PushSubscriptionRepository:
         p256dh: str,
         auth: str,
         device_label: str | None,
+        existing: PushSubscription | None = None,
     ) -> PushSubscription:
         """Create a new subscription, or reactivate/refresh one already
         registered for this endpoint — re-subscribing the same browser must
-        not create a duplicate row."""
-        existing = await self.get_by_endpoint(endpoint)
+        not create a duplicate row. Pass ``existing`` if the caller already
+        looked it up, to avoid querying for it twice."""
+        if existing is None:
+            existing = await self.get_by_endpoint(endpoint)
         if existing is not None:
             existing.workspace_id = workspace_id
             existing.user_id = user_id
@@ -302,13 +306,13 @@ class PushSubscriptionRepository:
         await self.session.flush()
 
     async def mark_success(self, subscription: PushSubscription) -> None:
+        """Mutates in place; caller flushes once after the batch (see
+        ``deliver_pending_push_notifications``)."""
         subscription.last_success_at = datetime.now(UTC)
-        self.session.add(subscription)
-        await self.session.flush()
 
     async def mark_failure(self, subscription: PushSubscription, *, deactivate: bool) -> None:
+        """Mutates in place; caller flushes once after the batch (see
+        ``deliver_pending_push_notifications``)."""
         subscription.last_failure_at = datetime.now(UTC)
         if deactivate:
             subscription.is_active = False
-        self.session.add(subscription)
-        await self.session.flush()

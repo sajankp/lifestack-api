@@ -742,7 +742,11 @@ async def push_delivery_job() -> None:
     rows (spec-052). Global, not per-workspace — a delivery queue has no
     natural workspace-iteration shape, so this follows fx_rate_ingestion_job's
     single-lock/single-session pattern rather than run_workspace_job."""
-    if not settings.VAPID_PRIVATE_KEY or not settings.VAPID_PUBLIC_KEY:
+    if (
+        not settings.VAPID_PRIVATE_KEY
+        or not settings.VAPID_PUBLIC_KEY
+        or not settings.VAPID_SUBJECT
+    ):
         return
 
     start_time = datetime.now(UTC)

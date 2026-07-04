@@ -1,7 +1,14 @@
 import uuid
 
 from app.core.exceptions import NotFoundError, ValidationError
+from app.notifications.models import NotificationPreference
 from app.notifications.repository import NotificationRepository, PushSubscriptionRepository
+
+# Sentinel distinguishing "caller didn't pre-fetch a preference" from a
+# legitimately-absent preference row (None). Lets batch callers (e.g. a
+# per-workspace reminder loop) pass an already-looked-up preference/
+# subscription-status per user instead of re-querying them once per notify().
+_UNSET = object()
 
 
 class NotificationService:
@@ -19,8 +26,13 @@ class NotificationService:
         module: str = "system",
         entity_type: str | None = None,
         entity_public_id=None,
+        *,
+        preference: NotificationPreference | None = _UNSET,  # type: ignore[assignment]
+        has_push_subscription: bool | None = None,
     ):
-        pref = await self.repository.get_preference(workspace_id, user_id, category)
+        if preference is _UNSET:
+            preference = await self.repository.get_preference(workspace_id, user_id, category)
+        pref = preference
         if pref and pref.is_muted:
             return None
         notification = await self.repository.create_notification({
@@ -38,10 +50,11 @@ class NotificationService:
         # Push is opt-in: no preference row means channel_push defaults to
         # False, same as the model default (spec-052).
         if pref and pref.channel_push:
-            has_subscription = await self.repository.has_active_push_subscription(
-                workspace_id, user_id
-            )
-            if has_subscription:
+            if has_push_subscription is None:
+                has_push_subscription = await self.repository.has_active_push_subscription(
+                    workspace_id, user_id
+                )
+            if has_push_subscription:
                 await self.repository.create_pending_push_delivery(notification.id)
 
         return notification
@@ -100,7 +113,7 @@ class PushSubscriptionService:
             # would silently move push delivery to the wrong account.
             raise ValidationError(detail="This push endpoint is already registered")
         return await self.repository.upsert(
-            workspace_id, user_id, endpoint, p256dh, auth, device_label
+            workspace_id, user_id, endpoint, p256dh, auth, device_label, existing=existing
         )
 
     async def list_subscriptions(self, workspace_id: int, user_id: int):
