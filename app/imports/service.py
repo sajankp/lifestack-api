@@ -17,7 +17,13 @@ from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.database import postgres
 from app.core.exceptions import NotFoundError, ValidationError
-from app.finance.models import Account, CapitalTransfer, Currency, TransferModule
+from app.finance.models import (
+    Account,
+    CapitalTransfer,
+    Currency,
+    TransferModule,
+    WorkspaceFinanceSetting,
+)
 from app.finance.repository import AccountRepository, CurrencyRepository
 from app.imports.cams_cas_parser import parse_cams_cas
 from app.imports.models import (
@@ -464,10 +470,34 @@ class ImportService:
                     )
                 )
             extra_json = {"target_account_id": str(target_account_id)}
+        elif module == ImportModule.spending_transactions:
+            if not (
+                upload.filename.lower().endswith(".csv")
+                or upload.filename.lower().endswith(".xlsx")
+            ):
+                raise ValidationError(detail="Only .csv and .xlsx files are supported")
+            # Optional import-level fallback account (spec-054) — used for
+            # rows whose account_name is missing/unmatched, before falling
+            # back to the workspace default.
+            if target_account_id is not None:
+                account = (
+                    await self.session.execute(
+                        select(Account).where(
+                            Account.workspace_id == workspace_id,
+                            Account.public_id == target_account_id,
+                            Account.is_active,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if account is None:
+                    raise NotFoundError(
+                        detail=f"Account with id {target_account_id} not found in this workspace"
+                    )
+                extra_json = {"target_account_id": str(target_account_id)}
         else:
             if target_account_id is not None:
                 raise ValidationError(
-                    detail="target_account_id is only supported for CAMS CAS imports"
+                    detail="target_account_id is only supported for CAMS CAS and spending transaction imports"
                 )
             if not (
                 upload.filename.lower().endswith(".csv")
@@ -524,6 +554,34 @@ class ImportService:
         by_name, by_public = await self._category_maps(workspace_id)
         account_map = await self._account_map(workspace_id)
         currency_set = await self._currency_set()
+
+        # Fallback account for spending-transaction rows with no (matched)
+        # account_name (spec-054): the import-level target account set at
+        # upload time, else the workspace default. Resolved once, not per row.
+        fallback_account_id: int | None = None
+        if batch.module == ImportModule.spending_transactions:
+            target_account_public_id = (batch.extra_json or {}).get("target_account_id")
+            if target_account_public_id:
+                target_account = (
+                    await self.session.execute(
+                        select(Account).where(
+                            Account.workspace_id == workspace_id,
+                            Account.public_id == uuid.UUID(target_account_public_id),
+                        )
+                    )
+                ).scalar_one_or_none()
+                fallback_account_id = target_account.id if target_account else None
+            if fallback_account_id is None:
+                finance_setting = (
+                    await self.session.execute(
+                        select(WorkspaceFinanceSetting).where(
+                            WorkspaceFinanceSetting.workspace_id == workspace_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                fallback_account_id = (
+                    finance_setting.default_spending_account_id if finance_setting else None
+                )
 
         instruments_map = {}
         order_account_pub_map: dict[str, uuid.UUID] = {}
@@ -722,6 +780,9 @@ class ImportService:
                     else:
                         add_error("category", "required", "category is required", category_raw)
 
+                    # Resolution order (spec-054): row's account_name match →
+                    # import-level target account → workspace default →
+                    # row-level error (blocks commit for that row only).
                     account_id = None
                     if account_name_raw:
                         account_id = account_map.get(account_name_raw.lower())
@@ -732,13 +793,16 @@ class ImportService:
                                 "account not found in workspace",
                                 account_name_raw,
                             )
-                    elif header_mode == "spendee":
-                        add_error(
-                            "account_name",
-                            "required",
-                            "Wallet is required and must match an existing account in the workspace",
-                            account_name_raw,
-                        )
+                    else:
+                        account_id = fallback_account_id
+                        if account_id is None:
+                            add_error(
+                                "account_name",
+                                "required",
+                                "account_name is required — set a target account for this "
+                                "import or a default spending account in Finance Settings",
+                                account_name_raw,
+                            )
 
                     payload = {
                         "occurred_at": occurred_at.isoformat() if occurred_at else None,

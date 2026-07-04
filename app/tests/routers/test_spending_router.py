@@ -56,10 +56,20 @@ async def test_transaction_router_endpoints(client: AsyncClient):
     list_res = await client.get("/v1/spending/categories", cookies=cookies)
     category_id = list_res.json()["items"][0]["public_id"]
 
+    # Create an account
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=cookies,
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     # 1. Create a transaction
     tx_data = {
         "amount": 42.50,
         "category_id": category_id,
+        "account_id": account_id,
         "type": "expense",
         "description": "Lunch with team",
         "occurred_at": "2026-06-05T12:00:00Z",

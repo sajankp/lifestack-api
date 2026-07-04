@@ -59,6 +59,7 @@ class WorkspaceFinanceSettingUpdate(BaseModel):
     reporting_currency_code: str | None = Field(default=None, min_length=1, max_length=10)
     currency_display_preference: CurrencyDisplayPreference | None = None
     lookthrough_min_weight_pct: Decimal | None = Field(default=None, ge=0, le=100)
+    default_spending_account_id: uuid.UUID | None = Field(default=None)
 
     @field_validator("reporting_currency_code")
     @classmethod
@@ -72,6 +73,7 @@ class WorkspaceFinanceSettingResponse(BaseModel):
     reporting_currency_code: str | None
     currency_display_preference: CurrencyDisplayPreference
     lookthrough_min_weight_pct: Decimal
+    default_spending_account_id: uuid.UUID | None = None
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

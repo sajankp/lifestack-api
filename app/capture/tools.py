@@ -6,7 +6,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditLogger
-from app.finance.repository import AccountRepository, CurrencyRepository
+from app.finance.repository import AccountRepository, CurrencyRepository, FinanceSettingRepository
 from app.investing.order_service import InvestingOrderService
 from app.investing.repository import (
     CashBalanceRepository,
@@ -60,7 +60,10 @@ class AgentTools:
         self.account_repo = AccountRepository(session)
         self.tx_repo = TransactionRepository(session)
         self.cat_repo = CategoryRepository(session)
-        self.tx_service = TransactionService(self.tx_repo, self.cat_repo, self.account_repo)
+        self.setting_repo = FinanceSettingRepository(session)
+        self.tx_service = TransactionService(
+            self.tx_repo, self.cat_repo, self.account_repo, self.setting_repo
+        )
         self.category_service = CategoryService(self.cat_repo)
 
         self.cash_repo = CashBalanceRepository(session)

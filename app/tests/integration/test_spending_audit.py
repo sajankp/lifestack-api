@@ -124,8 +124,17 @@ async def test_spending_audit_logging_e2e(client: AsyncClient):
     # Transaction: create → update → delete
     # =========================================================================
 
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=cookies,
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     tx_payload = {
         "category_id": cat_uuid,
+        "account_id": account_id,
         "amount": "120.50",
         "type": "expense",
         "occurred_at": datetime.now(UTC).isoformat(),

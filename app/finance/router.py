@@ -180,9 +180,19 @@ async def get_workspace_finance_settings(
             reporting_currency_code=None,
             currency_display_preference=CurrencyDisplayPreference.symbol,
             lookthrough_min_weight_pct=settings.LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT,
+            default_spending_account_id=None,
             updated_at=datetime.now(UTC),
         )
-    return WorkspaceFinanceSettingResponse.model_validate(row)
+    default_account_public_id = await setting_service.resolve_default_account_public_id(
+        workspace_id, row
+    )
+    return WorkspaceFinanceSettingResponse(
+        reporting_currency_code=row.reporting_currency_code,
+        currency_display_preference=row.currency_display_preference,
+        lookthrough_min_weight_pct=row.lookthrough_min_weight_pct,
+        default_spending_account_id=default_account_public_id,
+        updated_at=row.updated_at,
+    )
 
 
 @router.patch("/settings", response_model=WorkspaceFinanceSettingResponse)
@@ -197,7 +207,16 @@ async def update_workspace_finance_settings(
         workspace_id,
         setting_in.model_dump(exclude_unset=True),
     )
-    return WorkspaceFinanceSettingResponse.model_validate(row)
+    default_account_public_id = await setting_service.resolve_default_account_public_id(
+        workspace_id, row
+    )
+    return WorkspaceFinanceSettingResponse(
+        reporting_currency_code=row.reporting_currency_code,
+        currency_display_preference=row.currency_display_preference,
+        lookthrough_min_weight_pct=row.lookthrough_min_weight_pct,
+        default_spending_account_id=default_account_public_id,
+        updated_at=row.updated_at,
+    )
 
 
 @router.get("/settings/user", response_model=UserFinanceSettingResponse)

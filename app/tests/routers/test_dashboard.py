@@ -60,11 +60,20 @@ async def test_dashboard_summary_with_data(client: AsyncClient):
     categories = cat_res.json()["items"]
     category_id = categories[0]["public_id"]
 
+    # Create an account
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     # Create a spending transaction
     spending_data = {
         "amount": "15.50",
         "description": "Lunch",
         "category_id": category_id,
+        "account_id": account_id,
         "type": "expense",
         "occurred_at": datetime.now(UTC).isoformat(),
     }

@@ -31,6 +31,16 @@ async def _register_and_login(client: AsyncClient, suffix: str):
     return {"cookies": dict(login.cookies)}
 
 
+async def _create_account(client: AsyncClient, creds: dict, name: str = "Wallet") -> str:
+    response = await client.post(
+        "/v1/finance/accounts",
+        json={"name": name, "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["public_id"]
+
+
 @pytest.mark.asyncio
 async def test_import_rejects_oversized_multipart_before_parsing(client: AsyncClient):
     oversized_file = io.BytesIO(b"x" * (settings.MAX_MULTIPART_BODY_BYTES + 1))
@@ -57,6 +67,7 @@ async def test_import_spending_transactions_fail_all_on_single_error(client: Asy
 
     cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
     food = next(c for c in cats if c["name"] == "Food & Dining")
+    account_id = await _create_account(client, creds)
 
     csv_content = (
         "occurred_at,type,amount,category,description\n"
@@ -65,7 +76,7 @@ async def test_import_spending_transactions_fail_all_on_single_error(client: Asy
     )
 
     files = {"file": ("tx.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
-    data = {"module": "spending-transactions"}
+    data = {"module": "spending-transactions", "target_account_id": account_id}
     validate = await client.post("/v1/imports", data=data, files=files, cookies=creds["cookies"])
     assert validate.status_code == 200, validate.text
     payload = validate.json()
@@ -145,13 +156,14 @@ async def test_import_accepts_utf8_bom_csv(client: AsyncClient):
 
     cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
     food = next(c for c in cats if c["name"] == "Food & Dining")
+    account_id = await _create_account(client, creds)
 
     csv_content = (
         "\ufeffoccurred_at,type,amount,category,description\n"
         f"{datetime.now(UTC).isoformat()},expense,10.00,{food['public_id']},valid row\n"
     )
     files = {"file": ("tx.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
-    data = {"module": "spending-transactions"}
+    data = {"module": "spending-transactions", "target_account_id": account_id}
     validate = await client.post("/v1/imports", data=data, files=files, cookies=creds["cookies"])
     assert validate.status_code == 200, validate.text
     payload = validate.json()
@@ -301,6 +313,7 @@ async def test_import_spendee_csv_fails_when_wallet_does_not_match_account(
 @pytest.mark.asyncio
 async def test_import_commit_reports_auto_created_categories(client: AsyncClient):
     creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    account_id = await _create_account(client, creds)
 
     csv_content = (
         "occurred_at,type,amount,category,description\n"
@@ -310,7 +323,7 @@ async def test_import_commit_reports_auto_created_categories(client: AsyncClient
     files = {"file": ("tx.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
     validate = await client.post(
         "/v1/imports",
-        data={"module": "spending-transactions"},
+        data={"module": "spending-transactions", "target_account_id": account_id},
         files=files,
         cookies=creds["cookies"],
     )
@@ -364,6 +377,7 @@ async def test_import_delete_completed_spending_transactions_rolls_back_records(
     client: AsyncClient,
 ):
     creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    account_id = await _create_account(client, creds)
 
     csv_content = (
         "occurred_at,type,amount,category,description\n"
@@ -372,7 +386,7 @@ async def test_import_delete_completed_spending_transactions_rolls_back_records(
     files = {"file": ("tx.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
     validate = await client.post(
         "/v1/imports",
-        data={"module": "spending-transactions"},
+        data={"module": "spending-transactions", "target_account_id": account_id},
         files=files,
         cookies=creds["cookies"],
     )
