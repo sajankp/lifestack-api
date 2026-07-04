@@ -13,7 +13,7 @@ from app.auth.repository import AuthSessionRepository
 from app.auth.schemas import UserCreate
 from app.auth.service import AuthService
 from app.config import settings
-from app.core.audit import AuditLogger
+from app.core.audit import AuditLogger, snapshot_columns
 from app.core.recurrence import advance_due_date
 from app.dashboard.schemas import (
     DashboardSummary,
@@ -49,7 +49,7 @@ from app.spending.service import (
 )
 from app.todo.models import PriorityEnum, RecurringTodoRule, Todo
 from app.todo.repository import TodoRepository
-from app.todo.service import TodoService
+from app.todo.service import _TODO_AUDIT_FIELDS, TodoService
 
 logger = structlog.get_logger(__name__)
 
@@ -209,13 +209,11 @@ class DashboardSummaryWorkflow:
 
 
 def _snapshot_todo(todo: Todo) -> dict:
-    return {
-        "title": todo.title,
-        "description": todo.description,
-        "due_date": todo.due_date.isoformat() if todo.due_date else None,
-        "priority": todo.priority,
-        "completed": todo.completed,
-    }
+    data = snapshot_columns(todo, _TODO_AUDIT_FIELDS)
+    # Convert date field to ISO format for JSON serialization
+    if data.get("due_date") is not None:
+        data["due_date"] = data["due_date"].isoformat()
+    return data
 
 
 async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace: Workspace) -> None:

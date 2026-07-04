@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from app.core.audit import AuditLogger
+from app.core.audit import AuditLogger, snapshot_columns
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
 from app.core.recurrence import validate_recurrence_fields
@@ -17,34 +17,47 @@ from app.todo.schemas import (
     TodoUpdate,
 )
 
+_TODO_AUDIT_FIELDS = (
+    "title",
+    "description",
+    "due_date",
+    "priority",
+    "completed",
+)
+
+_RECURRING_RULE_AUDIT_FIELDS = (
+    "title",
+    "description",
+    "priority",
+    "frequency",
+    "interval",
+    "anchor_date",
+    "due_time",
+    "timezone",
+    "next_due_date",
+    "end_date",
+    "is_active",
+    "monthly_mode",
+    "by_weekday",
+    "by_ordinal",
+)
+
 
 def _snapshot_todo(todo: Todo) -> dict:
-    return {
-        "title": todo.title,
-        "description": todo.description,
-        "due_date": todo.due_date.isoformat() if todo.due_date else None,
-        "priority": todo.priority,
-        "completed": todo.completed,
-    }
+    data = snapshot_columns(todo, _TODO_AUDIT_FIELDS)
+    # Convert date fields to ISO format for JSON serialization
+    if data.get("due_date") is not None:
+        data["due_date"] = data["due_date"].isoformat()
+    return data
 
 
 def _snapshot_recurring_rule(rule: RecurringTodoRule) -> dict:
-    return {
-        "title": rule.title,
-        "description": rule.description,
-        "priority": rule.priority,
-        "frequency": rule.frequency,
-        "interval": rule.interval,
-        "anchor_date": rule.anchor_date.isoformat() if rule.anchor_date else None,
-        "due_time": rule.due_time.isoformat() if rule.due_time else None,
-        "timezone": rule.timezone,
-        "next_due_date": rule.next_due_date.isoformat() if rule.next_due_date else None,
-        "end_date": rule.end_date.isoformat() if rule.end_date else None,
-        "is_active": rule.is_active,
-        "monthly_mode": rule.monthly_mode,
-        "by_weekday": rule.by_weekday,
-        "by_ordinal": rule.by_ordinal,
-    }
+    data = snapshot_columns(rule, _RECURRING_RULE_AUDIT_FIELDS)
+    # Convert date/time fields to ISO format for JSON serialization
+    for field in ("anchor_date", "due_time", "next_due_date", "end_date"):
+        if data.get(field) is not None:
+            data[field] = data[field].isoformat()
+    return data
 
 
 class TodoService:

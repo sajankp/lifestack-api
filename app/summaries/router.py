@@ -10,7 +10,7 @@ from app.core.dependencies import (
     get_weekly_summary_service,
     require_min_role,
 )
-from app.core.pagination import PaginatedResponse, PaginationParams
+from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.summaries.schemas import WeeklySummaryResponse
 from app.summaries.service import WeeklySummaryService
 
@@ -33,12 +33,7 @@ async def list_weekly_summaries(
     items, total = await service.list(
         workspace_id, from_date, to_date, pagination.limit, pagination.offset
     )
-    return PaginatedResponse(
-        items=[WeeklySummaryResponse.model_validate(i) for i in items],
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
-    )
+    return build_page([WeeklySummaryResponse.model_validate(i) for i in items], total, pagination)
 
 
 @router.get("/latest", response_model=WeeklySummaryResponse)

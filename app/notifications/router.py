@@ -12,7 +12,7 @@ from app.core.dependencies import (
     require_min_role,
 )
 from app.core.exceptions import PushNotConfiguredError
-from app.core.pagination import PaginatedResponse, PaginationParams
+from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.notifications.schemas import (
     NotificationPreferenceResponse,
     NotificationPreferenceUpdate,
@@ -56,12 +56,7 @@ async def list_notifications(
     items, total = await service.list_notifications(
         workspace_id, user["id"], is_read, category, severity, pagination.limit, pagination.offset
     )
-    return PaginatedResponse(
-        items=[NotificationResponse.model_validate(i) for i in items],
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
-    )
+    return build_page([NotificationResponse.model_validate(i) for i in items], total, pagination)
 
 
 @router.get("/unread-count")

@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 import httpx
 
 from app.config import settings
-from app.core.audit import AuditLogger
+from app.core.audit import AuditLogger, snapshot_columns
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
 from app.finance.models import Account, FxRate
@@ -135,23 +135,42 @@ def _fx_rates_used(
     return rates
 
 
+_HOLDING_AUDIT_FIELDS = (
+    "symbol",
+    "account_id",
+    "quantity",
+    "avg_cost",
+    "currency",
+)
+
+_CASH_BALANCE_AUDIT_FIELDS = (
+    "account_id",
+    "balance",
+    "currency",
+    "as_of",
+)
+
+
 def _snapshot_holding(holding: Holding) -> dict:
-    return {
-        "symbol": holding.symbol,
-        "account_id": holding.account_id,
-        "quantity": str(holding.quantity),
-        "avg_cost": str(holding.avg_cost),
-        "currency": holding.currency,
-    }
+    data = snapshot_columns(holding, _HOLDING_AUDIT_FIELDS)
+    # Convert Decimal fields for JSON serialization
+    if data.get("quantity") is not None:
+        data["quantity"] = str(data["quantity"])
+    if data.get("avg_cost") is not None:
+        data["avg_cost"] = str(data["avg_cost"])
+    return data
 
 
 def _snapshot_cash_balance(cash: CashBalance) -> dict:
-    return {
-        "account_id": cash.account_id,
-        "balance": str(cash.balance),
-        "currency": cash.currency,
-        "as_of": cash.as_of.isoformat() if hasattr(cash.as_of, "isoformat") else str(cash.as_of),
-    }
+    data = snapshot_columns(cash, _CASH_BALANCE_AUDIT_FIELDS)
+    # Convert Decimal and datetime fields for JSON serialization
+    if data.get("balance") is not None:
+        data["balance"] = str(data["balance"])
+    if data.get("as_of") is not None:
+        data["as_of"] = (
+            data["as_of"].isoformat() if hasattr(data["as_of"], "isoformat") else str(data["as_of"])
+        )
+    return data
 
 
 class HoldingService:

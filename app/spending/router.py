@@ -19,7 +19,7 @@ from app.core.dependencies import (
     require_min_role,
 )
 from app.core.exceptions import NotFoundError
-from app.core.pagination import PaginatedResponse, PaginationParams
+from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.finance.service import AccountService
 from app.imports.models import ImportBatch, ImportModule
 from app.imports.repository import ImportRepository
@@ -210,12 +210,7 @@ async def list_categories(
     cats, total = await category_service.list_categories(
         workspace_id, pagination.limit, pagination.offset
     )
-    return PaginatedResponse(
-        items=[_category_response(c) for c in cats],
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
-    )
+    return build_page([_category_response(c) for c in cats], total, pagination)
 
 
 @router.post("/categories", response_model=CategoryResponse, status_code=status.HTTP_201_CREATED)
@@ -317,8 +312,8 @@ async def list_transactions(
     missing_category_ids = {tx.category_id for tx in txs if tx.category_id not in cat_cache}
     if missing_category_ids:
         raise NotFoundError(detail="One or more transaction categories were not found")
-    return PaginatedResponse(
-        items=[
+    return build_page(
+        [
             _transaction_response(
                 tx,
                 cat_cache[tx.category_id],
@@ -327,9 +322,8 @@ async def list_transactions(
             )
             for tx in txs
         ],
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
+        total,
+        pagination,
     )
 
 
@@ -566,14 +560,13 @@ async def list_budgets(
     )
     cat_cache = await _build_category_cache(category_service, workspace_id)
     import_cache = await _build_import_batch_cache(import_repo, workspace_id, budgets)
-    return PaginatedResponse(
-        items=[
+    return build_page(
+        [
             _budget_response(b, cat_cache.get(b.category_id), import_cache.get(b.source_import_id))
             for b in budgets
         ],
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
+        total,
+        pagination,
     )
 
 
@@ -631,11 +624,10 @@ async def list_recurring(
         workspace_id, is_active, pagination.limit, pagination.offset
     )
     cat_cache = await _build_category_cache(category_service, workspace_id)
-    return PaginatedResponse(
-        items=[_recurring_response(item, cat_cache.get(item.category_id)) for item in items],
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
+    return build_page(
+        [_recurring_response(item, cat_cache.get(item.category_id)) for item in items],
+        total,
+        pagination,
     )
 
 
