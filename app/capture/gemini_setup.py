@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from app.config import settings
 from app.core.database import postgres
+from app.finance.models import AccountType
 from app.finance.repository import AccountRepository, FinanceSettingRepository
 from app.spending.repository import CategoryRepository
 
@@ -42,7 +43,11 @@ async def _fetch_workspace_context(workspace_id: int) -> str:
         default_account_id = setting.default_spending_account_id if setting else None
 
     category_names = sorted((c.name for c in categories), key=str.lower)
-    active_accounts = [a for a in accounts if a.is_active]
+    # Brokerage accounts are not voice targets (spec-059: investing is
+    # read-only on this surface), so don't spend prompt budget on them.
+    active_accounts = [
+        a for a in accounts if a.is_active and a.account_type != AccountType.brokerage
+    ]
 
     if not category_names and not active_accounts:
         return ""
@@ -98,7 +103,9 @@ def _build_setup_message(
             "generationConfig": {
                 "responseModalities": response_modalities,
                 "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Aoede"}}},
-                "thinkingConfig": {"thinkingBudget": 0},
+                # Modest budget improves tool-argument quality (spec-059); set
+                # GEMINI_THINKING_BUDGET=0 if the model rejects a non-zero value.
+                "thinkingConfig": {"thinkingBudget": settings.GEMINI_THINKING_BUDGET},
             },
             "systemInstruction": {
                 "parts": [
@@ -106,8 +113,11 @@ def _build_setup_message(
                         "text": (
                             "You are a helpful personal voice assistant. You have access to workspace tools: "
                             "`create_todo_task`, `create_recurring_todo`, `list_todos`, `get_todo`, "
-                            "`update_todo`, `delete_todo`, and `list_next_due_items`, plus finance tools for "
-                            "logging transactions and cash balances. When a user asks to manage todos, prefer "
+                            "`update_todo`, `delete_todo`, and `list_next_due_items`, plus "
+                            "`log_spending_transaction` for expenses and the read-only "
+                            "`get_investing_summary` for portfolio questions. You cannot create or modify "
+                            "investing data (orders, cash balances) — if asked, say so and offer the summary "
+                            "instead. When a user asks to manage todos, prefer "
                             "the todo functions and return concise, factual results. Always call the matching "
                             "function when the user requests an action (creating, listing, retrieving, updating, or deleting a todo). "
                             "Treat reminders and todos as the same persisted concept: whenever the user asks "
@@ -130,10 +140,13 @@ def _build_setup_message(
                             "in the workspace-data block below; if nothing fits, use 'other' and tell the user "
                             "you filed it under Other. If the tool returns `category_matched: false`, say so and "
                             "offer to use a real category instead of claiming a clean match. Always state which "
-                            "account a spend was logged to. Include `account_name` when the user names an "
-                            "account; otherwise the workspace default is used and you must state it. If the "
-                            "tool returns `needs_account: true`, ask the user one short question naming the "
-                            "available accounts instead of asserting success. "
+                            "account a spend was logged to. Include `account_name` whenever the user refers to "
+                            "an account in any way, even loosely ('my wallet', 'the card') — pass the reference "
+                            "as spoken; the server matches it against the workspace accounts, so an exact name "
+                            "is not required. Omit it only when no account is mentioned; the workspace default "
+                            "is then used and you must state it. If the tool returns `needs_account: true`, ask "
+                            "the user one short question naming the returned candidate or available accounts "
+                            "instead of asserting success. "
                             "For informational queries, use `list_todos` or `list_next_due_items`. Keep spoken responses "
                             "short and avoid repeating structured data — let the tools provide authoritative outputs."
                             f"{workspace_context}"
@@ -237,77 +250,16 @@ def _build_setup_message(
                                     },
                                     "account_name": {
                                         "type": "STRING",
-                                        "description": "Exact workspace account name. Omit only when the user names no account; the workspace default is then used and must be stated back to the user.",
+                                        "description": "The account the user referred to, as spoken (e.g. 'my wallet', 'HDFC card') — the server matches it against workspace accounts, so an exact name is not required. Omit only when the user names no account; the workspace default is then used and must be stated back to the user.",
                                     },
                                 },
                                 "required": ["amount", "category_name", "description"],
                             },
                         },
                         {
-                            "name": "log_cash_balance",
-                            "description": "Record/update cash balance for an investing account.",
-                            "parameters": {
-                                "type": "OBJECT",
-                                "properties": {
-                                    "account_name": {
-                                        "type": "STRING",
-                                        "description": "The name of the brokerage or bank account (e.g., 'Brokerage Cash').",
-                                    },
-                                    "balance": {
-                                        "type": "STRING",
-                                        "description": "The cash balance amount as a string (e.g. '1200.50').",
-                                    },
-                                    "currency": {
-                                        "type": "STRING",
-                                        "description": "The currency code (e.g. 'USD', 'EUR', 'GBP').",
-                                    },
-                                },
-                                "required": ["account_name", "balance", "currency"],
-                            },
-                        },
-                        {
-                            "name": "place_stock_order",
-                            "description": "Place a buy or sell order for a stock in a brokerage account. Updates cash balance and holding quantity automatically.",
-                            "parameters": {
-                                "type": "OBJECT",
-                                "properties": {
-                                    "order_type": {
-                                        "type": "STRING",
-                                        "description": "Either 'buy' or 'sell'.",
-                                    },
-                                    "symbol": {
-                                        "type": "STRING",
-                                        "description": "The stock ticker symbol (e.g., 'AAPL', 'INFY.NS').",
-                                    },
-                                    "quantity": {
-                                        "type": "STRING",
-                                        "description": "Number of shares as a string (e.g., '10').",
-                                    },
-                                    "price_per_unit": {
-                                        "type": "STRING",
-                                        "description": "Price per share as a string (e.g., '150.00').",
-                                    },
-                                    "account_name": {
-                                        "type": "STRING",
-                                        "description": "Name of the brokerage account to use.",
-                                    },
-                                    "currency": {
-                                        "type": "STRING",
-                                        "description": "Currency code (e.g., 'USD', 'INR'). Defaults to 'USD'.",
-                                    },
-                                    "brokerage_fee": {
-                                        "type": "STRING",
-                                        "description": "Brokerage commission as a string (e.g., '1.99'). Defaults to '0'.",
-                                    },
-                                },
-                                "required": [
-                                    "order_type",
-                                    "symbol",
-                                    "quantity",
-                                    "price_per_unit",
-                                    "account_name",
-                                ],
-                            },
+                            "name": "get_investing_summary",
+                            "description": "Read-only summary of the investing portfolio: total value, holdings count, cash total, daily change, and reporting currency. Use for questions like 'how is my portfolio doing'. Investing data cannot be created or changed by voice.",
+                            "parameters": {"type": "OBJECT", "properties": {}},
                         },
                         {
                             "name": "list_todos",

@@ -13,6 +13,7 @@ from app.capture.agent import (
     _handle_gemini_message,
     execute_agent_tool,
 )
+from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account, AccountType, WorkspaceFinanceSetting
@@ -150,13 +151,14 @@ async def test_execute_agent_tool_log_spending(seed_agent_test_data):
             [(c.name, c.normalized_name, str(c.public_id)) for c in db_cats],
         )
 
+    # Spoken names rarely match stored casing — resolution must be fuzzy (spec-059).
     res = await execute_agent_tool(
         name="log_spending_transaction",
         args={
             "amount": "15.50",
             "category_name": "food",
             "description": "Lunch at restaurant",
-            "account_name": "Chase Brokerage",
+            "account_name": "everyday wallet",
         },
         user_id=10,
         workspace_id=20,
@@ -169,7 +171,7 @@ async def test_execute_agent_tool_log_spending(seed_agent_test_data):
     assert res["amount"] == "15.50"
     assert res["category"].lower() == "food"
     assert res["description"] == "Lunch at restaurant"
-    assert res["account_name"] == "Chase Brokerage"
+    assert res["account_name"] == "Everyday Wallet"
 
     # Query DB to verify
     async with postgres.async_session_maker() as session:
@@ -199,49 +201,194 @@ async def test_execute_agent_tool_log_spending(seed_agent_test_data):
 
 
 @pytest.mark.asyncio
-async def test_execute_agent_tool_log_cash_balance(seed_agent_test_data):
-    res = await execute_agent_tool(
-        name="log_cash_balance",
-        args={"account_name": "Chase Brokerage", "balance": "10500.25", "currency": "USD"},
-        user_id=10,
-        workspace_id=20,
-    )
+async def test_investing_mutation_tools_removed(seed_agent_test_data):
+    """spec-059: investing is read-only on voice — the mutation tools are gone
+    from the dispatch and leave no rows behind."""
+    for name, args in [
+        (
+            "log_cash_balance",
+            {"account_name": "Chase Brokerage", "balance": "1", "currency": "USD"},
+        ),
+        (
+            "place_stock_order",
+            {
+                "order_type": "buy",
+                "symbol": "AAPL",
+                "quantity": "1",
+                "price_per_unit": "10",
+                "account_name": "Chase Brokerage",
+            },
+        ),
+    ]:
+        res = await execute_agent_tool(name=name, args=args, user_id=10, workspace_id=20)
+        assert res["status"] == "error"
+        assert "Unknown function" in res["message"]
 
-    assert res["status"] == "success"
-    assert res["entity_type"] == "cash_balance"
-    assert res["account_name"] == "Chase Brokerage"
-    assert res["balance"] == "10500.25"
-    assert res["currency"] == "USD"
-
-    # Query DB to verify
     async with postgres.async_session_maker() as session:
-        account = (
-            await session.execute(
-                select(Account)
-                .where(Account.workspace_id == 20)
-                .where(Account.name == "Chase Brokerage")
-            )
-        ).scalar_one()
-
         balances = (
             (await session.execute(select(CashBalance).where(CashBalance.workspace_id == 20)))
             .scalars()
             .all()
         )
-        assert len(balances) == 1
-        assert balances[0].account_id == account.id
-        assert balances[0].balance == 10500.25
-        assert balances[0].currency == "USD"
+        assert balances == []
 
-        # Verify audit logs
-        logs = (
-            (await session.execute(select(AuditLog).where(AuditLog.workspace_id == 20)))
+
+@pytest.mark.asyncio
+async def test_get_investing_summary_tool(seed_agent_test_data):
+    """spec-059: the read-only summary replaces investing mutations on voice."""
+    res = await execute_agent_tool(
+        name="get_investing_summary", args={}, user_id=10, workspace_id=20
+    )
+
+    assert res["status"] == "success"
+    assert res["holdings_count"] == 0
+    assert res["valuation_status"] == "empty"
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_account_containment_and_type_match(seed_agent_test_data):
+    """spec-059: partial names and account-type words resolve to the unique
+    spending-eligible account."""
+    async with postgres.async_session_maker() as session:
+        session.add(
+            Account(
+                workspace_id=20,
+                name="HDFC Credit Card",
+                default_currency_code="USD",
+                account_type=AccountType.card,
+            )
+        )
+        await session.commit()
+
+    by_fragment = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "3.00",
+            "category_name": "food",
+            "description": "Bus fare",
+            "account_name": "wallet",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert by_fragment["status"] == "success"
+    assert by_fragment["account_name"] == "Everyday Wallet"
+
+    by_type = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "4.00",
+            "category_name": "food",
+            "description": "Dinner",
+            "account_name": "the card",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert by_type["status"] == "success"
+    assert by_type["account_name"] == "HDFC Credit Card"
+
+
+@pytest.mark.asyncio
+async def test_whitespace_account_name_falls_back_to_default(seed_agent_test_data):
+    """A whitespace-only account_name must behave as omitted (default account),
+    not empty-string-match every candidate into a bogus ambiguity error."""
+    async with postgres.async_session_maker() as session:
+        session.add(
+            Account(
+                workspace_id=20,
+                name="HDFC Credit Card",
+                default_currency_code="USD",
+                account_type=AccountType.card,
+            )
+        )
+        await session.commit()
+
+    res = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "7.00",
+            "category_name": "food",
+            "description": "Juice",
+            "account_name": "   ",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert res["status"] == "success"
+    assert res["account_name"] == "Everyday Wallet"
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_account_ambiguity_no_match_and_brokerage_exclusion(seed_agent_test_data):
+    """spec-059: ambiguity asks with candidates; no match lists the available
+    accounts; brokerage accounts are never spending targets on voice."""
+    async with postgres.async_session_maker() as session:
+        session.add(
+            Account(
+                workspace_id=20,
+                name="Travel Wallet",
+                default_currency_code="USD",
+                account_type=AccountType.wallet,
+            )
+        )
+        await session.commit()
+
+    ambiguous = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "2.00",
+            "category_name": "food",
+            "description": "Snack",
+            "account_name": "wallet",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert ambiguous["status"] == "error"
+    assert ambiguous["needs_account"] is True
+    assert set(ambiguous["candidates"]) == {"Everyday Wallet", "Travel Wallet"}
+
+    no_match = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "2.00",
+            "category_name": "food",
+            "description": "Snack",
+            "account_name": "nonexistent account",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert no_match["status"] == "error"
+    assert no_match["needs_account"] is True
+    assert "Everyday Wallet" in no_match["available_accounts"]
+
+    brokerage = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "2.00",
+            "category_name": "food",
+            "description": "Snack",
+            "account_name": "Chase Brokerage",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert brokerage["status"] == "error"
+    assert brokerage["needs_account"] is True
+
+    async with postgres.async_session_maker() as session:
+        txs = (
+            (
+                await session.execute(
+                    select(SpendingTransaction).where(SpendingTransaction.workspace_id == 20)
+                )
+            )
             .scalars()
             .all()
         )
-        assert len(logs) == 1
-        assert logs[0].action == "create"
-        assert logs[0].module == "investing"
+        assert txs == []
 
 
 @pytest.mark.asyncio
@@ -264,6 +411,39 @@ def test_voice_agent_declares_timed_todos_and_spending_accounts():
     assert "ISO 8601" in due_description
     assert "UTC offset" in due_description
     assert "account_name" in spending_properties
+    # spec-059: fuzzy matching means the model must not be told to pass exact names.
+    assert "Exact" not in spending_properties["account_name"]["description"]
+    # spec-059: investing is read-only on voice.
+    assert "place_stock_order" not in by_name
+    assert "log_cash_balance" not in by_name
+    assert "get_investing_summary" in by_name
+
+
+def test_setup_message_carries_configured_thinking_budget():
+    """spec-059: the hardcoded thinkingBudget: 0 becomes an env-tunable setting
+    with a modest non-zero default."""
+    setup = _build_setup_message(["TEXT"])
+    thinking = setup["setup"]["generationConfig"]["thinkingConfig"]
+
+    assert thinking["thinkingBudget"] == settings.GEMINI_THINKING_BUDGET
+    assert settings.GEMINI_THINKING_BUDGET > 0
+
+
+@pytest.mark.asyncio
+async def test_interrupted_signal_forwarded_to_client():
+    """spec-059: Gemini's VAD barge-in signal must reach the client so it can
+    flush its scheduled audio queue."""
+    client_ws = FakeClientWebSocket()
+
+    await _handle_gemini_message(
+        {"serverContent": {"interrupted": True}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=1,
+        workspace_id=1,
+    )
+
+    assert {"type": "interrupted"} in client_ws.sent_json
 
 
 def test_capture_session_limiter_rejects_oversized_audio_frame():
@@ -371,6 +551,8 @@ async def test_context_injection_lists_workspace_vocabulary(seed_agent_test_data
     assert "Everyday Wallet (wallet)" in context
     assert "[default spending account]" in context
     assert "ForeignSecretCategory" not in context
+    # spec-059: brokerage accounts are not voice spending targets — don't inject them.
+    assert "Chase Brokerage" not in context
 
     # And it wires into the assembled system instruction verbatim.
     setup = _build_setup_message(["TEXT"], workspace_context=context)
