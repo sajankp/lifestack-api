@@ -10,7 +10,7 @@ from app.auth.models import User
 from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
-from app.finance.models import Account, Currency, FxRate
+from app.finance.models import Account, Currency, FxRate, WorkspaceFinanceSetting
 from app.investing.models import CashBalance, PortfolioSnapshot
 from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.todo.models import Todo
@@ -464,6 +464,19 @@ async def test_workspace_demo_reset(client: AsyncClient):
                 )
             ).scalar_one()
             assert eur_cash.balance == Decimal("1200.00")
+
+            # The demo workspace holds both USD and EUR cash, so a reporting
+            # currency must be set or /investing/performance/summary 422s
+            # ("Reporting currency is required for multi-currency ...").
+            finance_setting = (
+                await session.execute(
+                    select(WorkspaceFinanceSetting).where(
+                        WorkspaceFinanceSetting.workspace_id == owner["workspace_id"]
+                    )
+                )
+            ).scalar_one_or_none()
+            assert finance_setting is not None
+            assert finance_setting.reporting_currency_code == "USD"
 
             eur_usd = (
                 await session.execute(

@@ -7,7 +7,14 @@ from sqlmodel import select
 
 from app.core.audit import AuditLogger
 from app.exports.models import ExportRecord
-from app.finance.models import Account, CapitalTransfer, Currency, FxRate, WorkspaceCurrency
+from app.finance.models import (
+    Account,
+    CapitalTransfer,
+    Currency,
+    FxRate,
+    WorkspaceCurrency,
+    WorkspaceFinanceSetting,
+)
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow
 from app.investing.models import (
     CashBalance,
@@ -189,6 +196,7 @@ class DemoResetService:
             category_map[cat_name.lower()] = category.id
 
         await self._ensure_demo_currencies(workspace_id)
+        await self._ensure_reporting_currency(workspace_id)
 
         brokerage_acct = Account(
             workspace_id=workspace_id,
@@ -377,6 +385,26 @@ class DemoResetService:
                 source="ECB",
             )
         )
+
+    async def _ensure_reporting_currency(self, workspace_id: int) -> None:
+        # The demo fixture seeds both USD and EUR cash balances; without a
+        # reporting currency, /investing/performance/summary 422s and the
+        # dashboard/investing pages show N/A for a freshly-reset workspace.
+        existing = (
+            await self.session.execute(
+                select(WorkspaceFinanceSetting).where(
+                    WorkspaceFinanceSetting.workspace_id == workspace_id
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.reporting_currency_code = "USD"
+            self.session.add(existing)
+        else:
+            self.session.add(
+                WorkspaceFinanceSetting(workspace_id=workspace_id, reporting_currency_code="USD")
+            )
+        await self.session.flush()
 
     async def _ensure_demo_currencies(self, workspace_id: int) -> None:
         for code, name, symbol in [
