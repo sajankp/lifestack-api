@@ -290,6 +290,36 @@ async def test_fuzzy_account_containment_and_type_match(seed_agent_test_data):
 
 
 @pytest.mark.asyncio
+async def test_whitespace_account_name_falls_back_to_default(seed_agent_test_data):
+    """A whitespace-only account_name must behave as omitted (default account),
+    not empty-string-match every candidate into a bogus ambiguity error."""
+    async with postgres.async_session_maker() as session:
+        session.add(
+            Account(
+                workspace_id=20,
+                name="HDFC Credit Card",
+                default_currency_code="USD",
+                account_type=AccountType.card,
+            )
+        )
+        await session.commit()
+
+    res = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "7.00",
+            "category_name": "food",
+            "description": "Juice",
+            "account_name": "   ",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert res["status"] == "success"
+    assert res["account_name"] == "Everyday Wallet"
+
+
+@pytest.mark.asyncio
 async def test_fuzzy_account_ambiguity_no_match_and_brokerage_exclusion(seed_agent_test_data):
     """spec-059: ambiguity asks with candidates; no match lists the available
     accounts; brokerage accounts are never spending targets on voice."""

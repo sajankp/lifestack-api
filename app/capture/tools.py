@@ -487,7 +487,9 @@ class AgentTools:
         # against spending-eligible accounts (spec-059).
         account_public_id = None
         resolved_account_name = None
-        if account_name:
+        # Whitespace-only names count as omitted — an empty normalized query
+        # would containment-match every account into a bogus ambiguity error.
+        if account_name and account_name.strip():
             account, resolution_error = await self._resolve_spending_account(account_name)
             if resolution_error is not None or account is None:
                 return resolution_error
