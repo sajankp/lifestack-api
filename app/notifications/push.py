@@ -33,6 +33,7 @@ def send_web_push(endpoint: str, p256dh: str, auth: str, payload: dict) -> PushR
             data=json.dumps(payload),
             vapid_private_key=settings.VAPID_PRIVATE_KEY,
             vapid_claims={"sub": settings.VAPID_SUBJECT},
+            timeout=10,
         )
         return PushResult(success=True)
     except WebPushException as exc:
