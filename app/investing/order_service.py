@@ -13,7 +13,7 @@ from decimal import Decimal
 
 from pydantic import ValidationError as PydanticValidationError
 
-from app.core.audit import AuditLogger
+from app.core.audit import AuditLogger, snapshot_columns
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
 from app.finance.models import Account
@@ -44,24 +44,45 @@ AVG_COST_PRECISION = Decimal("0.000001")
 LOT_QTY_PRECISION = Decimal("0.00000001")
 
 
+_ORDER_AUDIT_FIELDS = (
+    "order_type",
+    "symbol",
+    "currency",
+    "quantity",
+    "price_per_unit",
+    "gross_amount",
+    "brokerage_fee",
+    "tax_amount",
+    "other_fees",
+    "net_amount",
+    "occurred_at",
+    "exchange_name",
+    "notes",
+)
+
+
 def _snapshot_order(order: InvestingOrder) -> dict:
-    return {
-        "order_type": order.order_type,
-        "symbol": order.symbol,
-        "currency": order.currency,
-        "quantity": str(order.quantity),
-        "price_per_unit": str(order.price_per_unit),
-        "gross_amount": str(order.gross_amount),
-        "brokerage_fee": str(order.brokerage_fee),
-        "tax_amount": str(order.tax_amount),
-        "other_fees": str(order.other_fees),
-        "net_amount": str(order.net_amount),
-        "occurred_at": order.occurred_at.isoformat()
-        if hasattr(order.occurred_at, "isoformat")
-        else str(order.occurred_at),
-        "exchange_name": order.exchange_name,
-        "notes": order.notes,
-    }
+    data = snapshot_columns(order, _ORDER_AUDIT_FIELDS)
+    # Convert Decimal fields for JSON serialization
+    for field_name in (
+        "quantity",
+        "price_per_unit",
+        "gross_amount",
+        "brokerage_fee",
+        "tax_amount",
+        "other_fees",
+        "net_amount",
+    ):
+        if data.get(field_name) is not None:
+            data[field_name] = str(data[field_name])
+    # Convert datetime field for JSON serialization
+    if data.get("occurred_at") is not None:
+        data["occurred_at"] = (
+            data["occurred_at"].isoformat()
+            if hasattr(data["occurred_at"], "isoformat")
+            else str(data["occurred_at"])
+        )
+    return data
 
 
 def _order_total_fees(order: InvestingOrder) -> Decimal:

@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import case, desc, func, select
 
-from app.core.audit import AuditLogger
+from app.core.audit import AuditLogger, snapshot_columns
 from app.core.exceptions import (
     CategoryInUseError,
     ConflictError,
@@ -74,36 +74,55 @@ def _normalize(name: str) -> str:
     return name.strip().lower()
 
 
+_CATEGORY_AUDIT_FIELDS = (
+    "name",
+    "color",
+    "icon",
+    "is_system",
+)
+
+_TRANSACTION_AUDIT_FIELDS = (
+    "category_id",
+    "account_id",
+    "amount",
+    "type",
+    "occurred_at",
+    "description",
+    "wallet_name",
+    "labels",
+    "source_type",
+    "source_ref",
+)
+
+_BUDGET_AUDIT_FIELDS = (
+    "category_id",
+    "amount",
+    "month_start",
+)
+
+
 def _snapshot_category(category: SpendingCategory) -> dict:
-    return {
-        "name": category.name,
-        "color": category.color,
-        "icon": category.icon,
-        "is_system": category.is_system,
-    }
+    return snapshot_columns(category, _CATEGORY_AUDIT_FIELDS)
 
 
 def _snapshot_transaction(transaction: SpendingTransaction) -> dict:
-    return {
-        "category_id": transaction.category_id,
-        "account_id": transaction.account_id,
-        "amount": str(transaction.amount) if transaction.amount is not None else None,
-        "type": transaction.type,
-        "occurred_at": transaction.occurred_at.isoformat() if transaction.occurred_at else None,
-        "description": transaction.description,
-        "wallet_name": transaction.wallet_name,
-        "labels": transaction.labels,
-        "source_type": transaction.source_type,
-        "source_ref": transaction.source_ref,
-    }
+    data = snapshot_columns(transaction, _TRANSACTION_AUDIT_FIELDS)
+    # Convert Decimal and datetime fields for JSON serialization
+    if data.get("amount") is not None:
+        data["amount"] = str(data["amount"])
+    if data.get("occurred_at") is not None:
+        data["occurred_at"] = data["occurred_at"].isoformat()
+    return data
 
 
 def _snapshot_budget(budget: SpendingBudget) -> dict:
-    return {
-        "category_id": budget.category_id,
-        "amount": str(budget.amount) if budget.amount is not None else None,
-        "month_start": budget.month_start.isoformat() if budget.month_start else None,
-    }
+    data = snapshot_columns(budget, _BUDGET_AUDIT_FIELDS)
+    # Convert Decimal and date fields for JSON serialization
+    if data.get("amount") is not None:
+        data["amount"] = str(data["amount"])
+    if data.get("month_start") is not None:
+        data["month_start"] = data["month_start"].isoformat()
+    return data
 
 
 class CategoryService:

@@ -11,6 +11,19 @@ logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Snapshot Helper
+# ---------------------------------------------------------------------------
+
+
+def snapshot_columns(entity: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    """Build an audit snapshot dict from an ORM entity for the given fields.
+
+    Decimals/UUIDs/datetimes are left as-is; AuditLogger handles serialization.
+    """
+    return {name: getattr(entity, name) for name in fields}
+
+
+# ---------------------------------------------------------------------------
 # Redaction Layer
 # ---------------------------------------------------------------------------
 
