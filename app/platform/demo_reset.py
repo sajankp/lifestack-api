@@ -1,13 +1,20 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.core.audit import AuditLogger
 from app.exports.models import ExportRecord
-from app.finance.models import Account, CapitalTransfer, Currency, FxRate, WorkspaceCurrency
+from app.finance.models import (
+    Account,
+    CapitalTransfer,
+    Currency,
+    FxRate,
+    WorkspaceCurrency,
+    WorkspaceFinanceSetting,
+)
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow
 from app.investing.models import (
     CashBalance,
@@ -163,6 +170,15 @@ class DemoResetService:
         await self.session.execute(
             delete(CapitalTransfer).where(CapitalTransfer.workspace_id == workspace_id)
         )
+        # The workspace finance setting may point a default spending account
+        # (spec-054) at a row about to be deleted — clear the reference first
+        # or the delete violates
+        # fk_workspace_finance_settings_default_spending_account.
+        await self.session.execute(
+            update(WorkspaceFinanceSetting)
+            .where(WorkspaceFinanceSetting.workspace_id == workspace_id)
+            .values(default_spending_account_id=None)
+        )
         await self.session.execute(delete(Account).where(Account.workspace_id == workspace_id))
         await self.session.flush()
 
@@ -189,6 +205,7 @@ class DemoResetService:
             category_map[cat_name.lower()] = category.id
 
         await self._ensure_demo_currencies(workspace_id)
+        await self._ensure_reporting_currency(workspace_id)
 
         brokerage_acct = Account(
             workspace_id=workspace_id,
@@ -377,6 +394,26 @@ class DemoResetService:
                 source="ECB",
             )
         )
+
+    async def _ensure_reporting_currency(self, workspace_id: int) -> None:
+        # The demo fixture seeds both USD and EUR cash balances; without a
+        # reporting currency, /investing/performance/summary 422s and the
+        # dashboard/investing pages show N/A for a freshly-reset workspace.
+        existing = (
+            await self.session.execute(
+                select(WorkspaceFinanceSetting).where(
+                    WorkspaceFinanceSetting.workspace_id == workspace_id
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            # Already session-tracked — mutating the attribute is enough.
+            existing.reporting_currency_code = "USD"
+        else:
+            self.session.add(
+                WorkspaceFinanceSetting(workspace_id=workspace_id, reporting_currency_code="USD")
+            )
+        await self.session.flush()
 
     async def _ensure_demo_currencies(self, workspace_id: int) -> None:
         for code, name, symbol in [
