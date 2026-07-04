@@ -24,7 +24,7 @@ from app.core.dependencies import (
     get_investing_summary_service,
     require_min_role,
 )
-from app.core.pagination import PaginatedResponse, PaginationParams
+from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.finance.service import AccountService
 from app.imports.repository import ImportRepository
 from app.investing.order_service import InvestingOrderService
@@ -135,12 +135,7 @@ async def list_holdings(
         workspace_id, pagination.limit, pagination.offset
     )
     if not holdings:
-        return PaginatedResponse(
-            items=[],
-            total=total,
-            limit=pagination.limit,
-            offset=pagination.offset,
-        )
+        return build_page([], total, pagination)
 
     account_cache = await _build_account_cache(account_service, workspace_id)
     import_cache = await _build_import_batch_cache(import_repo, workspace_id, holdings)
@@ -174,12 +169,7 @@ async def list_holdings(
         _populate_valuation_fields(data, h.quantity, h.avg_cost, unit_price)
 
         items.append(HoldingResponse.model_validate(data))
-    return PaginatedResponse(
-        items=items,
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
-    )
+    return build_page(items, total, pagination)
 
 
 @router.patch("/holdings/{holding_id}", response_model=HoldingResponse)
@@ -268,12 +258,7 @@ async def list_cash_balances(
         workspace_id, pagination.limit, pagination.offset, account_id=account_internal_id
     )
     if not balances:
-        return PaginatedResponse(
-            items=[],
-            total=total,
-            limit=pagination.limit,
-            offset=pagination.offset,
-        )
+        return build_page([], total, pagination)
 
     account_cache = await _build_account_cache(account_service, workspace_id)
     items = []
@@ -283,12 +268,7 @@ async def list_cash_balances(
         data["account_id"] = pub_id
         data["account_name"] = name
         items.append(CashBalanceResponse.model_validate(data))
-    return PaginatedResponse(
-        items=items,
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
-    )
+    return build_page(items, total, pagination)
 
 
 @router.post(
@@ -602,14 +582,10 @@ async def list_orders(
         search=search,
     )
     if not orders:
-        return PaginatedResponse(
-            items=[], total=total, limit=pagination.limit, offset=pagination.offset
-        )
+        return build_page([], total, pagination)
     account_cache = await _build_account_cache(account_service, workspace_id)
     items = [_order_response(o, account_cache) for o in orders]
-    return PaginatedResponse(
-        items=items, total=total, limit=pagination.limit, offset=pagination.offset
-    )
+    return build_page(items, total, pagination)
 
 
 @router.get("/orders/by-holding/{symbol}", response_model=list[InvestingOrderResponse])
@@ -788,9 +764,7 @@ async def list_corporate_actions(
             workspace_id, account_id
         )
         if not account or account.id is None:
-            return PaginatedResponse(
-                items=[], total=0, limit=pagination.limit, offset=pagination.offset
-            )
+            return build_page([], 0, pagination)
         account_internal_id = account.id
     actions, total = await order_service.list_corporate_actions(
         workspace_id,
@@ -800,14 +774,10 @@ async def list_corporate_actions(
         account_id=account_internal_id,
     )
     if not actions:
-        return PaginatedResponse(
-            items=[], total=total, limit=pagination.limit, offset=pagination.offset
-        )
+        return build_page([], total, pagination)
     account_cache = await _build_account_cache(account_service, workspace_id)
     items = [_corporate_action_response(a, account_cache) for a in actions]
-    return PaginatedResponse(
-        items=items, total=total, limit=pagination.limit, offset=pagination.offset
-    )
+    return build_page(items, total, pagination)
 
 
 @router.delete("/corporate-actions/{action_id}", status_code=status.HTTP_204_NO_CONTENT)

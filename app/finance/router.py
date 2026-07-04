@@ -23,7 +23,7 @@ from app.core.dependencies import (
     require_min_role,
 )
 from app.core.exceptions import NotFoundError
-from app.core.pagination import PaginatedResponse, PaginationParams
+from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.finance.models import AccountType, CurrencyDisplayPreference, FxRate
 from app.finance.repository import FinanceSettingRepository, FxRateRepository
 from app.finance.schemas import (
@@ -78,12 +78,7 @@ async def list_accounts(
     accounts, total = await account_service.list_accounts(
         workspace_id, pagination.limit, pagination.offset
     )
-    return PaginatedResponse(
-        items=[AccountResponse.model_validate(a) for a in accounts],
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
-    )
+    return build_page([AccountResponse.model_validate(a) for a in accounts], total, pagination)
 
 
 @router.post("/accounts", response_model=AccountResponse, status_code=status.HTTP_201_CREATED)
@@ -274,11 +269,8 @@ async def list_transfers(
     transfers, total = await transfer_service.list_transfers(
         workspace_id, pagination.limit, pagination.offset
     )
-    return PaginatedResponse(
-        items=[CapitalTransferResponse.model_validate(t) for t in transfers],
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
+    return build_page(
+        [CapitalTransferResponse.model_validate(t) for t in transfers], total, pagination
     )
 
 

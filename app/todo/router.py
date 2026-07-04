@@ -11,7 +11,7 @@ from app.core.dependencies import (
     get_todo_service,
     require_min_role,
 )
-from app.core.pagination import PaginatedResponse, PaginationParams
+from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.todo.schemas import (
     RecurringTodoRuleCreate,
     RecurringTodoRuleResponse,
@@ -36,9 +36,7 @@ async def list_todos(
     items, total = await todo_service.list_todos(
         workspace_id, completed, pagination.limit, pagination.offset
     )
-    return PaginatedResponse(
-        items=items, total=total, limit=pagination.limit, offset=pagination.offset
-    )
+    return build_page(items, total, pagination)
 
 
 @router.post("/", response_model=TodoResponse, status_code=status.HTTP_201_CREATED)
@@ -66,9 +64,7 @@ async def list_recurring_todos(
     items, total = await todo_service.list_recurring_rules(
         workspace_id, is_active, pagination.limit, pagination.offset
     )
-    return PaginatedResponse(
-        items=items, total=total, limit=pagination.limit, offset=pagination.offset
-    )
+    return build_page(items, total, pagination)
 
 
 @router.post(

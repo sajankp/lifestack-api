@@ -15,7 +15,7 @@ from app.core.dependencies import (
     get_import_service,
     require_min_role,
 )
-from app.core.pagination import PaginatedResponse, PaginationParams
+from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.imports.models import ImportModule, ImportStatus
 from app.imports.schemas import (
     ImportBatchResponse,
@@ -180,12 +180,7 @@ async def list_imports(
     pagination: PaginationParams = Depends(),
 ):
     items, total = await service.list_batches(workspace_id, pagination.limit, pagination.offset)
-    return PaginatedResponse(
-        items=[ImportBatchResponse.model_validate(i) for i in items],
-        total=total,
-        limit=pagination.limit,
-        offset=pagination.offset,
-    )
+    return build_page([ImportBatchResponse.model_validate(i) for i in items], total, pagination)
 
 
 @router.get("/{import_public_id}", response_model=ImportValidateResponse)

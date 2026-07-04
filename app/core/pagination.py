@@ -32,3 +32,16 @@ class PaginatedResponse[T](BaseModel):
     total: int
     limit: int
     offset: int
+
+
+def build_page[T](items: list[T], total: int, pagination: PaginationParams) -> PaginatedResponse[T]:
+    """Wrap ``items``/``total`` in the standard paginated envelope, taking the
+    limit/offset from the request's ``PaginationParams``. Replaces the
+    hand-built ``PaginatedResponse(items=..., total=..., limit=pagination.limit,
+    offset=pagination.offset)`` repeated across list endpoints."""
+    return PaginatedResponse(
+        items=items,
+        total=total,
+        limit=pagination.limit,
+        offset=pagination.offset,
+    )
