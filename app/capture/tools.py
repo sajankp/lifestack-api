@@ -4,6 +4,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditLogger
@@ -170,8 +171,10 @@ class AgentTools:
         """
         rule_timezone = timezone or self.user_timezone
         try:
+            # ZoneInfo raises ZoneInfoNotFoundError for unknown zones but
+            # ValueError for malformed input (empty string, path traversal).
             anchor = datetime.now(ZoneInfo(rule_timezone)).date()
-        except ZoneInfoNotFoundError:
+        except (ZoneInfoNotFoundError, ValueError):
             anchor = datetime.now(UTC).date()
 
         parsed_due_time: time | None = None
@@ -211,7 +214,7 @@ class AgentTools:
                 by_weekday=by_weekday,
                 by_ordinal=by_ordinal,  # type: ignore[arg-type]
             )
-        except ValueError as exc:
+        except (ValueError, PydanticValidationError) as exc:
             return {"status": "error", "message": f"Invalid recurring reminder: {exc}"}
 
         try:

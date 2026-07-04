@@ -526,6 +526,17 @@ async def test_create_recurring_todo_tool(seed_agent_test_data):
     )
     assert invalid["status"] == "error"
 
+    # An unknown/malformed timezone resolves to a clean error, not a crash
+    # into the generic internal-error handler.
+    bad_tz = await execute_agent_tool(
+        name="create_recurring_todo",
+        args={"title": "Bad tz", "frequency": "daily", "timezone": "Mars/Phobos"},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert bad_tz["status"] == "error"
+    assert "internal error" not in bad_tz["message"].lower()
+
 
 @pytest.mark.asyncio
 async def test_prompt_injection_category_stays_data(seed_agent_test_data):
