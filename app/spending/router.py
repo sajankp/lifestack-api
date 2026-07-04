@@ -464,8 +464,18 @@ async def create_transaction(
         user["id"], workspace_id, tx_in, audit_logger=audit_logger
     )
     cat = await category_service.get_category(workspace_id, tx_in.category_id)
-    account_cache = await _build_account_cache(account_service, workspace_id)
-    account_public_id = account_cache.get(tx.account_id) if tx.account_id is not None else None
+    account_public_id = None
+    if tx.account_id is not None:
+        if tx_in.account_id is not None:
+            # Explicit account_id round-trips as-is — no lookup needed.
+            account_public_id = tx_in.account_id
+        else:
+            # Resolved via the workspace default; look up just that one
+            # account instead of caching every account in the workspace.
+            account = await account_service.account_repository.get_by_id(
+                workspace_id, tx.account_id
+            )
+            account_public_id = account.public_id if account else None
     return _transaction_response(tx, cat.public_id, account_public_id)
 
 

@@ -567,6 +567,7 @@ class ImportService:
                         select(Account).where(
                             Account.workspace_id == workspace_id,
                             Account.public_id == uuid.UUID(target_account_public_id),
+                            Account.is_active,
                         )
                     )
                 ).scalar_one_or_none()
@@ -579,9 +580,17 @@ class ImportService:
                         )
                     )
                 ).scalar_one_or_none()
-                fallback_account_id = (
-                    finance_setting.default_spending_account_id if finance_setting else None
-                )
+                if finance_setting and finance_setting.default_spending_account_id is not None:
+                    default_account = (
+                        await self.session.execute(
+                            select(Account).where(
+                                Account.workspace_id == workspace_id,
+                                Account.id == finance_setting.default_spending_account_id,
+                                Account.is_active,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    fallback_account_id = default_account.id if default_account else None
 
         instruments_map = {}
         order_account_pub_map: dict[str, uuid.UUID] = {}

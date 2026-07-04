@@ -322,7 +322,14 @@ class TransactionService:
         if self.setting_repo is not None:
             setting = await self.setting_repo.get_by_workspace(workspace_id)
             if setting and setting.default_spending_account_id is not None:
-                return setting.default_spending_account_id
+                # Defense in depth: the default is cleared when its account
+                # is deactivated through the API (AccountService.update_account),
+                # but don't trust that path alone — re-check is_active here.
+                default_account = await self.account_repo.get_by_id(
+                    workspace_id, setting.default_spending_account_id
+                )
+                if default_account and default_account.is_active:
+                    return setting.default_spending_account_id
 
         raise ValidationError(
             detail=("Provide account_id or set a default spending account in Finance Settings.")
