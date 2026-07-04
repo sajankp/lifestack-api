@@ -11,8 +11,10 @@ import from a single authoritative location, and makes them available to the
 """
 
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
-from app.finance.models import FxRate
+if TYPE_CHECKING:
+    from app.finance.models import FxRate
 
 
 def build_required_pairs(
