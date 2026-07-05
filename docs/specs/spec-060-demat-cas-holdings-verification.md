@@ -1,7 +1,7 @@
 # Spec-060: Demat CAS PDF Import — Holdings Verification
 
 **Created:** 2026-07-05
-**Status:** Draft — awaiting owner approval (the Rule-7 autonomous window closed at Task 14; no code before approval)
+**Status:** Approved (owner confirmed 2026-07-05: NSDL is the target depository; `holding_verifications` table confirmed over preview-only, for auditability over time)
 **Depends on:** spec-056 (CAMS CAS PDF import — parser/pipeline precedent), spec-051 (corporate actions — drift explanations), spec-057 (bhavcopy feed — referenced by the rejected alternative), spec-044 (FIFO lots — the numbers being verified)
 
 ---
@@ -81,7 +81,7 @@ Synthetic-but-structurally-accurate fixture PDF via `reportlab` (spec-056 preced
 - **Auto-creating `CorporateAction` or orders from drift** — the report explains, the owner acts; no automated writes to money-bearing tables.
 - **Multi-account statements** — a CAS covering several demat accounts verifies only the chosen target account this pass; other sections are skipped with a reason.
 
-## Open questions for the owner
+## Resolved questions
 
-1. NSDL vs CDSL first — which depository issues your own CAS? (Spec assumes NSDL; flipping it is a fixture/regex change, same architecture.)
-2. Is the `holding_verifications` table wanted, or should the report stay preview-only (no commit step, no new table)? The table is what makes the check auditable over time; preview-only is less schema.
+1. **NSDL vs CDSL first** — NSDL confirmed (owner, 2026-07-05). CDSL stays out of scope as a follow-up spec.
+2. **`holding_verifications` table vs preview-only** — table confirmed (owner, 2026-07-05): the audit trail across statements is the point of the feature.

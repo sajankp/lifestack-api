@@ -74,6 +74,10 @@ async def upload_and_validate(
     module: ImportModule = Form(...),
     file: UploadFile = File(...),
     target_account_id: uuid.UUID | None = Form(None),
+    # Demat CAS PDFs are always password-protected (spec-060). Never
+    # persisted to ImportBatch or logged — forwarded in-memory only, as a
+    # plain function argument, to whichever code path parses the PDF.
+    file_password: str | None = Form(None),
     service: ImportService = Depends(get_import_service),
     workspace_id: int = Depends(get_current_workspace_id),
     user: dict = Depends(get_current_user),
@@ -85,7 +89,12 @@ async def upload_and_validate(
     if settings.RUN_BACKGROUND_TASKS_SYNCHRONOUSLY:
         try:
             batch, errors = await service.validate_batch_file(
-                workspace_id, user["id"], batch, temp_path, audit_logger
+                workspace_id,
+                user["id"],
+                batch,
+                temp_path,
+                audit_logger,
+                file_password=file_password,
             )
         finally:
             with contextlib.suppress(Exception):
@@ -116,6 +125,7 @@ async def upload_and_validate(
             user["id"],
             batch.public_id,
             temp_path,
+            file_password,
         )
         return ImportValidateResponse(
             import_batch=ImportBatchResponse.model_validate(batch),

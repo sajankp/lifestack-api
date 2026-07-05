@@ -13,6 +13,7 @@ from app.investing.models import (
     CorporateAction,
     Holding,
     HoldingPrice,
+    HoldingVerification,
     Instrument,
     InstrumentConstituent,
     InvestingOrder,
@@ -313,6 +314,35 @@ class CorporateActionRepository(BaseRepository[CorporateAction]):
             base.order_by(CorporateAction.ex_date.desc()).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
+
+
+class HoldingVerificationRepository(BaseRepository[HoldingVerification]):
+    async def list_by_workspace(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        account_id: int | None = None,
+    ) -> tuple[Sequence[HoldingVerification], int]:
+        base = select(HoldingVerification).where(HoldingVerification.workspace_id == workspace_id)
+        if account_id is not None:
+            base = base.where(HoldingVerification.account_id == account_id)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(HoldingVerification.created_at.desc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), total
+
+    async def delete_for_import_batch(self, workspace_id: int, source_import_id: int) -> int:
+        result = await self.session.execute(
+            delete(HoldingVerification).where(
+                HoldingVerification.workspace_id == workspace_id,
+                HoldingVerification.source_import_id == source_import_id,
+            )
+        )
+        return result.rowcount or 0
 
 
 class InstrumentRepository(BaseRepository[Instrument]):

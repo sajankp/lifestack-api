@@ -202,6 +202,22 @@ class CorporateActionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 
 
+class HoldingVerificationResponse(BaseModel):
+    public_id: uuid.UUID
+    account_id: uuid.UUID
+    account_name: str
+    source: str
+    statement_date: date | None = None
+    match_count: int
+    quantity_drift_count: int
+    missing_in_lifestack_count: int
+    missing_at_depository_count: int
+    report: list[dict] = Field(default_factory=list)
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class InvestingSummaryResponse(BaseModel):
     portfolio_value: Decimal | None = None
     holdings_count: int

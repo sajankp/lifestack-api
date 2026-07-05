@@ -499,3 +499,46 @@ class LotConsumption(SQLModel, table=True):
             ondelete="CASCADE",
         ),
     )
+
+
+class HoldingVerification(SQLModel, table=True):
+    """A depository-vs-Lifestack holdings comparison snapshot (spec-060).
+
+    Written once per Demat CAS import commit. Never writes/reads
+    ``Holding``, ``InvestingOrder``, ``OrderLot``, or cash rows — this is a
+    read-only verification record, not an ingestion path (a Demat CAS has no
+    price, so it cannot safely become an order). ``report_json`` holds the
+    full per-ISIN comparison; the four `*_count` columns are a fast summary.
+    """
+
+    __tablename__ = "investing_holding_verifications"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    account_id: int = Field(index=True)
+    source_import_id: int = Field(foreign_key="import_batches.id", index=True)
+
+    # Plain string, not enum — only NSDL is implemented (spec-060), but the
+    # column shouldn't need a migration when CDSL is added later.
+    source: str = Field(max_length=32)
+    statement_date: date | None = Field(default=None, sa_type=sa.Date())
+
+    match_count: int = Field(default=0)
+    quantity_drift_count: int = Field(default=0)
+    missing_in_lifestack_count: int = Field(default=0)
+    missing_at_depository_count: int = Field(default=0)
+
+    report_json: list = Field(default_factory=list, sa_type=sa.JSON)
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_investing_holding_verifications_account_workspace",
+        ),
+    )

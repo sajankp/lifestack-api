@@ -39,6 +39,7 @@ from app.investing.repository import (
     CorporateActionRepository,
     HoldingPriceRepository,
     HoldingRepository,
+    HoldingVerificationRepository,
     InstrumentConstituentRepository,
     InstrumentRepository,
     InvestingOrderRepository,
@@ -399,6 +400,12 @@ async def get_investing_corporate_action_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> CorporateActionRepository:
     return CorporateActionRepository(session)
+
+
+async def get_investing_holding_verification_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> HoldingVerificationRepository:
+    return HoldingVerificationRepository(session)
 
 
 async def get_investing_order_service(

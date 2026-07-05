@@ -14,6 +14,7 @@ from app.core.dependencies import (
     get_investing_cash_balance_service,
     get_investing_constituent_service,
     get_investing_holding_service,
+    get_investing_holding_verification_repo,
     get_investing_instrument_service,
     get_investing_order_service,
     get_investing_performance_service,
@@ -25,7 +26,7 @@ from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.finance.service import AccountService
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService, PerformanceService
-from app.investing.repository import PortfolioSnapshotRepository
+from app.investing.repository import HoldingVerificationRepository, PortfolioSnapshotRepository
 from app.investing.schemas import (
     CashBalanceCreate,
     CashBalanceResponse,
@@ -36,6 +37,7 @@ from app.investing.schemas import (
     HoldingPriceBulkCreate,
     HoldingResponse,
     HoldingUpdate,
+    HoldingVerificationResponse,
     InstrumentConstituentResponse,
     InstrumentConstituentUpsert,
     InstrumentCreate,
@@ -669,3 +671,60 @@ async def delete_corporate_action(
         audit_logger=audit_logger,
     )
     await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
+
+
+def _holding_verification_response(
+    verification, account_cache: dict[int, tuple[uuid.UUID, str]]
+) -> HoldingVerificationResponse:
+    pub_id, name = account_cache.get(verification.account_id, (uuid.UUID(int=0), "Unknown"))
+    data = {
+        "public_id": verification.public_id,
+        "account_id": pub_id,
+        "account_name": name,
+        "source": verification.source,
+        "statement_date": verification.statement_date,
+        "match_count": verification.match_count,
+        "quantity_drift_count": verification.quantity_drift_count,
+        "missing_in_lifestack_count": verification.missing_in_lifestack_count,
+        "missing_at_depository_count": verification.missing_at_depository_count,
+        "report": verification.report_json,
+        "created_at": verification.created_at,
+    }
+    return HoldingVerificationResponse.model_validate(data)
+
+
+@router.get("/holding-verifications", response_model=PaginatedResponse[HoldingVerificationResponse])
+async def list_holding_verifications(
+    verification_repo: Annotated[
+        HoldingVerificationRepository, Depends(get_investing_holding_verification_repo)
+    ],
+    account_service: Annotated[AccountService, Depends(get_finance_account_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+    account_id: uuid.UUID | None = None,
+):
+    """Depository-vs-Lifestack holdings verification history (spec-060).
+
+    Written by Demat CAS import commits; read-only from this endpoint —
+    there is no create/update/delete surface here beyond the import flow.
+    """
+    account_internal_id: int | None = None
+    if account_id is not None:
+        account = await account_service.account_repository.get_by_public_id(
+            workspace_id, account_id
+        )
+        if not account or account.id is None:
+            return build_page([], 0, pagination)
+        account_internal_id = account.id
+    verifications, total = await verification_repo.list_by_workspace(
+        workspace_id,
+        pagination.limit,
+        pagination.offset,
+        account_id=account_internal_id,
+    )
+    if not verifications:
+        return build_page([], total, pagination)
+    account_cache = await _build_account_cache(account_service, workspace_id)
+    items = [_holding_verification_response(v, account_cache) for v in verifications]
+    return build_page(items, total, pagination)
