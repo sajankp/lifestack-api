@@ -652,6 +652,7 @@ erDiagram
         datetime last_success_at
         datetime last_failure_at
         datetime created_at
+        datetime updated_at
     }
 
     WEEKLY_SUMMARIES {
