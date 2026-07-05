@@ -889,9 +889,10 @@ Added across the 2026-07 codebase-improvement batch. New code should reach for
 these instead of re-implementing the pattern locally:
 
 - **`app/core/repository.py` — `BaseRepository[T]`**: shared persistence
-  primitives (`create`/`save` = add + flush + refresh, `delete`,
-  `get_by_public_id`). Repositories subclass it and add only domain query
-  methods. All 17+ repository classes are on it; a new module's repository
+  primitives (`create`/`save` = add + flush + refresh, `delete`).
+  Repositories subclass it and add their domain query methods (including
+  `get_by_public_id`, which stays per-repository because workspace scoping
+  differs). All 17+ repository classes are on it; a new module's repository
   starts as `class XRepository(BaseRepository[X])`.
 - **`app/core/pagination.py` — `build_page(items, total, pagination)`**:
   builds the standard paginated list envelope. Every list endpoint uses it —
