@@ -34,11 +34,11 @@ New import module `investing-demat-cas` reusing the spec-056 pipeline shape — 
 
 - `ImportModule.investing_demat_cas = "investing-demat-cas"`; `create_batch` accepts `.pdf` for this module (same gate pattern as spec-056).
 - Reuses spec-056's `extra_json.target_account_id` mechanism (required, active brokerage account).
-- New optional `file_password: str | None` on the upload request, passed to `pdfplumber.open(path, password=...)`, used in-memory only — **never persisted to `ImportBatch`, never logged** (PAN-derived secret). Wrong/missing password → the clean `ValidationError` path spec-056 added for encrypted PDFs, with a message telling the user the expected password format.
+- New optional `file_password: str | None` on the upload request, passed to `pdfplumber.open(path, password=...)`, used in-memory only — **never persisted to `ImportBatch`, never logged** (PAN-derived secret). Because validation may run asynchronously (`RUN_BACKGROUND_TASKS_SYNCHRONOUSLY=False` in production) and the password is deliberately not persisted, `file_password` must be forwarded as an explicit argument through the background-validation entry point (`run_background_validate`) so the async parser can decrypt the PDF. Wrong/missing password → the clean `ValidationError` path spec-056 added for encrypted PDFs, with a message telling the user the expected password format.
 
 ### Parser: `app/imports/demat_cas_parser.py`
 
-Text-line regex over `pdfplumber` text, mirroring `cams_cas_parser.py`'s structure: track the current demat-account context (`DP ID`/`Client ID` header), match holdings rows by leading ISIN (`^IN[A-Z0-9]{9}\d`), emit `{isin, security_name, quantity}`. Only the **Equities (E)** section rows are parsed; mutual-fund folio sections inside an NSDL CAS are skipped with a per-row reason (already covered by the CAMS import, spec-056) and surfaced in the preview's `skipped` list, not silently dropped.
+Text-line regex over `pdfplumber` text, mirroring `cams_cas_parser.py`'s structure: track the current demat-account context (`DP ID`/`Client ID` header), match holdings rows by a full-capture pattern anchored on the leading ISIN — e.g. `^(?P<isin>IN[A-Z0-9]{9}\d)\s+(?P<name>.+?)\s+(?P<quantity>[\d,]+\.\d{3})` against the whitespace-stripped line (exact quantity precision to be confirmed against real fixtures) — emitting `{isin, security_name, quantity}`. Only the **Equities (E)** section rows are parsed; mutual-fund folio sections inside an NSDL CAS are skipped with a per-row reason (already covered by the CAMS import, spec-056) and surfaced in the preview's `skipped` list, not silently dropped.
 
 ### Preview: the verification report
 
@@ -55,7 +55,7 @@ Drift rows where the ratio matches a plausible split (integer or simple fraction
 
 ### Commit: persist the verification snapshot
 
-New table `holding_verifications` (one row per batch commit): workspace/account FKs (composite, matching `Holding`'s pattern), `statement_date` (parsed from the CAS header), `source` (`"nsdl_cas"`), counts per status, and the full per-ISIN report as JSON. Migration with working `downgrade()`; enum-free (plain strings) to avoid the named-enum migration trap. Rollback (`_rollback` branch keyed by `source_import_id`) deletes the verification row — trivially safe since nothing else references it.
+New table `holding_verifications` (one row per batch commit): workspace/account FKs (composite, matching `Holding`'s pattern), `source_import_id` FK → `import_batches.id` (the rollback key, indexed — same convention as `Holding.source_import_id`), `statement_date` (parsed from the CAS header), `source` (`"nsdl_cas"`), counts per status, and the full per-ISIN report as JSON. Migration with working `downgrade()`; enum-free (plain strings) to avoid the named-enum migration trap. Rollback (`_rollback` branch keyed by `source_import_id`) deletes the verification row — trivially safe since nothing else references it.
 
 This gives the campaign an auditable trail: "as of the June statement, depository and Lifestack agreed on 14 of 15 ISINs; the drift on X was resolved by recording the missing bonus issue" — exactly the G4-style evidence the proof toolkit asks for.
 
