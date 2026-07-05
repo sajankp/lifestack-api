@@ -193,65 +193,45 @@ workflows.py → business logic: receives a session + workspace object, returns 
 Jobs call workflows. Workflows never import from `jobs.py`.
 
 ```python
-# app/application/jobs.py
-import asyncio
-import structlog
-from sqlalchemy import func, select
+# app/application/jobs.py — per-workspace jobs go through run_workspace_job
 from app.application.workflows import evaluate_workspace_budget_guardrails
-from app.core.database import postgres
-from app.platform.models import Workspace
-
-logger = structlog.get_logger(__name__)
-BUDGET_GUARDRAILS_LOCK_KEY = 1001
-WORKSPACE_EVALUATION_TIMEOUT_SECONDS = 300.0
+from app.core.constants import ADVISORY_LOCK_BUDGET_GUARDRAILS
 
 
-async def budget_guardrails_job() -> None:
-    # 1. Acquire advisory lock — prevents concurrent runs during rolling deploys
-    async with postgres.async_session_maker() as session:
-        has_lock = (
-            await session.execute(
-                select(func.pg_try_advisory_xact_lock(BUDGET_GUARDRAILS_LOCK_KEY))
-            )
-        ).scalar()
-        if not has_lock:
-            logger.info("budget_guardrails_job_skipped_lock_held")
-            return
-
-        workspaces = (
-            (
-                await session.execute(
-                    select(Workspace).where(Workspace.is_active == True)  # noqa: E712
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    # 2. Per-workspace isolated transactions
-    for workspace in workspaces:
-        try:
-            async with postgres.async_session_maker() as ws_session:
-                async with ws_session.begin():
-                    await asyncio.wait_for(
-                        evaluate_workspace_budget_guardrails(ws_session, workspace),
-                        timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
-                    )
-            logger.info(
-                "budget_guardrails_workspace_success", workspace_id=workspace.id, status="success"
-            )
-        except asyncio.TimeoutError:
-            logger.error(
-                "budget_guardrails_workspace_timeout", workspace_id=workspace.id, status="timeout"
-            )
-        except Exception:
-            logger.error(
-                "budget_guardrails_workspace_failed",
-                workspace_id=workspace.id,
-                status="failed",
-                exc_info=True,
-            )
+async def budget_guardrails_job(workspace_id: int | None = None) -> None:
+    await run_workspace_job(
+        job_name="budget_guardrails",
+        lock_key=ADVISORY_LOCK_BUDGET_GUARDRAILS,
+        process_workspace=evaluate_workspace_budget_guardrails,
+        workspace_id=workspace_id,
+    )
 ```
+
+`run_workspace_job` (in `jobs.py`) owns the scaffolding: session-level advisory
+lock, workspace iteration, per-workspace transactions with timeout, failure
+isolation, and the standard log events (`{job_name}_start`,
+`_skipped_lock_held`, `_workspace_success`, `_workspace_timeout`,
+`_workspace_failed`, `_completed`).
+
+**Connection discipline (do not regress this):** a job run holds exactly ONE
+pooled connection. The advisory lock is a *session-level* lock
+(`pg_try_advisory_lock` + `finally` unlock) taken on the same session that does
+the per-workspace work — session-level locks survive `COMMIT`, so each
+workspace still commits in its own transaction. The old shape (an outer
+lock-holder session kept open while a second per-workspace session was checked
+out inside the loop) could deadlock the pool under concurrent job runs and was
+removed in PR #119; `test_scheduler.py` has regression tests asserting the
+single-connection property. Two more rules baked into the wrapper:
+
+- Fetch workspace **ids**, not ORM objects, before the loop: a per-workspace
+  rollback expires every object loaded on the shared session, and touching an
+  expired attribute afterwards raises under async lazy-load. Re-fetch the
+  `Workspace` inside each per-workspace transaction.
+- Advisory-lock keys are registered centrally in `app/core/constants.py`.
+
+Jobs with genuinely different shapes (`recurring_transactions_job`,
+`weekly_summary_job` — custom log-event names and per-run aggregation) keep
+their own scaffolding but follow the same single-connection pattern.
 
 ```python
 # app/core/scheduler.py

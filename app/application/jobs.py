@@ -86,85 +86,122 @@ async def run_workspace_job(
     """Run ``process_workspace`` for each active workspace under an advisory
     lock, isolating failures per workspace.
 
-    Mirrors the scaffolding shared by the per-workspace cron jobs exactly:
-    acquire a Postgres advisory transaction lock, fetch the active workspace
-    list (optionally scoped to a single ``workspace_id``), then evaluate each
-    workspace in its own isolated, timeout-bounded transaction — one
-    workspace's failure is logged and skipped, others continue. Log event
-    names (``{job_name}_start``, ``_skipped_lock_held``,
-    ``_workspace_not_found_or_inactive``, ``_workspace_success``,
-    ``_workspace_timeout``, ``_workspace_failed``, ``_completed``) match what
-    the jobs logged before extraction — do not rename them without checking
-    ``test_scheduler.py`` and any log-based alerting.
+    Holds exactly ONE pooled connection for the whole run: a *session-level*
+    advisory lock (``pg_try_advisory_lock``) is taken on the same session that
+    does the per-workspace work, and each workspace runs in its own
+    timeout-bounded transaction on that session (session-level locks survive
+    ``COMMIT``, unlike ``pg_try_advisory_xact_lock``). The previous shape —
+    an outer lock-holder session kept open while a second per-workspace
+    session was checked out inside the loop — could deadlock a constrained
+    pool under concurrent job runs (see PR #104 review): lock-holder
+    connections exhaust the pool, then every inner checkout waits on a
+    connection no blocked outer holder will release.
+
+    One workspace's failure is rolled back, logged, and skipped; others
+    continue. A workspace *timeout* cancels a query mid-flight, which may
+    invalidate the shared connection — remaining workspaces then fail fast
+    and the server releases the advisory lock on disconnect, so the next
+    scheduled run recovers. Log event names (``{job_name}_start``,
+    ``_skipped_lock_held``, ``_workspace_not_found_or_inactive``,
+    ``_workspace_success``, ``_workspace_timeout``, ``_workspace_failed``,
+    ``_completed``) match what the jobs logged before extraction — do not
+    rename them without checking ``test_scheduler.py`` and any log-based
+    alerting.
     """
     start_time = datetime.now(UTC)
     logger.info(f"{job_name}_start", job_name=job_name)
 
-    async with postgres.async_session_maker() as session, session.begin():
-        lock_res = await session.execute(select(func.pg_try_advisory_xact_lock(lock_key)))
+    async with postgres.async_session_maker() as session:
+        lock_res = await session.execute(select(func.pg_try_advisory_lock(lock_key)))
         has_lock = lock_res.scalar()
         if not has_lock:
+            await session.rollback()
             logger.info(f"{job_name}_skipped_lock_held", job_name=job_name)
             return
 
-        if workspace_id is not None:
-            workspaces_res = await session.execute(
-                select(Workspace).where(Workspace.id == workspace_id, Workspace.is_active)
-            )
-        else:
-            workspaces_res = await session.execute(select(Workspace).where(Workspace.is_active))
-        workspaces = workspaces_res.scalars().all()
-        if workspace_id is not None and not workspaces:
-            logger.warning(
-                f"{job_name}_workspace_not_found_or_inactive",
-                workspace_id=workspace_id,
-            )
+        try:
+            # Fetch plain ids, not ORM objects: a later per-workspace rollback
+            # expires every object loaded on this session, and touching an
+            # expired attribute afterwards would raise (async lazy-load).
+            if workspace_id is not None:
+                ids_res = await session.execute(
+                    select(Workspace.id).where(Workspace.id == workspace_id, Workspace.is_active)
+                )
+            else:
+                ids_res = await session.execute(select(Workspace.id).where(Workspace.is_active))
+            workspace_ids = list(ids_res.scalars().all())
+            if workspace_id is not None and not workspace_ids:
+                logger.warning(
+                    f"{job_name}_workspace_not_found_or_inactive",
+                    workspace_id=workspace_id,
+                )
+            # End the read transaction; the session-level advisory lock survives.
+            await session.commit()
 
-        for workspace in workspaces:
-            ws_start = datetime.now(UTC)
-            try:
-                async with postgres.async_session_maker() as ws_session:  # noqa: SIM117
-                    async with ws_session.begin():
+            for ws_id in workspace_ids:
+                ws_start = datetime.now(UTC)
+                try:
+                    async with session.begin():
+                        workspace = await session.get(Workspace, ws_id)
+                        if workspace is None or not workspace.is_active:
+                            continue
                         await asyncio.wait_for(
-                            process_workspace(ws_session, workspace),
+                            process_workspace(session, workspace),
                             timeout=timeout_seconds,
                         )
 
-                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-                logger.info(
-                    f"{job_name}_workspace_success",
-                    job_name=job_name,
-                    workspace_id=workspace.id,
-                    duration_ms=duration_ms,
-                    status="success",
-                )
-            except TimeoutError:
-                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-                logger.error(
-                    f"{job_name}_workspace_timeout",
-                    job_name=job_name,
-                    workspace_id=workspace.id,
-                    duration_ms=duration_ms,
-                    status="timeout",
-                )
-            except Exception:
-                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-                logger.error(
-                    f"{job_name}_workspace_failed",
-                    job_name=job_name,
-                    workspace_id=workspace.id,
-                    duration_ms=duration_ms,
-                    status="failed",
-                    exc_info=True,
-                )
+                    duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                    logger.info(
+                        f"{job_name}_workspace_success",
+                        job_name=job_name,
+                        workspace_id=ws_id,
+                        duration_ms=duration_ms,
+                        status="success",
+                    )
+                except TimeoutError:
+                    duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                    logger.error(
+                        f"{job_name}_workspace_timeout",
+                        job_name=job_name,
+                        workspace_id=ws_id,
+                        duration_ms=duration_ms,
+                        status="timeout",
+                    )
+                except Exception:
+                    duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                    logger.error(
+                        f"{job_name}_workspace_failed",
+                        job_name=job_name,
+                        workspace_id=ws_id,
+                        duration_ms=duration_ms,
+                        status="failed",
+                        exc_info=True,
+                    )
 
-        total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
-        logger.info(
-            f"{job_name}_completed",
-            job_name=job_name,
-            duration_ms=total_ms,
-            workspace_count=len(workspaces),
-        )
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info(
+                f"{job_name}_completed",
+                job_name=job_name,
+                duration_ms=total_ms,
+                workspace_count=len(workspace_ids),
+            )
+        finally:
+            await _release_session_advisory_lock(session, lock_key, job_name)
+
+
+async def _release_session_advisory_lock(
+    session: AsyncSession, lock_key: int, job_name: str
+) -> None:
+    """Release a session-level advisory lock, tolerating a dead connection.
+
+    If a cancelled query invalidated the connection, the unlock fails here but
+    Postgres already released the lock server-side when the connection dropped.
+    """
+    try:
+        await session.execute(select(func.pg_advisory_unlock(lock_key)))
+        await session.commit()
+    except Exception:
+        logger.warning(f"{job_name}_lock_release_failed", job_name=job_name, exc_info=True)
 
 
 async def investment_closing_prices_job() -> None:
@@ -306,30 +343,35 @@ async def recurring_transactions_job(workspace_id: int | None = None) -> None:
     Cron-triggered job that generates spending transactions for all due recurring
     rules across all active workspaces (Spec 013).
 
-    Execution model mirrors budget_guardrails_job:
-      1. Acquire a Postgres session advisory lock (key 1002) to prevent concurrent
-         execution during rolling deploys.
-      2. Fetch the list of active workspaces, then close the read transaction.
-      3. Iterate workspaces, processing each in its own isolated DB transaction.
-         One workspace failure is logged and skipped; others continue.
+    Execution model mirrors run_workspace_job's single-connection shape:
+      1. Acquire a Postgres session-level advisory lock (key 1002) on the ONE
+         session the whole job uses, to prevent concurrent execution during
+         rolling deploys (a second connection alongside the lock holder risks
+         pool-deadlock under load — see PR #104 review).
+      2. Fetch the list of active workspaces, then commit the read transaction
+         (the session-level lock survives COMMIT).
+      3. Iterate workspaces, processing each in its own isolated transaction
+         on that same session. One workspace failure is rolled back, logged,
+         and skipped; others continue.
       4. Each workspace has a bounded timeout to avoid unbounded drain on shutdown.
     """
     start_time = datetime.now(UTC)
     logger.info("recurring_transactions_job_start", job_name="recurring_transactions_job")
 
-    async with postgres.engine.connect() as conn, conn.begin():
-        lock_res = await conn.execute(
-            select(func.pg_try_advisory_xact_lock(RECURRING_TRANSACTIONS_LOCK_KEY))
+    async with postgres.async_session_maker() as session:
+        lock_res = await session.execute(
+            select(func.pg_try_advisory_lock(RECURRING_TRANSACTIONS_LOCK_KEY))
         )
         has_lock = lock_res.scalar()
         if not has_lock:
+            await session.rollback()
             logger.info(
                 "recurring_transactions_job_skipped_lock_held",
                 job_name="recurring_transactions_job",
             )
             return
 
-        async with postgres.async_session_maker() as session:
+        try:
             if workspace_id is not None:
                 workspaces_res = await session.execute(
                     select(Workspace.id).where(Workspace.id == workspace_id, Workspace.is_active)
@@ -344,65 +386,69 @@ async def recurring_transactions_job(workspace_id: int | None = None) -> None:
                     "recurring_transactions_job_workspace_not_found_or_inactive",
                     workspace_id=workspace_id,
                 )
+            await session.commit()
 
-        total_generated = 0
-        total_todos_generated = 0
-        for ws_id in workspace_ids:
-            ws_start = datetime.now(UTC)
-            try:
-                async with postgres.async_session_maker() as ws_session:  # noqa: SIM117
-                    async with ws_session.begin():
-                        workspace = await ws_session.get(Workspace, ws_id)
+            total_generated = 0
+            total_todos_generated = 0
+            for ws_id in workspace_ids:
+                ws_start = datetime.now(UTC)
+                try:
+                    async with session.begin():
+                        workspace = await session.get(Workspace, ws_id)
                         if workspace is None or not workspace.is_active:
                             continue
                         count = await asyncio.wait_for(
-                            process_workspace_recurring_transactions(ws_session, workspace),
+                            process_workspace_recurring_transactions(session, workspace),
                             timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
                         )
                         total_generated += count
                         todo_count = await asyncio.wait_for(
-                            process_workspace_recurring_todos(ws_session, workspace),
+                            process_workspace_recurring_todos(session, workspace),
                             timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
                         )
                         total_todos_generated += todo_count
 
-                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-                logger.info(
-                    "recurring_transactions_workspace_success",
-                    job_name="recurring_transactions_job",
-                    workspace_id=ws_id,
-                    duration_ms=duration_ms,
-                    status="success",
-                )
-            except TimeoutError:
-                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-                logger.error(
-                    "recurring_transactions_workspace_timeout",
-                    job_name="recurring_transactions_job",
-                    workspace_id=ws_id,
-                    duration_ms=duration_ms,
-                    status="timeout",
-                )
-            except Exception:
-                duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
-                logger.error(
-                    "recurring_transactions_workspace_failed",
-                    job_name="recurring_transactions_job",
-                    workspace_id=ws_id,
-                    duration_ms=duration_ms,
-                    status="failed",
-                    exc_info=True,
-                )
+                    duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                    logger.info(
+                        "recurring_transactions_workspace_success",
+                        job_name="recurring_transactions_job",
+                        workspace_id=ws_id,
+                        duration_ms=duration_ms,
+                        status="success",
+                    )
+                except TimeoutError:
+                    duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                    logger.error(
+                        "recurring_transactions_workspace_timeout",
+                        job_name="recurring_transactions_job",
+                        workspace_id=ws_id,
+                        duration_ms=duration_ms,
+                        status="timeout",
+                    )
+                except Exception:
+                    duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                    logger.error(
+                        "recurring_transactions_workspace_failed",
+                        job_name="recurring_transactions_job",
+                        workspace_id=ws_id,
+                        duration_ms=duration_ms,
+                        status="failed",
+                        exc_info=True,
+                    )
 
-        total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
-        logger.info(
-            "recurring_transactions_job_completed",
-            job_name="recurring_transactions_job",
-            duration_ms=total_ms,
-            workspace_count=len(workspace_ids),
-            total_generated=total_generated,
-            total_todos_generated=total_todos_generated,
-        )
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info(
+                "recurring_transactions_job_completed",
+                job_name="recurring_transactions_job",
+                duration_ms=total_ms,
+                workspace_count=len(workspace_ids),
+                total_generated=total_generated,
+                total_todos_generated=total_todos_generated,
+            )
+        finally:
+            await _release_session_advisory_lock(
+                session, RECURRING_TRANSACTIONS_LOCK_KEY, "recurring_transactions_job"
+            )
 
 
 WEEKLY_SUMMARY_LOCK_KEY = ADVISORY_LOCK_WEEKLY_SUMMARY
@@ -425,10 +471,13 @@ async def weekly_summary_job(
     start_time = datetime.now(UTC)
     logger.info("weekly_summary_job_start", job_name="weekly_summary_job")
 
-    async with postgres.engine.connect() as conn:
-        lock_res = await conn.execute(select(func.pg_try_advisory_lock(WEEKLY_SUMMARY_LOCK_KEY)))
+    async with postgres.async_session_maker() as session:
+        # Session-level advisory lock on the SAME session that does the work —
+        # one pooled connection for the whole run (see run_workspace_job).
+        lock_res = await session.execute(select(func.pg_try_advisory_lock(WEEKLY_SUMMARY_LOCK_KEY)))
         has_lock = lock_res.scalar()
         if not has_lock:
+            await session.rollback()
             logger.info(
                 "weekly_summary_job_skipped_lock_held",
                 job_name="weekly_summary_job",
@@ -436,41 +485,39 @@ async def weekly_summary_job(
             return
 
         try:
-            async with postgres.async_session_maker() as session:
-                if workspace_id is not None:
-                    workspaces_res = await session.execute(
-                        select(Workspace).where(Workspace.id == workspace_id, Workspace.is_active)
-                    )
-                else:
-                    workspaces_res = await session.execute(
-                        select(Workspace).where(Workspace.is_active)
-                    )
-                workspaces = list(workspaces_res.scalars().all())
-                if workspace_id is not None and not workspaces:
-                    logger.warning(
-                        "weekly_summary_job_workspace_not_found_or_inactive",
-                        workspace_id=workspace_id,
-                    )
-                workspace_ids = [
-                    workspace.id for workspace in workspaces if workspace.id is not None
-                ]
-                memberships_by_workspace: dict[int, list[WorkspaceMembership]] = {}
-                if workspace_ids:
-                    memberships_res = await session.execute(
-                        select(WorkspaceMembership).where(
-                            WorkspaceMembership.workspace_id.in_(workspace_ids)
-                        )
-                    )
-                    for membership in memberships_res.scalars().all():
-                        memberships_by_workspace.setdefault(membership.workspace_id, []).append(
-                            membership
-                        )
-                    for memberships in memberships_by_workspace.values():
-                        memberships.sort(
-                            key=lambda membership: WEEKLY_SUMMARY_ROLE_ORDER.get(
-                                membership.role, 99
-                            )
-                        )
+            # Fetch plain rows, not ORM objects: a later per-workspace rollback
+            # expires every object loaded on this session, and touching an
+            # expired attribute afterwards would raise (async lazy-load).
+            if workspace_id is not None:
+                ids_res = await session.execute(
+                    select(Workspace.id).where(Workspace.id == workspace_id, Workspace.is_active)
+                )
+            else:
+                ids_res = await session.execute(select(Workspace.id).where(Workspace.is_active))
+            workspace_ids = list(ids_res.scalars().all())
+            if workspace_id is not None and not workspace_ids:
+                logger.warning(
+                    "weekly_summary_job_workspace_not_found_or_inactive",
+                    workspace_id=workspace_id,
+                )
+            # user ids per workspace, sorted owner → admin → member → viewer
+            user_ids_by_workspace: dict[int, list[int]] = {}
+            if workspace_ids:
+                memberships_res = await session.execute(
+                    select(
+                        WorkspaceMembership.workspace_id,
+                        WorkspaceMembership.user_id,
+                        WorkspaceMembership.role,
+                    ).where(WorkspaceMembership.workspace_id.in_(workspace_ids))
+                )
+                rows_by_workspace: dict[int, list[tuple[int, object]]] = {}
+                for ws_id, user_id, role in memberships_res.all():
+                    rows_by_workspace.setdefault(ws_id, []).append((user_id, role))
+                for ws_id, rows in rows_by_workspace.items():
+                    rows.sort(key=lambda row: WEEKLY_SUMMARY_ROLE_ORDER.get(row[1], 99))
+                    user_ids_by_workspace[ws_id] = [user_id for user_id, _role in rows]
+            # End the read transaction; the session-level advisory lock survives.
+            await session.commit()
 
             # Calculate week_start as the Monday of the previous week
             if week_start is None:
@@ -480,26 +527,20 @@ async def weekly_summary_job(
             else:
                 last_monday = week_start
 
-            for workspace in workspaces:
-                workspace_id = workspace.id
-                if workspace_id is None:
-                    continue
-
+            for workspace_id in workspace_ids:
                 ws_start = datetime.now(UTC)
                 try:
-                    memberships = memberships_by_workspace.get(workspace_id, [])
-                    if not memberships:
+                    member_user_ids = user_ids_by_workspace.get(workspace_id, [])
+                    if not member_user_ids:
                         continue
 
-                    async with postgres.async_session_maker() as ws_session, ws_session.begin():
-                        summary_repo = WeeklySummaryRepository(ws_session)
-                        notification_repo = NotificationRepository(ws_session)
+                    async with session.begin():
+                        summary_repo = WeeklySummaryRepository(session)
+                        notification_repo = NotificationRepository(session)
                         notification_service = NotificationService(notification_repo)
-                        service = WeeklySummaryService(
-                            summary_repo, ws_session, notification_service
-                        )
+                        service = WeeklySummaryService(summary_repo, session, notification_service)
 
-                        primary_user_id = memberships[0].user_id
+                        primary_user_id = member_user_ids[0]
                         await asyncio.wait_for(
                             service.generate_for_workspace_week(
                                 workspace_id, primary_user_id, last_monday
@@ -507,10 +548,10 @@ async def weekly_summary_job(
                             timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
                         )
 
-                        for membership in memberships[1:]:
+                        for member_user_id in member_user_ids[1:]:
                             await notification_service.notify(
                                 workspace_id=workspace_id,
-                                user_id=membership.user_id,
+                                user_id=member_user_id,
                                 category="system",
                                 severity="info",
                                 title=f"Weekly summary ready: {last_monday.isoformat()}",
@@ -550,10 +591,12 @@ async def weekly_summary_job(
                 "weekly_summary_job_completed",
                 job_name="weekly_summary_job",
                 duration_ms=total_ms,
-                workspace_count=len(workspaces),
+                workspace_count=len(workspace_ids),
             )
         finally:
-            await conn.execute(select(func.pg_advisory_unlock(WEEKLY_SUMMARY_LOCK_KEY)))
+            await _release_session_advisory_lock(
+                session, WEEKLY_SUMMARY_LOCK_KEY, "weekly_summary_job"
+            )
 
 
 FX_RATE_INGESTION_LOCK_KEY = ADVISORY_LOCK_FX_RATE_INGESTION
