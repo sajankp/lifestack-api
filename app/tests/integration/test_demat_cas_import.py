@@ -258,6 +258,70 @@ async def test_demat_cas_missing_both_directions(client: AsyncClient):
     assert v["missing_at_depository_count"] == 1
 
 
+def _build_multi_account_demat_cas_pdf() -> bytes:
+    """Two demat-account blocks in one statement (Gemini review, api#123).
+
+    Only the first account's holdings must be parsed; the second account's
+    ISIN must be recorded as skipped, never silently merged into the first
+    account's report.
+    """
+    buf = io.BytesIO()
+    enc = StandardEncryption(userPassword=_CAS_PASSWORD, ownerPassword="owner-secret")
+    pdf = canvas.Canvas(buf, pagesize=A4, encrypt=enc)
+    pdf.setFont("Courier", 9)
+    y = 800
+
+    def line(text: str) -> None:
+        nonlocal y
+        pdf.drawString(40, y, text)
+        y -= 14
+
+    line("NSDL Demat Account          DP ID: IN300095   Client ID: 12345678")
+    line("Equities (E)")
+    line(
+        "ISIN          Security                            Current Bal.   Market Price   Value(Rs.)"
+    )
+    line(
+        "INE002A01018  RELIANCE INDUSTRIES LTD                   10.000       2,970.50    148,525.00"
+    )
+    line("NSDL Demat Account          DP ID: IN300099   Client ID: 87654321")
+    line("Equities (E)")
+    line(
+        "ISIN          Security                            Current Bal.   Market Price   Value(Rs.)"
+    )
+    line(
+        "INE467B01029  TATA CONSULTANCY SERVICES LTD             99.000       4,215.10     50,581.20"
+    )
+    pdf.showPage()
+    pdf.save()
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_demat_cas_multi_account_statement_only_parses_first(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    account_id = await _create_brokerage_account(client, creds["cookies"])
+    await _seed_cash(client, creds["cookies"], account_id, "25000.00")
+    await _place_buy_order(client, creds["cookies"], account_id, "INE002A01018", "10.000")
+
+    pdf_bytes = _build_multi_account_demat_cas_pdf()
+
+    validate = await _upload_demat_cas(client, creds["cookies"], pdf_bytes, account_id)
+    assert validate.status_code == 200, validate.text
+    body = validate.json()
+
+    # Only the first account's ISIN was verified.
+    rows_by_isin = {r["payload_json"]["isin"]: r["payload_json"] for r in body["preview_rows"]}
+    assert set(rows_by_isin) == {"INE002A01018"}
+    assert rows_by_isin["INE002A01018"]["status"] == "match"
+
+    # The second account's ISIN is recorded as skipped, not silently merged in.
+    skipped_isins = {s["isin"] for s in body["skipped"]}
+    assert "INE467B01029" in skipped_isins
+    reason = next(s["reason"] for s in body["skipped"] if s["isin"] == "INE467B01029")
+    assert "different demat account" in reason
+
+
 @pytest.mark.asyncio
 async def test_demat_cas_wrong_password_rejected_cleanly(client: AsyncClient):
     creds = await _register_and_login(client, uuid.uuid4().hex[:8])

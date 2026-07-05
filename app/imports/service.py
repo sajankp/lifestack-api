@@ -9,6 +9,7 @@ from pathlib import Path
 
 import openpyxl
 from fastapi import UploadFile
+from pdfminer.pdfdocument import PDFPasswordIncorrect
 from sqlalchemy import delete, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1634,11 +1635,24 @@ class ImportService:
         try:
             parse_result = await asyncio.to_thread(parse_demat_cas_nsdl, file_path, file_password)
         except Exception as exc:
+            # pdfplumber wraps every PDFDocument-construction failure in its own
+            # PdfminerException, with the real underlying error as args[0] — so a
+            # wrong password (PDFPasswordIncorrect) needs an explicit isinstance
+            # check to distinguish from a genuinely corrupted/unexpected-format
+            # file. Blaming the password for every failure would mislead a user
+            # whose PDF is just broken.
+            underlying = exc.args[0] if exc.args else None
+            if isinstance(underlying, PDFPasswordIncorrect):
+                raise ValidationError(
+                    detail=(
+                        "Failed to parse Demat CAS PDF: incorrect password. Check that "
+                        "the password matches the PAN-derived password printed on your "
+                        "NSDL statement."
+                    )
+                ) from exc
             raise ValidationError(
-                detail=(
-                    "Failed to parse Demat CAS PDF. Check that the password matches the "
-                    "PAN-derived password printed on your NSDL statement."
-                )
+                detail="Failed to parse Demat CAS PDF. The file may be corrupted or in "
+                "an unexpected format."
             ) from exc
 
         # Symbols are ISINs for Indian instruments (spec-056's symbol choice),

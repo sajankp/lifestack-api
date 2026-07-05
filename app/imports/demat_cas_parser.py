@@ -25,6 +25,12 @@ _EQUITIES_SECTION_RE = re.compile(r"^Equities\b", re.IGNORECASE)
 # Any other named section (Mutual Fund Folios, Corporate Bonds, ...) ends
 # the Equities section. NSDL CAS section headers look like "Name (X)".
 _OTHER_SECTION_RE = re.compile(r"^[A-Za-z][A-Za-z /]+\([A-Z]{1,4}\)\s*$")
+# A CAS can cover multiple demat accounts (spec-060 explicitly scopes this
+# to "only the chosen target account this pass"); each account's block is
+# introduced by a DP ID/Client ID header.
+_ACCOUNT_HEADER_RE = re.compile(
+    r"DP ID:\s*(?P<dp_id>\S+)\s+Client ID:\s*(?P<client_id>\S+)", re.IGNORECASE
+)
 
 _STATEMENT_DATE_RE = re.compile(
     r"Statement Date[:\s]+(?P<date>\d{2}-[A-Za-z]{3}-\d{4})", re.IGNORECASE
@@ -72,6 +78,16 @@ class DematCasParseResult:
 def parse_demat_cas_nsdl(file_path: str, password: str | None = None) -> DematCasParseResult:
     result = DematCasParseResult()
     in_equities = False
+    # The first DP ID/Client ID header seen is "the" account for this parse.
+    # A CAS listing several demat accounts is scoped out (spec-060): once a
+    # DIFFERENT account header appears, holding rows are recorded as skipped
+    # rather than silently merged into the target account's report — an
+    # un-flagged merge would corrupt the verification with another account's
+    # numbers. NSDL CAS statements list each account's sections once, in
+    # sequence (not interleaved), so this flag is monotonic: it never flips
+    # back to "in target account" once left.
+    target_account_key: tuple[str, str] | None = None
+    in_target_account = True
 
     lines: list[str] = []
     with pdfplumber.open(file_path, password=password or "") as pdf:
@@ -90,6 +106,15 @@ def parse_demat_cas_nsdl(file_path: str, password: str | None = None) -> DematCa
                 with contextlib.suppress(ValueError, KeyError):
                     result.statement_date = _parse_cas_date(date_match.group("date"))
 
+        account_match = _ACCOUNT_HEADER_RE.search(line)
+        if account_match:
+            account_key = (account_match.group("dp_id"), account_match.group("client_id"))
+            if target_account_key is None:
+                target_account_key = account_key
+            elif account_key != target_account_key:
+                in_target_account = False
+            continue
+
         if _EQUITIES_SECTION_RE.match(line):
             in_equities = True
             continue
@@ -99,6 +124,15 @@ def parse_demat_cas_nsdl(file_path: str, password: str | None = None) -> DematCa
 
         holding_match = _HOLDING_RE.match(line)
         if not holding_match:
+            continue
+
+        if not in_target_account:
+            result.skipped.append({
+                "isin": holding_match.group("isin").upper(),
+                "reason": "belongs to a different demat account in a multi-account "
+                "statement — only the first account is verified this pass",
+                "raw_line": line,
+            })
             continue
 
         if not in_equities:
