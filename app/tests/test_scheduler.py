@@ -566,30 +566,56 @@ async def test_budget_guardrails_per_workspace_failure_isolation(override_databa
 # connections can exhaust the pool and every inner checkout then blocks on a
 # connection that no (also-blocked) outer holder will ever release.
 #
-# These tests attach pool checkout/checkin listeners and assert the peak
-# number of simultaneously checked-out connections during a job run is 1.
+# The test harness binds every session to ONE shared connection (savepoint
+# isolation in conftest), so physical pool checkouts cannot be observed here.
+# Instead these tests count the job's *logical* connection holds — concurrent
+# open sessions from postgres.async_session_maker plus any direct
+# postgres.engine.connect() call — which is exactly what maps 1:1 to pooled
+# connections in production.
+
+
+class _CountingEngineProxy:
+    """Delegates to the real engine, counting direct connect() calls."""
+
+    def __init__(self, real_engine, state):
+        self._real_engine = real_engine
+        self._state = state
+
+    def connect(self, *args, **kwargs):
+        self._state["engine_connects"] += 1
+        return self._real_engine.connect(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real_engine, name)
 
 
 @contextmanager
-def _track_pool_checkouts():
-    """Track the peak number of simultaneously checked-out pool connections."""
-    state = {"current": 0, "peak": 0}
-    sync_engine = postgres.engine.sync_engine
+def _track_concurrent_db_holds():
+    """Track peak concurrent sessions and any direct engine.connect() calls."""
+    state = {"current": 0, "peak": 0, "engine_connects": 0}
+    real_maker = postgres.async_session_maker
+    real_engine = postgres.engine
 
-    def on_checkout(dbapi_connection, connection_record, connection_proxy):
+    def counting_maker(*args, **kwargs):
+        session = real_maker(*args, **kwargs)
         state["current"] += 1
         state["peak"] = max(state["peak"], state["current"])
+        orig_close = session.close
 
-    def on_checkin(dbapi_connection, connection_record):
-        state["current"] -= 1
+        async def counted_close():
+            state["current"] -= 1
+            await orig_close()
 
-    sa.event.listen(sync_engine, "checkout", on_checkout)
-    sa.event.listen(sync_engine, "checkin", on_checkin)
+        session.close = counted_close
+        return session
+
+    postgres.async_session_maker = counting_maker
+    postgres.engine = _CountingEngineProxy(real_engine, state)
     try:
         yield state
     finally:
-        sa.event.remove(sync_engine, "checkout", on_checkout)
-        sa.event.remove(sync_engine, "checkin", on_checkin)
+        postgres.async_session_maker = real_maker
+        postgres.engine = real_engine
 
 
 @pytest.mark.asyncio
@@ -600,7 +626,7 @@ async def test_run_workspace_job_holds_single_connection(override_database_url):
         # Prove the session passed to the callback is usable for real queries.
         await session.execute(select(Workspace.id).where(Workspace.id == workspace.id))
 
-    with _track_pool_checkouts() as state:
+    with _track_concurrent_db_holds() as state:
         await run_workspace_job(
             job_name="single_conn_probe",
             lock_key=987_654,
@@ -608,10 +634,11 @@ async def test_run_workspace_job_holds_single_connection(override_database_url):
         )
 
     assert state["peak"] == 1, (
-        f"run_workspace_job checked out {state['peak']} connections at once; "
+        f"run_workspace_job held {state['peak']} sessions at once; "
         "the advisory lock and the per-workspace work must share ONE connection "
         "(pool-deadlock risk, see PR #104 review)"
     )
+    assert state["engine_connects"] == 0
 
 
 @pytest.mark.asyncio
@@ -646,12 +673,14 @@ async def test_recurring_transactions_job_holds_single_connection(override_datab
             "app.application.jobs.process_workspace_recurring_todos",
             new=AsyncMock(return_value=0),
         ),
-        _track_pool_checkouts() as state,
+        _track_concurrent_db_holds() as state,
     ):
         await recurring_transactions_job()
 
-    assert state["peak"] == 1, (
-        f"recurring_transactions_job checked out {state['peak']} connections at once"
+    assert state["peak"] == 1, f"recurring_transactions_job held {state['peak']} sessions at once"
+    assert state["engine_connects"] == 0, (
+        "recurring_transactions_job must not hold a dedicated lock connection "
+        "alongside its work session"
     )
 
 
@@ -659,8 +688,11 @@ async def test_recurring_transactions_job_holds_single_connection(override_datab
 async def test_weekly_summary_job_holds_single_connection(override_database_url):
     with (
         patch.object(WeeklySummaryService, "generate_for_workspace_week", new=AsyncMock()),
-        _track_pool_checkouts() as state,
+        _track_concurrent_db_holds() as state,
     ):
         await weekly_summary_job()
 
-    assert state["peak"] == 1, f"weekly_summary_job checked out {state['peak']} connections at once"
+    assert state["peak"] == 1, f"weekly_summary_job held {state['peak']} sessions at once"
+    assert state["engine_connects"] == 0, (
+        "weekly_summary_job must not hold a dedicated lock connection alongside its work session"
+    )
