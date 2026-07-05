@@ -860,3 +860,37 @@ To keep router files slim and isolate HTTP concerns from domain mapping, all for
 
 This ensures routers only delegate to a single service call and return the validated response model directly.
 ```
+
+---
+
+## Shared Core Helpers (use these, don't re-roll them)
+
+Added across the 2026-07 codebase-improvement batch. New code should reach for
+these instead of re-implementing the pattern locally:
+
+- **`app/core/repository.py` — `BaseRepository[T]`**: shared persistence
+  primitives (`create`/`save` = add + flush + refresh, `delete`).
+  Repositories subclass it and add their domain query methods (including
+  `get_by_public_id`, which stays per-repository because workspace scoping
+  differs). All 17+ repository classes are on it; a new module's repository
+  starts as `class XRepository(BaseRepository[X])`.
+- **`app/core/pagination.py` — `build_page(items, total, pagination)`**:
+  builds the standard paginated list envelope. Every list endpoint uses it —
+  do not hand-assemble `{items, total, limit, offset}` dicts in routers.
+- **`app/core/audit.py` — `snapshot_columns(entity, fields)`**: constructs
+  audit-log payloads from a per-service field tuple, preserving str/isoformat
+  conversions. Audit payload field sets are contract — change the field tuple,
+  not the helper.
+- **`app/core/currency.py`**: centralized FX/currency conversion helpers
+  (moved out of `investing/performance_service.py`); deliberately decoupled
+  from `app.finance` models.
+- **`app/core/recurrence.py` — `advance_due_date(...)`**: shared recurrence
+  math (spec-053 monthly modes, anchor-day clamping) used by both spending
+  and todo. Recurrence bugs get fixed here, once.
+- **`app/application/jobs.py` — `run_workspace_job(...)`**: per-workspace
+  scheduled-job scaffolding — see the Scheduled Jobs section above.
+
+Frontend counterparts in `lifestack-web` (documented in that repo's
+`docs/PATTERNS.md`): `src/hooks/useInvalidatingMutation.ts` (mutate +
+invalidate query keys) and `src/lib/queryKeys.ts` (the module-scoped query-key
+registry — never inline raw key arrays in pages).
