@@ -15,6 +15,7 @@ class ImportModule(StrEnum):
     investing_orders = "investing-orders"
     finance_transfers = "finance-transfers"
     investing_cams_cas = "investing-cams-cas"
+    investing_demat_cas = "investing-demat-cas"
 
 
 class ImportStatus(StrEnum):
