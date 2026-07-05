@@ -1,7 +1,7 @@
 # Spec-060: Demat CAS PDF Import — Holdings Verification
 
 **Created:** 2026-07-05
-**Status:** Approved (owner confirmed 2026-07-05: NSDL is the target depository; `holding_verifications` table confirmed over preview-only, for auditability over time)
+**Status:** Implemented (api#123, merged 2026-07-05; UI in lifestack-web#82)
 **Depends on:** spec-056 (CAMS CAS PDF import — parser/pipeline precedent), spec-051 (corporate actions — drift explanations), spec-057 (bhavcopy feed — referenced by the rejected alternative), spec-044 (FIFO lots — the numbers being verified)
 
 ---
