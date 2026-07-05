@@ -34,8 +34,9 @@ ingress via Cloudflare Tunnel · encrypted nightly DB backups to S3/R2
 - **Multi-tenant from day one** — every business table carries `workspace_id`, enforced by composite foreign keys at the database level.
 - **Production-grade auth** — JWT in HttpOnly cookies, refresh-token rotation with replay detection, CSRF double-submit, Argon2id, concurrent-session limits.
 - **Operability** — append-only PII-redacted audit logging, structlog + OpenTelemetry + Prometheus, scheduled jobs guarded by Postgres advisory locks.
+- **Lot-accurate cost basis** — FIFO lot engine with corporate-action handling (splits, reverse splits, bonus issues), golden-tested against broker-statement numbers; Indian market ingestion via CAMS CAS PDF import and the NSE bhavcopy price feed.
 - **Quality gates** — 80% backend / 70% frontend coverage thresholds, 18 Playwright E2E specs, and `pip-audit` + Bandit + TruffleHog in CI.
-- **Spec-driven** — 40+ specs under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
+- **Spec-driven** — 60 specs under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
 
 ---
 

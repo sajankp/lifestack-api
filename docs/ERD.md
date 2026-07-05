@@ -122,6 +122,7 @@ erDiagram
         string priority
         boolean completed
         string system_key
+        datetime reminded_at
         datetime created_at
         datetime updated_at
     }
@@ -143,6 +144,9 @@ erDiagram
         date end_date
         boolean is_active
         datetime last_generated_at
+        string monthly_mode
+        int by_weekday
+        int by_ordinal
         datetime created_at
         datetime updated_at
     }
@@ -228,6 +232,9 @@ erDiagram
         date end_date
         boolean is_active
         datetime last_generated_at
+        string monthly_mode
+        int by_weekday
+        int by_ordinal
         datetime created_at
         datetime updated_at
     }
@@ -295,6 +302,7 @@ erDiagram
         string reporting_currency_code FK
         string currency_display_preference
         decimal lookthrough_min_weight_pct
+        int default_spending_account_id FK
         datetime created_at
         datetime updated_at
     }
@@ -488,6 +496,44 @@ erDiagram
         datetime updated_at
     }
 
+    INVESTING_ORDER_LOTS {
+        int id PK
+        int workspace_id FK
+        int holding_id FK
+        int buy_order_id FK
+        int corporate_action_id FK
+        decimal original_quantity
+        decimal remaining_quantity
+        decimal cost_per_unit
+        datetime acquired_at
+        datetime created_at
+    }
+
+    INVESTING_LOT_CONSUMPTIONS {
+        int id PK
+        int sell_order_id FK
+        int lot_id FK
+        decimal quantity_consumed
+        decimal cost_per_unit
+        datetime created_at
+    }
+
+    INVESTING_CORPORATE_ACTIONS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        int account_id FK
+        string symbol
+        string action_type
+        decimal ratio_base
+        decimal ratio_quote
+        date ex_date
+        string notes
+        datetime created_at
+        datetime updated_at
+    }
+
     HOLDING_PRICES {
         int id PK
         int workspace_id FK
@@ -530,6 +576,107 @@ erDiagram
     WORKSPACES ||--o{ HOLDING_PRICES : scopes
     INVESTING_HOLDINGS ||--o{ HOLDING_PRICES : has_prices
     WORKSPACES ||--o{ PORTFOLIO_SNAPSHOTS : scopes
+    INVESTING_HOLDINGS ||--o{ INVESTING_ORDER_LOTS : fifo_lots
+    INVESTING_ORDERS ||--o{ INVESTING_ORDER_LOTS : buy_creates
+    INVESTING_CORPORATE_ACTIONS ||--o{ INVESTING_ORDER_LOTS : bonus_creates
+    INVESTING_ORDERS ||--o{ INVESTING_LOT_CONSUMPTIONS : sell_consumes
+    INVESTING_ORDER_LOTS ||--o{ INVESTING_LOT_CONSUMPTIONS : consumed_from
+    WORKSPACES ||--o{ INVESTING_CORPORATE_ACTIONS : scopes
+    ACCOUNTS ||--o{ INVESTING_CORPORATE_ACTIONS : applies_to
+```
+
+## Notifications & Summaries
+
+```mermaid
+erDiagram
+    USERS {
+        int id PK
+        uuid public_id UK
+    }
+
+    WORKSPACES {
+        int id PK
+        uuid public_id UK
+    }
+
+    NOTIFICATIONS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        string category
+        string severity
+        string title
+        string body
+        string module
+        string entity_type
+        uuid entity_public_id
+        boolean is_read
+        datetime read_at
+        datetime created_at
+    }
+
+    NOTIFICATION_PREFERENCES {
+        int id PK
+        int workspace_id FK
+        int user_id FK
+        string category
+        boolean channel_in_app
+        boolean channel_email
+        boolean channel_push
+        boolean is_muted
+        datetime created_at
+        datetime updated_at
+    }
+
+    NOTIFICATION_DELIVERIES {
+        int id PK
+        int notification_id FK
+        string channel
+        string status
+        datetime attempted_at
+        string error_detail
+        datetime created_at
+    }
+
+    PUSH_SUBSCRIPTIONS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        string endpoint UK
+        string p256dh
+        string auth
+        string device_label
+        boolean is_active
+        datetime last_success_at
+        datetime last_failure_at
+        datetime created_at
+        datetime updated_at
+    }
+
+    WEEKLY_SUMMARIES {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        date week_start
+        date week_end
+        datetime generated_at
+        json todo_summary
+        json spending_summary
+        json investing_summary
+        json highlights
+        datetime created_at
+    }
+
+    WORKSPACES ||--o{ NOTIFICATIONS : scopes
+    USERS ||--o{ NOTIFICATIONS : receives
+    WORKSPACES ||--o{ NOTIFICATION_PREFERENCES : scopes
+    USERS ||--o{ NOTIFICATION_PREFERENCES : configures
+    NOTIFICATIONS ||--o{ NOTIFICATION_DELIVERIES : delivered_via
+    WORKSPACES ||--o{ PUSH_SUBSCRIPTIONS : scopes
+    USERS ||--o{ PUSH_SUBSCRIPTIONS : subscribes
+    WORKSPACES ||--o{ WEEKLY_SUMMARIES : scopes
 ```
 
 ## Imports & Exports
@@ -565,6 +712,8 @@ erDiagram
         int total_rows
         int valid_rows
         int error_rows
+        string commit_error
+        json extra_json
         datetime started_at
         datetime validated_at
         datetime committed_at
@@ -626,6 +775,11 @@ erDiagram
 - `fx_rates` stores currency pairs with both a base and quote currency reference.
 - `capital_transfers` connects the spending and investing modules through accounts and currencies.
 - `investing_holdings`, `investing_cash_balances`, and `investing_orders` enforce tenant-safe `account_id` relationships to the `accounts` table.
-- `investing_orders` records each buy/sell trade against a brokerage account. Placing an order automatically writes a new `investing_cash_balances` row (`trigger_type="order"`) and recomputes the linked holding's weighted `avg_cost`; a transfer into an investing account writes a balance row with `trigger_type="transfer"`. `trigger_ref` points back to the order/transfer `public_id`.
+- `investing_orders` records each buy/sell trade against a brokerage account. Placing an order automatically writes a new `investing_cash_balances` row (`trigger_type="order"`) and replays the holding's FIFO lots (`investing_order_lots` / `investing_lot_consumptions`, spec-044) to recompute `avg_cost`; a transfer into an investing account writes a balance row with `trigger_type="transfer"`. `trigger_ref` points back to the order/transfer `public_id`.
+- `investing_order_lots` rows are recomputed (deleted and recreated) on every holding replay. Exactly one of `buy_order_id`/`corporate_action_id` is set: a buy creates a lot; a bonus issue (spec-051) creates a zero-cost lot; a split/reverse split scales existing lots in place. `investing_lot_consumptions` is the audit trail of which lots each sell drew from.
+- `investing_corporate_actions` (spec-051) are replayed alongside orders by `ex_date` and never touch `investing_cash_balances` — cash-neutral by construction.
+- `notifications` fan out through `notification_deliveries` per channel; `push_subscriptions` (spec-052) stores Web Push endpoints as capability secrets (never logged, returned truncated) and is deactivated automatically on permanent push-service rejection.
+- `workspace_finance_settings.default_spending_account_id` (spec-054) is the create-path fallback account for spending transactions; cleared automatically when that account is deactivated.
+- `import_batches.extra_json` (spec-056) carries module-specific batch context, e.g. the CAMS CAS `target_account_id` and advisory preview signals.
 - `import_batches` tracks the life of bulk data uploads for transaction and holdings modules.
 - `exports` handles the user-driven data exports lifecycle.
