@@ -15,7 +15,28 @@ from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
     SpendingTransaction,
+    TransactionSort,
 )
+
+
+def _transaction_order_by(sort: TransactionSort | None) -> list:  # type: ignore[type-arg]
+    """Build the ORDER BY clause for a transaction listing.
+
+    ``created_at`` (then ``id``) is always appended as a tiebreaker so results
+    are deterministic and pagination stays stable when the primary sort key
+    ties. ``sort=None`` preserves the historical default (newest-created first).
+    """
+    created_desc = SpendingTransaction.created_at.desc()
+    id_desc = SpendingTransaction.id.desc()
+    if sort == TransactionSort.date_desc:
+        return [SpendingTransaction.occurred_at.desc(), created_desc, id_desc]
+    if sort == TransactionSort.date_asc:
+        return [SpendingTransaction.occurred_at.asc(), created_desc, id_desc]
+    if sort == TransactionSort.amount_desc:
+        return [SpendingTransaction.amount.desc(), created_desc, id_desc]
+    if sort == TransactionSort.amount_asc:
+        return [SpendingTransaction.amount.asc(), created_desc, id_desc]
+    return [created_desc, id_desc]
 
 
 @dataclass
@@ -124,6 +145,7 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         type_filter: str | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        sort: TransactionSort | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
     ) -> tuple[Sequence[SpendingTransaction], int]:
@@ -144,7 +166,7 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
         result = await self.session.execute(
-            base.order_by(SpendingTransaction.created_at.desc()).limit(limit).offset(offset)
+            base.order_by(*_transaction_order_by(sort)).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
 

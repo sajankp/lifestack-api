@@ -14,6 +14,20 @@ class TransactionType(StrEnum):
     expense = "expense"
 
 
+class TransactionSort(StrEnum):
+    """Sort options for listing spending transactions.
+
+    ``date_*`` sorts by the transaction date (``occurred_at``); ``amount_*``
+    sorts by the transaction amount. ``created_at`` is always applied as a
+    secondary key so pagination stays stable when the primary key ties.
+    """
+
+    date_desc = "date_desc"
+    date_asc = "date_asc"
+    amount_desc = "amount_desc"
+    amount_asc = "amount_asc"
+
+
 class TransactionSourceType(StrEnum):
     manual = "manual"
     imported = "imported"

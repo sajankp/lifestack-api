@@ -17,6 +17,7 @@ from app.core.dependencies import (
 )
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.spending.models import (
+    TransactionSort,
     TransactionType,
 )
 from app.spending.response_helpers import (
@@ -148,6 +149,13 @@ async def list_transactions(
     type: TransactionType | None = Query(None),
     from_date: datetime | None = Query(None),
     to_date: datetime | None = Query(None),
+    sort: TransactionSort | None = Query(
+        None,
+        description=(
+            "Sort order: date_desc/date_asc (by transaction date) or "
+            "amount_desc/amount_asc. Defaults to newest-created first."
+        ),
+    ),
 ):
     detailed_items, total = await transaction_service.list_transactions_with_details(
         workspace_id,
@@ -157,6 +165,7 @@ async def list_transactions(
         type_filter=type,
         from_date=from_date,
         to_date=to_date,
+        sort=sort,
         limit=pagination.limit,
         offset=pagination.offset,
     )

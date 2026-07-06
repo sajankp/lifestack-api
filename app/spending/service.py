@@ -32,6 +32,7 @@ from app.spending.models import (
     SpendingBudget,
     SpendingCategory,
     SpendingTransaction,
+    TransactionSort,
     TransactionSourceType,
     TransactionType,
 )
@@ -338,6 +339,7 @@ class TransactionService:
         type_filter: TransactionType | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        sort: TransactionSort | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
     ) -> tuple[list[TransactionResponse], int]:
@@ -349,6 +351,7 @@ class TransactionService:
             type_filter=type_filter,
             from_date=from_date,
             to_date=to_date,
+            sort=sort,
             limit=limit,
             offset=offset,
         )
@@ -509,6 +512,7 @@ class TransactionService:
         type_filter: TransactionType | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        sort: TransactionSort | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
     ) -> tuple[Sequence[SpendingTransaction], int]:
@@ -526,6 +530,7 @@ class TransactionService:
             type_filter=type_filter,
             from_date=from_date,
             to_date=to_date,
+            sort=sort,
             limit=limit,
             offset=offset,
         )
