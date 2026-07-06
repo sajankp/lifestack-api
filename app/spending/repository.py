@@ -26,17 +26,18 @@ def _transaction_order_by(sort: TransactionSort | None) -> list:  # type: ignore
     are deterministic and pagination stays stable when the primary sort key
     ties. ``sort=None`` preserves the historical default (newest-created first).
     """
-    created_desc = SpendingTransaction.created_at.desc()
-    id_desc = SpendingTransaction.id.desc()
+    clauses = []
     if sort == TransactionSort.date_desc:
-        return [SpendingTransaction.occurred_at.desc(), created_desc, id_desc]
-    if sort == TransactionSort.date_asc:
-        return [SpendingTransaction.occurred_at.asc(), created_desc, id_desc]
-    if sort == TransactionSort.amount_desc:
-        return [SpendingTransaction.amount.desc(), created_desc, id_desc]
-    if sort == TransactionSort.amount_asc:
-        return [SpendingTransaction.amount.asc(), created_desc, id_desc]
-    return [created_desc, id_desc]
+        clauses.append(SpendingTransaction.occurred_at.desc())
+    elif sort == TransactionSort.date_asc:
+        clauses.append(SpendingTransaction.occurred_at.asc())
+    elif sort == TransactionSort.amount_desc:
+        clauses.append(SpendingTransaction.amount.desc())
+    elif sort == TransactionSort.amount_asc:
+        clauses.append(SpendingTransaction.amount.asc())
+
+    clauses.extend([SpendingTransaction.created_at.desc(), SpendingTransaction.id.desc()])
+    return clauses
 
 
 @dataclass

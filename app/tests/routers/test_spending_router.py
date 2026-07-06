@@ -136,11 +136,15 @@ async def test_transaction_list_sorting(client: AsyncClient):
         )
         assert res.status_code == 201, res.text
 
-    async def _amounts(sort: str) -> list[str]:
-        res = await client.get("/v1/spending/transactions", params={"sort": sort}, cookies=cookies)
+    async def _amounts(sort: str | None = None) -> list[str]:
+        params = {"sort": sort} if sort is not None else {}
+        res = await client.get("/v1/spending/transactions", params=params, cookies=cookies)
         assert res.status_code == 200, res.text
         return [item["amount"] for item in res.json()["items"]]
 
+    # Default sort (no param) is newest-created first: 30, 10, 50 were created
+    # in that order, so the most-recently-created (50) comes first.
+    assert await _amounts() == ["50.00", "10.00", "30.00"]
     assert await _amounts("amount_desc") == ["50.00", "30.00", "10.00"]
     assert await _amounts("amount_asc") == ["10.00", "30.00", "50.00"]
     # date_desc → newest occurred_at first (10 was on the 20th, 50 on the 1st).
