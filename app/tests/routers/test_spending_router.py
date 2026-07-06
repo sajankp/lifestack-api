@@ -103,6 +103,60 @@ async def test_transaction_router_endpoints(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_transaction_list_sorting(client: AsyncClient):
+    cookies = await _register_and_login(client, "spendingsort@example.com", "spendingsort")
+
+    list_res = await client.get("/v1/spending/categories", cookies=cookies)
+    category_id = list_res.json()["items"][0]["public_id"]
+
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=cookies,
+    )
+    account_id = account_res.json()["public_id"]
+
+    # Create three transactions with amount/date deliberately misaligned so a
+    # correct sort can only come from the right column (not creation order).
+    seeds = [
+        {"amount": 30.00, "occurred_at": "2026-06-10T12:00:00Z", "description": "mid"},
+        {"amount": 10.00, "occurred_at": "2026-06-20T12:00:00Z", "description": "low"},
+        {"amount": 50.00, "occurred_at": "2026-06-01T12:00:00Z", "description": "high"},
+    ]
+    for seed in seeds:
+        res = await client.post(
+            "/v1/spending/transactions",
+            json={
+                "category_id": category_id,
+                "account_id": account_id,
+                "type": "expense",
+                **seed,
+            },
+            cookies=cookies,
+        )
+        assert res.status_code == 201, res.text
+
+    async def _amounts(sort: str | None = None) -> list[str]:
+        params = {"sort": sort} if sort is not None else {}
+        res = await client.get("/v1/spending/transactions", params=params, cookies=cookies)
+        assert res.status_code == 200, res.text
+        return [item["amount"] for item in res.json()["items"]]
+
+    # Default sort (no param) is newest-created first: 30, 10, 50 were created
+    # in that order, so the most-recently-created (50) comes first.
+    assert await _amounts() == ["50.00", "10.00", "30.00"]
+    assert await _amounts("amount_desc") == ["50.00", "30.00", "10.00"]
+    assert await _amounts("amount_asc") == ["10.00", "30.00", "50.00"]
+    # date_desc → newest occurred_at first (10 was on the 20th, 50 on the 1st).
+    assert await _amounts("date_desc") == ["10.00", "30.00", "50.00"]
+    assert await _amounts("date_asc") == ["50.00", "30.00", "10.00"]
+
+    # An invalid sort value is rejected by the enum validation.
+    bad = await client.get("/v1/spending/transactions", params={"sort": "bogus"}, cookies=cookies)
+    assert bad.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_budget_router_endpoints(client: AsyncClient):
     cookies = await _register_and_login(client, "spendingbudget@example.com", "spendingbudget")
 
