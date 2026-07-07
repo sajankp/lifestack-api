@@ -60,7 +60,7 @@ def migrated_database_url(postgres_container):
     return url
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 async def test_database_engine(migrated_database_url):
     """Share one migrated test database engine across DB-backed tests."""
     engine = create_async_engine(
