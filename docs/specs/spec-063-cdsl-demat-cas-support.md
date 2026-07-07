@@ -1,7 +1,7 @@
 # Spec-063: CDSL Demat CAS Support (Holdings Verification)
 
 **Created:** 2026-07-07
-**Status:** Proposed — pending owner approval before code (change-control gate)
+**Status:** Implemented (2026-07-07, on `chore/imports-service-split` alongside the D4 `app/imports/service.py` split — bundled per owner request)
 **Depends on:** spec-060 (NSDL Demat CAS holdings verification — pipeline, table, and UI this spec extends)
 
 ---
@@ -63,22 +63,53 @@ real feedback" call, not a spec gap to close before merging.
 
 ## Golden tests
 
-Same synthetic-`reportlab`-fixture approach as spec-060, adapted to a CDSL-shaped layout:
+Same synthetic-`reportlab`-fixture approach as spec-060, adapted to a CDSL-shaped layout, added to
+`app/tests/integration/test_demat_cas_import.py`:
 
-1. All-match CDSL fixture → every row `match`, `source="cdsl_cas"` on the persisted row.
-2. Quantity drift + split hint (same corporate-action-suspected logic, registrar-agnostic).
-3. Both `missing_*` directions in one CDSL statement.
-4. Wrong password → same clean `ValidationError` path as NSDL.
-5. Registrar misdetection (neither NSDL nor CDSL header found) → clean "unexpected format" error,
-   not a silent wrong-parse.
-6. Rollback deletes the verification row (shared logic with NSDL, so this may already be covered —
-   confirm rather than duplicate).
+1. `test_demat_cas_cdsl_detected_and_all_match` — all-match CDSL fixture → every row `match`,
+   `source="cdsl_cas"` on the persisted `HoldingVerification`.
+2. `test_demat_cas_cdsl_quantity_drift_and_split_hint` — quantity drift + split hint (same
+   corporate-action-suspected logic, registrar-agnostic).
+3. `test_demat_cas_cdsl_missing_both_directions` — both `missing_*` directions in one CDSL
+   statement.
+4. `test_demat_cas_unrecognized_registrar_rejected_cleanly` — a statement naming neither NSDL nor
+   CDSL → clean `ValidationError` ("...could not identify it as an NSDL or CDSL statement..."),
+   never a silent wrong-parse.
+
+**Wrong-password and rollback were deliberately not duplicated for CDSL** — both are
+registrar-agnostic (password failure happens during PDF extraction, before registrar detection
+runs; rollback is keyed by `source_import_id`, not by `source`) and are already exercised by the
+existing NSDL tests against the same code paths. Confirmed by reading the code rather than assumed.
 
 **Acceptance bar for this spec is intentionally lower than spec-060's:** synthetic fixtures proving
 the plumbing (detection routing, `source` value, preview/commit/rollback) is correct, *not* a
 guarantee the regex matches a real CDSL PDF byte-for-byte. That gap is closed by the owner's first
 real test, not by more synthetic fixtures — track any regex fix needed after that test as a normal
 bug-fix commit against this spec's branch/PR, not a new spec.
+
+## Implementation notes (what was actually built, 2026-07-07)
+
+- `app/imports/demat_cas_parser.py`: the NSDL-only line-walker was refactored into a shared
+  `_walk_lines(lines, section_re, holding_re)` used by both registrars, plus
+  `detect_registrar(lines)` (raises `UnrecognizedRegistrarError` — a `ValueError` subclass — when
+  neither or both of the literal words "NSDL"/"CDSL" appear in the extracted PDF text) and a new
+  `parse_demat_cas(file_path, password)` entry point returning `(DematCasParseResult, source)`.
+  `parse_demat_cas_nsdl` is kept as a thin wrapper for anyone calling it directly; a symmetrical
+  `parse_demat_cas_cdsl` was added too.
+- **CDSL assumptions baked into the regexes** (the part most likely to need a follow-up fix against
+  a real statement): holdings section opens on a bare `CDSL` line (vs. NSDL's `Equities (E)`);
+  account header accepts `BO ID:` as well as `DP ID:` but still expects a `Client ID:` on the same
+  line (real CDSL statements may only carry a BO ID — unconfirmed); holding rows tolerate an
+  optional leading serial number and 2-or-3-decimal quantities (NSDL is always 3). All three are
+  isolated in `demat_cas_parser.py`'s regex constants, so a fix from real-statement feedback should
+  be a small, contained diff.
+- `app/imports/demat_cas_import.py`: `validate_demat_cas_batch` now calls `parse_demat_cas` (not
+  the NSDL-only function) and catches `UnrecognizedRegistrarError` separately from the
+  password/corruption branch so its error message doesn't blame the password. The detected
+  `source` is threaded through `batch.extra_json["source"]` so `finalize_demat_cas_commit` can read
+  it back at commit time instead of the previously hardcoded `"nsdl_cas"` literal (defaults to
+  `"nsdl_cas"` if absent, for any pre-existing batch rows without the key).
+- No database migration, no new `ImportModule`, no frontend changes — matches the spec's scope.
 
 ## Out of scope
 

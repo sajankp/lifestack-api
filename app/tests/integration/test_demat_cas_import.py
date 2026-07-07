@@ -108,6 +108,59 @@ def _build_demat_cas_pdf(
     return buf.getvalue()
 
 
+def _build_cdsl_demat_cas_pdf(holdings: list[dict], statement_date: str = "30-Jun-2026") -> bytes:
+    """Render a synthetic, best-effort CDSL CAS PDF (spec-063).
+
+    No real CDSL statement was available at implementation time — this
+    fixture matches this module's own CDSL regexes (leading serial number,
+    2-decimal balance, bare "CDSL" section header) so it proves the
+    detection/parsing/persistence plumbing, not byte-for-byte fidelity to a
+    real CDSL PDF. See `demat_cas_parser`'s module docstring.
+    """
+    buf = io.BytesIO()
+    enc = StandardEncryption(userPassword=_CAS_PASSWORD, ownerPassword="owner-secret")
+    pdf = canvas.Canvas(buf, pagesize=A4, encrypt=enc)
+    pdf.setFont("Courier", 9)
+    y = 800
+
+    def line(text: str) -> None:
+        nonlocal y
+        if y < 60:
+            pdf.showPage()
+            pdf.setFont("Courier", 9)
+            y = 800
+        pdf.drawString(40, y, text)
+        y -= 14
+
+    line("CDSL Demat Account          BO ID: 1234567890123456   Client ID: 12345678")
+    line(f"Statement Date: {statement_date}")
+    line("CDSL")
+    line(
+        "Sl.No  ISIN          Security                       Current Bal.   Market Price   Value(Rs.)"
+    )
+    for i, h in enumerate(holdings, start=1):
+        line(f"{i}  {h['isin']}  {h['name']:<30} {h['quantity']:>10}    2,970.50    148,525.00")
+    line("Mutual Fund Folios (F)")
+    line("INF179K01WV6  HDFC Flexi Cap Fund - Growth Option       999.00")
+    pdf.showPage()
+    pdf.save()
+    return buf.getvalue()
+
+
+def _build_unrecognized_registrar_pdf() -> bytes:
+    """A statement naming neither NSDL nor CDSL — must hard-fail, not guess."""
+    buf = io.BytesIO()
+    enc = StandardEncryption(userPassword=_CAS_PASSWORD, ownerPassword="owner-secret")
+    pdf = canvas.Canvas(buf, pagesize=A4, encrypt=enc)
+    pdf.setFont("Courier", 9)
+    pdf.drawString(40, 800, "Some Other Depository Statement")
+    pdf.drawString(40, 786, "ISIN          Security                            Current Bal.")
+    pdf.drawString(40, 772, "INE002A01018  RELIANCE INDUSTRIES LTD                   50.000")
+    pdf.showPage()
+    pdf.save()
+    return buf.getvalue()
+
+
 async def _upload_demat_cas(
     client: AsyncClient,
     cookies: dict,
@@ -146,7 +199,7 @@ async def test_demat_cas_all_match(client: AsyncClient):
     assert row["lifestack_quantity"] == "50.00000000"
     # The Mutual Fund Folios row must not leak into the Equities report.
     assert len(body["skipped"]) == 1
-    assert "Equities" in body["skipped"][0]["reason"]
+    assert "holdings section" in body["skipped"][0]["reason"]
 
     import_id = body["import_batch"]["public_id"]
     commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
@@ -381,3 +434,101 @@ async def test_demat_cas_rollback_deletes_verification_row(client: AsyncClient):
     holdings = await client.get("/v1/investing/holdings", cookies=creds["cookies"])
     holding = next(h for h in holdings.json()["items"] if h["symbol"] == "INE002A01018")
     assert Decimal(holding["quantity"]) == Decimal("50.000")
+
+
+# --- CDSL (spec-063) ---
+# Wrong-password handling and rollback are registrar-agnostic (they run
+# before/independent of registrar detection and are keyed by
+# source_import_id, not by source value) and are already proven above for
+# NSDL — not duplicated here per spec-063's own "confirm rather than
+# duplicate" note.
+
+
+@pytest.mark.asyncio
+async def test_demat_cas_cdsl_detected_and_all_match(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    account_id = await _create_brokerage_account(client, creds["cookies"])
+    await _seed_cash(client, creds["cookies"], account_id, "25000.00")
+    await _place_buy_order(client, creds["cookies"], account_id, "INE002A01018", "50.000")
+
+    pdf_bytes = _build_cdsl_demat_cas_pdf([
+        {"isin": "INE002A01018", "name": "RELIANCE INDUSTRIES LTD", "quantity": "50.00"},
+    ])
+
+    validate = await _upload_demat_cas(client, creds["cookies"], pdf_bytes, account_id)
+    assert validate.status_code == 200, validate.text
+    body = validate.json()
+    row = body["preview_rows"][0]["payload_json"]
+    assert row["isin"] == "INE002A01018"
+    assert row["status"] == "match"
+    # The Mutual Fund Folios row must not leak into the CDSL equities report.
+    assert len(body["skipped"]) == 1
+
+    import_id = body["import_batch"]["public_id"]
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code == 200, commit.text
+
+    verifications = await client.get(
+        "/v1/investing/holding-verifications", cookies=creds["cookies"]
+    )
+    items = verifications.json()["items"]
+    assert len(items) == 1
+    assert items[0]["source"] == "cdsl_cas"
+    assert items[0]["match_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_demat_cas_cdsl_quantity_drift_and_split_hint(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    account_id = await _create_brokerage_account(client, creds["cookies"])
+    await _seed_cash(client, creds["cookies"], account_id, "25000.00")
+    await _place_buy_order(client, creds["cookies"], account_id, "INE002A01018", "50.000")
+
+    pdf_bytes = _build_cdsl_demat_cas_pdf([
+        {"isin": "INE002A01018", "name": "RELIANCE INDUSTRIES LTD", "quantity": "500.00"},
+    ])
+
+    validate = await _upload_demat_cas(client, creds["cookies"], pdf_bytes, account_id)
+    assert validate.status_code == 200, validate.text
+    row = validate.json()["preview_rows"][0]["payload_json"]
+    assert row["status"] == "quantity_drift"
+    assert row["corporate_action_suspected"] is True
+
+
+@pytest.mark.asyncio
+async def test_demat_cas_cdsl_missing_both_directions(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    account_id = await _create_brokerage_account(client, creds["cookies"])
+    await _seed_cash(client, creds["cookies"], account_id, "25000.00")
+    await _place_buy_order(client, creds["cookies"], account_id, "INE002A01018", "10.000")
+    await _place_buy_order(client, creds["cookies"], account_id, "INE467B01029", "20.000")
+
+    pdf_bytes = _build_cdsl_demat_cas_pdf([
+        {"isin": "INE002A01018", "name": "RELIANCE INDUSTRIES LTD", "quantity": "10.00"},
+        {"isin": "INE999C99999", "name": "UNKNOWN CORP LTD", "quantity": "5.00"},
+    ])
+
+    validate = await _upload_demat_cas(client, creds["cookies"], pdf_bytes, account_id)
+    assert validate.status_code == 200, validate.text
+    rows_by_isin = {
+        r["payload_json"]["isin"]: r["payload_json"] for r in validate.json()["preview_rows"]
+    }
+    assert rows_by_isin["INE002A01018"]["status"] == "match"
+    assert rows_by_isin["INE999C99999"]["status"] == "missing_in_lifestack"
+    assert rows_by_isin["INE467B01029"]["status"] == "missing_at_depository"
+
+
+@pytest.mark.asyncio
+async def test_demat_cas_unrecognized_registrar_rejected_cleanly(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    account_id = await _create_brokerage_account(client, creds["cookies"])
+
+    pdf_bytes = _build_unrecognized_registrar_pdf()
+
+    validate = await _upload_demat_cas(client, creds["cookies"], pdf_bytes, account_id)
+    assert validate.status_code == 422, validate.text
+    assert "NSDL or CDSL" in validate.json()["detail"]
+
+    # No batch row leaked from the failed attempt.
+    imports = await client.get("/v1/imports", cookies=creds["cookies"])
+    assert imports.json()["total"] == 0

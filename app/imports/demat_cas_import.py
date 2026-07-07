@@ -1,7 +1,10 @@
-"""Demat CAS (NSDL Consolidated Account Statement) import for
+"""Demat CAS (NSDL/CDSL Consolidated Account Statement) import for
 `ImportModule.investing_demat_cas`: upload validation, the PDF-parse-driven
 "validate" step, and the commit-side accumulation/finalization that builds
-one `HoldingVerification` row per commit (spec-060).
+one `HoldingVerification` row per commit (spec-060 NSDL, spec-063 CDSL).
+Registrar (NSDL vs CDSL) is auto-detected from the PDF text by
+`demat_cas_parser.parse_demat_cas` and carried through `extra_json["source"]`
+to the persisted `HoldingVerification.source`.
 """
 
 import asyncio
@@ -16,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditLogger
 from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import Account
-from app.imports.demat_cas_parser import parse_demat_cas_nsdl
+from app.imports.demat_cas_parser import UnrecognizedRegistrarError, parse_demat_cas
 from app.imports.models import ImportBatch, ImportPreviewRow, ImportStatus
 from app.imports.repository import ImportRepository
 from app.imports.shared import enum_value
@@ -111,7 +114,14 @@ async def validate_demat_cas_batch(
         )
 
     try:
-        parse_result = await asyncio.to_thread(parse_demat_cas_nsdl, file_path, file_password)
+        parse_result, source = await asyncio.to_thread(parse_demat_cas, file_path, file_password)
+    except UnrecognizedRegistrarError as exc:
+        # Neither/both NSDL and CDSL markers found — a clean format error,
+        # never a silent mis-route to the wrong registrar's parser (spec-063).
+        raise ValidationError(
+            detail="Failed to parse Demat CAS PDF: could not identify it as an NSDL "
+            "or CDSL statement. The file may be corrupted or in an unsupported format."
+        ) from exc
     except Exception as exc:
         # pdfplumber wraps every PDFDocument-construction failure in its own
         # PdfminerException, with the real underlying error as args[0] — so a
@@ -125,7 +135,7 @@ async def validate_demat_cas_batch(
                 detail=(
                     "Failed to parse Demat CAS PDF: incorrect password. Check that "
                     "the password matches the PAN-derived password printed on your "
-                    "NSDL statement."
+                    "NSDL/CDSL statement."
                 )
             ) from exc
         raise ValidationError(
@@ -217,6 +227,7 @@ async def validate_demat_cas_batch(
         **(batch.extra_json or {}),
         "skipped": parse_result.skipped,
         "statement_date": parse_result.statement_date,
+        "source": source,
     }
     batch.total_rows = len(report)
     batch.valid_rows = len(report)
@@ -289,7 +300,7 @@ async def finalize_demat_cas_commit(
         workspace_id=workspace_id,
         account_id=account.id,
         source_import_id=batch.id,
-        source="nsdl_cas",
+        source=(batch.extra_json or {}).get("source", "nsdl_cas"),
         statement_date=date.fromisoformat(statement_date_str) if statement_date_str else None,
         match_count=counts["match"],
         quantity_drift_count=counts["quantity_drift"],
