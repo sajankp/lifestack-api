@@ -55,8 +55,8 @@ def _parse_occurred_at(value: str, user_timezone: str) -> datetime:
     """
     normalized = value.strip()
     try:
-        tz: tzinfo = ZoneInfo(user_timezone)
-    except (ZoneInfoNotFoundError, ValueError):
+        tz: tzinfo = ZoneInfo(user_timezone) if user_timezone else UTC
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
         tz = UTC
 
     if len(normalized) == 10:  # bare ISO date, e.g. "2026-07-03"
@@ -504,8 +504,8 @@ class AgentTools:
                     "message": "Invalid date. Use a day like 'yesterday' or an ISO date.",
                 }
             try:
-                tz: tzinfo = ZoneInfo(self.user_timezone)
-            except (ZoneInfoNotFoundError, ValueError):
+                tz: tzinfo = ZoneInfo(self.user_timezone) if self.user_timezone else UTC
+            except (ZoneInfoNotFoundError, ValueError, TypeError):
                 tz = UTC
             if resolved_occurred_at.astimezone(tz).date() > now.astimezone(tz).date():
                 return {

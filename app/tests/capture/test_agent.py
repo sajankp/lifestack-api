@@ -920,9 +920,12 @@ async def test_spending_invalid_date_returns_structured_error(seed_agent_test_da
 
 
 @pytest.mark.asyncio
-async def test_spending_backdate_falls_back_to_utc_for_unknown_timezone(seed_agent_test_data):
-    """A malformed/unknown session timezone falls back to UTC rather than
-    failing — a bare date is then anchored to noon UTC."""
+@pytest.mark.parametrize("bad_timezone", ["Not/AZone", ""])
+async def test_spending_backdate_falls_back_to_utc_for_bad_timezone(
+    seed_agent_test_data, bad_timezone
+):
+    """A malformed, unknown, or empty session timezone falls back to UTC rather
+    than failing — a bare date is then anchored to noon UTC."""
     res = await execute_agent_tool(
         name="log_spending_transaction",
         args={
@@ -934,7 +937,7 @@ async def test_spending_backdate_falls_back_to_utc_for_unknown_timezone(seed_age
         },
         user_id=10,
         workspace_id=20,
-        user_timezone="Not/AZone",
+        user_timezone=bad_timezone,
     )
 
     assert res["status"] == "success"
