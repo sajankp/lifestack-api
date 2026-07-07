@@ -76,12 +76,12 @@ Synthetic-but-structurally-accurate fixture PDF via `reportlab` (spec-056 preced
 ## Out of scope
 
 - **Order inference / price backfill from demat movements** — rejected above; would need its own spec with an explicit "estimated cost basis" model if ever wanted.
-- **CDSL layout** — follow-up spec once NSDL is proven (layout differs enough to need its own fixtures).
+- **CDSL layout** — promoted to [spec-063](spec-063-cdsl-demat-cas-support.md) (owner decision, 2026-07-07: build now rather than wait for NSDL to be proven against a real statement).
 - **Mutual-fund sections of the NSDL CAS** — covered by the CAMS import (spec-056); rows are skipped with a reason.
 - **Auto-creating `CorporateAction` or orders from drift** — the report explains, the owner acts; no automated writes to money-bearing tables.
 - **Multi-account statements** — a CAS covering several demat accounts verifies only the chosen target account this pass; other sections are skipped with a reason.
 
 ## Resolved questions
 
-1. **NSDL vs CDSL first** — NSDL confirmed (owner, 2026-07-05). CDSL stays out of scope as a follow-up spec.
+1. **NSDL vs CDSL first** — NSDL confirmed (owner, 2026-07-05). CDSL follow-up promoted to spec-063 (owner, 2026-07-07).
 2. **`holding_verifications` table vs preview-only** — table confirmed (owner, 2026-07-05): the audit trail across statements is the point of the feature.
