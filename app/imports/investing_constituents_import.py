@@ -225,6 +225,31 @@ async def commit_constituents_chunk(
             (c.instrument_id, c.constituent_company_id, c.as_of_date): c for c in const_rows
         }
 
+    # Pre-create all missing companies in a single batch and flush once to
+    # populate their DB-assigned IDs. This avoids N+1 flushes (one per new
+    # company) when a large ETF constituent list contains many unseen companies.
+    new_companies: dict[str, Company] = {}
+    for row in rows:
+        p = row.payload_json
+        company_name_raw = p.get("company_name")
+        company_name_norm = company_name_raw.strip().lower() if company_name_raw else ""
+        if (
+            company_name_norm
+            and company_name_norm not in company_cache
+            and company_name_norm not in new_companies
+        ):
+            company = Company(
+                workspace_id=workspace_id,
+                name=company_name_raw,
+                ticker=p.get("company_ticker") or None,
+            )
+            session.add(company)
+            new_companies[company_name_norm] = company
+
+    if new_companies:
+        await session.flush()
+        company_cache.update(new_companies)
+
     inserted = 0
     for row in rows:
         p = row.payload_json
@@ -232,19 +257,16 @@ async def commit_constituents_chunk(
         company_name_norm = company_name_raw.strip().lower() if company_name_raw else ""
 
         company = company_cache.get(company_name_norm)
-        if company is None:
-            company = Company(
-                workspace_id=workspace_id,
-                name=company_name_raw,
-                ticker=p.get("company_ticker") or None,
-            )
-            session.add(company)
-            await session.flush()
-            company_cache[company_name_norm] = company
 
         instrument_id = p.get("instrument_id")
         if instrument_id is None:
             raise ValidationError(detail="Instrument ID is missing in preview payload")
+
+        if company is None:
+            # Company still missing after the batch-create pass — this can only
+            # happen if company_name_norm was empty (validation should have
+            # caught this upstream, but be safe rather than crash).
+            continue
 
         as_of_date = datetime.strptime(p["as_of_date"], "%Y-%m-%d").date()
         const_key = (int(instrument_id), company.id, as_of_date)

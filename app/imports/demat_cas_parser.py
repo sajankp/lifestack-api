@@ -132,9 +132,14 @@ def detect_registrar(lines: list[str]) -> str:
     wrong parser would produce a plausible-looking but wrong verification
     report, which is worse than a clean upload-time error.
     """
-    full_text = "\n".join(lines)
-    is_nsdl = bool(_NSDL_MARKER_RE.search(full_text))
-    is_cdsl = bool(_CDSL_MARKER_RE.search(full_text))
+    # Restrict to the first 50 lines where the issuing registrar's header is
+    # guaranteed to appear. Searching the full document risks false positives:
+    # NSDL statements sometimes mention CDSL in footers/disclaimers (and vice
+    # versa), which would cause both markers to match and trigger an
+    # UnrecognizedRegistrarError on a valid statement.
+    header_text = "\n".join(lines[:50])
+    is_nsdl = bool(_NSDL_MARKER_RE.search(header_text))
+    is_cdsl = bool(_CDSL_MARKER_RE.search(header_text))
     if is_nsdl and not is_cdsl:
         return "nsdl_cas"
     if is_cdsl and not is_nsdl:

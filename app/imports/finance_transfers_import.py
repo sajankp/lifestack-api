@@ -196,7 +196,9 @@ def validate_finance_transfer_row(
 
     if gross_amount is not None and net_amount_received is not None:
         if (
-            from_currency == to_currency
+            from_currency is not None
+            and to_currency is not None
+            and from_currency == to_currency
             and fx_rate_used is not None
             and fx_rate_used != Decimal("1")
         ):
@@ -292,7 +294,8 @@ async def commit_finance_transfers_chunk(
         # Use an in-memory cache so multiple transfers in the same batch
         # accumulate correctly without N+1 DB queries.
         if transfer.to_module == TransferModule.investing and order_service is not None:
-            await session.flush()  # get transfer.public_id
+            # public_id is a uuid.uuid4 default_factory — already populated on
+            # Python instantiation, no flush needed before reading it.
             cache_key = (to_account_id, transfer.to_currency_code)
             if cache_key not in cash_balance_cache:
                 cash_repo = order_service.cash_balance_repository
