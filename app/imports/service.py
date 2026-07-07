@@ -9,7 +9,7 @@ from pathlib import Path
 
 import openpyxl
 from fastapi import UploadFile
-from sqlalchemy import delete, select, tuple_
+from sqlalchemy import select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,23 @@ from app.imports.demat_cas_import import (
     validate_demat_cas_batch,
     validate_demat_cas_upload,
 )
+from app.imports.investing_constituents_import import (
+    TEMPLATE_ROW as INVESTING_CONSTITUENTS_TEMPLATE_ROW,
+)
+from app.imports.investing_constituents_import import (
+    check_weight_group_totals,
+    commit_constituents_chunk,
+    prepare_constituents_commit,
+    validate_investing_constituent_row,
+)
+from app.imports.investing_orders_import import (
+    TEMPLATE_ROWS as INVESTING_ORDERS_TEMPLATE_ROWS,
+)
+from app.imports.investing_orders_import import (
+    commit_investing_orders_chunk,
+    rollback_investing_orders_import,
+    validate_investing_order_row,
+)
 from app.imports.models import (
     ImportBatch,
     ImportError,
@@ -46,7 +63,6 @@ from app.investing.models import (
 from app.investing.models import (
     Company,
     Instrument,
-    InstrumentConstituent,
     InstrumentType,
 )
 from app.investing.order_service import InvestingOrderService
@@ -60,7 +76,6 @@ from app.investing.repository import (
     InvestingOrderRepository,
     LotRepository,
 )
-from app.investing.schemas import InvestingOrderCreate
 from app.investing.service import InstrumentService
 from app.spending.models import (
     SpendingBudget,
@@ -250,14 +265,9 @@ class ImportService:
         elif module == ImportModule.spending_budgets:
             lines.append("2026-05-01,Food & Dining,800.00")
         elif module == ImportModule.investing_constituents:
-            lines.append("UMMA,Apple Inc,AAPL,0.082,2026-06-14")
+            lines.append(INVESTING_CONSTITUENTS_TEMPLATE_ROW)
         elif module == ImportModule.investing_orders:
-            lines.append(
-                "buy,AAPL,stock,,Primary Brokerage,10,150.00,USD,1.99,0,0,2026-01-15T10:30:00+00:00,NASDAQ,First purchase"
-            )
-            lines.append(
-                "buy,122639,mutual_fund,Parag Parikh Flexi Cap Fund Direct Growth,GROWW,222.03,90.07,INR,0,0,0,2026-04-09T00:00:00+00:00,,Parag Parikh Flexi Cap Fund Direct Growth | Amount: 19999"
-            )
+            lines.extend(INVESTING_ORDERS_TEMPLATE_ROWS)
         elif module == ImportModule.finance_transfers:
             lines.append(
                 "2026-05-01T09:30:00Z,ICICI,GROWW,INR,INR,50000.00,50000.00,SIP Investment"
@@ -872,156 +882,12 @@ class ImportService:
                         "amount": str(amount) if amount is not None else None,
                     }
                 elif batch.module == ImportModule.investing_orders:
-                    order_type_raw = self._norm(row.get("order_type"))
-                    symbol_raw = self._norm(row.get("symbol"))
-                    instrument_type_raw = self._norm(row.get("instrument_type")) or "stock"
-                    instrument_name_raw = self._norm(row.get("instrument_name")) or None
-                    account_name_raw = self._norm(row.get("account_name"))
-                    quantity_raw = self._norm(row.get("quantity"))
-                    price_raw = self._norm(row.get("price_per_unit"))
-                    currency_raw = self._norm(row.get("currency"))
-                    occurred_raw = self._norm(row.get("occurred_at"))
-                    fee_raw = self._norm(row.get("brokerage_fee")) or "0"
-                    tax_raw = self._norm(row.get("tax_amount")) or "0"
-                    other_raw = self._norm(row.get("other_fees")) or "0"
-                    exchange_raw = self._norm(row.get("exchange_name")) or None
-                    notes_raw = self._norm(row.get("notes")) or None
-
-                    order_type_val = order_type_raw.lower() if order_type_raw else ""
-                    if order_type_val not in {"buy", "sell"}:
-                        add_error(
-                            "order_type",
-                            "invalid_enum",
-                            "order_type must be 'buy' or 'sell'",
-                            order_type_raw,
-                        )
-
-                    valid_instrument_types = {t.value for t in InstrumentType}
-                    instrument_type_val = instrument_type_raw.lower()
-                    if instrument_type_val not in valid_instrument_types:
-                        add_error(
-                            "instrument_type",
-                            "invalid_enum",
-                            f"instrument_type must be one of: {', '.join(sorted(valid_instrument_types))}",
-                            instrument_type_raw,
-                        )
-                        instrument_type_val = "stock"
-
-                    if (
-                        instrument_type_val == InstrumentType.mutual_fund
-                        and not instrument_name_raw
-                    ):
-                        add_error(
-                            "instrument_name",
-                            "required",
-                            "instrument_name is required when instrument_type is mutual_fund",
-                            instrument_name_raw,
-                        )
-
-                    if not symbol_raw:
-                        add_error("symbol", "required", "symbol is required", symbol_raw)
-
-                    account_public_id = None
-                    if account_name_raw:
-                        account_public_id = order_account_pub_map.get(account_name_raw.lower())
-                        if account_public_id is None:
-                            add_error(
-                                "account_name",
-                                "not_found",
-                                "account not found in workspace",
-                                account_name_raw,
-                            )
-                    else:
-                        add_error(
-                            "account_name", "required", "account_name is required", account_name_raw
-                        )
-
-                    try:
-                        quantity = Decimal(quantity_raw)
-                        if quantity <= 0:
-                            raise InvalidOperation
-                    except Exception:
-                        add_error(
-                            "quantity",
-                            "invalid_decimal",
-                            "quantity must be a positive decimal",
-                            quantity_raw,
-                        )
-                        quantity = None
-
-                    try:
-                        price = Decimal(price_raw)
-                        if price <= 0:
-                            raise InvalidOperation
-                    except Exception:
-                        add_error(
-                            "price_per_unit",
-                            "invalid_decimal",
-                            "price_per_unit must be a positive decimal",
-                            price_raw,
-                        )
-                        price = None
-
-                    currency = None
-                    if currency_raw:
-                        currency = currency_raw.upper()
-                        if currency not in currency_set:
-                            add_error(
-                                "currency",
-                                "not_found",
-                                "currency not enabled in workspace",
-                                currency_raw,
-                            )
-                    else:
-                        add_error("currency", "required", "currency is required", currency_raw)
-
-                    occurred_at = None
-                    try:
-                        occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
-                    except Exception:
-                        add_error(
-                            "occurred_at",
-                            "invalid_datetime",
-                            "occurred_at must be ISO datetime",
-                            occurred_raw,
-                        )
-
-                    def _safe_decimal(raw: str, field: str) -> Decimal:
-                        try:
-                            val = Decimal(raw)
-                            if val < 0:
-                                raise InvalidOperation
-                            return val
-                        except Exception:
-                            add_error(
-                                field,
-                                "invalid_decimal",
-                                f"{field} must be a non-negative decimal",
-                                raw,
-                            )
-                            return Decimal("0")
-
-                    fee = _safe_decimal(fee_raw, "brokerage_fee")
-                    tax = _safe_decimal(tax_raw, "tax_amount")
-                    other = _safe_decimal(other_raw, "other_fees")
-
-                    payload = {
-                        "order_type": order_type_val,
-                        "symbol": symbol_raw.upper() if symbol_raw else None,
-                        "instrument_type": instrument_type_val,
-                        "instrument_name": instrument_name_raw,
-                        "account_name": account_name_raw,
-                        "account_public_id": str(account_public_id) if account_public_id else None,
-                        "quantity": str(quantity) if quantity is not None else None,
-                        "price_per_unit": str(price) if price is not None else None,
-                        "currency": currency,
-                        "brokerage_fee": str(fee),
-                        "tax_amount": str(tax),
-                        "other_fees": str(other),
-                        "occurred_at": occurred_at.isoformat() if occurred_at else None,
-                        "exchange_name": exchange_raw,
-                        "notes": notes_raw,
-                    }
+                    payload, _weight_entry = validate_investing_order_row(
+                        row,
+                        add_error,
+                        order_account_pub_map=order_account_pub_map,
+                        currency_set=currency_set,
+                    )
                 elif batch.module == ImportModule.finance_transfers:
                     occurred_raw = self._norm(row.get("occurred_at"))
                     from_account_raw = self._norm(row.get("from_account"))
@@ -1244,89 +1110,11 @@ class ImportService:
                         "tax_amount": str(tax_amount),
                     }
                 else:
-                    instrument_symbol_raw = self._norm(row.get("instrument_symbol"))
-                    company_name_raw = self._norm(row.get("company_name"))
-                    company_ticker_raw = self._norm(row.get("company_ticker"))
-                    weight_raw = self._norm(row.get("weight"))
-                    as_of_date_raw = self._norm(row.get("as_of_date"))
-
-                    inst = None
-                    if instrument_symbol_raw:
-                        inst = instruments_map.get(instrument_symbol_raw.upper())
-                        if (
-                            not inst
-                            or not inst.is_active
-                            or inst.instrument_type
-                            not in {InstrumentType.etf.value, InstrumentType.mutual_fund.value}
-                        ):
-                            add_error(
-                                "instrument_symbol",
-                                "invalid_instrument",
-                                "instrument_symbol must resolve to an active ETF/Mutual Fund instrument in the current workspace",
-                                instrument_symbol_raw,
-                            )
-                    else:
-                        add_error(
-                            "instrument_symbol",
-                            "required",
-                            "instrument_symbol is required",
-                            instrument_symbol_raw,
-                        )
-
-                    if not company_name_raw:
-                        add_error(
-                            "company_name",
-                            "required",
-                            "company_name is required",
-                            company_name_raw,
-                        )
-
-                    try:
-                        weight = Decimal(weight_raw)
-                        if not (Decimal("0.00000001") <= weight <= Decimal("1.0")):
-                            raise InvalidOperation
-                    except Exception:
-                        add_error(
-                            "weight",
-                            "invalid_decimal",
-                            "weight must be a positive decimal between 0 and 1",
-                            weight_raw,
-                        )
-                        weight = None
-
-                    try:
-                        as_of_date = datetime.strptime(as_of_date_raw, "%Y-%m-%d").date()
-                    except Exception:
-                        add_error(
-                            "as_of_date",
-                            "invalid_date",
-                            "as_of_date must be YYYY-MM-DD",
-                            as_of_date_raw,
-                        )
-                        as_of_date = None
-
-                    payload = {
-                        "instrument_symbol": instrument_symbol_raw.upper()
-                        if instrument_symbol_raw
-                        else None,
-                        "instrument_id": inst.id if inst else None,
-                        "company_name": company_name_raw,
-                        "company_ticker": company_ticker_raw or None,
-                        "weight": str(weight) if weight is not None else None,
-                        "as_of_date": as_of_date.isoformat() if as_of_date else None,
-                        "source": "csv_import",
-                    }
-
-                    if (
-                        instrument_symbol_raw
-                        and inst
-                        and inst.is_active
-                        and inst.instrument_type
-                        in {InstrumentType.etf.value, InstrumentType.mutual_fund.value}
-                        and weight is not None
-                        and as_of_date is not None
-                    ):
-                        key = (instrument_symbol_raw.upper(), as_of_date_raw)
+                    payload, weight_entry = validate_investing_constituent_row(
+                        row, add_error, instruments_map
+                    )
+                    if weight_entry is not None:
+                        key, weight = weight_entry
                         weight_groups.setdefault(key, []).append(weight)
 
                 if row_errors:
@@ -1348,19 +1136,7 @@ class ImportService:
                         await self.repository.add_errors(errors)
                         errors = []
 
-            for (sym, dt_str), weights in weight_groups.items():
-                total_w = sum(weights)
-                if not (Decimal("0.99") <= total_w <= Decimal("1.01")):
-                    errors.append(
-                        ImportError(
-                            import_batch_id=batch.id,
-                            row_number=1,
-                            field_name="weight",
-                            error_code="invalid_weight_sum",
-                            message=f"Total weight for instrument '{sym}' on date '{dt_str}' is {total_w}, which is outside the range 0.99 - 1.01.",
-                            raw_value=str(total_w),
-                        )
-                    )
+            errors.extend(check_weight_group_totals(batch.id, weight_groups))
 
             if previews:
                 await self.repository.add_preview_rows(previews)
@@ -1451,40 +1227,9 @@ class ImportService:
         demat_cas_report: list[dict] = []
         try:
             if batch.module == ImportModule.investing_constituents:
-                # 1. Fetch all preview rows to extract unique target snapshots (instrument_id, as_of_date)
-                preview_rows = await self.repository.iter_preview_rows(batch.id)
-                unique_snapshots = set()
-                for row in preview_rows:
-                    p = row.payload_json
-                    inst_id = p.get("instrument_id")
-                    as_of_date_str = p.get("as_of_date")
-                    if inst_id is not None and as_of_date_str:
-                        unique_snapshots.add((
-                            int(inst_id),
-                            datetime.strptime(as_of_date_str, "%Y-%m-%d").date(),
-                        ))
-
-                # 2. Delete existing snapshot records under source "csv_import"
-                for inst_id, as_of_date in unique_snapshots:
-                    await self.session.execute(
-                        delete(InstrumentConstituent).where(
-                            InstrumentConstituent.instrument_id == inst_id,
-                            InstrumentConstituent.as_of_date == as_of_date,
-                            InstrumentConstituent.source == "csv_import",
-                        )
-                    )
-
-                # 3. Cache existing workspace companies by lowercased name
-                company_rows = (
-                    (
-                        await self.session.execute(
-                            select(Company).where(Company.workspace_id == workspace_id)
-                        )
-                    )
-                    .scalars()
-                    .all()
+                company_cache = await prepare_constituents_commit(
+                    self.session, self.repository, workspace_id, batch
                 )
-                company_cache = {c.name.strip().lower(): c for c in company_rows}
 
             category_name_to_id = await self._category_maps(workspace_id)
             by_name, _by_public = category_name_to_id
@@ -1600,48 +1345,9 @@ class ImportService:
                         raise ValidationError(
                             detail="Order service is not available for this import type"
                         )
-                    order_ins: list[InvestingOrderCreate] = []
-                    for row in rows:
-                        p = row.payload_json
-                        required = (
-                            "order_type",
-                            "symbol",
-                            "account_public_id",
-                            "quantity",
-                            "price_per_unit",
-                            "currency",
-                            "occurred_at",
-                        )
-                        if any(p.get(f) is None for f in required):
-                            raise ValidationError(
-                                detail=f"Row {row.row_number}: missing required order field in preview payload"
-                            )
-                        order_ins.append(
-                            InvestingOrderCreate(
-                                account_id=uuid.UUID(p["account_public_id"]),
-                                order_type=p["order_type"],
-                                symbol=p["symbol"],
-                                instrument_type=InstrumentType(p.get("instrument_type") or "stock"),
-                                instrument_name=p.get("instrument_name") or None,
-                                quantity=Decimal(p["quantity"]),
-                                price_per_unit=Decimal(p["price_per_unit"]),
-                                currency=p["currency"],
-                                brokerage_fee=Decimal(p.get("brokerage_fee") or "0"),
-                                tax_amount=Decimal(p.get("tax_amount") or "0"),
-                                other_fees=Decimal(p.get("other_fees") or "0"),
-                                exchange_name=p.get("exchange_name"),
-                                occurred_at=datetime.fromisoformat(p["occurred_at"]),
-                                notes=p.get("notes"),
-                            )
-                        )
-                    created = await self.order_service.bulk_import_orders(
-                        workspace_id=workspace_id,
-                        user_id=user_id,
-                        orders=order_ins,
-                        source_import_id=batch.id,
-                        audit_logger=audit_logger,
+                    inserted += await commit_investing_orders_chunk(
+                        self.order_service, workspace_id, user_id, batch, rows, audit_logger
                     )
-                    inserted += len(created)
                 elif batch.module == ImportModule.finance_transfers:
                     for row in rows:
                         p = row.payload_json
@@ -1720,88 +1426,9 @@ class ImportService:
                     for row in rows:
                         demat_cas_report.append(row.payload_json)
                 else:  # ImportModule.investing_constituents
-                    # Pre-load existing constituents for the chunk to prevent unique constraint violation
-                    keys = []
-                    for row in rows:
-                        p = row.payload_json
-                        company_name_raw = p.get("company_name")
-                        company_name_norm = (
-                            company_name_raw.strip().lower() if company_name_raw else ""
-                        )
-                        company = company_cache.get(company_name_norm)
-                        if company is not None and p.get("instrument_id") is not None:
-                            try:
-                                dt = datetime.strptime(p["as_of_date"], "%Y-%m-%d").date()
-                                keys.append((int(p["instrument_id"]), company.id, dt))
-                            except Exception:
-                                pass
-
-                    existing_consts = {}
-                    if keys:
-                        const_rows = (
-                            (
-                                await self.session.execute(
-                                    select(InstrumentConstituent).where(
-                                        InstrumentConstituent.source == "csv_import",
-                                        tuple_(
-                                            InstrumentConstituent.instrument_id,
-                                            InstrumentConstituent.constituent_company_id,
-                                            InstrumentConstituent.as_of_date,
-                                        ).in_(keys),
-                                    )
-                                )
-                            )
-                            .scalars()
-                            .all()
-                        )
-                        existing_consts = {
-                            (c.instrument_id, c.constituent_company_id, c.as_of_date): c
-                            for c in const_rows
-                        }
-
-                    for row in rows:
-                        p = row.payload_json
-                        company_name_raw = p.get("company_name")
-                        company_name_norm = (
-                            company_name_raw.strip().lower() if company_name_raw else ""
-                        )
-
-                        company = company_cache.get(company_name_norm)
-                        if company is None:
-                            company = Company(
-                                workspace_id=workspace_id,
-                                name=company_name_raw,
-                                ticker=p.get("company_ticker") or None,
-                            )
-                            self.session.add(company)
-                            await self.session.flush()
-                            company_cache[company_name_norm] = company
-
-                        instrument_id = p.get("instrument_id")
-                        if instrument_id is None:
-                            raise ValidationError(
-                                detail="Instrument ID is missing in preview payload"
-                            )
-
-                        as_of_date = datetime.strptime(p["as_of_date"], "%Y-%m-%d").date()
-                        const_key = (int(instrument_id), company.id, as_of_date)
-                        existing_const = existing_consts.get(const_key)
-
-                        if existing_const:
-                            existing_const.weight = Decimal(p["weight"])
-                            existing_const.fetched_at = datetime.now(UTC)
-                        else:
-                            constituent = InstrumentConstituent(
-                                instrument_id=int(instrument_id),
-                                constituent_company_id=company.id,
-                                weight=Decimal(p["weight"]),
-                                as_of_date=as_of_date,
-                                source="csv_import",
-                                fetched_at=datetime.now(UTC),
-                            )
-                            self.session.add(constituent)
-                            existing_consts[const_key] = constituent
-                        inserted += 1
+                    inserted += await commit_constituents_chunk(
+                        self.session, workspace_id, rows, company_cache
+                    )
 
                 await self.session.flush()
                 offset += self.COMMIT_CHUNK_SIZE
@@ -1869,30 +1496,14 @@ class ImportService:
     ) -> int:
         """Roll back a committed investing-orders import.
 
-        Placing orders has side effects (cash-balance snapshots and holding
-        avg_cost/quantity changes), so deleting the order rows alone would orphan
-        cash balances and leave holdings incorrect. This removes the order-triggered
-        cash balances and recomputes the affected holdings from the remaining orders.
+        Thin delegator kept on the façade (rather than inlined at the call
+        site) because it's exercised directly in unit tests
+        (`test_import_order_rollback.py`). See
+        `app/imports/investing_orders_import.py` for the implementation.
         """
-        if self.order_service is None:
-            raise ValidationError(detail="Order service is required to roll back an order import")
-
-        orders = await self.repository.list_investing_orders_for_batch(
-            workspace_id, import_batch_id
+        return await rollback_investing_orders_import(
+            self.repository, self.order_service, workspace_id, user_id, import_batch_id
         )
-        if not orders:
-            return 0
-
-        affected = {(o.symbol, o.account_id) for o in orders}
-        await self.repository.delete_cash_balances_by_trigger_refs(
-            workspace_id, "order", [o.public_id for o in orders]
-        )
-        deleted_records = await self.repository.delete_investing_orders_for_batch(
-            workspace_id, import_batch_id
-        )
-        for symbol, account_id in affected:
-            await self.order_service._recompute_holding(workspace_id, user_id, symbol, account_id)
-        return deleted_records
 
     async def delete_batch(
         self,
