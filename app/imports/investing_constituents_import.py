@@ -155,12 +155,20 @@ async def prepare_constituents_commit(
                 datetime.strptime(as_of_date_str, "%Y-%m-%d").date(),
             ))
 
-    for inst_id, as_of_date in unique_snapshots:
+    # Batched into a single DELETE (Gemini review, api PR#128) rather than one
+    # query per (instrument, as_of_date) pair. The `if unique_snapshots:` guard
+    # is deliberate, not just an optimization: `tuple_(...).in_(())` is safe on
+    # its own, but this stays explicit so an empty/falsy set can never end up
+    # executing a DELETE that only carries the `source == "csv_import"` filter
+    # — that would silently wipe every CSV-imported constituent snapshot in
+    # the workspace instead of doing nothing.
+    if unique_snapshots:
         await session.execute(
             delete(InstrumentConstituent).where(
-                InstrumentConstituent.instrument_id == inst_id,
-                InstrumentConstituent.as_of_date == as_of_date,
                 InstrumentConstituent.source == "csv_import",
+                tuple_(InstrumentConstituent.instrument_id, InstrumentConstituent.as_of_date).in_(
+                    unique_snapshots
+                ),
             )
         )
 
