@@ -159,7 +159,7 @@ def validate_spending_transaction_row(
                 amount_raw,
             )
             amount = None
-        if amount <= 0:
+        if amount is not None and amount <= 0:
             raise InvalidOperation
     except Exception:
         add_error(
