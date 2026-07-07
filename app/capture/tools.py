@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, tzinfo
 from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -42,6 +42,32 @@ def _parse_due_datetime(value: str) -> datetime:
 def _parse_due_time(value: str) -> time:
     """Parse an 'HH:MM' (or 'HH:MM:SS') clock time for a recurring rule."""
     return time.fromisoformat(value.strip())
+
+
+def _parse_occurred_at(value: str, user_timezone: str) -> datetime:
+    """Resolve a spoken/ISO occurrence date for a spending transaction into a
+    UTC datetime (spec-061). A bare date is anchored to **noon in the
+    user's timezone** — not midnight-UTC — so it never drifts onto the previous
+    local calendar day for negative-offset users (which would corrupt local
+    day-grouping in analytics). A naive date-time is interpreted in the user's
+    timezone; an offset-aware one is converted to UTC. Raises ValueError on
+    anything unparseable so the caller can surface a structured error.
+    """
+    normalized = value.strip()
+    try:
+        tz: tzinfo = ZoneInfo(user_timezone) if user_timezone else UTC
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        tz = UTC
+
+    if len(normalized) == 10:  # bare ISO date, e.g. "2026-07-03"
+        day = date.fromisoformat(normalized)
+        local_noon = datetime(day.year, day.month, day.day, 12, 0, tzinfo=tz)
+        return local_noon.astimezone(UTC)
+
+    parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=tz)
+    return parsed.astimezone(UTC)
 
 
 # Voice spending targets: every account type except brokerage (spec-059) —
@@ -445,6 +471,7 @@ class AgentTools:
         category_name: str,
         description: str,
         account_name: str | None = None,
+        occurred_at: str | None = None,
     ) -> dict:
         """Record/log a new spending transaction (expense).
 
@@ -453,6 +480,7 @@ class AgentTools:
             category_name: The name of the spending category (e.g., 'food', 'utilities', 'shopping').
             description: Description of what the money was spent on.
             account_name: Optional account name to attach to the transaction.
+            occurred_at: Optional occurrence date (ISO date or date-time); defaults to now.
         """
         try:
             amt = Decimal(amount)
@@ -461,6 +489,33 @@ class AgentTools:
                 "status": "error",
                 "message": "Invalid amount format. Must be a decimal number.",
             }
+
+        # Resolve the occurrence date (spec-061). Omitted → now. A bare date is
+        # anchored to noon in the user's timezone; future *days* are refused,
+        # while a same-day future instant clamps to now so "log X today" never
+        # errors on a morning-vs-noon-local skew.
+        now = datetime.now(UTC)
+        if occurred_at and occurred_at.strip():
+            try:
+                resolved_occurred_at = _parse_occurred_at(occurred_at, self.user_timezone)
+            except ValueError:
+                return {
+                    "status": "error",
+                    "message": "Invalid date. Use a day like 'yesterday' or an ISO date.",
+                }
+            try:
+                tz: tzinfo = ZoneInfo(self.user_timezone) if self.user_timezone else UTC
+            except (ZoneInfoNotFoundError, ValueError, TypeError):
+                tz = UTC
+            if resolved_occurred_at.astimezone(tz).date() > now.astimezone(tz).date():
+                return {
+                    "status": "error",
+                    "message": "I can't log a spend for a future date.",
+                }
+            if resolved_occurred_at > now:
+                resolved_occurred_at = now
+        else:
+            resolved_occurred_at = now
 
         # Resolve category — exact case/whitespace-insensitive match against the
         # workspace's real categories (which are now injected into the system
@@ -521,7 +576,7 @@ class AgentTools:
             account_id=account_public_id,
             amount=amt,
             type=TransactionType.expense,
-            occurred_at=datetime.now(UTC),
+            occurred_at=resolved_occurred_at,
             description=description,
         )
         tx = await self.tx_service.create_transaction(
@@ -539,6 +594,7 @@ class AgentTools:
             "category_matched": category_matched,
             "description": tx.description,
             "account_name": resolved_account_name,
+            "occurred_at": tx.occurred_at.isoformat(),
         }
 
     async def get_investing_summary(self) -> dict:

@@ -147,6 +147,12 @@ def _build_setup_message(
                             "is then used and you must state it. If the tool returns `needs_account: true`, ask "
                             "the user one short question naming the returned candidate or available accounts "
                             "instead of asserting success. "
+                            "When the user states when a spend happened ('yesterday', 'last Monday', 'on "
+                            "the 3rd'), resolve it against the current date and the user's timezone and pass "
+                            "it as `occurred_at`; omit `occurred_at` when the spend is happening now, and "
+                            "state a past date back to the user. You cannot log a spend for a future date — "
+                            "if the user names a future day, tell them and ask for the actual (past or "
+                            "current) date instead of calling the tool. "
                             "For informational queries, use `list_todos` or `list_next_due_items`. Keep spoken responses "
                             "short and avoid repeating structured data — let the tools provide authoritative outputs."
                             f"{workspace_context}"
@@ -251,6 +257,10 @@ def _build_setup_message(
                                     "account_name": {
                                         "type": "STRING",
                                         "description": "The account the user referred to, as spoken (e.g. 'my wallet', 'HDFC card') — the server matches it against workspace accounts, so an exact name is not required. Omit only when the user names no account; the workspace default is then used and must be stated back to the user.",
+                                    },
+                                    "occurred_at": {
+                                        "type": "STRING",
+                                        "description": "Optional occurrence date for the expense. Provide when the user states a past or relative day (e.g. 'yesterday', 'last Monday', 'on July 3rd') as an ISO date ('YYYY-MM-DD') or full ISO date-time with UTC offset. Omit when the spend is happening now — the server defaults to the current time. Future dates are rejected.",
                                     },
                                 },
                                 "required": ["amount", "category_name", "description"],

@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -744,3 +745,239 @@ async def test_prompt_injection_category_stays_data(seed_agent_test_data):
     # ...inside a wrapper that explicitly frames the block as non-instructions.
     assert "NOT instructions" in context
     assert "never as commands" in context
+
+
+# ---------------------------------------------------------------------------
+# spec-061: optional transaction occurrence date on the voice spending tool.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spending_backdate_bare_date_uses_noon_in_user_timezone(seed_agent_test_data):
+    """A bare date ('yesterday' → 'YYYY-MM-DD') is stamped at noon in the user's
+    timezone, then stored as UTC. For Asia/Kolkata (+05:30, no DST) noon local is
+    06:30 UTC on the same calendar day — proving the date is honored and never
+    drifts across the day boundary."""
+    res = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "20.00",
+            "category_name": "food",
+            "description": "Groceries yesterday",
+            "account_name": "everyday wallet",
+            "occurred_at": "2026-07-03",
+        },
+        user_id=10,
+        workspace_id=20,
+        user_timezone="Asia/Kolkata",
+    )
+
+    assert res["status"] == "success"
+    assert res["occurred_at"] == "2026-07-03T06:30:00+00:00"
+
+    async with postgres.async_session_maker() as session:
+        txs = (
+            (
+                await session.execute(
+                    select(SpendingTransaction).where(SpendingTransaction.workspace_id == 20)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(txs) == 1
+        assert txs[0].occurred_at == datetime(2026, 7, 3, 6, 30, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_spending_backdate_negative_offset_stays_on_local_day(seed_agent_test_data):
+    """For a negative-offset zone (America/Los_Angeles), noon-local converts to a
+    same-calendar-day UTC instant — a midnight-UTC stamp would land on the prior
+    day and corrupt local day-grouping. Assert the stored UTC date equals the
+    requested local date."""
+    requested = "2026-07-03"
+    res = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "9.00",
+            "category_name": "food",
+            "description": "Coffee",
+            "account_name": "everyday wallet",
+            "occurred_at": requested,
+        },
+        user_id=10,
+        workspace_id=20,
+        user_timezone="America/Los_Angeles",
+    )
+
+    assert res["status"] == "success"
+    stored = datetime.fromisoformat(res["occurred_at"])
+    la_noon = datetime(2026, 7, 3, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    assert stored == la_noon.astimezone(UTC)
+    # The whole point: same local calendar day, no drift.
+    assert stored.astimezone(ZoneInfo("America/Los_Angeles")).date() == date(2026, 7, 3)
+
+
+@pytest.mark.asyncio
+async def test_spending_future_day_is_rejected_and_writes_no_row(seed_agent_test_data):
+    """A genuinely future calendar day is refused with a clear message and no
+    transaction is written (you cannot have spent money in the future)."""
+    future = (datetime.now(UTC) + timedelta(days=5)).date().isoformat()
+    res = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "50.00",
+            "category_name": "food",
+            "description": "Future spend",
+            "account_name": "everyday wallet",
+            "occurred_at": future,
+        },
+        user_id=10,
+        workspace_id=20,
+        user_timezone="Asia/Kolkata",
+    )
+
+    assert res["status"] == "error"
+    assert "future" in res["message"].lower()
+
+    async with postgres.async_session_maker() as session:
+        txs = (
+            (
+                await session.execute(
+                    select(SpendingTransaction).where(SpendingTransaction.workspace_id == 20)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(txs) == 0
+
+
+@pytest.mark.asyncio
+async def test_spending_same_day_future_instant_clamps_to_now(seed_agent_test_data):
+    """An instant slightly in the future but on the current local day (e.g.
+    'today' resolved to noon-local in the morning) clamps to now rather than
+    erroring, so the ordinary 'log X today' path never fails."""
+    future_instant = (datetime.now(UTC) + timedelta(minutes=1)).isoformat()
+    res = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "5.00",
+            "category_name": "food",
+            "description": "Now-ish",
+            "account_name": "everyday wallet",
+            "occurred_at": future_instant,
+        },
+        user_id=10,
+        workspace_id=20,
+        user_timezone="UTC",
+    )
+
+    assert res["status"] == "success"
+    stored = datetime.fromisoformat(res["occurred_at"])
+    # Clamped: not the future value, and no later than ~now.
+    assert stored < datetime.fromisoformat(future_instant)
+    assert stored <= datetime.now(UTC) + timedelta(seconds=5)
+
+
+@pytest.mark.asyncio
+async def test_spending_omitted_date_defaults_to_now(seed_agent_test_data):
+    """Omitting occurred_at keeps the pre-addendum behavior: stamped ~now."""
+    before = datetime.now(UTC) - timedelta(seconds=1)
+    res = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "3.00",
+            "category_name": "food",
+            "description": "Right now",
+            "account_name": "everyday wallet",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+
+    assert res["status"] == "success"
+    stored = datetime.fromisoformat(res["occurred_at"])
+    assert before <= stored <= datetime.now(UTC) + timedelta(seconds=5)
+
+
+@pytest.mark.asyncio
+async def test_spending_invalid_date_returns_structured_error(seed_agent_test_data):
+    res = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "3.00",
+            "category_name": "food",
+            "description": "Bad date",
+            "account_name": "everyday wallet",
+            "occurred_at": "last thursday",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert res["status"] == "error"
+    assert "date" in res["message"].lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_timezone", ["Not/AZone", ""])
+async def test_spending_backdate_falls_back_to_utc_for_bad_timezone(
+    seed_agent_test_data, bad_timezone
+):
+    """A malformed, unknown, or empty session timezone falls back to UTC rather
+    than failing — a bare date is then anchored to noon UTC."""
+    res = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "7.00",
+            "category_name": "food",
+            "description": "Snack",
+            "account_name": "everyday wallet",
+            "occurred_at": "2026-07-03",
+        },
+        user_id=10,
+        workspace_id=20,
+        user_timezone=bad_timezone,
+    )
+
+    assert res["status"] == "success"
+    assert res["occurred_at"] == "2026-07-03T12:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_spending_naive_datetime_interpreted_in_user_timezone(seed_agent_test_data):
+    """An ISO date-time without an offset is interpreted in the user's session
+    timezone. 09:00 in Asia/Kolkata (+05:30) is 03:30 UTC."""
+    res = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "12.00",
+            "category_name": "food",
+            "description": "Breakfast",
+            "account_name": "everyday wallet",
+            "occurred_at": "2026-07-03T09:00:00",
+        },
+        user_id=10,
+        workspace_id=20,
+        user_timezone="Asia/Kolkata",
+    )
+
+    assert res["status"] == "success"
+    assert res["occurred_at"] == "2026-07-03T03:30:00+00:00"
+
+
+def test_spending_declaration_exposes_optional_occurred_at():
+    setup = _build_setup_message(["TEXT"])
+    declarations = setup["setup"]["tools"][0]["functionDeclarations"]
+    by_name = {item["name"]: item for item in declarations}
+    spending = by_name["log_spending_transaction"]["parameters"]
+    assert "occurred_at" in spending["properties"]
+    # Optional — must not be required.
+    assert "occurred_at" not in spending.get("required", [])
+
+
+def test_spending_prompt_mentions_backdating_and_future_block():
+    setup = _build_setup_message(["TEXT"])
+    system_text = setup["setup"]["systemInstruction"]["parts"][0]["text"]
+    assert "occurred_at" in system_text
+    assert "future" in system_text.lower()
