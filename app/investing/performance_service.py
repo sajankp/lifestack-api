@@ -205,7 +205,9 @@ class PerformanceService:
         # snapshots on bank/wallet accounts), but only brokerage cash belongs in
         # the investing performance total -- mirrors the same filter in
         # InvestingSummaryService.get_summary() (spec-050).
-        if self.account_repo is not None:
+        if self.account_repo is None:
+            raise ValidationError(detail="Account repository is required for performance snapshots")
+        if cash_balances:
             accounts, _ = await self.account_repo.list_workspace_accounts(
                 workspace_id, limit=10000, offset=0
             )
