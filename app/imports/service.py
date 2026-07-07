@@ -4,12 +4,12 @@ import csv
 import hashlib
 import uuid
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 
 import openpyxl
 from fastapi import UploadFile
-from sqlalchemy import select, tuple_
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +20,6 @@ from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import (
     Account,
     Currency,
-    WorkspaceFinanceSetting,
 )
 from app.finance.repository import AccountRepository, CurrencyRepository
 from app.imports.cams_cas_import import validate_cams_cas_batch, validate_cams_cas_upload
@@ -62,6 +61,16 @@ from app.imports.models import (
 )
 from app.imports.repository import ImportRepository
 from app.imports.schemas import SPENDEE_TRANSACTION_HEADERS, TEMPLATE_HEADERS
+from app.imports.spending_import import (
+    SPENDING_BUDGETS_TEMPLATE_ROW,
+    SPENDING_TRANSACTIONS_TEMPLATE_ROW,
+    commit_spending_budgets_chunk,
+    commit_spending_transactions_chunk,
+    resolve_spending_transactions_fallback_account_id,
+    validate_spending_budget_row,
+    validate_spending_transaction_row,
+    validate_spending_transactions_upload,
+)
 from app.investing.models import (
     Company,
     Instrument,
@@ -79,13 +88,7 @@ from app.investing.repository import (
     LotRepository,
 )
 from app.investing.service import InstrumentService
-from app.spending.models import (
-    SpendingBudget,
-    SpendingCategory,
-    SpendingTransaction,
-    TransactionSourceType,
-    TransactionType,
-)
+from app.spending.models import SpendingCategory
 
 try:
     import boto3  # type: ignore
@@ -263,9 +266,9 @@ class ImportService:
         header = TEMPLATE_HEADERS[module]
         lines = [",".join(header)]
         if module == ImportModule.spending_transactions:
-            lines.append("2026-05-01T09:30:00Z,expense,42.50,Food & Dining,Breakfast")
+            lines.append(SPENDING_TRANSACTIONS_TEMPLATE_ROW)
         elif module == ImportModule.spending_budgets:
-            lines.append("2026-05-01,Food & Dining,800.00")
+            lines.append(SPENDING_BUDGETS_TEMPLATE_ROW)
         elif module == ImportModule.investing_constituents:
             lines.append(INVESTING_CONSTITUENTS_TEMPLATE_ROW)
         elif module == ImportModule.investing_orders:
@@ -473,29 +476,9 @@ class ImportService:
                 self.session, workspace_id, upload.filename, target_account_id
             )
         elif module == ImportModule.spending_transactions:
-            if not (
-                upload.filename.lower().endswith(".csv")
-                or upload.filename.lower().endswith(".xlsx")
-            ):
-                raise ValidationError(detail="Only .csv and .xlsx files are supported")
-            # Optional import-level fallback account (spec-054) — used for
-            # rows whose account_name is missing/unmatched, before falling
-            # back to the workspace default.
-            if target_account_id is not None:
-                account = (
-                    await self.session.execute(
-                        select(Account).where(
-                            Account.workspace_id == workspace_id,
-                            Account.public_id == target_account_id,
-                            Account.is_active,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if account is None:
-                    raise NotFoundError(
-                        detail=f"Account with id {target_account_id} not found in this workspace"
-                    )
-                extra_json = {"target_account_id": str(target_account_id)}
+            extra_json = await validate_spending_transactions_upload(
+                self.session, workspace_id, upload.filename, target_account_id
+            )
         else:
             if target_account_id is not None:
                 raise ValidationError(
@@ -574,37 +557,9 @@ class ImportService:
         # upload time, else the workspace default. Resolved once, not per row.
         fallback_account_id: int | None = None
         if batch.module == ImportModule.spending_transactions:
-            target_account_public_id = (batch.extra_json or {}).get("target_account_id")
-            if target_account_public_id:
-                target_account = (
-                    await self.session.execute(
-                        select(Account).where(
-                            Account.workspace_id == workspace_id,
-                            Account.public_id == uuid.UUID(target_account_public_id),
-                            Account.is_active,
-                        )
-                    )
-                ).scalar_one_or_none()
-                fallback_account_id = target_account.id if target_account else None
-            if fallback_account_id is None:
-                finance_setting = (
-                    await self.session.execute(
-                        select(WorkspaceFinanceSetting).where(
-                            WorkspaceFinanceSetting.workspace_id == workspace_id
-                        )
-                    )
-                ).scalar_one_or_none()
-                if finance_setting and finance_setting.default_spending_account_id is not None:
-                    default_account = (
-                        await self.session.execute(
-                            select(Account).where(
-                                Account.workspace_id == workspace_id,
-                                Account.id == finance_setting.default_spending_account_id,
-                                Account.is_active,
-                            )
-                        )
-                    ).scalar_one_or_none()
-                    fallback_account_id = default_account.id if default_account else None
+            fallback_account_id = await resolve_spending_transactions_fallback_account_id(
+                self.session, workspace_id, batch
+            )
 
         instruments_map = {}
         order_account_pub_map: dict[str, uuid.UUID] = {}
@@ -737,150 +692,19 @@ class ImportService:
 
                 payload: dict
                 if batch.module == ImportModule.spending_transactions:
-                    if header_mode == "spendee":
-                        occurred_raw = self._norm(row.get("Date"))
-                        raw_type = self._norm(row.get("Type"))
-                        type_raw = raw_type.lower() if raw_type else ""
-                        amount_raw = self._norm(row.get("Amount"))
-                        category_raw = self._norm(row.get("Category name"))
-                        description_raw = self._norm(row.get("Note")) or None
-                        account_name_raw = self._norm(row.get("Wallet")) or None
-                        labels_raw = self._norm(row.get("Labels")) or None
-                    else:
-                        occurred_raw = self._norm(row.get("occurred_at"))
-                        raw_type = self._norm(row.get("type"))
-                        type_raw = raw_type.lower() if raw_type else ""
-                        amount_raw = self._norm(row.get("amount"))
-                        category_raw = self._norm(row.get("category"))
-                        description_raw = self._norm(row.get("description")) or None
-                        account_name_raw = self._norm(row.get("account_name")) or None
-                        labels_raw = None
-
-                    try:
-                        occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
-                    except Exception:
-                        add_error(
-                            "occurred_at",
-                            "invalid_datetime",
-                            "occurred_at must be ISO datetime/date",
-                            occurred_raw,
-                        )
-                        occurred_at = None
-
-                    if type_raw not in {"income", "expense"}:
-                        add_error(
-                            "type", "invalid_enum", "type must be income or expense", type_raw
-                        )
-
-                    try:
-                        amount = Decimal(amount_raw)
-                        if header_mode == "spendee" and type_raw == "expense" and amount < 0:
-                            amount = abs(amount)
-                        if header_mode == "spendee" and type_raw == "income" and amount < 0:
-                            add_error(
-                                "amount",
-                                "invalid_decimal",
-                                "income rows cannot have negative amount",
-                                amount_raw,
-                            )
-                            amount = None
-                        if amount <= 0:
-                            raise InvalidOperation
-                    except Exception:
-                        add_error(
-                            "amount",
-                            "invalid_decimal",
-                            "amount must be a positive decimal",
-                            amount_raw,
-                        )
-                        amount = None
-
-                    category_id = None
-                    if category_raw:
-                        category_id = by_public.get(category_raw) or by_name.get(
-                            category_raw.lower()
-                        )
-                    else:
-                        add_error("category", "required", "category is required", category_raw)
-
-                    # Resolution order (spec-054): row's account_name match →
-                    # import-level target account → workspace default →
-                    # row-level error (blocks commit for that row only).
-                    account_id = None
-                    if account_name_raw:
-                        account_id = account_map.get(account_name_raw.lower())
-                        if account_id is None:
-                            add_error(
-                                "account_name",
-                                "not_found",
-                                "account not found in workspace",
-                                account_name_raw,
-                            )
-                    else:
-                        account_id = fallback_account_id
-                        if account_id is None:
-                            add_error(
-                                "account_name",
-                                "required",
-                                "account_name is required — set a target account for this "
-                                "import or a default spending account in Finance Settings",
-                                account_name_raw,
-                            )
-
-                    payload = {
-                        "occurred_at": occurred_at.isoformat() if occurred_at else None,
-                        "type": type_raw,
-                        "amount": str(amount) if amount is not None else None,
-                        "category_id": category_id,
-                        "category_name": category_raw if category_raw else None,
-                        "description": description_raw,
-                        "account_name": account_name_raw,
-                        "account_id": account_id,
-                        "labels": labels_raw,
-                    }
+                    payload, _weight_entry = validate_spending_transaction_row(
+                        row,
+                        add_error,
+                        header_mode=header_mode,
+                        by_name=by_name,
+                        by_public=by_public,
+                        account_map=account_map,
+                        fallback_account_id=fallback_account_id,
+                    )
                 elif batch.module == ImportModule.spending_budgets:
-                    month_raw = self._norm(row.get("month_start"))
-                    category_raw = self._norm(row.get("category"))
-                    amount_raw = self._norm(row.get("amount"))
-
-                    try:
-                        month_start = datetime.fromisoformat(month_raw).date()
-                        if month_start.day != 1:
-                            raise ValueError
-                    except Exception:
-                        add_error(
-                            "month_start",
-                            "invalid_month",
-                            "month_start must be YYYY-MM-01",
-                            month_raw,
-                        )
-                        month_start = None
-
-                    category_id = by_public.get(category_raw) or by_name.get(category_raw.lower())
-                    if category_id is None:
-                        add_error(
-                            "category", "not_found", "category not found in workspace", category_raw
-                        )
-
-                    try:
-                        amount = Decimal(amount_raw)
-                        if amount <= 0:
-                            raise InvalidOperation
-                    except Exception:
-                        add_error(
-                            "amount",
-                            "invalid_decimal",
-                            "amount must be a positive decimal",
-                            amount_raw,
-                        )
-                        amount = None
-
-                    payload = {
-                        "month_start": month_start.isoformat() if month_start else None,
-                        "category_id": category_id,
-                        "category_name": category_raw if category_raw else None,
-                        "amount": str(amount) if amount is not None else None,
-                    }
+                    payload, _weight_entry = validate_spending_budget_row(
+                        row, add_error, by_name=by_name, by_public=by_public
+                    )
                 elif batch.module == ImportModule.investing_orders:
                     payload, _weight_entry = validate_investing_order_row(
                         row,
@@ -1029,101 +853,19 @@ class ImportService:
                     break
 
                 if batch.module == ImportModule.spending_transactions:
-                    for row in rows:
-                        p = row.payload_json
-                        category_id = p.get("category_id")
-                        if category_id is None:
-                            category_name_raw = self._norm(p.get("category_name"))
-                            if not category_name_raw:
-                                raise ValidationError(detail="category is required")
-                            category_name = category_name_raw.lower()
-                            if category_name in by_name:
-                                category_id = by_name[category_name]
-                            else:
-                                category = SpendingCategory(
-                                    workspace_id=workspace_id,
-                                    name=category_name_raw,
-                                    normalized_name=category_name,
-                                    is_system=False,
-                                )
-                                self.session.add(category)
-                                await self.session.flush()
-                                category_id = category.id
-                                if category_id is None:
-                                    raise ValidationError(detail="failed to create category")
-                                by_name[category_name] = category_id
-                                auto_created_categories.append(category.name)
-                        tx = SpendingTransaction(
-                            workspace_id=workspace_id,
-                            user_id=user_id,
-                            category_id=int(category_id),
-                            amount=Decimal(p["amount"]),
-                            type=TransactionType(p["type"]),
-                            occurred_at=datetime.fromisoformat(p["occurred_at"]),
-                            description=p.get("description"),
-                            account_id=p.get("account_id"),
-                            labels=p.get("labels"),
-                            source_type=TransactionSourceType.imported,
-                            source_import_id=batch.id,
-                            source_ref=f"{batch.public_id}:{row.row_number}",
-                        )
-                        self.session.add(tx)
-                        inserted += 1
+                    inserted += await commit_spending_transactions_chunk(
+                        self.session,
+                        workspace_id,
+                        user_id,
+                        batch,
+                        rows,
+                        by_name,
+                        auto_created_categories,
+                    )
                 elif batch.module == ImportModule.spending_budgets:
-                    budget_keys = {
-                        (
-                            int(row.payload_json["category_id"]),
-                            datetime.fromisoformat(row.payload_json["month_start"]).date(),
-                        )
-                        for row in rows
-                    }
-                    existing_budgets = {}
-                    if budget_keys:
-                        budget_rows = (
-                            (
-                                await self.session.execute(
-                                    select(SpendingBudget).where(
-                                        SpendingBudget.workspace_id == workspace_id,
-                                        tuple_(
-                                            SpendingBudget.category_id,
-                                            SpendingBudget.month_start,
-                                        ).in_(budget_keys),
-                                    )
-                                )
-                            )
-                            .scalars()
-                            .all()
-                        )
-                        existing_budgets = {
-                            (budget.category_id, budget.month_start): budget
-                            for budget in budget_rows
-                        }
-
-                    for row in rows:
-                        p = row.payload_json
-                        month_start_date = datetime.fromisoformat(p["month_start"]).date()
-                        budget_key = (int(p["category_id"]), month_start_date)
-                        existing_budget = existing_budgets.get(budget_key)
-
-                        if existing_budget:
-                            existing_budget.amount = Decimal(p["amount"])
-                            existing_budget.source_type = "imported"
-                            existing_budget.source_import_id = batch.id
-                            existing_budget.source_ref = f"{batch.public_id}:{row.row_number}"
-                            existing_budget.updated_at = datetime.now(UTC)
-                        else:
-                            budget = SpendingBudget(
-                                workspace_id=workspace_id,
-                                category_id=int(p["category_id"]),
-                                amount=Decimal(p["amount"]),
-                                month_start=month_start_date,
-                                source_type="imported",
-                                source_import_id=batch.id,
-                                source_ref=f"{batch.public_id}:{row.row_number}",
-                            )
-                            self.session.add(budget)
-                            existing_budgets[budget_key] = budget
-                        inserted += 1
+                    inserted += await commit_spending_budgets_chunk(
+                        self.session, workspace_id, batch, rows
+                    )
                 elif batch.module in {
                     ImportModule.investing_orders,
                     ImportModule.investing_cams_cas,
