@@ -1,7 +1,7 @@
 # Spec-058: Dashboard Insights (Phase 1)
 
 **Created:** 2026-07-04
-**Status:** Approved (owner directive 2026-07-04, Rule 7 — Tasks 5–13 pre-approved; spec still written in house style, approval pause waived)
+**Status:** Implemented (api#107, merged 2026-07-04)
 **Depends on:** none for Phase 1 (push delivery is additive-for-free if Task 10/spec-052 has merged by the time this ships — see "Interplay with push" below)
 
 ---

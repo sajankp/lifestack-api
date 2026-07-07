@@ -3,6 +3,9 @@
 **Created:** 2026-07-07
 **Status:** Draft (design) — pending owner approval
 **Depends on:** none (spending-ledger policy only; no snapshot/order math)
+**Sequencing (owner plan, 2026-07-07):** implemented **after** spec-062 (category delete &
+merge) — landing 062 first means its merge/delete logic never needs group-awareness rework
+(mirror note in spec-062).
 
 ---
 

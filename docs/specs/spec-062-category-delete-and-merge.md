@@ -3,6 +3,9 @@
 **Created:** 2026-07-07
 **Status:** Draft (design) — pending owner approval
 **Depends on:** none (spending-ledger policy only; no snapshot/order math)
+**Sequencing (owner plan, 2026-07-07):** lands **before** spec-064 (recurring budgets & category
+groups), so this spec's merge/delete logic is written once, without `category_group_id`
+awareness; after spec-064, the only interaction is its own group-delete guard.
 
 ---
 
