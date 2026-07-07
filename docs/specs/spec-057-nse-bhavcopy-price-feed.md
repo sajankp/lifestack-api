@@ -1,7 +1,7 @@
 # Spec-057: NSE Bhavcopy Price Feed
 
 **Created:** 2026-07-04
-**Status:** Approved (owner directive 2026-07-04, Rule 7 — Tasks 5–13 pre-approved; spec still written in house style, approval pause waived)
+**Status:** Implemented (api#106, merged 2026-07-04)
 **Depends on:** none (additive to the existing `investment_closing_prices_job` / `PerformanceService.refresh_workspace_prices` pipeline)
 
 ---

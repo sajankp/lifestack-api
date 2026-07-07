@@ -1,7 +1,7 @@
 # Spec-056: CAMS CAS PDF Import
 
 **Created:** 2026-07-04
-**Status:** Approved (owner directive 2026-07-04, Rule 7 — Tasks 5–13 pre-approved; spec still written in house style, approval pause waived)
+**Status:** Implemented (api#105, merged 2026-07-04)
 **Depends on:** spec-041 (investing orders), spec-044 (FIFO cost basis), spec-051 (corporate actions — referenced for price-discontinuity flagging)
 
 ---

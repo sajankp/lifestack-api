@@ -760,6 +760,116 @@ async def test_performance_summary_converts_multi_currency_snapshot(client: Asyn
 
 
 @pytest.mark.asyncio
+async def test_performance_summary_cash_total_excludes_non_brokerage_accounts(client: AsyncClient):
+    """Investing > Cash must only ever reflect brokerage-account cash, matching
+    the brokerage-only filter already applied to net worth's investing_cash_total
+    (spec-050). A bank account's manual cash-balance snapshot (used for
+    reconciliation) must not leak into the investing performance total."""
+    account_map = await _register_and_login(
+        client,
+        email="investing-perf-brokerage-filter@example.com",
+        username="investing-perf-brokerage-filter",
+        password="TestPass123!",
+    )
+
+    bank_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Bank", "account_type": "bank", "default_currency_code": "USD"},
+    )
+    assert bank_res.status_code == 201, bank_res.text
+    bank_id = bank_res.json()["public_id"]
+
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_map["brokerage"],
+            "balance": "1000.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": bank_id,
+            "balance": "500.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    perf_res = await client.get("/v1/investing/performance/summary")
+    assert perf_res.status_code == 200, perf_res.text
+    assert Decimal(perf_res.json()["cash_total"]) == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
+async def test_performance_summary_cash_total_reflects_same_day_order_changes(client: AsyncClient):
+    """The performance snapshot cash_total is cached for the day, but placing,
+    editing, or deleting an order changes investing_cash_balances immediately —
+    the cache must be invalidated on each of those so the figure doesn't go
+    stale for the rest of the day."""
+    account_map = await _register_and_login(
+        client,
+        email="investing-perf-staleness@example.com",
+        username="investing-perf-staleness",
+        password="TestPass123!",
+    )
+
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_map["brokerage"],
+            "balance": "1000.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    # First read creates today's portfolio snapshot.
+    first_res = await client.get("/v1/investing/performance/summary")
+    assert first_res.status_code == 200, first_res.text
+    assert Decimal(first_res.json()["cash_total"]) == Decimal("1000.00")
+
+    order_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": account_map["brokerage"],
+            "order_type": "buy",
+            "symbol": "AAPL",
+            "quantity": "1.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "instrument_type": "stock",
+        },
+    )
+    assert order_res.status_code == 201, order_res.text
+    order_id = order_res.json()["public_id"]
+
+    second_res = await client.get("/v1/investing/performance/summary")
+    assert second_res.status_code == 200, second_res.text
+    assert Decimal(second_res.json()["cash_total"]) == Decimal("900.00")
+
+    update_res = await client.patch(
+        f"/v1/investing/orders/{order_id}",
+        json={"quantity": "2.00000000"},
+    )
+    assert update_res.status_code == 200, update_res.text
+
+    third_res = await client.get("/v1/investing/performance/summary")
+    assert third_res.status_code == 200, third_res.text
+    assert Decimal(third_res.json()["cash_total"]) == Decimal("800.00")
+
+    delete_res = await client.delete(f"/v1/investing/orders/{order_id}")
+    assert delete_res.status_code == 204, delete_res.text
+
+    fourth_res = await client.get("/v1/investing/performance/summary")
+    assert fourth_res.status_code == 200, fourth_res.text
+    assert Decimal(fourth_res.json()["cash_total"]) == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
 async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
     account_map = await _register_and_login(
         client,

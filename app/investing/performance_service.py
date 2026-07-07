@@ -60,6 +60,7 @@ class PerformanceService:
         finance_setting_repo: FinanceSettingRepository | None = None,
         fx_rate_repo: FxRateRepository | None = None,
         instrument_repo: InstrumentRepository | None = None,
+        account_repo: AccountRepository | None = None,
     ):
         self.holding_repo = holding_repo
         self.cash_repo = cash_repo
@@ -68,6 +69,7 @@ class PerformanceService:
         self.finance_setting_repo = finance_setting_repo
         self.fx_rate_repo = fx_rate_repo
         self.instrument_repo = instrument_repo
+        self.account_repo = account_repo
 
     async def refresh_workspace_prices(self, workspace_id: int) -> dict[str, Decimal]:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -199,6 +201,18 @@ class PerformanceService:
         cash_balances = await self.cash_repo.get_latest_per_account_currency(
             workspace_id, as_of=as_of_datetime
         )
+        # Cash balances are legitimately added to any account type (reconciliation
+        # snapshots on bank/wallet accounts), but only brokerage cash belongs in
+        # the investing performance total -- mirrors the same filter in
+        # InvestingSummaryService.get_summary() (spec-050).
+        if self.account_repo is None:
+            raise ValidationError(detail="Account repository is required for performance snapshots")
+        if cash_balances:
+            accounts, _ = await self.account_repo.list_workspace_accounts(
+                workspace_id, limit=10000, offset=0
+            )
+            brokerage_ids = {a.id for a in accounts if a.account_type == "brokerage"}
+            cash_balances = [c for c in cash_balances if c.account_id in brokerage_ids]
         holdings_value = Decimal("0")
         total_cost = Decimal("0")
         cash_value = Decimal("0")

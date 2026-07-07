@@ -378,6 +378,7 @@ async def get_investing_performance_service(
     finance_setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
     fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
     instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
 ) -> PerformanceService:
     return PerformanceService(
         holding_repo,
@@ -387,6 +388,7 @@ async def get_investing_performance_service(
         finance_setting_repo,
         fx_rate_repo,
         instrument_repo,
+        account_repo,
     )
 
 
