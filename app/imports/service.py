@@ -19,9 +19,7 @@ from app.core.database import postgres
 from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import (
     Account,
-    CapitalTransfer,
     Currency,
-    TransferModule,
     WorkspaceFinanceSetting,
 )
 from app.finance.repository import AccountRepository, CurrencyRepository
@@ -30,6 +28,13 @@ from app.imports.demat_cas_import import (
     finalize_demat_cas_commit,
     validate_demat_cas_batch,
     validate_demat_cas_upload,
+)
+from app.imports.finance_transfers_import import (
+    TEMPLATE_ROW as FINANCE_TRANSFERS_TEMPLATE_ROW,
+)
+from app.imports.finance_transfers_import import (
+    commit_finance_transfers_chunk,
+    validate_finance_transfer_row,
 )
 from app.imports.investing_constituents_import import (
     TEMPLATE_ROW as INVESTING_CONSTITUENTS_TEMPLATE_ROW,
@@ -57,9 +62,6 @@ from app.imports.models import (
 )
 from app.imports.repository import ImportRepository
 from app.imports.schemas import SPENDEE_TRANSACTION_HEADERS, TEMPLATE_HEADERS
-from app.investing.models import (
-    CashBalance as InvestingCashBalance,
-)
 from app.investing.models import (
     Company,
     Instrument,
@@ -269,9 +271,7 @@ class ImportService:
         elif module == ImportModule.investing_orders:
             lines.extend(INVESTING_ORDERS_TEMPLATE_ROWS)
         elif module == ImportModule.finance_transfers:
-            lines.append(
-                "2026-05-01T09:30:00Z,ICICI,GROWW,INR,INR,50000.00,50000.00,SIP Investment"
-            )
+            lines.append(FINANCE_TRANSFERS_TEMPLATE_ROW)
         return "\n".join(lines) + "\n"
 
     async def _hash_file(self, upload: UploadFile) -> tuple[str, int]:
@@ -889,226 +889,13 @@ class ImportService:
                         currency_set=currency_set,
                     )
                 elif batch.module == ImportModule.finance_transfers:
-                    occurred_raw = self._norm(row.get("occurred_at"))
-                    from_account_raw = self._norm(row.get("from_account"))
-                    to_account_raw = self._norm(row.get("to_account"))
-                    from_currency_raw = self._norm(row.get("from_currency"))
-                    to_currency_raw = self._norm(row.get("to_currency"))
-                    gross_amount_raw = self._norm(row.get("gross_amount"))
-                    net_amount_raw = self._norm(row.get("net_amount_received"))
-                    notes_raw = self._norm(row.get("notes")) or None
-                    from_module_raw = self._norm(row.get("from_module")) or "spending"
-                    to_module_raw = self._norm(row.get("to_module")) or "investing"
-                    fx_rate_raw = self._norm(row.get("fx_rate_used")) or None
-                    fx_fee_raw = self._norm(row.get("fx_fee_amount")) or "0"
-                    platform_fee_raw = self._norm(row.get("platform_fee_amount")) or "0"
-                    tax_raw = self._norm(row.get("tax_amount")) or "0"
-
-                    occurred_at = None
-                    try:
-                        occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
-                    except Exception:
-                        add_error(
-                            "occurred_at",
-                            "invalid_datetime",
-                            "occurred_at must be ISO datetime",
-                            occurred_raw,
-                        )
-
-                    from_account_pub_id = None
-                    from_account_id = None
-                    if from_account_raw:
-                        from_account_pub_id = order_account_pub_map.get(from_account_raw.lower())
-                        from_account_id = account_map.get(from_account_raw.lower())
-                        if from_account_pub_id is None:
-                            add_error(
-                                "from_account",
-                                "not_found",
-                                "from_account not found in workspace",
-                                from_account_raw,
-                            )
-                    else:
-                        add_error(
-                            "from_account", "required", "from_account is required", from_account_raw
-                        )
-
-                    to_account_pub_id = None
-                    to_account_id = None
-                    if to_account_raw:
-                        to_account_pub_id = order_account_pub_map.get(to_account_raw.lower())
-                        to_account_id = account_map.get(to_account_raw.lower())
-                        if to_account_pub_id is None:
-                            add_error(
-                                "to_account",
-                                "not_found",
-                                "to_account not found in workspace",
-                                to_account_raw,
-                            )
-                    else:
-                        add_error(
-                            "to_account", "required", "to_account is required", to_account_raw
-                        )
-
-                    from_currency = None
-                    if from_currency_raw:
-                        from_currency = from_currency_raw.upper()
-                        if from_currency not in currency_set:
-                            add_error(
-                                "from_currency",
-                                "not_found",
-                                "from_currency not enabled in workspace",
-                                from_currency_raw,
-                            )
-                    else:
-                        add_error(
-                            "from_currency",
-                            "required",
-                            "from_currency is required",
-                            from_currency_raw,
-                        )
-
-                    to_currency = None
-                    if to_currency_raw:
-                        to_currency = to_currency_raw.upper()
-                        if to_currency not in currency_set:
-                            add_error(
-                                "to_currency",
-                                "not_found",
-                                "to_currency not enabled in workspace",
-                                to_currency_raw,
-                            )
-                    else:
-                        add_error(
-                            "to_currency", "required", "to_currency is required", to_currency_raw
-                        )
-
-                    try:
-                        gross_amount = Decimal(gross_amount_raw)
-                        if gross_amount < 0:
-                            raise InvalidOperation
-                    except Exception:
-                        add_error(
-                            "gross_amount",
-                            "invalid_decimal",
-                            "gross_amount must be a non-negative decimal",
-                            gross_amount_raw,
-                        )
-                        gross_amount = None
-
-                    try:
-                        net_amount_received = Decimal(net_amount_raw)
-                        if net_amount_received < 0:
-                            raise InvalidOperation
-                    except Exception:
-                        add_error(
-                            "net_amount_received",
-                            "invalid_decimal",
-                            "net_amount_received must be a non-negative decimal",
-                            net_amount_raw,
-                        )
-                        net_amount_received = None
-
-                    fx_rate_used = None
-                    if fx_rate_raw:
-                        try:
-                            fx_rate_used = Decimal(fx_rate_raw)
-                            if fx_rate_used <= 0:
-                                raise InvalidOperation
-                        except Exception:
-                            add_error(
-                                "fx_rate_used",
-                                "invalid_decimal",
-                                "fx_rate_used must be a positive decimal",
-                                fx_rate_raw,
-                            )
-
-                    def _safe_decimal(raw: str, field: str) -> Decimal:
-                        try:
-                            val = Decimal(raw)
-                            if val < 0:
-                                raise InvalidOperation
-                            return val
-                        except Exception:
-                            add_error(
-                                field,
-                                "invalid_decimal",
-                                f"{field} must be a non-negative decimal",
-                                raw,
-                            )
-                            return Decimal("0")
-
-                    fx_fee_amount = _safe_decimal(fx_fee_raw, "fx_fee_amount")
-                    platform_fee_amount = _safe_decimal(platform_fee_raw, "platform_fee_amount")
-                    tax_amount = _safe_decimal(tax_raw, "tax_amount")
-
-                    if from_module_raw not in {"spending", "investing"}:
-                        add_error(
-                            "from_module",
-                            "invalid_enum",
-                            "from_module must be spending or investing",
-                            from_module_raw,
-                        )
-                    if to_module_raw not in {"spending", "investing"}:
-                        add_error(
-                            "to_module",
-                            "invalid_enum",
-                            "to_module must be spending or investing",
-                            to_module_raw,
-                        )
-
-                    if gross_amount is not None and net_amount_received is not None:
-                        if (
-                            from_currency == to_currency
-                            and fx_rate_used is not None
-                            and fx_rate_used != Decimal("1")
-                        ):
-                            add_error(
-                                "fx_rate_used",
-                                "invalid_value",
-                                "FX rate must be 1.0 when transferring between the same currency",
-                                str(fx_rate_used),
-                            )
-
-                        gross = gross_amount
-                        fx_rate = fx_rate_used if fx_rate_used is not None else Decimal("1")
-                        converted_gross = gross * fx_rate
-                        total_fees = fx_fee_amount + platform_fee_amount + tax_amount
-                        net = net_amount_received
-                        difference = abs(converted_gross - total_fees - net)
-                        if difference > Decimal("0.01"):
-                            add_error(
-                                "net_amount_received",
-                                "invalid_value",
-                                f"Transfer arithmetic inconsistent: gross ({gross:.2f}) * rate ({fx_rate:.4f}) - fees ({total_fees:.2f}) ≠ net ({net:.2f}). Difference: {difference:.4f}",
-                                str(net_amount_received),
-                            )
-
-                    payload = {
-                        "occurred_at": occurred_at.isoformat() if occurred_at else None,
-                        "from_account": from_account_raw,
-                        "from_account_public_id": str(from_account_pub_id)
-                        if from_account_pub_id
-                        else None,
-                        "from_account_id": from_account_id,
-                        "to_account": to_account_raw,
-                        "to_account_public_id": str(to_account_pub_id)
-                        if to_account_pub_id
-                        else None,
-                        "to_account_id": to_account_id,
-                        "from_currency": from_currency,
-                        "to_currency": to_currency,
-                        "gross_amount": str(gross_amount) if gross_amount is not None else None,
-                        "net_amount_received": str(net_amount_received)
-                        if net_amount_received is not None
-                        else None,
-                        "notes": notes_raw,
-                        "from_module": from_module_raw,
-                        "to_module": to_module_raw,
-                        "fx_rate_used": str(fx_rate_used) if fx_rate_used is not None else None,
-                        "fx_fee_amount": str(fx_fee_amount),
-                        "platform_fee_amount": str(platform_fee_amount),
-                        "tax_amount": str(tax_amount),
-                    }
+                    payload, _weight_entry = validate_finance_transfer_row(
+                        row,
+                        add_error,
+                        order_account_pub_map=order_account_pub_map,
+                        account_map=account_map,
+                        currency_set=currency_set,
+                    )
                 else:
                     payload, weight_entry = validate_investing_constituent_row(
                         row, add_error, instruments_map
@@ -1349,76 +1136,15 @@ class ImportService:
                         self.order_service, workspace_id, user_id, batch, rows, audit_logger
                     )
                 elif batch.module == ImportModule.finance_transfers:
-                    for row in rows:
-                        p = row.payload_json
-                        from_account_id = p.get("from_account_id")
-                        to_account_id = p.get("to_account_id")
-                        if from_account_id is None or to_account_id is None:
-                            raise ValidationError(
-                                detail="from_account or to_account not found in workspace"
-                            )
-
-                        transfer = CapitalTransfer(
-                            workspace_id=workspace_id,
-                            actor_id=user_id,
-                            from_module=TransferModule(p["from_module"]),
-                            to_module=TransferModule(p["to_module"]),
-                            from_account_id=from_account_id,
-                            to_account_id=to_account_id,
-                            from_currency_code=p["from_currency"],
-                            to_currency_code=p["to_currency"],
-                            gross_amount=Decimal(p["gross_amount"]),
-                            fx_rate_used=Decimal(p.get("fx_rate_used"))
-                            if p.get("fx_rate_used")
-                            else None,
-                            fx_fee_amount=Decimal(p.get("fx_fee_amount") or "0"),
-                            platform_fee_amount=Decimal(p.get("platform_fee_amount") or "0"),
-                            tax_amount=Decimal(p.get("tax_amount") or "0"),
-                            net_amount_received=Decimal(p["net_amount_received"]),
-                            occurred_at=datetime.fromisoformat(p["occurred_at"]),
-                            notes=p.get("notes"),
-                            source_type="imported",
-                            source_import_id=batch.id,
-                            source_ref=f"{batch.public_id}:{row.row_number}",
-                        )
-                        self.session.add(transfer)
-                        inserted += 1
-
-                        # Mirror what finance.service.create_transfer does: update
-                        # investing cash balance when money flows into an investing account.
-                        # Use an in-memory cache so multiple transfers in the same batch
-                        # accumulate correctly without N+1 DB queries.
-                        if (
-                            transfer.to_module == TransferModule.investing
-                            and self.order_service is not None
-                        ):
-                            await self.session.flush()  # get transfer.public_id
-                            cache_key = (to_account_id, transfer.to_currency_code)
-                            if cache_key not in self._cash_balance_cache:
-                                cash_repo = self.order_service.cash_balance_repository
-                                latest = await cash_repo.get_latest_for_account_currency(
-                                    workspace_id, to_account_id, transfer.to_currency_code
-                                )
-                                self._cash_balance_cache[cache_key] = (
-                                    latest.balance if latest is not None else Decimal("0")
-                                )
-                            new_balance = (
-                                self._cash_balance_cache[cache_key] + transfer.net_amount_received
-                            )
-                            self._cash_balance_cache[cache_key] = new_balance
-                            new_cash = InvestingCashBalance(
-                                workspace_id=workspace_id,
-                                user_id=user_id,
-                                account_id=to_account_id,
-                                balance=new_balance,
-                                currency=transfer.to_currency_code,
-                                as_of=transfer.occurred_at,
-                                source_type="imported",
-                                source_import_id=batch.id,
-                                trigger_type="transfer",
-                                trigger_ref=transfer.public_id,
-                            )
-                            self.session.add(new_cash)
+                    inserted += await commit_finance_transfers_chunk(
+                        self.session,
+                        self.order_service,
+                        workspace_id,
+                        user_id,
+                        batch,
+                        rows,
+                        self._cash_balance_cache,
+                    )
                 elif batch.module == ImportModule.investing_demat_cas:
                     # Accumulated across chunks; the HoldingVerification row is
                     # built once, after the loop, from the full report — this
