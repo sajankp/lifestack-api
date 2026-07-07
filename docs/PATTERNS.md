@@ -894,3 +894,28 @@ Frontend counterparts in `lifestack-web` (documented in that repo's
 `docs/PATTERNS.md`): `src/hooks/useInvalidatingMutation.ts` (mutate +
 invalidate query keys) and `src/lib/queryKeys.ts` (the module-scoped query-key
 registry — never inline raw key arrays in pages).
+
+## Import Module Split (`app/imports/`)
+
+`ImportService` (`app/imports/service.py`) was a single ~2,445-line class with
+per-`ImportModule` if/elif branches running through `validate_batch_file` and
+`commit_batch`. It's now a thin façade: `ImportService` keeps the shared
+upload/temp-file handling, the generic CSV/XLSX row-iteration and chunked-commit
+harness, and dispatch — the actual per-format validation and commit logic
+lives in its own module, one per import format:
+
+- `app/imports/cams_cas_import.py` + `cams_cas_parser.py` — CAMS CAS (mutual funds)
+- `app/imports/demat_cas_import.py` + `demat_cas_parser.py` — Demat CAS (NSDL holdings verification, spec-060)
+- `app/imports/finance_transfers_import.py` — `finance-transfers`
+- `app/imports/investing_constituents_import.py` — `investing-constituents`
+- `app/imports/investing_orders_import.py` — `investing-orders`
+- `app/imports/spending_import.py` — `spending-transactions` and `spending-budgets`
+- `app/imports/shared.py` — small helpers shared across the above
+
+Router imports (`app.core.dependencies.get_import_service` →
+`ImportService(repo, session, order_service=...)`) are unchanged — callers
+never see the split. **When adding a new import format** (e.g. a future
+registrar/statement layout), add a new `<format>_import.py` with a
+`validate_<format>_upload`/`validate_<format>_batch`/`commit_<format>_chunk`
+(or equivalent) triplet and wire it into `ImportService`'s three dispatch
+points, rather than growing the inline if/elif chains again.
