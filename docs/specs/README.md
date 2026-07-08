@@ -41,7 +41,7 @@ Platform baseline, first finance/investing/workflow features, and the original v
 | [Spec 015: Notifications and Delivery Channel](./spec-015-notifications.md) | Implemented (Phase 1) | In-app notifications, preferences, and dispatch service. |
 | [Spec 016: Weekly Summary Workflow](./spec-016-weekly-summary.md) | Implemented | Weekly summary data model, scheduler job, and dashboard integration. |
 | [Spec 017: Spending Analytics and Trends](./spec-017-spending-analytics.md) | Implemented (Trends V1) | Spending trend analytics and category breakdown direction. |
-| [Spec 018: Quick Capture API](./spec-018-quick-capture.md) | Archived - deferred to roadmap | Historical quick-capture proposal; superseded by the spec-066 capture consolidation direction. |
+| [Spec 018: Quick Capture API](./spec-018-quick-capture.md) | Archived - deferred to roadmap | Historical quick-capture proposal; superseded by the roadmap's capture consolidation item (see `PRODUCT_STRATEGY_AND_ROADMAP.md` §4 Immediate Focus). |
 | [Spec 019: Recurring Todos](./spec-019-recurring-todos.md) | Implemented | Recurring todo CRUD, scheduler generation, and UI exposure. |
 | [Spec 020: Bulk Import via CSV Templates](./spec-020-bulk-import-csv.md) | Implemented (CSV V1) | CSV validate-preview-commit import workflow. |
 | [Spec 021: Voice Agent with Function Calling](./spec-021-voice-agent-function-calling.md) | Implemented (Phase 1) | WebSocket voice/tool-calling capture surface and future WebRTC/MCP direction. |
