@@ -8,7 +8,7 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditLogger
-from app.core.exceptions import APIError
+from app.core.exceptions import APIError, NotFoundError
 from app.finance.models import Account, AccountType
 from app.finance.repository import (
     AccountRepository,
@@ -411,8 +411,8 @@ class AgentTools:
         try:
             todo = await self.todo_service.get_todo(self.workspace_id, pid)
             todo_title = todo.title
-        except Exception:
-            todo_title = "Unknown Todo"
+        except NotFoundError:
+            return {"status": "error", "message": "Todo not found."}
 
         try:
             await self.todo_service.delete_todo(
@@ -619,12 +619,11 @@ class AgentTools:
         )
 
         # Resolve currency symbol for the transaction summary
-        symbol = account_obj.default_currency_code if account_obj else ""
-        if account_obj:
-            currency_repo = CurrencyRepository(self.session)
-            currency = await currency_repo.get_by_code(account_obj.default_currency_code)
-            if currency and currency.symbol:
-                symbol = currency.symbol
+        symbol = account_obj.default_currency_code
+        currency_repo = CurrencyRepository(self.session)
+        currency = await currency_repo.get_by_code(account_obj.default_currency_code)
+        if currency and currency.symbol:
+            symbol = currency.symbol
 
         return {
             "status": "success",
