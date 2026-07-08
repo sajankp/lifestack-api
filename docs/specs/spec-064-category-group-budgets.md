@@ -1,7 +1,7 @@
 # Spec-064: Recurring Date-Ranged Budgets & Category Groups
 
 **Created:** 2026-07-07
-**Status:** Implemented (backend) — web (groups panel, budget form, dashboard spotlight,
+**Status:** Implemented (backend, api#131) — web (groups panel, budget form, dashboard spotlight,
 analytics groups section) pending
 **Depends on:** none (spending-ledger policy only; no snapshot/order math)
 **Sequencing (owner plan, 2026-07-07):** implemented **after** spec-062 (category delete &

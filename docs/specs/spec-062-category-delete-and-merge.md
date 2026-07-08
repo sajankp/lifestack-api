@@ -1,7 +1,7 @@
 # Spec-062: Deletable System Categories & Category Merge
 
 **Created:** 2026-07-07
-**Status:** Implemented (backend) — web (MasterConfigPage delete/merge UI) pending
+**Status:** Implemented (backend, api#131) — web (MasterConfigPage delete/merge UI) pending
 **Depends on:** none (spending-ledger policy only; no snapshot/order math)
 **Sequencing (owner plan, 2026-07-07):** lands **before** spec-064 (recurring budgets & category
 groups), so this spec's merge/delete logic is written once, without `category_group_id`
