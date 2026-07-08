@@ -4,7 +4,6 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -37,7 +36,7 @@ from app.finance.schemas import (
     ReconciliationSummary,
 )
 from app.investing.models import CashBalance as InvestingCashBalance
-from app.investing.performance_service import InvestingSummaryService, _live_cash_total
+from app.investing.performance_service import InvestingSummaryService
 from app.investing.repository import CashBalanceRepository
 
 
@@ -1197,7 +1196,16 @@ class NetWorthService:
             return amount / inverse.rate
         return None
 
-    async def get_net_worth(self, workspace_id: int) -> dict:
+    async def _compute_net_worth(self, workspace_id: int) -> tuple[dict, dict | None]:
+        """Compute live net-worth components for a workspace.
+
+        Returns the API response dict plus, when a total is computable, the
+        fields needed to persist a NetWorthSnapshot (None otherwise). Shared by
+        get_net_worth (opportunistic snapshot on read) and
+        create_net_worth_snapshot (cron job) so the job doesn't depend on
+        PortfolioSnapshot existing, which is only created on-demand and would
+        otherwise cause the job to silently skip most workspaces.
+        """
         accounts, _ = await self.account_service.list_accounts(workspace_id, limit=10000, offset=0)
 
         # Get reporting currency from workspace settings
@@ -1319,7 +1327,8 @@ class NetWorthService:
             "fx_as_of": investing_summary.fx_as_of,
         }
 
-        # Opportunistic current-day snapshot upsert
+        # Snapshot fields, populated only when a total is computable
+        snapshot_fields: dict | None = None
         if total_net_worth is not None and reporting_currency and spending_convertible:
             # Construct dictionary of rate strings for used currencies
             used_currencies = sorted(
@@ -1336,126 +1345,50 @@ class NetWorthService:
                 if rate is not None:
                     rates_used[curr] = str(rate)
 
+            snapshot_fields = {
+                "reporting_currency": reporting_currency,
+                "holdings_value": holdings_value,
+                "investing_cash": investing_cash,
+                "spending_cash": spending_total,
+                "total_net_worth": total_net_worth,
+                "fx_rates_used": rates_used,
+            }
+
+        return res, snapshot_fields
+
+    async def get_net_worth(self, workspace_id: int) -> dict:
+        res, snapshot_fields = await self._compute_net_worth(workspace_id)
+
+        # Opportunistic current-day snapshot upsert
+        if snapshot_fields is not None:
             today_date = datetime.now(UTC).date()
             snapshot = NetWorthSnapshot(
-                workspace_id=workspace_id,
-                snapshot_date=today_date,
-                reporting_currency=reporting_currency,
-                holdings_value=holdings_value,
-                investing_cash=investing_cash,
-                spending_cash=spending_total,
-                total_net_worth=total_net_worth,
-                fx_rates_used=rates_used,
+                workspace_id=workspace_id, snapshot_date=today_date, **snapshot_fields
             )
             await self.net_worth_snapshot_repo.upsert(snapshot)
-            await self.session.commit()
+            await self.session.flush()
 
         return res
 
     async def create_net_worth_snapshot(self, workspace_id: int, snapshot_date: date) -> None:
-        """Create or update a net worth snapshot for a specific workspace and date."""
-        accounts, _ = await self.account_service.list_accounts(workspace_id, limit=10000, offset=0)
+        """Create or update a net worth snapshot for a workspace.
 
-        ws_settings = await self.setting_repo.get_by_workspace(workspace_id)
-        if not ws_settings or not ws_settings.reporting_currency_code:
-            # Skip if no reporting currency configured
+        Valuations are always computed live (current holdings prices, cash
+        balances, and FX rates) via the same path as get_net_worth, so this is
+        only meaningful when snapshot_date is today — which is how the daily
+        cron job calls it. It intentionally does not depend on PortfolioSnapshot,
+        which is only created on-demand and would otherwise cause the job to
+        silently skip most workspaces, including any with no investing accounts.
+        """
+        _res, snapshot_fields = await self._compute_net_worth(workspace_id)
+        if snapshot_fields is None:
             return
-        reporting_currency = ws_settings.reporting_currency_code.upper()
-
-        as_of_datetime = datetime.combine(snapshot_date, datetime.max.time(), UTC)
-
-        # Resolve spending balances
-        spending_accounts_list = [a for a in accounts if a.account_type != "brokerage"]
-        raw_balances = await self.account_service.get_spending_balances_bulk(
-            workspace_id, spending_accounts_list
-        )
-
-        # Resolve investing cash
-        brokerage_by_id = {a.id: a for a in accounts if a.account_type == "brokerage"}
-        cash_rows = [
-            c
-            for c in await self.cash_balance_repo.get_latest_per_account_currency(
-                workspace_id, as_of=as_of_datetime
-            )
-            if c.account_id in brokerage_by_id
-        ]
-
-        # Get FX lookup
-        currencies = {b["currency_code"].upper() for b in raw_balances} | {
-            c.currency.upper() for c in cash_rows
-        }
-        foreign = {c for c in currencies if c != reporting_currency}
-        fx_lookup = {}
-        if foreign:
-            pairs = [(c, reporting_currency) for c in foreign] + [
-                (reporting_currency, c) for c in foreign
-            ]
-            fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
-                pairs, as_of=as_of_datetime
-            )
-
-        spending_total = Decimal("0")
-        for data in raw_balances:
-            balance = data["spending_balance"]
-            currency = data["currency_code"]
-            balance_in_rc = self._convert_to_reporting(
-                balance, currency, reporting_currency, fx_lookup
-            )
-            if balance_in_rc is None:
-                # Can't compute spending cash total -> skip snapshot
-                return
-            spending_total += balance_in_rc
-
-        # Resolve investing cash live (brokerage only)
-        investing_cash = await _live_cash_total(
-            workspace_id=workspace_id,
-            reporting_currency=reporting_currency,
-            cash_repo=self.cash_balance_repo,
-            account_repo=self.account_service.account_repository,
-            fx_rate_repo=self.fx_rate_repo,
-            as_of=as_of_datetime,
-        )
-        if investing_cash is None:
-            return
-
-        # Resolve holdings value from PortfolioSnapshot
-        from app.investing.models import PortfolioSnapshot  # noqa: PLC0415
-
-        portfolio_snapshot = (
-            await self.session.execute(
-                select(PortfolioSnapshot).where(
-                    PortfolioSnapshot.workspace_id == workspace_id,
-                    PortfolioSnapshot.snapshot_date == snapshot_date,
-                )
-            )
-        ).scalar_one_or_none()
-        if portfolio_snapshot is None:
-            return
-        holdings_value = portfolio_snapshot.holdings_value
-
-        total_net_worth = spending_total + investing_cash + holdings_value
-
-        used_currencies = sorted(currencies)
-        rates_used = {}
-        for curr in used_currencies:
-            if curr == reporting_currency:
-                continue
-            rate = self._convert_to_reporting(Decimal("1.0"), curr, reporting_currency, fx_lookup)
-            if rate is not None:
-                rates_used[curr] = str(rate)
 
         snapshot = NetWorthSnapshot(
-            workspace_id=workspace_id,
-            snapshot_date=snapshot_date,
-            reporting_currency=reporting_currency,
-            holdings_value=holdings_value,
-            investing_cash=investing_cash,
-            spending_cash=spending_total,
-            total_net_worth=total_net_worth,
-            fx_rates_used=rates_used,
+            workspace_id=workspace_id, snapshot_date=snapshot_date, **snapshot_fields
         )
         await self.net_worth_snapshot_repo.upsert(snapshot)
-        await self.session.commit()
+        await self.session.flush()
 
     async def get_history(
         self, workspace_id: int, from_date: date, to_date: date

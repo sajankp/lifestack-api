@@ -10,7 +10,6 @@ from sqlalchemy import select
 from app.application.jobs import net_worth_snapshot_job
 from app.core.database import postgres
 from app.finance.models import NetWorthSnapshot
-from app.investing.models import PortfolioSnapshot
 from app.platform.models import Workspace
 
 
@@ -76,12 +75,17 @@ async def test_net_worth_live_cash_and_snapshot_creation(client: AsyncClient):
     today_date = datetime.now(UTC).date()
     session_maker = postgres.async_session_maker
     async with session_maker() as session:
-        stmt = select(NetWorthSnapshot).where(NetWorthSnapshot.snapshot_date == today_date)
+        ws_res = await session.execute(
+            select(Workspace).where(Workspace.name == "nw_snap's Workspace")
+        )
+        workspace = ws_res.scalar_one()
+
+        stmt = select(NetWorthSnapshot).where(
+            NetWorthSnapshot.snapshot_date == today_date,
+            NetWorthSnapshot.workspace_id == workspace.id,
+        )
         db_res = await session.execute(stmt)
-        snapshots = db_res.scalars().all()
-        # At least one snapshot should exist
-        assert len(snapshots) >= 1
-        user_snapshot = [s for s in snapshots if s.reporting_currency == "USD"][0]
+        user_snapshot = db_res.scalar_one()
         assert user_snapshot.reporting_currency == "USD"
         assert user_snapshot.total_net_worth == Decimal("0.00")
 
@@ -96,7 +100,13 @@ async def test_net_worth_live_cash_and_snapshot_creation(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_net_worth_snapshot_job(client: AsyncClient):
-    """Test that running the daily snapshot job creates/updates the snapshot."""
+    """Test that running the daily snapshot job creates/updates the snapshot.
+
+    Deliberately does NOT create a PortfolioSnapshot row: the job must compute
+    holdings value live via the summary service, not depend on an on-demand
+    PortfolioSnapshot existing (regression test for the job silently skipping
+    workspaces that never visited the investing dashboard).
+    """
     cookies = await _register_and_login(client, "nw_job@example.com", "nw_job")
 
     # Create account
@@ -107,34 +117,24 @@ async def test_net_worth_snapshot_job(client: AsyncClient):
         "/v1/finance/settings", json={"reporting_currency_code": "USD"}, cookies=cookies
     )
 
-    # Insert a dummy PortfolioSnapshot for the workspace so the job is not skipped
-    today_date = datetime.now(UTC).date()
     session_maker = postgres.async_session_maker
     async with session_maker() as session:
-        db_res = await session.execute(select(Workspace))
-        workspace = db_res.scalars().first()
-        assert workspace is not None
-        workspace_id = workspace.id
-
-        portfolio_snapshot = PortfolioSnapshot(
-            workspace_id=workspace_id,
-            snapshot_date=today_date,
-            total_value=Decimal("0.00"),
-            total_cost=Decimal("0.00"),
-            holdings_value=Decimal("0.00"),
-            cash_value=Decimal("0.00"),
-            currency_code="USD",
-            fx_rates_used={},
+        db_res = await session.execute(
+            select(Workspace).where(Workspace.name == "nw_job's Workspace")
         )
-        session.add(portfolio_snapshot)
-        await session.commit()
+        workspace = db_res.scalar_one()
+        workspace_id = workspace.id
 
     # Run daily net worth snapshot job
     await net_worth_snapshot_job()
 
-    # Check if a snapshot row was created for today
+    # Check if a snapshot row was created for today, for this workspace
+    today_date = datetime.now(UTC).date()
     async with session_maker() as session:
-        stmt = select(NetWorthSnapshot).where(NetWorthSnapshot.snapshot_date == today_date)
+        stmt = select(NetWorthSnapshot).where(
+            NetWorthSnapshot.snapshot_date == today_date,
+            NetWorthSnapshot.workspace_id == workspace_id,
+        )
         db_res = await session.execute(stmt)
-        snapshots = db_res.scalars().all()
-        assert len(snapshots) >= 1
+        snapshot = db_res.scalar_one()
+        assert snapshot.total_net_worth == Decimal("0.00")

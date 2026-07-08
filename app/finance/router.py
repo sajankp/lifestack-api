@@ -18,7 +18,7 @@ from app.core.dependencies import (
     get_finance_transfer_service,
     require_min_role,
 )
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.finance.models import CurrencyDisplayPreference
 from app.finance.schemas import (
@@ -347,6 +347,9 @@ async def get_net_worth_history(
 ):
     to_dt = to_date or datetime.now(UTC).date()
     from_dt = from_date or (to_dt - timedelta(days=90))
+
+    if from_dt > to_dt:
+        raise ValidationError(detail="from_date must not be after to_date")
 
     if (to_dt - from_dt).days > 365:
         from_dt = to_dt - timedelta(days=365)
