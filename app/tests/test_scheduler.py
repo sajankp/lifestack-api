@@ -82,7 +82,7 @@ async def _seed_category_budget_transaction(
         workspace_id=workspace_id,
         category_id=cat.id,
         amount=budget_amount,
-        month_start=month_start,
+        start_month=month_start,
     )
     session.add(budget)
 

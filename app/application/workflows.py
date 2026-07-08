@@ -1,4 +1,5 @@
 import asyncio
+import calendar
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -6,7 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import structlog
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.repository import AuthSessionRepository
@@ -42,6 +43,7 @@ from app.spending.models import (
     SpendingTransaction,
     TransactionType,
 )
+from app.spending.schemas import BudgetSpotlightItem
 from app.spending.service import (
     BudgetService,
     CategoryService,
@@ -145,8 +147,11 @@ class DashboardSummaryWorkflow:
                 offset=0,
             )
             month_spent = sum(category_totals.values(), Decimal("0"))
-            month_budget = sum((budget.amount for budget in budgets), Decimal("0"))
-            budget_amount_by_category = {budget.category_id: budget.amount for budget in budgets}
+            budget_amount_by_category = {
+                budget.category_id: budget.amount
+                for budget in budgets
+                if budget.category_id is not None
+            }
             top_overspent_categories = []
             for category_id, spent in category_totals.items():
                 budget_amount = budget_amount_by_category.get(category_id)
@@ -164,10 +169,41 @@ class DashboardSummaryWorkflow:
                     "ratio": ratio,
                 })
             top_overspent_categories.sort(key=lambda item: item["overspend"], reverse=True)
+
+            perf = await self.budget_service.get_budget_performance(
+                workspace_id, start_of_month.date(), start_of_month.date()
+            )
+
+            _, last_day = calendar.monthrange(now.year, now.month)
+            days_remaining = max(1, last_day - now.day + 1)
+
+            spotlight_items = []
+            for item in perf.groups:
+                if item.budget_amount is None or item.budget_amount == Decimal("0"):
+                    continue
+
+                remaining = item.remaining or Decimal("0")
+                daily_amount_left = max(Decimal("0"), remaining / Decimal(str(days_remaining)))
+
+                spotlight_items.append(
+                    BudgetSpotlightItem(
+                        category_group_id=item.category_group_id,
+                        category_group_name=item.category_group_name,
+                        budget_amount=item.budget_amount,
+                        actual_amount=item.actual_amount,
+                        utilization_pct=item.utilization_pct or 0.0,
+                        remaining=remaining,
+                        status=item.status,
+                        daily_amount_left=daily_amount_left,
+                    )
+                )
+
+            spotlight_items.sort(key=lambda x: x.utilization_pct, reverse=True)
+
             spending_res = SpendingSummary(
                 status="available",
                 month_spent=month_spent,
-                month_budget=month_budget,
+                budget_spotlight=spotlight_items[:2],
                 top_overspent_categories=top_overspent_categories[:5],
             )
         except Exception:
@@ -257,7 +293,11 @@ async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace:
     budgets_res = await session.execute(
         select(SpendingBudget).where(
             SpendingBudget.workspace_id == workspace.id,
-            SpendingBudget.month_start == month_start,
+            SpendingBudget.start_month <= month_start,
+            or_(
+                SpendingBudget.end_month.is_(None),
+                SpendingBudget.end_month >= month_start,
+            ),
         )
     )
     budgets = budgets_res.scalars().all()

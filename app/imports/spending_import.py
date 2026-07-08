@@ -337,9 +337,10 @@ async def commit_spending_budgets_chunk(
                 await session.execute(
                     select(SpendingBudget).where(
                         SpendingBudget.workspace_id == workspace_id,
-                        tuple_(SpendingBudget.category_id, SpendingBudget.month_start).in_(
+                        tuple_(SpendingBudget.category_id, SpendingBudget.start_month).in_(
                             budget_keys
                         ),
+                        SpendingBudget.end_month == SpendingBudget.start_month,
                     )
                 )
             )
@@ -347,8 +348,34 @@ async def commit_spending_budgets_chunk(
             .all()
         )
         existing_budgets = {
-            (budget.category_id, budget.month_start): budget for budget in budget_rows
+            (budget.category_id, budget.start_month): budget for budget in budget_rows
         }
+
+    new_category_ids = {
+        int(row.payload_json["category_id"])
+        for row in rows
+        if (
+            int(row.payload_json["category_id"]),
+            datetime.fromisoformat(row.payload_json["month_start"]).date(),
+        )
+        not in existing_budgets
+    }
+    overlap_candidates: dict[int, list[SpendingBudget]] = {}
+    if new_category_ids:
+        other_budget_rows = (
+            (
+                await session.execute(
+                    select(SpendingBudget).where(
+                        SpendingBudget.workspace_id == workspace_id,
+                        SpendingBudget.category_id.in_(new_category_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for other_budget in other_budget_rows:
+            overlap_candidates.setdefault(other_budget.category_id, []).append(other_budget)
 
     inserted = 0
     for row in rows:
@@ -364,11 +391,22 @@ async def commit_spending_budgets_chunk(
             existing_budget.source_ref = f"{batch.public_id}:{row.row_number}"
             existing_budget.updated_at = datetime.now(UTC)
         else:
+            for other_budget in overlap_candidates.get(int(p["category_id"]), []):
+                if other_budget.start_month <= month_start_date and (
+                    other_budget.end_month is None or other_budget.end_month >= month_start_date
+                ):
+                    raise ValidationError(
+                        detail=(
+                            f"Row {row.row_number}: an existing budget for this category "
+                            f"already covers {month_start_date.isoformat()}"
+                        )
+                    )
             budget = SpendingBudget(
                 workspace_id=workspace_id,
                 category_id=int(p["category_id"]),
                 amount=Decimal(p["amount"]),
-                month_start=month_start_date,
+                start_month=month_start_date,
+                end_month=month_start_date,
                 source_type="imported",
                 source_import_id=batch.id,
                 source_ref=f"{batch.public_id}:{row.row_number}",

@@ -20,7 +20,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.notifications.models import Notification
@@ -202,7 +202,13 @@ async def _detect_budget_pace(
             await session.execute(
                 select(SpendingBudget).where(
                     SpendingBudget.workspace_id == workspace.id,
-                    SpendingBudget.month_start == month_start,
+                    and_(
+                        SpendingBudget.start_month <= month_start,
+                        or_(
+                            SpendingBudget.end_month.is_(None),
+                            SpendingBudget.end_month >= month_start,
+                        ),
+                    ),
                 )
             )
         )

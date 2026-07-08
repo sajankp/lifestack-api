@@ -8,10 +8,12 @@ from sqlalchemy import select
 from app.application.jobs import weekly_summary_job
 from app.auth.repository import UserRepository
 from app.core.database import postgres
+from app.finance.models import Account, AccountType
 from app.investing.models import PortfolioSnapshot
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.platform.repository import WorkspaceRepository
+from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction
 from app.summaries.repository import WeeklySummaryRepository
 from app.summaries.service import WeeklySummaryService
 from app.tests.integration.test_spending import _register_and_login
@@ -194,3 +196,78 @@ async def test_weekly_summary_service_endpoints_and_job(client: AsyncClient):
     # Confirm last_monday summary exists in items
     week_starts = [item["week_start"] for item in items]
     assert last_monday.isoformat() in week_starts
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_computes_budget_breached_for_categorized_spend(
+    client: AsyncClient,
+):
+    creds = await _register_and_login(client, "sumbudget")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        assert user is not None
+        user_id = user.id
+
+        workspace_repo = WorkspaceRepository(session)
+        workspaces = await workspace_repo.list_user_workspaces(user_id)
+        workspace_id = workspaces[0].id
+
+        category = (
+            (
+                await session.execute(
+                    select(SpendingCategory).where(SpendingCategory.workspace_id == workspace_id)
+                )
+            )
+            .scalars()
+            .first()
+        )
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+        start_dt = datetime.combine(week_start, datetime.min.time(), tzinfo=UTC)
+
+        account = Account(
+            workspace_id=workspace_id,
+            name="Test Wallet",
+            account_type=AccountType.wallet,
+            default_currency_code="INR",
+        )
+        session.add(account)
+        await session.flush()
+
+        session.add(
+            SpendingBudget(
+                workspace_id=workspace_id,
+                category_id=category.id,
+                amount=Decimal("50.00"),
+                start_month=week_start.replace(day=1),
+            )
+        )
+        session.add(
+            SpendingTransaction(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                account_id=account.id,
+                category_id=category.id,
+                amount=Decimal("75.00"),
+                type="expense",
+                occurred_at=start_dt + timedelta(days=1),
+            )
+        )
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_repo = NotificationRepository(session)
+        notification_service = NotificationService(notification_repo)
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.spending_summary["status"] == "complete"
+    assert summary.spending_summary["budgets_breached"] == 1
+    assert summary.spending_summary["budget_utilization_pct"] == "150.0"
+    assert summary.spending_summary["top_categories"][0]["amount"] == "75.00"

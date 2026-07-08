@@ -257,7 +257,7 @@ async def test_spending_audit_logging_e2e(client: AsyncClient):
     budget_payload = {
         "category_id": cat_uuid,
         "amount": "150.00",
-        "month_start": "2026-06-01",
+        "start_month": "2026-06-01",
     }
     create_budget_res = await client.post(
         "/v1/spending/budgets", json=budget_payload, cookies=cookies

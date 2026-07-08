@@ -17,7 +17,10 @@ from datetime import UTC, date, datetime
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 
+from app.core.audit import AuditLog
+from app.core.database import postgres
 from app.core.exceptions import NotFoundError
 from app.spending.response_helpers import category_public_id_or_404 as _category_public_id_or_404
 
@@ -280,7 +283,7 @@ async def test_budget_uniqueness_enforced(client: AsyncClient):
     # First budget create — must succeed
     first = await client.post(
         "/v1/spending/budgets",
-        json={"category_id": cat_id, "amount": "300.00", "month_start": month},
+        json={"category_id": cat_id, "amount": "300.00", "start_month": month},
         cookies=creds["cookies"],
     )
     assert first.status_code == 201
@@ -288,7 +291,7 @@ async def test_budget_uniqueness_enforced(client: AsyncClient):
     # Second budget create for same category+month — must be rejected
     second = await client.post(
         "/v1/spending/budgets",
-        json={"category_id": cat_id, "amount": "400.00", "month_start": month},
+        json={"category_id": cat_id, "amount": "400.00", "start_month": month},
         cookies=creds["cookies"],
     )
     assert second.status_code == 409
@@ -297,7 +300,7 @@ async def test_budget_uniqueness_enforced(client: AsyncClient):
 
     # Confirm only one budget row exists
     budgets = (await client.get("/v1/spending/budgets", cookies=creds["cookies"])).json()["items"]
-    matching = [b for b in budgets if b["category_id"] == cat_id and b["month_start"] == month]
+    matching = [b for b in budgets if b["category_id"] == cat_id and b["start_month"] == month]
     assert len(matching) == 1
 
 
@@ -315,7 +318,7 @@ async def test_budget_update_via_patch(client: AsyncClient):
 
     created = await client.post(
         "/v1/spending/budgets",
-        json={"category_id": cat_id, "amount": "200.00", "month_start": month},
+        json={"category_id": cat_id, "amount": "200.00", "start_month": month},
         cookies=creds["cookies"],
     )
     assert created.status_code == 201
@@ -437,7 +440,7 @@ async def test_spending_month_summary_uses_full_month_totals(client: AsyncClient
         json={
             "category_id": food_cat["public_id"],
             "amount": "1000.00",
-            "month_start": month_start.date().isoformat(),
+            "start_month": month_start.date().isoformat(),
         },
         cookies=creds["cookies"],
     )
@@ -491,17 +494,17 @@ async def test_spending_month_summary_uses_full_month_totals(client: AsyncClient
     )
     assert month_budgets.status_code == 200
     assert all(
-        b["month_start"] == month_start.date().isoformat() for b in month_budgets.json()["items"]
+        b["start_month"] == month_start.date().isoformat() for b in month_budgets.json()["items"]
     )
 
 
 # ---------------------------------------------------------------------------
-# Cannot delete a system category
+# System categories: deletable when unused, still refused when in use
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_cannot_delete_system_category(client: AsyncClient):
+async def test_unused_system_category_deletes_successfully(client: AsyncClient):
     creds = await _register_and_login(client, "sysdelcat")
     cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
     system_cat = next(c for c in cats if c["is_system"])
@@ -510,7 +513,41 @@ async def test_cannot_delete_system_category(client: AsyncClient):
         f"/v1/spending/categories/{system_cat['public_id']}",
         cookies=creds["cookies"],
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 204, resp.text
+
+
+@pytest.mark.asyncio
+async def test_in_use_system_category_still_refused(client: AsyncClient):
+    creds = await _register_and_login(client, "sysdelcatinuse")
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
+    system_cat = next(c for c in cats if c["is_system"])
+
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
+    tx_resp = await client.post(
+        "/v1/spending/transactions",
+        json={
+            "category_id": system_cat["public_id"],
+            "account_id": account_id,
+            "amount": "10.00",
+            "type": "expense",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+        cookies=creds["cookies"],
+    )
+    assert tx_resp.status_code == 201, tx_resp.text
+
+    resp = await client.delete(
+        f"/v1/spending/categories/{system_cat['public_id']}",
+        cookies=creds["cookies"],
+    )
+    assert resp.status_code == 409, resp.text
     assert "type" in resp.json()  # RFC 7807
 
 
@@ -600,7 +637,7 @@ async def test_cannot_delete_category_with_budget(client: AsyncClient):
         json={
             "category_id": cat_id,
             "amount": "500.00",
-            "month_start": date.today().replace(day=1).isoformat(),
+            "start_month": date.today().replace(day=1).isoformat(),
         },
         cookies=creds["cookies"],
     )
@@ -610,6 +647,216 @@ async def test_cannot_delete_category_with_budget(client: AsyncClient):
     del_resp = await client.delete(f"/v1/spending/categories/{cat_id}", cookies=creds["cookies"])
     assert del_resp.status_code == 409
     assert "Cannot delete a category" in del_resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Category merge (spec-062)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_merge_categories_repoints_transactions_recurring_and_deletes_sources(
+    client: AsyncClient,
+):
+    creds = await _register_and_login(client, "mergecats")
+
+    async def _make_category(name: str) -> str:
+        resp = await client.post(
+            "/v1/spending/categories", json={"name": name}, cookies=creds["cookies"]
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["public_id"]
+
+    target_id = await _make_category("Dining")
+    source_a = await _make_category("Food")
+    source_b = await _make_category("Restaurants")
+
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
+    tx_resp = await client.post(
+        "/v1/spending/transactions",
+        json={
+            "category_id": source_a,
+            "account_id": account_id,
+            "amount": "10.00",
+            "type": "expense",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+        cookies=creds["cookies"],
+    )
+    assert tx_resp.status_code == 201, tx_resp.text
+    tx_id = tx_resp.json()["public_id"]
+
+    recurring_resp = await client.post(
+        "/v1/spending/recurring",
+        json={
+            "category_id": source_b,
+            "amount": "14.99",
+            "type": "expense",
+            "frequency": "monthly",
+            "interval": 1,
+            "anchor_date": date.today().isoformat(),
+        },
+        cookies=creds["cookies"],
+    )
+    assert recurring_resp.status_code == 201, recurring_resp.text
+    recurring_id = recurring_resp.json()["public_id"]
+
+    merge_resp = await client.post(
+        f"/v1/spending/categories/{target_id}/merge",
+        json={"source_public_ids": [source_a, source_b]},
+        cookies=creds["cookies"],
+    )
+    assert merge_resp.status_code == 204, merge_resp.text
+
+    tx_after = (await client.get("/v1/spending/transactions", cookies=creds["cookies"])).json()[
+        "items"
+    ]
+    moved_tx = next(t for t in tx_after if t["public_id"] == tx_id)
+    assert moved_tx["category_id"] == target_id
+
+    recurring_after = (await client.get("/v1/spending/recurring", cookies=creds["cookies"])).json()[
+        "items"
+    ]
+    moved_recurring = next(r for r in recurring_after if r["public_id"] == recurring_id)
+    assert moved_recurring["category_id"] == target_id
+
+    cats_after = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()[
+        "items"
+    ]
+    remaining_ids = {c["public_id"] for c in cats_after}
+    assert source_a not in remaining_ids
+    assert source_b not in remaining_ids
+    assert target_id in remaining_ids
+
+
+@pytest.mark.asyncio
+async def test_merge_categories_sums_overlapping_budgets_for_same_month(client: AsyncClient):
+    creds = await _register_and_login(client, "mergebudgets")
+
+    async def _make_category(name: str) -> str:
+        resp = await client.post(
+            "/v1/spending/categories", json={"name": name}, cookies=creds["cookies"]
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["public_id"]
+
+    target_id = await _make_category("Groceries")
+    source_id = await _make_category("Supermarket")
+
+    month_start = date.today().replace(day=1).isoformat()
+
+    for cat_id, amount in ((target_id, "300.00"), (source_id, "200.00")):
+        budget_resp = await client.post(
+            "/v1/spending/budgets",
+            json={
+                "category_id": cat_id,
+                "amount": amount,
+                "start_month": month_start,
+                "end_month": month_start,
+            },
+            cookies=creds["cookies"],
+        )
+        assert budget_resp.status_code == 201, budget_resp.text
+
+    merge_resp = await client.post(
+        f"/v1/spending/categories/{target_id}/merge",
+        json={"source_public_ids": [source_id]},
+        cookies=creds["cookies"],
+    )
+    assert merge_resp.status_code == 204, merge_resp.text
+
+    budgets_after = (
+        await client.get(
+            "/v1/spending/budgets",
+            params={"month_start": month_start},
+            cookies=creds["cookies"],
+        )
+    ).json()["items"]
+    target_budgets = [b for b in budgets_after if b["category_id"] == target_id]
+    assert len(target_budgets) == 1
+    assert target_budgets[0]["amount"] == "500.00"
+
+
+@pytest.mark.asyncio
+async def test_merge_categories_validation_rejects_target_in_sources_and_empty_sources(
+    client: AsyncClient,
+):
+    creds = await _register_and_login(client, "mergevalidation")
+
+    cat_resp = await client.post(
+        "/v1/spending/categories", json={"name": "Solo"}, cookies=creds["cookies"]
+    )
+    assert cat_resp.status_code == 201
+    cat_id = cat_resp.json()["public_id"]
+
+    resp = await client.post(
+        f"/v1/spending/categories/{cat_id}/merge",
+        json={"source_public_ids": [cat_id]},
+        cookies=creds["cookies"],
+    )
+    assert resp.status_code == 422, resp.text
+
+    resp = await client.post(
+        f"/v1/spending/categories/{cat_id}/merge",
+        json={"source_public_ids": []},
+        cookies=creds["cookies"],
+    )
+    assert resp.status_code == 422, resp.text
+
+    resp = await client.post(
+        f"/v1/spending/categories/{cat_id}/merge",
+        json={"source_public_ids": [str(uuid.uuid4())]},
+        cookies=creds["cookies"],
+    )
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_merge_categories_records_one_audit_event(client: AsyncClient):
+    creds = await _register_and_login(client, "mergeaudit")
+
+    async def _make_category(name: str) -> str:
+        resp = await client.post(
+            "/v1/spending/categories", json={"name": name}, cookies=creds["cookies"]
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["public_id"]
+
+    target_id = await _make_category("Bills")
+    source_id = await _make_category("Utilities")
+
+    merge_resp = await client.post(
+        f"/v1/spending/categories/{target_id}/merge",
+        json={"source_public_ids": [source_id]},
+        cookies=creds["cookies"],
+    )
+    assert merge_resp.status_code == 204, merge_resp.text
+
+    async with postgres.async_session_maker() as session:
+        audit_rows = (
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "merge", AuditLog.entity_type == "spending_category"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(audit_rows) == 1
+        details = audit_rows[0].details
+        assert details["target_public_id"] == target_id
+        assert details["source_public_ids"] == [source_id]
+        assert details["transactions_moved"] == 0
+        assert details["recurring_rules_moved"] == 0
 
 
 @pytest.mark.asyncio

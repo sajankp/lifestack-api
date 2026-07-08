@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
@@ -304,7 +304,13 @@ class WeeklySummaryService:
                     await self.session.execute(
                         select(SpendingBudget).where(
                             SpendingBudget.workspace_id == workspace_id,
-                            SpendingBudget.month_start == month_start,
+                            and_(
+                                SpendingBudget.start_month <= month_start,
+                                or_(
+                                    SpendingBudget.end_month.is_(None),
+                                    SpendingBudget.end_month >= month_start,
+                                ),
+                            ),
                             SpendingBudget.category_id.in_(category_ids),
                         )
                     )

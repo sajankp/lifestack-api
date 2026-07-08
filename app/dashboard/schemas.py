@@ -3,6 +3,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
 
+from app.spending.schemas import BudgetSpotlightItem
+
 
 class TodosSummary(BaseModel):
     status: str = "available"
@@ -15,7 +17,7 @@ class TodosSummary(BaseModel):
 class SpendingSummary(BaseModel):
     status: str = "available"
     month_spent: Decimal = Decimal("0")
-    month_budget: Decimal | None = None
+    budget_spotlight: list[BudgetSpotlightItem] = []
     top_overspent_categories: list[dict] = []
 
 

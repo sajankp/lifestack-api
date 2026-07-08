@@ -36,12 +36,40 @@ class TransactionSourceType(StrEnum):
     order = "order"
 
 
+class CategoryGroup(SQLModel, table=True):
+    __tablename__ = "category_groups"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+
+    name: str = Field(max_length=100)
+    normalized_name: str = Field(max_length=100)
+    color: str | None = Field(default=None, max_length=20)
+    icon: str | None = Field(default=None, max_length=50)
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint("id", "workspace_id", name="uq_category_group_id_workspace"),
+        sa.UniqueConstraint(
+            "workspace_id", "normalized_name", name="uq_category_group_workspace_name"
+        ),
+    )
+
+
 class SpendingCategory(SQLModel, table=True):
     __tablename__ = "spending_categories"
 
     id: int | None = Field(default=None, primary_key=True)
     public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
     workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    category_group_id: int | None = Field(default=None, index=True)
 
     name: str = Field(max_length=100)
     # Stored normalised (lowercase, stripped) for uniqueness checks
@@ -60,6 +88,11 @@ class SpendingCategory(SQLModel, table=True):
     __table_args__ = (
         sa.UniqueConstraint("id", "workspace_id", name="uq_category_id_workspace"),
         sa.UniqueConstraint("workspace_id", "normalized_name", name="uq_category_workspace_name"),
+        sa.ForeignKeyConstraint(
+            ["category_group_id", "workspace_id"],
+            ["category_groups.id", "category_groups.workspace_id"],
+            name="fk_spending_categories_group_workspace",
+        ),
     )
 
 
@@ -115,11 +148,14 @@ class SpendingBudget(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
     workspace_id: int = Field(foreign_key="workspaces.id", index=True)
-    category_id: int = Field(foreign_key="spending_categories.id", index=True)
+
+    category_id: int | None = Field(default=None, index=True)
+    category_group_id: int | None = Field(default=None, index=True)
 
     amount: Decimal = Field(sa_type=sa.Numeric(precision=12, scale=2))
-    # First day of the budget month, e.g. 2026-03-01
-    month_start: date = Field(sa_type=sa.Date())
+    start_month: date = Field(sa_type=sa.Date())
+    end_month: date | None = Field(default=None, sa_type=sa.Date())
+
     source_type: str = Field(default="manual", sa_type=sa.String(length=32), index=True)
     source_ref: str | None = Field(default=None, max_length=255)
     source_import_id: int | None = Field(default=None, foreign_key="import_batches.id", index=True)
@@ -137,8 +173,14 @@ class SpendingBudget(SQLModel, table=True):
             ["spending_categories.id", "spending_categories.workspace_id"],
             name="fk_spending_budgets_category_workspace",
         ),
-        sa.UniqueConstraint(
-            "workspace_id", "category_id", "month_start", name="uq_budget_workspace_category_month"
+        sa.ForeignKeyConstraint(
+            ["category_group_id", "workspace_id"],
+            ["category_groups.id", "category_groups.workspace_id"],
+            name="fk_spending_budgets_group_workspace",
+        ),
+        sa.CheckConstraint(
+            "(category_id IS NULL) != (category_group_id IS NULL)",
+            name="ck_budget_scope",
         ),
     )
 

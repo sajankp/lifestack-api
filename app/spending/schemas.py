@@ -13,6 +13,38 @@ from app.spending.models import TransactionSourceType, TransactionType
 LedgerEntryKind = Literal["transaction", "transfer_out", "transfer_in"]
 
 # ---------------------------------------------------------------------------
+# Category Group schemas
+# ---------------------------------------------------------------------------
+
+
+class CategoryGroupCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    color: str | None = Field(default=None, max_length=20)
+    icon: str | None = Field(default=None, max_length=50)
+
+
+class CategoryGroupUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    color: str | None = Field(default=None, max_length=20)
+    icon: str | None = Field(default=None, max_length=50)
+
+
+class CategoryGroupResponse(BaseModel):
+    public_id: uuid.UUID
+    name: str
+    color: str | None
+    icon: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CategoryMergeRequest(BaseModel):
+    source_public_ids: list[uuid.UUID]
+
+
+# ---------------------------------------------------------------------------
 # Category schemas
 # ---------------------------------------------------------------------------
 
@@ -27,6 +59,7 @@ class CategoryUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     color: str | None = Field(default=None, max_length=20)
     icon: str | None = Field(default=None, max_length=50)
+    category_group_id: uuid.UUID | None = None
 
 
 class CategoryResponse(BaseModel):
@@ -35,6 +68,7 @@ class CategoryResponse(BaseModel):
     is_system: bool
     color: str | None
     icon: str | None
+    category_group_id: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -147,9 +181,11 @@ class TransactionSummaryResponse(BaseModel):
 
 
 class BudgetCreate(BaseModel):
-    category_id: uuid.UUID  # public_id of the category
+    category_id: uuid.UUID | None = None
+    category_group_id: uuid.UUID | None = None
     amount: Decimal = Field(..., gt=0, decimal_places=2)
-    month_start: date
+    start_month: date
+    end_month: date | None = None
 
     @field_validator("amount")
     @classmethod
@@ -158,35 +194,72 @@ class BudgetCreate(BaseModel):
             raise ValueError("Amount must have at most 2 decimal places")
         return v
 
-    @field_validator("month_start")
+    @field_validator("start_month", "end_month")
     @classmethod
-    def validate_first_of_month(cls, v: date) -> date:
-        if v.day != 1:
-            raise ValueError("month_start must be the first day of the month")
+    def validate_first_of_month(cls, v: date | None) -> date | None:
+        if v is not None and v.day != 1:
+            raise ValueError("Month dates must be the first day of the month")
         return v
+
+    @model_validator(mode="after")
+    def validate_scope_and_dates(self) -> "BudgetCreate":
+        if (self.category_id is None) == (self.category_group_id is None):
+            raise ValueError("Exactly one of category_id or category_group_id must be set")
+        if self.end_month is not None and self.end_month < self.start_month:
+            raise ValueError("end_month must be greater than or equal to start_month")
+        return self
 
 
 class BudgetUpdate(BaseModel):
-    amount: Decimal = Field(..., gt=0, decimal_places=2)
+    amount: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    end_month: date | None = None
 
     @field_validator("amount")
     @classmethod
-    def validate_scale(cls, v: Decimal) -> Decimal:
-        if v != v.quantize(Decimal("0.01")):
+    def validate_scale(cls, v: Decimal | None) -> Decimal | None:
+        if v is not None and v != v.quantize(Decimal("0.01")):
             raise ValueError("Amount must have at most 2 decimal places")
+        return v
+
+    @field_validator("end_month")
+    @classmethod
+    def validate_first_of_month(cls, v: date | None) -> date | None:
+        if v is not None and v.day != 1:
+            raise ValueError("end_month must be the first day of the month")
         return v
 
 
 class BudgetResponse(BaseModel):
     public_id: uuid.UUID
-    category_id: uuid.UUID  # exposed as public_id
+    category_id: uuid.UUID | None = None
+    category_group_id: uuid.UUID | None = None
     amount: Decimal
-    month_start: date
+    start_month: date
+    end_month: date | None = None
     source_metadata: SourceMetadataResponse | None = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class BudgetChangeAmountRequest(BaseModel):
+    amount: Decimal = Field(..., gt=0, decimal_places=2)
+    from_month: date
+
+    @field_validator("amount")
+    @classmethod
+    def validate_scale(cls, v: Decimal) -> Decimal:
+        if v != v.quantize(Decimal("0.01")):
+            raise ValueError("Amount must have at most 2 decimal places")
+        return v
+
+    @field_validator("from_month")
+    @classmethod
+    def validate_first_of_month(cls, v: date) -> date:
+        if v.day != 1:
+            raise ValueError("from_month must be the first day of the month")
+        return v
 
 
 class SpendingTrendPoint(BaseModel):
@@ -321,13 +394,28 @@ class CategoryBreakdownResponse(BaseModel):
 
 
 class BudgetPerformanceItem(BaseModel):
-    category_id: uuid.UUID
-    category_name: str
+    category_id: uuid.UUID | None = None
+    category_name: str | None = None
+    category_group_id: uuid.UUID | None = None
+    category_group_name: str | None = None
     budget_amount: Decimal | None
     actual_amount: Decimal
     utilization_pct: float | None
     remaining: Decimal | None
     status: Literal["on_track", "warning", "exceeded"]
+
+    model_config = ConfigDict(use_enum_values=True, json_encoders={Decimal: str})
+
+
+class BudgetSpotlightItem(BaseModel):
+    category_group_id: uuid.UUID
+    category_group_name: str
+    budget_amount: Decimal
+    actual_amount: Decimal
+    utilization_pct: float
+    remaining: Decimal
+    status: Literal["on_track", "warning", "exceeded"]
+    daily_amount_left: Decimal
 
     model_config = ConfigDict(use_enum_values=True, json_encoders={Decimal: str})
 
@@ -345,6 +433,8 @@ class BudgetPerformanceResponse(BaseModel):
     to_month: str = Field(serialization_alias="to")
     categories: list[BudgetPerformanceItem]
     totals: BudgetPerformanceTotals
+    groups: list[BudgetPerformanceItem] = Field(default_factory=list)
+    group_totals: BudgetPerformanceTotals
 
     model_config = ConfigDict(populate_by_name=True, json_encoders={Decimal: str})
 

@@ -65,7 +65,8 @@ def _make_budget(workspace_id: int = 1, category_id: int = 10) -> SpendingBudget
         workspace_id=workspace_id,
         category_id=category_id,
         amount=Decimal("500.00"),
-        month_start=date(2026, 3, 1),
+        start_month=date(2026, 3, 1),
+        end_month=None,
     )
 
 
@@ -120,13 +121,12 @@ async def test_create_category_duplicate_name_rejected(cat_service, mock_cat_rep
 
 
 @pytest.mark.asyncio
-async def test_delete_system_category_rejected(cat_service, mock_cat_repo):
+async def test_delete_unused_system_category_succeeds(cat_service, mock_cat_repo):
     system_cat = _make_category(is_system=True)
     mock_cat_repo.get_by_public_id.return_value = system_cat
-    with pytest.raises(APIError) as exc:
-        await cat_service.delete_category(workspace_id=1, public_id=system_cat.public_id)
-    assert exc.value.status_code == 403
-    assert "System" in exc.value.detail
+    mock_cat_repo.has_usage.return_value = False
+    await cat_service.delete_category(workspace_id=1, public_id=system_cat.public_id)
+    mock_cat_repo.delete.assert_called_once_with(system_cat)
 
 
 @pytest.mark.asyncio
@@ -136,6 +136,16 @@ async def test_delete_category_in_use_rejected(cat_service, mock_cat_repo):
     mock_cat_repo.has_usage.return_value = True
     with pytest.raises(APIError) as exc:
         await cat_service.delete_category(workspace_id=1, public_id=custom_cat.public_id)
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_delete_in_use_system_category_rejected(cat_service, mock_cat_repo):
+    system_cat = _make_category(is_system=True)
+    mock_cat_repo.get_by_public_id.return_value = system_cat
+    mock_cat_repo.has_usage.return_value = True
+    with pytest.raises(APIError) as exc:
+        await cat_service.delete_category(workspace_id=1, public_id=system_cat.public_id)
     assert exc.value.status_code == 409
 
 
@@ -287,7 +297,7 @@ def budget_service(mock_budget_repo, mock_cat_repo_for_budget):
 async def test_create_budget_success(budget_service, mock_budget_repo, mock_cat_repo_for_budget):
     cat = _make_category()
     mock_cat_repo_for_budget.get_by_public_id.return_value = cat
-    mock_budget_repo.get_by_category_and_month.return_value = None
+    mock_budget_repo.get_overlapping_budgets.return_value = []
     budget = _make_budget()
     mock_budget_repo.create.return_value = budget
 
@@ -296,7 +306,7 @@ async def test_create_budget_success(budget_service, mock_budget_repo, mock_cat_
         budget_in=BudgetCreate(
             category_id=cat.public_id,
             amount=Decimal("500.00"),
-            month_start=date(2026, 3, 1),
+            start_month=date(2026, 3, 1),
         ),
     )
     assert result == budget
@@ -309,7 +319,7 @@ async def test_create_budget_duplicate_rejected(
 ):
     cat = _make_category()
     mock_cat_repo_for_budget.get_by_public_id.return_value = cat
-    mock_budget_repo.get_by_category_and_month.return_value = _make_budget()  # already exists
+    mock_budget_repo.get_overlapping_budgets.return_value = [_make_budget()]  # already exists
 
     with pytest.raises(APIError) as exc:
         await budget_service.create_budget(
@@ -317,7 +327,7 @@ async def test_create_budget_duplicate_rejected(
             budget_in=BudgetCreate(
                 category_id=cat.public_id,
                 amount=Decimal("500.00"),
-                month_start=date(2026, 3, 1),
+                start_month=date(2026, 3, 1),
             ),
         )
     assert exc.value.status_code == 409
@@ -335,7 +345,7 @@ async def test_create_budget_cross_workspace_category_rejected(
             budget_in=BudgetCreate(
                 category_id=uuid.uuid4(),
                 amount=Decimal("100.00"),
-                month_start=date(2026, 3, 1),
+                start_month=date(2026, 3, 1),
             ),
         )
     assert exc.value.status_code == 404
@@ -345,6 +355,7 @@ async def test_create_budget_cross_workspace_category_rejected(
 async def test_update_budget_success(budget_service, mock_budget_repo, mock_cat_repo_for_budget):
     budget = _make_budget()
     mock_budget_repo.get_by_public_id.return_value = budget
+    mock_budget_repo.get_overlapping_budgets.return_value = []
     mock_budget_repo.save.return_value = budget
 
     result = await budget_service.update_budget(

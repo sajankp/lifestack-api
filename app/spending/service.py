@@ -10,6 +10,7 @@ from app.imports.repository import ImportRepository
 from app.spending.response_helpers import (
     budget_response,
     recurring_response,
+    source_metadata_response,
     transaction_response,
 )
 
@@ -20,7 +21,6 @@ from app.core.audit import AuditLogger, snapshot_columns
 from app.core.exceptions import (
     CategoryInUseError,
     ConflictError,
-    ForbiddenError,
     NotFoundError,
     ValidationError,
 )
@@ -28,6 +28,7 @@ from app.core.pagination import DEFAULT_LIMIT
 from app.core.recurrence import advance_due_date, validate_recurrence_fields
 from app.finance.repository import AccountRepository, FinanceSettingRepository
 from app.spending.models import (
+    CategoryGroup,
     RecurringTransaction,
     SpendingBudget,
     SpendingCategory,
@@ -38,6 +39,7 @@ from app.spending.models import (
 )
 from app.spending.repository import (
     BudgetRepository,
+    CategoryGroupRepository,
     CategoryRepository,
     LedgerRow,
     RecurringTransactionRepository,
@@ -54,6 +56,8 @@ from app.spending.schemas import (
     CategoryBreakdownOther,
     CategoryBreakdownResponse,
     CategoryCreate,
+    CategoryGroupCreate,
+    CategoryGroupUpdate,
     CategoryUpdate,
     LedgerEntry,
     LedgerResponse,
@@ -71,6 +75,76 @@ from app.spending.schemas import (
     UpcomingPreviewResponse,
     UpcomingTransactionItem,
 )
+
+
+def add_months(d: date, months: int) -> date:
+    month = d.month - 1 + months
+    year = d.year + month // 12
+    month = month % 12 + 1
+    return date(year, month, 1)
+
+
+def merge_budget_intervals(
+    target_budgets: list[SpendingBudget],
+    source_budgets: list[SpendingBudget],
+) -> list[dict]:
+    boundaries = set()
+    for b in target_budgets + source_budgets:
+        boundaries.add(b.start_month)
+        if b.end_month is not None:
+            boundaries.add(add_months(b.end_month, 1))
+
+    sorted_boundaries = sorted(boundaries)
+    if not sorted_boundaries:
+        return []
+
+    intervals = []
+    for i in range(len(sorted_boundaries)):
+        start = sorted_boundaries[i]
+        end_month = None
+        if i + 1 < len(sorted_boundaries):
+            end_month = add_months(sorted_boundaries[i + 1], -1)
+
+        # Find target amount
+        target_amount = Decimal("0")
+        for tb in target_budgets:
+            if tb.start_month <= start and (tb.end_month is None or tb.end_month >= start):
+                target_amount = tb.amount
+                break
+
+        # Find source amount
+        source_amount = Decimal("0")
+        for sb in source_budgets:
+            if sb.start_month <= start and (sb.end_month is None or sb.end_month >= start):
+                source_amount += sb.amount
+
+        combined_amount = target_amount + source_amount
+        if combined_amount > 0:
+            intervals.append({
+                "start_month": start,
+                "end_month": end_month,
+                "amount": combined_amount,
+            })
+
+    # Merge consecutive intervals with the same amount
+    merged_intervals = []
+    for interval in intervals:
+        if not merged_intervals:
+            merged_intervals.append(interval)
+        else:
+            last = merged_intervals[-1]
+            is_consecutive = (
+                last["end_month"] is not None
+                and add_months(last["end_month"], 1) == interval["start_month"]
+            )
+
+            if is_consecutive and last["amount"] == interval["amount"]:
+                last["end_month"] = interval["end_month"]
+            else:
+                merged_intervals.append(interval)
+
+    return merged_intervals
+
 
 # Default system categories seeded during registration
 DEFAULT_CATEGORIES: list[dict] = [
@@ -111,8 +185,10 @@ _TRANSACTION_AUDIT_FIELDS = (
 
 _BUDGET_AUDIT_FIELDS = (
     "category_id",
+    "category_group_id",
     "amount",
-    "month_start",
+    "start_month",
+    "end_month",
 )
 
 
@@ -135,14 +211,188 @@ def _snapshot_budget(budget: SpendingBudget) -> dict:
     # Convert Decimal and date fields for JSON serialization
     if data.get("amount") is not None:
         data["amount"] = str(data["amount"])
-    if data.get("month_start") is not None:
-        data["month_start"] = data["month_start"].isoformat()
+    if data.get("start_month") is not None:
+        data["start_month"] = data["start_month"].isoformat()
+    if data.get("end_month") is not None:
+        data["end_month"] = data["end_month"].isoformat()
     return data
 
 
-class CategoryService:
-    def __init__(self, repository: CategoryRepository):
+class CategoryGroupService:
+    def __init__(
+        self,
+        repository: CategoryGroupRepository,
+        budget_repo: BudgetRepository,
+        category_repo: CategoryRepository,
+    ):
         self.repository = repository
+        self.budget_repo = budget_repo
+        self.category_repo = category_repo
+
+    async def list_groups(
+        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> tuple[Sequence[CategoryGroup], int]:
+        return await self.repository.get_all(workspace_id, limit, offset)
+
+    async def get_group(self, workspace_id: int, public_id: uuid.UUID) -> CategoryGroup:
+        group = await self.repository.get_by_public_id(workspace_id, public_id)
+        if not group:
+            raise NotFoundError(
+                detail=f"Category group with id {public_id} not found in this workspace"
+            )
+        return group
+
+    async def create_group(
+        self,
+        workspace_id: int,
+        group_in: CategoryGroupCreate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> CategoryGroup:
+        normalized = _normalize(group_in.name)
+        existing = await self.repository.get_by_normalized_name(workspace_id, normalized)
+        if existing:
+            raise ConflictError(detail="A category group with this name already exists")
+
+        group = CategoryGroup(
+            workspace_id=workspace_id,
+            name=group_in.name,
+            normalized_name=normalized,
+            color=group_in.color,
+            icon=group_in.icon,
+        )
+        group = await self.repository.create(group)
+
+        if audit_logger and actor_id is not None:
+            after_snap = {
+                "name": group.name,
+                "color": group.color,
+                "icon": group.icon,
+            }
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="create",
+                module="spending",
+                entity_type="category_group",
+                entity_id=group.id,
+                details={
+                    "entity_public_id": str(group.public_id),
+                    "before": None,
+                    "after": after_snap,
+                    "changed_fields": list(after_snap.keys()),
+                },
+            )
+        return group
+
+    async def update_group(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        group_in: CategoryGroupUpdate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> CategoryGroup:
+        group = await self.get_group(workspace_id, public_id)
+        before_snap = {
+            "name": group.name,
+            "color": group.color,
+            "icon": group.icon,
+        }
+
+        changed_fields = []
+        if group_in.name is not None and group_in.name != group.name:
+            normalized = _normalize(group_in.name)
+            existing = await self.repository.get_by_normalized_name(workspace_id, normalized)
+            if existing and existing.id != group.id:
+                raise ConflictError(detail="A category group with this name already exists")
+            group.name = group_in.name
+            group.normalized_name = normalized
+            changed_fields.append("name")
+
+        if group_in.color is not None and group_in.color != group.color:
+            group.color = group_in.color
+            changed_fields.append("color")
+
+        if group_in.icon is not None and group_in.icon != group.icon:
+            group.icon = group_in.icon
+            changed_fields.append("icon")
+
+        if changed_fields:
+            group.updated_at = datetime.now(UTC)
+            await self.repository.save(group)
+
+            if audit_logger and actor_id is not None:
+                await audit_logger.log(
+                    workspace_id=workspace_id,
+                    actor_id=actor_id,
+                    action="update",
+                    module="spending",
+                    entity_type="category_group",
+                    entity_id=group.id,
+                    details={
+                        "entity_public_id": str(group.public_id),
+                        "before": before_snap,
+                        "after": {
+                            "name": group.name,
+                            "color": group.color,
+                            "icon": group.icon,
+                        },
+                        "changed_fields": changed_fields,
+                    },
+                )
+        return group
+
+    async def delete_group(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
+        group = await self.get_group(workspace_id, public_id)
+        if await self.budget_repo.has_current_or_future_budget(workspace_id, group.id):
+            raise ConflictError(
+                detail="Cannot delete a category group that has a budget for the current or a future month"
+            )
+        before_snap = {
+            "name": group.name,
+            "color": group.color,
+            "icon": group.icon,
+        }
+        await self.category_repo.ungroup_categories(workspace_id, group.id)
+        await self.budget_repo.delete_by_group_id(workspace_id, group.id)
+        await self.repository.delete(group)
+
+        if audit_logger and actor_id is not None:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="delete",
+                module="spending",
+                entity_type="category_group",
+                entity_id=group.id,
+                details={
+                    "entity_public_id": str(group.public_id),
+                    "before": before_snap,
+                    "after": None,
+                    "changed_fields": [],
+                },
+            )
+
+
+class CategoryService:
+    def __init__(
+        self,
+        repository: CategoryRepository,
+        budget_repo: BudgetRepository | None = None,
+        group_repo: CategoryGroupRepository | None = None,
+        session=None,
+    ):
+        self.repository = repository
+        self.budget_repo = budget_repo
+        self.group_repo = group_repo
+        self.session = session
 
     async def list_categories(
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
@@ -165,16 +415,14 @@ class CategoryService:
         normalized = _normalize(category_in.name)
         existing = await self.repository.get_by_normalized_name(workspace_id, normalized)
         if existing:
-            raise ConflictError(
-                detail=f"A category named '{category_in.name}' already exists in this workspace"
-            )
+            raise ConflictError(detail=f"A category named '{category_in.name}' already exists")
+
         category = SpendingCategory(
             workspace_id=workspace_id,
             name=category_in.name,
             normalized_name=normalized,
             color=category_in.color,
             icon=category_in.icon,
-            is_system=False,
         )
         category = await self.repository.create(category)
 
@@ -210,6 +458,21 @@ class CategoryService:
         update_data = category_in.model_dump(exclude_unset=True)
         if not update_data:
             return category
+
+        if "category_group_id" in update_data:
+            uuid_val = update_data["category_group_id"]
+            if uuid_val is not None:
+                if self.group_repo is None:
+                    raise ValidationError(
+                        detail="Group repository is required to update group association"
+                    )
+                group = await self.group_repo.get_by_public_id(workspace_id, uuid_val)
+                if not group:
+                    raise NotFoundError(detail="Category group not found")
+                category.category_group_id = group.id
+            else:
+                category.category_group_id = None
+            del update_data["category_group_id"]
 
         if "name" in update_data:
             new_normalized = _normalize(update_data["name"])
@@ -255,8 +518,6 @@ class CategoryService:
         audit_logger: AuditLogger | None = None,
     ) -> None:
         category = await self.get_category(workspace_id, public_id)
-        if category.is_system:
-            raise ForbiddenError(detail="System categories cannot be deleted")
         if await self.repository.has_usage(category.id):  # type: ignore[arg-type]
             raise CategoryInUseError(
                 detail="Cannot delete a category that is in use by transactions, budgets, or recurring rules"
@@ -277,6 +538,112 @@ class CategoryService:
                     "before": before_snap,
                     "after": None,
                     "changed_fields": [],
+                },
+            )
+
+    async def merge_categories(
+        self,
+        workspace_id: int,
+        target_public_id: uuid.UUID,
+        source_public_ids: list[uuid.UUID],
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
+        if not source_public_ids:
+            raise ValidationError(detail="source_public_ids cannot be empty")
+
+        source_public_ids = list(set(source_public_ids))
+        if target_public_id in source_public_ids:
+            raise ValidationError(detail="target_public_id cannot be in source_public_ids")
+
+        target_category = await self.get_category(workspace_id, target_public_id)
+        source_categories = []
+        for spid in source_public_ids:
+            cat = await self.get_category(workspace_id, spid)
+            source_categories.append(cat)
+
+        target_id = target_category.id
+        source_ids = [c.id for c in source_categories]
+
+        if self.budget_repo is None or self.session is None:
+            raise ValidationError(
+                detail="Budget repository and session are required to merge categories"
+            )
+
+        # 1. Reassign transactions & recurring rules
+        tx_count = await self.repository.reassign_transactions(workspace_id, source_ids, target_id)
+        recurring_count = await self.repository.reassign_recurring_rules(
+            workspace_id, source_ids, target_id
+        )
+
+        # 2. Merge range-based budgets
+        all_budgets = await self.budget_repo.get_by_category_ids(
+            workspace_id, [target_id] + source_ids
+        )
+        target_budgets = [b for b in all_budgets if b.category_id == target_id]
+        source_budgets = [b for b in all_budgets if b.category_id in source_ids]
+
+        merged_intervals = merge_budget_intervals(target_budgets, source_budgets)
+
+        # Delete existing budgets
+        await self.budget_repo.delete_by_category_ids(workspace_id, [target_id] + source_ids)
+
+        # Create new merged budgets
+        budgets_summed = 0
+        budgets_repointed = 0
+        for interval in merged_intervals:
+            has_target = any(
+                tb.start_month <= interval["start_month"]
+                and (tb.end_month is None or tb.end_month >= interval["start_month"])
+                for tb in target_budgets
+            )
+            has_source = any(
+                sb.start_month <= interval["start_month"]
+                and (sb.end_month is None or sb.end_month >= interval["start_month"])
+                for sb in source_budgets
+            )
+            if has_target and has_source:
+                budgets_summed += 1
+            else:
+                if has_source:
+                    budgets_repointed += 1
+
+            new_budget = SpendingBudget(
+                workspace_id=workspace_id,
+                category_id=target_id,
+                category_group_id=None,
+                amount=interval["amount"],
+                start_month=interval["start_month"],
+                end_month=interval["end_month"],
+                source_type="manual",
+            )
+            self.session.add(new_budget)
+
+        await self.session.flush()
+
+        # Delete source categories
+        for cat in source_categories:
+            await self.repository.delete(cat)
+
+        if audit_logger and actor_id is not None:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="merge",
+                module="spending",
+                entity_type="spending_category",
+                entity_id=target_id,
+                details={
+                    "entity_public_id": str(target_public_id),
+                    "before": None,
+                    "after": None,
+                    "changed_fields": [],
+                    "source_public_ids": [str(c.public_id) for c in source_categories],
+                    "target_public_id": str(target_public_id),
+                    "transactions_moved": tx_count,
+                    "recurring_rules_moved": recurring_count,
+                    "budgets_summed": budgets_summed,
+                    "budgets_repointed": budgets_repointed,
                 },
             )
 
@@ -1130,13 +1497,21 @@ class BudgetService:
         self,
         budget_repo: BudgetRepository,
         category_repo: CategoryRepository,
+        group_repo: CategoryGroupRepository | None = None,
     ):
         self.budget_repo = budget_repo
         self.category_repo = category_repo
+        self.group_repo = group_repo
 
     async def _build_category_cache(self, workspace_id: int) -> dict[int, uuid.UUID]:
         cats, _ = await self.category_repo.get_all(workspace_id, limit=10000, offset=0)
         return {c.id: c.public_id for c in cats}
+
+    async def _build_group_cache(self, workspace_id: int) -> dict[int, uuid.UUID]:
+        if self.group_repo is None:
+            return {}
+        groups, _ = await self.group_repo.get_all(workspace_id, limit=10000, offset=0)
+        return {g.id: g.public_id for g in groups}
 
     async def _build_import_batch_cache(
         self, workspace_id: int, budgets: Sequence[SpendingBudget]
@@ -1158,11 +1533,20 @@ class BudgetService:
             workspace_id, limit=limit, offset=offset, month_start=month_start
         )
         cat_cache = await self._build_category_cache(workspace_id)
+        group_cache = await self._build_group_cache(workspace_id)
         import_cache = await self._build_import_batch_cache(workspace_id, budgets)
-        detailed = [
-            budget_response(b, cat_cache.get(b.category_id), import_cache.get(b.source_import_id))
-            for b in budgets
-        ]
+        detailed = []
+        for b in budgets:
+            cat_uuid = cat_cache.get(b.category_id) if b.category_id else None
+            group_uuid = group_cache.get(b.category_group_id) if b.category_group_id else None
+
+            data = b.model_dump()
+            data["category_id"] = cat_uuid
+            data["category_group_id"] = group_uuid
+            data["source_metadata"] = source_metadata_response(
+                b.source_type, b.source_ref, import_cache.get(b.source_import_id)
+            )
+            detailed.append(BudgetResponse.model_validate(data))
         return detailed, total
 
     async def create_budget_with_details(
@@ -1175,7 +1559,27 @@ class BudgetService:
         budget = await self.create_budget(
             workspace_id, budget_in, actor_id=actor_id, audit_logger=audit_logger
         )
-        return budget_response(budget, budget_in.category_id)
+        cat_uuid = None
+        group_uuid = None
+        if budget.category_id:
+            category = await self.category_repo.get_by_id(workspace_id, budget.category_id)
+            cat_uuid = category.public_id if category else None
+        if budget.category_group_id and self.group_repo:
+            group = await self.group_repo.get_by_id(workspace_id, budget.category_group_id)
+            group_uuid = group.public_id if group else None
+
+        return (
+            budget_response(budget, cat_uuid)
+            if budget.category_id
+            else BudgetResponse.model_validate({
+                **budget.model_dump(),
+                "category_id": None,
+                "category_group_id": group_uuid,
+                "source_metadata": source_metadata_response(
+                    budget.source_type, budget.source_ref, None
+                ),
+            })
+        )
 
     async def update_budget_with_details(
         self,
@@ -1188,9 +1592,27 @@ class BudgetService:
         budget = await self.update_budget(
             workspace_id, budget_id, budget_in, actor_id=actor_id, audit_logger=audit_logger
         )
-        category = await self.category_repo.get_by_id(workspace_id, budget.category_id)
-        category_public_id = category.public_id if category else None
-        return budget_response(budget, category_public_id)
+        cat_uuid = None
+        group_uuid = None
+        if budget.category_id:
+            category = await self.category_repo.get_by_id(workspace_id, budget.category_id)
+            cat_uuid = category.public_id if category else None
+        if budget.category_group_id and self.group_repo:
+            group = await self.group_repo.get_by_id(workspace_id, budget.category_group_id)
+            group_uuid = group.public_id if group else None
+
+        return (
+            budget_response(budget, cat_uuid)
+            if budget.category_id
+            else BudgetResponse.model_validate({
+                **budget.model_dump(),
+                "category_id": None,
+                "category_group_id": group_uuid,
+                "source_metadata": source_metadata_response(
+                    budget.source_type, budget.source_ref, None
+                ),
+            })
+        )
 
     async def _resolve_category(
         self, workspace_id: int, category_public_id: uuid.UUID
@@ -1204,6 +1626,16 @@ class BudgetService:
                 )
             )
         return category
+
+    async def _resolve_group(self, workspace_id: int, group_public_id: uuid.UUID) -> CategoryGroup:
+        if self.group_repo is None:
+            raise ValidationError(detail="Group repository is not available")
+        group = await self.group_repo.get_by_public_id(workspace_id, group_public_id)
+        if not group:
+            raise NotFoundError(
+                detail=f"Category group with id {group_public_id} not found in this workspace."
+            )
+        return group
 
     async def list_budgets(
         self,
@@ -1230,26 +1662,43 @@ class BudgetService:
         actor_id: int | None = None,
         audit_logger: AuditLogger | None = None,
     ) -> SpendingBudget:
-        category = await self._resolve_category(workspace_id, budget_in.category_id)
+        category_id = None
+        category_group_id = None
+        if budget_in.category_id is not None:
+            category = await self._resolve_category(workspace_id, budget_in.category_id)
+            category_id = category.id
+        elif budget_in.category_group_id is not None:
+            group = await self._resolve_group(workspace_id, budget_in.category_group_id)
+            category_group_id = group.id
 
-        existing = await self.budget_repo.get_by_category_and_month(
+        overlapping = await self.budget_repo.get_overlapping_budgets(
             workspace_id,
-            category.id,
-            budget_in.month_start,  # type: ignore[arg-type]
+            category_id,
+            category_group_id,
+            budget_in.start_month,
+            budget_in.end_month,
         )
-        if existing:
-            raise ConflictError(
-                detail=(
-                    f"A budget for category '{category.name}' and month "
-                    f"{budget_in.month_start} already exists. Use PATCH to update it."
-                )
+        if overlapping:
+            exact_match = any(
+                b.category_id == category_id
+                and b.category_group_id == category_group_id
+                and b.start_month == budget_in.start_month
+                and b.end_month == budget_in.end_month
+                for b in overlapping
             )
+            if exact_match:
+                raise ConflictError(
+                    detail="A budget for this scope already exists. Use PATCH to update it."
+                )
+            raise ConflictError(detail="A budget for this scope overlaps with the requested range.")
 
         budget = SpendingBudget(
             workspace_id=workspace_id,
-            category_id=category.id,  # type: ignore[assignment]
+            category_id=category_id,
+            category_group_id=category_group_id,
             amount=budget_in.amount,
-            month_start=budget_in.month_start,
+            start_month=budget_in.start_month,
+            end_month=budget_in.end_month,
         )
         budget = await self.budget_repo.create(budget)
 
@@ -1261,7 +1710,7 @@ class BudgetService:
                 action="create",
                 module="spending",
                 entity_type="spending_budget",
-                entity_id=budget.id,  # type: ignore[arg-type]
+                entity_id=budget.id,
                 details={
                     "entity_public_id": str(budget.public_id),
                     "before": None,
@@ -1282,7 +1731,30 @@ class BudgetService:
         budget = await self.get_budget(workspace_id, public_id)
         before_snap = _snapshot_budget(budget)
 
-        budget.amount = budget_in.amount
+        # Enforce range containment overlap checks
+        new_end = budget.end_month
+        if budget_in.end_month is not None:
+            new_end = budget_in.end_month
+
+        if new_end is not None and new_end < budget.start_month:
+            raise ValidationError(detail="end_month cannot be before the budget's start_month")
+
+        overlapping = await self.budget_repo.get_overlapping_budgets(
+            workspace_id,
+            budget.category_id,
+            budget.category_group_id,
+            budget.start_month,
+            new_end,
+            exclude_id=budget.id,
+        )
+        if overlapping:
+            raise ConflictError(detail="A budget for this scope overlaps with the requested range.")
+
+        if budget_in.amount is not None:
+            budget.amount = budget_in.amount
+        if budget_in.end_month is not None:
+            budget.end_month = budget_in.end_month
+
         budget.updated_at = datetime.now(UTC)
         budget = await self.budget_repo.save(budget)
 
@@ -1295,7 +1767,7 @@ class BudgetService:
                 action="update",
                 module="spending",
                 entity_type="spending_budget",
-                entity_id=budget.id,  # type: ignore[arg-type]
+                entity_id=budget.id,
                 details={
                     "entity_public_id": str(budget.public_id),
                     "before": before_snap,
@@ -1304,6 +1776,78 @@ class BudgetService:
                 },
             )
         return budget
+
+    async def change_budget_amount(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        amount: Decimal,
+        from_month: date,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> SpendingBudget:
+        budget = await self.get_budget(workspace_id, public_id)
+        if from_month <= budget.start_month:
+            raise ValidationError(detail="from_month must be after the budget's start_month")
+        if budget.end_month is not None and from_month > budget.end_month:
+            raise ValidationError(detail="from_month cannot be after the budget's end_month")
+
+        before_snap = _snapshot_budget(budget)
+        original_end = budget.end_month
+
+        # 1. Update old budget range
+        budget.end_month = add_months(from_month, -1)
+        budget.updated_at = datetime.now(UTC)
+        await self.budget_repo.save(budget)
+
+        if audit_logger and actor_id is not None:
+            after_snap = _snapshot_budget(budget)
+            changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="update",
+                module="spending",
+                entity_type="spending_budget",
+                entity_id=budget.id,
+                details={
+                    "entity_public_id": str(budget.public_id),
+                    "before": before_snap,
+                    "after": after_snap,
+                    "changed_fields": changed_fields,
+                },
+            )
+
+        # 2. Create successor budget
+        successor = SpendingBudget(
+            workspace_id=workspace_id,
+            category_id=budget.category_id,
+            category_group_id=budget.category_group_id,
+            amount=amount,
+            start_month=from_month,
+            end_month=original_end,
+            source_type="manual",
+        )
+        await self.budget_repo.create(successor)
+
+        if audit_logger and actor_id is not None:
+            after_snap_succ = _snapshot_budget(successor)
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="create",
+                module="spending",
+                entity_type="spending_budget",
+                entity_id=successor.id,
+                details={
+                    "entity_public_id": str(successor.public_id),
+                    "before": None,
+                    "after": after_snap_succ,
+                    "changed_fields": list(after_snap_succ.keys()),
+                },
+            )
+
+        return successor
 
     async def get_budget_performance(
         self, workspace_id: int, from_month: date, to_month: date
@@ -1321,87 +1865,75 @@ class BudgetService:
         else:
             end_dt = datetime(to_month.year, to_month.month + 1, 1, tzinfo=UTC)
 
-        # 1. Sum budgets by category
-        budget_stmt = (
-            select(
-                SpendingCategory.id,
-                SpendingCategory.public_id,
-                SpendingCategory.name,
-                func.sum(SpendingBudget.amount).label("budget_amount"),
-            )
-            .join(SpendingBudget, SpendingBudget.category_id == SpendingCategory.id)
-            .where(
-                SpendingBudget.workspace_id == workspace_id,
-                SpendingBudget.month_start >= from_month,
-                SpendingBudget.month_start <= to_month,
-            )
-            .group_by(SpendingCategory.id, SpendingCategory.public_id, SpendingCategory.name)
+        # Months in range
+        months_in_range = []
+        curr = from_month
+        while curr <= to_month:
+            months_in_range.append(curr)
+            curr = add_months(curr, 1)
+
+        # Fetch categories, groups, budgets, transactions
+        cats, _ = await self.category_repo.get_all(workspace_id, limit=10000)
+        group_repo_active = self.group_repo
+        if group_repo_active:
+            groups, _ = await group_repo_active.get_all(workspace_id, limit=10000)
+        else:
+            groups = []
+
+        all_budgets, _ = await self.budget_repo.get_all(workspace_id, limit=10000)
+
+        tx_stmt = select(SpendingTransaction).where(
+            SpendingTransaction.workspace_id == workspace_id,
+            SpendingTransaction.type == TransactionType.expense.value,
+            SpendingTransaction.occurred_at >= start_dt,
+            SpendingTransaction.occurred_at < end_dt,
         )
-        budget_rows = (await self.budget_repo.session.execute(budget_stmt)).all()
+        txs = (await self.budget_repo.session.execute(tx_stmt)).scalars().all()
 
-        # 2. Sum transactions (expense type) by category
-        tx_stmt = (
-            select(
-                SpendingCategory.id,
-                SpendingCategory.public_id,
-                SpendingCategory.name,
-                func.sum(SpendingTransaction.amount).label("actual_amount"),
-            )
-            .join(SpendingTransaction, SpendingTransaction.category_id == SpendingCategory.id)
-            .where(
-                SpendingTransaction.workspace_id == workspace_id,
-                SpendingTransaction.type == TransactionType.expense.value,
-                SpendingTransaction.occurred_at >= start_dt,
-                SpendingTransaction.occurred_at < end_dt,
-            )
-            .group_by(SpendingCategory.id, SpendingCategory.public_id, SpendingCategory.name)
-        )
-        tx_rows = (await self.budget_repo.session.execute(tx_stmt)).all()
+        # 1. Categories Performance
+        categories_items = []
+        for cat in cats:
+            cat_txs = [t for t in txs if t.category_id == cat.id]
+            actual_amount = sum(t.amount for t in cat_txs)
 
-        categories_map = {}
-        for row in budget_rows:
-            categories_map[row.id] = {
-                "public_id": row.public_id,
-                "name": row.name,
-                "budget_amount": Decimal(row.budget_amount),
-                "actual_amount": Decimal("0"),
-            }
+            # Sum covering budgets for each month in range
+            budget_amount = Decimal("0")
+            has_budget = False
+            for m in months_in_range:
+                covering = [
+                    b
+                    for b in all_budgets
+                    if b.category_id == cat.id
+                    and b.start_month <= m
+                    and (b.end_month is None or b.end_month >= m)
+                ]
+                if covering:
+                    budget_amount += covering[0].amount
+                    has_budget = True
 
-        for row in tx_rows:
-            if row.id in categories_map:
-                categories_map[row.id]["actual_amount"] = Decimal(row.actual_amount)
-            else:
-                categories_map[row.id] = {
-                    "public_id": row.public_id,
-                    "name": row.name,
-                    "budget_amount": None,
-                    "actual_amount": Decimal(row.actual_amount),
-                }
-
-        items: list[BudgetPerformanceItem] = []
-        for data in categories_map.values():
-            budget_amount = data["budget_amount"]
-            actual_amount = data["actual_amount"]
-
-            if budget_amount is None or budget_amount == 0:
+            if not has_budget:
+                budget_amount_val = None
                 utilization_pct = None
-                remaining = -actual_amount if budget_amount == 0 else None
+                remaining = None
                 status = "exceeded" if actual_amount > 0 else "on_track"
             else:
-                utilization_pct = float((actual_amount / budget_amount) * 100)
+                budget_amount_val = budget_amount
+                utilization_pct = (
+                    float((actual_amount / budget_amount) * 100) if budget_amount > 0 else None
+                )
                 remaining = budget_amount - actual_amount
-                if utilization_pct < 90.0:
+                if utilization_pct is None or utilization_pct < 90.0:
                     status = "on_track"
                 elif utilization_pct <= 100.0:
                     status = "warning"
                 else:
                     status = "exceeded"
 
-            items.append(
+            categories_items.append(
                 BudgetPerformanceItem(
-                    category_id=data["public_id"],
-                    category_name=data["name"],
-                    budget_amount=budget_amount,
+                    category_id=cat.public_id,
+                    category_name=cat.name,
+                    budget_amount=budget_amount_val,
                     actual_amount=actual_amount,
                     utilization_pct=utilization_pct,
                     remaining=remaining,
@@ -1409,25 +1941,91 @@ class BudgetService:
                 )
             )
 
-        # Calculate totals
-        total_budgeted = sum(
-            item["budget_amount"]
-            for item in categories_map.values()
-            if item["budget_amount"] is not None
+        # 2. Groups Performance
+        groups_items = []
+        for g in groups:
+            member_cat_ids = [c.id for c in cats if c.category_group_id == g.id]
+            group_txs = [t for t in txs if t.category_id in member_cat_ids]
+            actual_amount = sum(t.amount for t in group_txs)
+
+            # Sum covering budgets for each month in range
+            budget_amount = Decimal("0")
+            has_budget = False
+            for m in months_in_range:
+                covering = [
+                    b
+                    for b in all_budgets
+                    if b.category_group_id == g.id
+                    and b.start_month <= m
+                    and (b.end_month is None or b.end_month >= m)
+                ]
+                if covering:
+                    budget_amount += covering[0].amount
+                    has_budget = True
+
+            if not has_budget:
+                budget_amount_val = None
+                utilization_pct = None
+                remaining = None
+                status = "exceeded" if actual_amount > 0 else "on_track"
+            else:
+                budget_amount_val = budget_amount
+                utilization_pct = (
+                    float((actual_amount / budget_amount) * 100) if budget_amount > 0 else None
+                )
+                remaining = budget_amount - actual_amount
+                if utilization_pct is None or utilization_pct < 90.0:
+                    status = "on_track"
+                elif utilization_pct <= 100.0:
+                    status = "warning"
+                else:
+                    status = "exceeded"
+
+            groups_items.append(
+                BudgetPerformanceItem(
+                    category_group_id=g.public_id,
+                    category_group_name=g.name,
+                    budget_amount=budget_amount_val,
+                    actual_amount=actual_amount,
+                    utilization_pct=utilization_pct,
+                    remaining=remaining,
+                    status=status,
+                )
+            )
+
+        # Totals
+        cat_budget_total = sum(
+            item.budget_amount for item in categories_items if item.budget_amount is not None
         )
-        total_actual = sum(item["actual_amount"] for item in categories_map.values())
-        overall_utilization = (
-            float((total_actual / total_budgeted) * 100) if total_budgeted > 0 else None
+        cat_actual_total = sum(item.actual_amount for item in categories_items)
+        cat_overall_utilization = (
+            float((cat_actual_total / cat_budget_total) * 100) if cat_budget_total > 0 else None
+        )
+
+        group_budget_total = sum(
+            item.budget_amount for item in groups_items if item.budget_amount is not None
+        )
+        group_actual_total = sum(item.actual_amount for item in groups_items)
+        group_overall_utilization = (
+            float((group_actual_total / group_budget_total) * 100)
+            if group_budget_total > 0
+            else None
         )
 
         return BudgetPerformanceResponse(
             from_month=from_month.strftime("%Y-%m"),
             to_month=to_month.strftime("%Y-%m"),
-            categories=items,
+            categories=categories_items,
             totals=BudgetPerformanceTotals(
-                total_budgeted=total_budgeted,
-                total_actual=total_actual,
-                overall_utilization_pct=overall_utilization,
+                total_budgeted=cat_budget_total,
+                total_actual=cat_actual_total,
+                overall_utilization_pct=cat_overall_utilization,
+            ),
+            groups=groups_items,
+            group_totals=BudgetPerformanceTotals(
+                total_budgeted=group_budget_total,
+                total_actual=group_actual_total,
+                overall_utilization_pct=group_overall_utilization,
             ),
         )
 

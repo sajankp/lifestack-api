@@ -59,12 +59,14 @@ from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.platform.service import WorkspaceService
 from app.spending.repository import (
     BudgetRepository,
+    CategoryGroupRepository,
     CategoryRepository,
     RecurringTransactionRepository,
     TransactionRepository,
 )
 from app.spending.service import (
     BudgetService,
+    CategoryGroupService,
     CategoryService,
     RecurringTransactionService,
     TransactionService,
@@ -157,6 +159,12 @@ async def get_category_repo(
     return CategoryRepository(session)
 
 
+async def get_category_group_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> CategoryGroupRepository:
+    return CategoryGroupRepository(session)
+
+
 async def get_transaction_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> TransactionRepository:
@@ -177,8 +185,19 @@ async def get_recurring_repo(
 
 async def get_spending_category_service(
     repo: CategoryRepository = Depends(get_category_repo),
+    budget_repo: BudgetRepository = Depends(get_budget_repo),
+    group_repo: CategoryGroupRepository = Depends(get_category_group_repo),
+    session: AsyncSession = Depends(get_db_session),
 ) -> CategoryService:
-    return CategoryService(repo)
+    return CategoryService(repo, budget_repo, group_repo, session)
+
+
+async def get_spending_category_group_service(
+    group_repo: CategoryGroupRepository = Depends(get_category_group_repo),
+    budget_repo: BudgetRepository = Depends(get_budget_repo),
+    category_repo: CategoryRepository = Depends(get_category_repo),
+) -> CategoryGroupService:
+    return CategoryGroupService(group_repo, budget_repo, category_repo)
 
 
 async def get_spending_transaction_service(
@@ -194,8 +213,9 @@ async def get_spending_transaction_service(
 async def get_spending_budget_service(
     budget_repo: BudgetRepository = Depends(get_budget_repo),
     cat_repo: CategoryRepository = Depends(get_category_repo),
+    group_repo: CategoryGroupRepository = Depends(get_category_group_repo),
 ) -> BudgetService:
-    return BudgetService(budget_repo, cat_repo)
+    return BudgetService(budget_repo, cat_repo, group_repo)
 
 
 async def get_spending_recurring_service(

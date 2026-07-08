@@ -10,6 +10,7 @@ from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
     get_spending_budget_service,
+    get_spending_category_group_service,
     get_spending_category_service,
     get_spending_recurring_service,
     get_spending_transaction_service,
@@ -21,15 +22,22 @@ from app.spending.models import (
     TransactionType,
 )
 from app.spending.response_helpers import (
+    budget_response,
     category_response,
+    source_metadata_response,
 )
 from app.spending.schemas import (
+    BudgetChangeAmountRequest,
     BudgetCreate,
     BudgetPerformanceResponse,
     BudgetResponse,
     BudgetUpdate,
     CategoryBreakdownResponse,
     CategoryCreate,
+    CategoryGroupCreate,
+    CategoryGroupResponse,
+    CategoryGroupUpdate,
+    CategoryMergeRequest,
     CategoryResponse,
     CategorySpendTotal,
     CategoryUpdate,
@@ -47,6 +55,7 @@ from app.spending.schemas import (
 )
 from app.spending.service import (
     BudgetService,
+    CategoryGroupService,
     CategoryService,
     RecurringTransactionService,
     TransactionService,
@@ -62,6 +71,7 @@ router = APIRouter(prefix="/spending", tags=["spending"])
 @router.get("/categories", response_model=PaginatedResponse[CategoryResponse])
 async def list_categories(
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    group_service: Annotated[CategoryGroupService, Depends(get_spending_category_group_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     pagination: Annotated[PaginationParams, Depends()],
@@ -69,7 +79,13 @@ async def list_categories(
     cats, total = await category_service.list_categories(
         workspace_id, pagination.limit, pagination.offset
     )
-    return build_page([category_response(c) for c in cats], total, pagination)
+    groups, _ = await group_service.list_groups(workspace_id, limit=10000)
+    group_id_to_public_id = {g.id: g.public_id for g in groups}
+    return build_page(
+        [category_response(c, group_id_to_public_id.get(c.category_group_id)) for c in cats],
+        total,
+        pagination,
+    )
 
 
 @router.post("/categories", response_model=CategoryResponse, status_code=status.HTTP_201_CREATED)
@@ -84,18 +100,24 @@ async def create_category(
     cat = await category_service.create_category(
         workspace_id, category_in, actor_id=user["id"], audit_logger=audit_logger
     )
-    return category_response(cat)
+    return category_response(cat, None)
 
 
 @router.get("/categories/{category_id}", response_model=CategoryResponse)
 async def get_category(
     category_id: uuid.UUID,
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    group_service: Annotated[CategoryGroupService, Depends(get_spending_category_group_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
 ):
     cat = await category_service.get_category(workspace_id, category_id)
-    return category_response(cat)
+    group_public_id = None
+    if cat.category_group_id is not None:
+        group = await group_service.repository.get_by_id(workspace_id, cat.category_group_id)
+        if group:
+            group_public_id = group.public_id
+    return category_response(cat, group_public_id)
 
 
 @router.patch("/categories/{category_id}", response_model=CategoryResponse)
@@ -103,6 +125,7 @@ async def update_category(
     category_id: uuid.UUID,
     category_in: CategoryUpdate,
     category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    group_service: Annotated[CategoryGroupService, Depends(get_spending_category_group_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -115,7 +138,12 @@ async def update_category(
         actor_id=user["id"],
         audit_logger=audit_logger,
     )
-    return category_response(cat)
+    group_public_id = None
+    if cat.category_group_id is not None:
+        group = await group_service.repository.get_by_id(workspace_id, cat.category_group_id)
+        if group:
+            group_public_id = group.public_id
+    return category_response(cat, group_public_id)
 
 
 @router.delete("/categories/{category_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -129,6 +157,98 @@ async def delete_category(
 ):
     await category_service.delete_category(
         workspace_id, category_id, actor_id=user["id"], audit_logger=audit_logger
+    )
+
+
+@router.post("/categories/{target_public_id}/merge", status_code=status.HTTP_204_NO_CONTENT)
+async def merge_categories(
+    target_public_id: uuid.UUID,
+    req: CategoryMergeRequest,
+    category_service: Annotated[CategoryService, Depends(get_spending_category_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    await category_service.merge_categories(
+        workspace_id,
+        target_public_id,
+        req.source_public_ids,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Category Groups
+# ---------------------------------------------------------------------------
+
+
+@router.get("/category-groups", response_model=PaginatedResponse[CategoryGroupResponse])
+async def list_category_groups(
+    group_service: Annotated[CategoryGroupService, Depends(get_spending_category_group_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+):
+    groups, total = await group_service.list_groups(
+        workspace_id, pagination.limit, pagination.offset
+    )
+    return build_page(
+        [CategoryGroupResponse.model_validate(g) for g in groups],
+        total,
+        pagination,
+    )
+
+
+@router.post(
+    "/category-groups", response_model=CategoryGroupResponse, status_code=status.HTTP_201_CREATED
+)
+async def create_category_group(
+    group_in: CategoryGroupCreate,
+    group_service: Annotated[CategoryGroupService, Depends(get_spending_category_group_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    group = await group_service.create_group(
+        workspace_id, group_in, actor_id=user["id"], audit_logger=audit_logger
+    )
+    return CategoryGroupResponse.model_validate(group)
+
+
+@router.patch("/category-groups/{group_id}", response_model=CategoryGroupResponse)
+async def update_category_group(
+    group_id: uuid.UUID,
+    group_in: CategoryGroupUpdate,
+    group_service: Annotated[CategoryGroupService, Depends(get_spending_category_group_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    group = await group_service.update_group(
+        workspace_id,
+        group_id,
+        group_in,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
+    return CategoryGroupResponse.model_validate(group)
+
+
+@router.delete("/category-groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_category_group(
+    group_id: uuid.UUID,
+    group_service: Annotated[CategoryGroupService, Depends(get_spending_category_group_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    await group_service.delete_group(
+        workspace_id, group_id, actor_id=user["id"], audit_logger=audit_logger
     )
 
 
@@ -393,6 +513,47 @@ async def update_budget(
         budget_in,
         actor_id=user["id"],
         audit_logger=audit_logger,
+    )
+
+
+@router.post("/budgets/{budget_id}/change-amount", response_model=BudgetResponse)
+async def change_budget_amount(
+    budget_id: uuid.UUID,
+    req: BudgetChangeAmountRequest,
+    budget_service: Annotated[BudgetService, Depends(get_spending_budget_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    successor = await budget_service.change_budget_amount(
+        workspace_id,
+        budget_id,
+        req.amount,
+        req.from_month,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
+    cat_uuid = None
+    group_uuid = None
+    if successor.category_id:
+        category = await budget_service.category_repo.get_by_id(workspace_id, successor.category_id)
+        cat_uuid = category.public_id if category else None
+    if successor.category_group_id and budget_service.group_repo:
+        group = await budget_service.group_repo.get_by_id(workspace_id, successor.category_group_id)
+        group_uuid = group.public_id if group else None
+
+    return (
+        budget_response(successor, cat_uuid)
+        if successor.category_id
+        else BudgetResponse.model_validate({
+            **successor.model_dump(),
+            "category_id": None,
+            "category_group_id": group_uuid,
+            "source_metadata": source_metadata_response(
+                successor.source_type, successor.source_ref, None
+            ),
+        })
     )
 
 

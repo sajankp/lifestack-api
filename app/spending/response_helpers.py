@@ -17,8 +17,13 @@ from app.spending.schemas import (
 )
 
 
-def category_response(cat: SpendingCategory) -> CategoryResponse:
-    return CategoryResponse.model_validate(cat)
+def category_response(
+    cat: SpendingCategory,
+    group_public_id: uuid.UUID | None = None,
+) -> CategoryResponse:
+    data = cat.model_dump()
+    data["category_group_id"] = group_public_id
+    return CategoryResponse.model_validate(data)
 
 
 def parse_import_row_number(source_ref: str | None) -> int | None:
