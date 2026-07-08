@@ -2,7 +2,14 @@
 
 This document details all background jobs registered in Lifestack's FastAPI lifespan and managed by the embedded `AsyncIOScheduler` (APScheduler).
 
-All background jobs are subject to **advisory lock coordination** (`pg_try_advisory_xact_lock` on Postgres) to prevent split-brain conflicts during rolling deployment windows. Additionally, non-idempotent scheduler jobs are blocked from registering unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly configured.
+Most background jobs are subject to **advisory lock coordination** on Postgres to prevent split-brain conflicts during rolling deployment windows, using one of two primitives:
+
+- **Transaction-scoped** (`pg_try_advisory_xact_lock`, released automatically on commit): `fx_rate_ingestion`, `export_cleanup`, `session_cleanup`, `import_preview_cleanup`, `push_delivery`.
+- **Session-scoped** (`pg_try_advisory_lock`, held across the per-workspace loop and released explicitly): the remaining per-workspace jobs, via the shared `run_workspace_job` helper — this primitive is used instead of the transaction-scoped one specifically so the lock survives `COMMIT` between workspaces in the loop (see the helper's docstring).
+
+**`investment_closing_prices_job` currently acquires no advisory lock at all** — it is the only per-workspace job not using `run_workspace_job`. Two instances running concurrently during a rolling deploy can double-write `holding_prices` for the same close date. This is a known gap being fixed separately.
+
+Additionally, non-idempotent scheduler jobs are blocked from registering unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly configured.
 
 ---
 
@@ -21,7 +28,7 @@ All background jobs are subject to **advisory lock coordination** (`pg_try_advis
 - **Job Function**: `recurring_transactions_job`
 - **Workflow Function**: `process_workspace_recurring_transactions`
 - **Recurrence advance (spec-053)**: both this job and recurring-todo generation advance `next_due_date` via the shared `app/core/recurrence.advance_due_date` (moved out of `app/spending/service.py`, which previously held a private copy `app/application/workflows.py` reached across module boundaries to apply to todo rules too). Supports three monthly modes — `day_of_month` (default, now clamped against the rule's *anchor* day rather than the current date's day, fixing a permanent-drift bug for anchors on days 29-31), `last_day`, and `nth_weekday` (e.g. "first Friday", "last Sunday") — selected per-rule via `monthly_mode`/`by_weekday`/`by_ordinal` on both `recurring_todo_rules` and `recurring_transactions`.
-- **Purpose**: Scans active recurring transaction rules due on or before today. It automatically generates and commits corresponding spending transaction records in the database, updating the `next_due_date` and setting `last_generated_at`.
+- **Purpose**: Scans active recurring transaction rules due on or before today. It automatically generates and commits corresponding spending transaction records in the database, updating the `next_due_date` and setting `last_generated_at`. In the same per-workspace transaction it also calls `process_workspace_recurring_todos`, generating recurring Todo records due on or before today — there is no separate "recurring todo" job.
 
 ## 3. FX Rate Ingestion Job
 - **Job ID**: `fx_rate_ingestion`
