@@ -59,7 +59,7 @@ async def test_e2e_budget_guardrail_hook_runs_current_workspace_workflow(client:
 
     budget = await client.post(
         "/v1/spending/budgets",
-        json={"category_id": category_id, "amount": "100.00", "month_start": month_start},
+        json={"category_id": category_id, "amount": "100.00", "start_month": month_start},
         cookies=creds["cookies"],
     )
     assert budget.status_code == 201, budget.text

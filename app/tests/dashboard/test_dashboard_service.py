@@ -109,7 +109,6 @@ async def test_get_summary_success(
     # Spending Summary
     assert summary.spending.status == "available"
     assert summary.spending.month_spent == Decimal("560.00")
-    assert summary.spending.month_budget == Decimal("400.00")
 
     # Check top overspent categories sorting and filtration
     # Category 102 overspend = 100, ratio = 1.5

@@ -170,7 +170,7 @@ async def test_budget_pace_triggers_and_dedupes(override_database_url):
                 workspace_id=workspace_id,
                 category_id=cat.id,
                 amount=Decimal("1000.00"),
-                month_start=month_start,
+                start_month=month_start,
             )
         )
         session.add(
@@ -321,7 +321,7 @@ async def test_generate_workspace_insights_is_idempotent_across_all_detectors(
                 workspace_id=workspace_id,
                 category_id=budget_cat.id,
                 amount=Decimal("1000.00"),
-                month_start=month_start,
+                start_month=month_start,
             )
         )
         session.add(

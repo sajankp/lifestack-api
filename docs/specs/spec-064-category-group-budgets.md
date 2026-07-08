@@ -1,7 +1,8 @@
 # Spec-064: Recurring Date-Ranged Budgets & Category Groups
 
 **Created:** 2026-07-07
-**Status:** Draft (design) — pending owner approval
+**Status:** Implemented (backend) — web (groups panel, budget form, dashboard spotlight,
+analytics groups section) pending
 **Depends on:** none (spending-ledger policy only; no snapshot/order math)
 **Sequencing (owner plan, 2026-07-07):** implemented **after** spec-062 (category delete &
 merge) — landing 062 first means its merge/delete logic never needs group-awareness rework
@@ -280,8 +281,9 @@ Because all existing budget rows are disposable test data (owner decision, 2026-
    from Jan onward evaluate against $500 in `get_budget_performance` and on the dashboard, with
    no per-month rows; a past `start_month` surfaces historical months automatically.
 2. **Non-overlap** — creating/updating a category (or group) budget whose range overlaps an
-   existing budget for the same scope is refused (422); non-overlapping adjacent segments (Jan–
-   Jun, then Jul–ongoing) both persist.
+   existing budget for the same scope is refused (409, the same `ConflictError` convention as the
+   old per-month unique constraint it replaces); non-overlapping adjacent segments (Jan–Jun, then
+   Jul–ongoing) both persist.
 3. **Segmentation preserves history, atomically** — `change-amount` on "$500, Jan→ongoing" with
    `{amount: 600, from_month: Jul}`: Jan–June evaluate against $500, Jul onward against $600;
    `from_month <= start_month` is refused (422); a forced failure on the create step rolls back

@@ -243,7 +243,7 @@ class DemoResetService:
                     workspace_id=workspace_id,
                     category_id=category_map[category_name],
                     amount=amount,
-                    month_start=month_start_date,
+                    start_month=month_start_date,
                 )
             )
 

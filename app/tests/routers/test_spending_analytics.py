@@ -111,7 +111,12 @@ async def test_budget_performance_endpoint(client: AsyncClient):
     # 2. Create budget for the month
     await client.post(
         "/v1/spending/budgets",
-        json={"amount": 100.00, "category_id": category_id, "month_start": "2026-06-01"},
+        json={
+            "amount": 100.00,
+            "category_id": category_id,
+            "start_month": "2026-06-01",
+            "end_month": "2026-06-01",
+        },
         cookies=cookies,
     )
 

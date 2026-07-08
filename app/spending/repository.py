@@ -11,6 +11,7 @@ from app.core.pagination import DEFAULT_LIMIT
 from app.core.repository import BaseRepository
 from app.finance.models import CapitalTransfer
 from app.spending.models import (
+    CategoryGroup,
     RecurringTransaction,
     SpendingBudget,
     SpendingCategory,
@@ -57,6 +58,49 @@ class LedgerRow:
     source_type: str
     category_id: int | None
     created_at: datetime
+
+
+class CategoryGroupRepository(BaseRepository[CategoryGroup]):
+    async def get_all(
+        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> tuple[Sequence[CategoryGroup], int]:
+        base = select(CategoryGroup).where(CategoryGroup.workspace_id == workspace_id)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(CategoryGroup.created_at.desc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), total
+
+    async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> CategoryGroup | None:
+        result = await self.session.execute(
+            select(CategoryGroup).where(
+                CategoryGroup.workspace_id == workspace_id,
+                CategoryGroup.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_id(self, workspace_id: int, group_id: int) -> CategoryGroup | None:
+        result = await self.session.execute(
+            select(CategoryGroup).where(
+                CategoryGroup.workspace_id == workspace_id,
+                CategoryGroup.id == group_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_normalized_name(
+        self, workspace_id: int, normalized_name: str
+    ) -> CategoryGroup | None:
+        result = await self.session.execute(
+            select(CategoryGroup).where(
+                CategoryGroup.workspace_id == workspace_id,
+                CategoryGroup.normalized_name == normalized_name,
+            )
+        )
+        return result.scalar_one_or_none()
 
 
 class CategoryRepository(BaseRepository[SpendingCategory]):
@@ -134,6 +178,48 @@ class CategoryRepository(BaseRepository[SpendingCategory]):
         for category in categories:
             self.session.add(category)
         await self.session.flush()
+
+    async def reassign_transactions(
+        self, workspace_id: int, source_ids: list[int], target_id: int
+    ) -> int:
+        stmt = (
+            sa
+            .update(SpendingTransaction)
+            .where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.category_id.in_(source_ids),
+            )
+            .values(category_id=target_id)
+        )
+        result = await self.session.execute(stmt)
+        return result.rowcount
+
+    async def reassign_recurring_rules(
+        self, workspace_id: int, source_ids: list[int], target_id: int
+    ) -> int:
+        stmt = (
+            sa
+            .update(RecurringTransaction)
+            .where(
+                RecurringTransaction.workspace_id == workspace_id,
+                RecurringTransaction.category_id.in_(source_ids),
+            )
+            .values(category_id=target_id)
+        )
+        result = await self.session.execute(stmt)
+        return result.rowcount
+
+    async def ungroup_categories(self, workspace_id: int, group_id: int) -> None:
+        stmt = (
+            sa
+            .update(SpendingCategory)
+            .where(
+                SpendingCategory.workspace_id == workspace_id,
+                SpendingCategory.category_group_id == group_id,
+            )
+            .values(category_group_id=None)
+        )
+        await self.session.execute(stmt)
 
 
 class TransactionRepository(BaseRepository[SpendingTransaction]):
@@ -458,7 +544,15 @@ class BudgetRepository(BaseRepository[SpendingBudget]):
     ) -> tuple[Sequence[SpendingBudget], int]:
         base = select(SpendingBudget).where(SpendingBudget.workspace_id == workspace_id)
         if month_start is not None:
-            base = base.where(SpendingBudget.month_start == month_start)
+            base = base.where(
+                and_(
+                    SpendingBudget.start_month <= month_start,
+                    or_(
+                        SpendingBudget.end_month.is_(None),
+                        SpendingBudget.end_month >= month_start,
+                    ),
+                )
+            )
         total = (
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
@@ -483,15 +577,107 @@ class BudgetRepository(BaseRepository[SpendingBudget]):
             select(SpendingBudget).where(
                 SpendingBudget.workspace_id == workspace_id,
                 SpendingBudget.category_id == category_id,
-                SpendingBudget.month_start == month_start,
+                SpendingBudget.start_month <= month_start,
+                or_(
+                    SpendingBudget.end_month.is_(None),
+                    SpendingBudget.end_month >= month_start,
+                ),
             )
         )
         return result.scalar_one_or_none()
 
+    async def get_by_group_and_month(
+        self, workspace_id: int, category_group_id: int, month_start: date
+    ) -> SpendingBudget | None:
+        result = await self.session.execute(
+            select(SpendingBudget).where(
+                SpendingBudget.workspace_id == workspace_id,
+                SpendingBudget.category_group_id == category_group_id,
+                SpendingBudget.start_month <= month_start,
+                or_(
+                    SpendingBudget.end_month.is_(None),
+                    SpendingBudget.end_month >= month_start,
+                ),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_overlapping_budgets(
+        self,
+        workspace_id: int,
+        category_id: int | None,
+        category_group_id: int | None,
+        start_month: date,
+        end_month: date | None,
+        exclude_id: int | None = None,
+    ) -> list[SpendingBudget]:
+        conds = [SpendingBudget.workspace_id == workspace_id]
+        if category_id is not None:
+            conds.append(SpendingBudget.category_id == category_id)
+        else:
+            conds.append(SpendingBudget.category_group_id == category_group_id)
+
+        overlap_conds = [
+            or_(
+                SpendingBudget.end_month.is_(None),
+                SpendingBudget.end_month >= start_month,
+            )
+        ]
+        if end_month is not None:
+            overlap_conds.append(SpendingBudget.start_month <= end_month)
+
+        conds.append(and_(*overlap_conds))
+
+        if exclude_id is not None:
+            conds.append(SpendingBudget.id != exclude_id)
+
+        result = await self.session.execute(select(SpendingBudget).where(*conds))
+        return list(result.scalars().all())
+
+    async def get_by_category_ids(
+        self, workspace_id: int, category_ids: list[int]
+    ) -> list[SpendingBudget]:
+        result = await self.session.execute(
+            select(SpendingBudget).where(
+                SpendingBudget.workspace_id == workspace_id,
+                SpendingBudget.category_id.in_(category_ids),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def delete_by_category_ids(self, workspace_id: int, category_ids: list[int]) -> None:
+        stmt = sa.delete(SpendingBudget).where(
+            SpendingBudget.workspace_id == workspace_id,
+            SpendingBudget.category_id.in_(category_ids),
+        )
+        await self.session.execute(stmt)
+
+    async def has_current_or_future_budget(self, workspace_id: int, category_group_id: int) -> bool:
+        today = date.today()
+        first_of_month = date(today.year, today.month, 1)
+        result = await self.session.execute(
+            select(SpendingBudget.id)
+            .where(
+                SpendingBudget.workspace_id == workspace_id,
+                SpendingBudget.category_group_id == category_group_id,
+                or_(
+                    SpendingBudget.end_month.is_(None),
+                    SpendingBudget.end_month >= first_of_month,
+                ),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def get_month_total(self, workspace_id: int, month_start: date) -> Decimal:
         query = select(func.sum(SpendingBudget.amount)).where(
             SpendingBudget.workspace_id == workspace_id,
-            SpendingBudget.month_start == month_start,
+            SpendingBudget.category_id.is_not(None),
+            SpendingBudget.start_month <= month_start,
+            or_(
+                SpendingBudget.end_month.is_(None),
+                SpendingBudget.end_month >= month_start,
+            ),
         )
         result = await self.session.execute(query)
         total = result.scalar_one_or_none()

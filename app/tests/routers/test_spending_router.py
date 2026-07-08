@@ -168,7 +168,7 @@ async def test_budget_router_endpoints(client: AsyncClient):
     budget_data = {
         "category_id": category_id,
         "amount": 500.00,
-        "month_start": "2026-06-01",
+        "start_month": "2026-06-01",
     }
     create_res = await client.post("/v1/spending/budgets", json=budget_data, cookies=cookies)
     assert create_res.status_code == 201
@@ -180,6 +180,7 @@ async def test_budget_router_endpoints(client: AsyncClient):
     list_budgets = await client.get(
         "/v1/spending/budgets", params={"month_start": "2026-06-01"}, cookies=cookies
     )
+    print("LIST BUDGETS RESPONSE:", list_budgets.text)
     assert list_budgets.status_code == 200
     assert len(list_budgets.json()["items"]) == 1
     assert list_budgets.json()["items"][0]["public_id"] == budget_id

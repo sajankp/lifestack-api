@@ -51,7 +51,7 @@ async def _seed_category_budget_transaction(
         workspace_id=workspace_id,
         category_id=cat.id,
         amount=budget_amount,
-        month_start=month_start,
+        start_month=month_start,
     )
     session.add(budget)
 
@@ -364,13 +364,13 @@ async def test_budget_guardrails_edge_cases(override_database_url):
             workspace_id=workspace_id,
             category_id=cat1.id,
             amount=0.0,
-            month_start=month_start,
+            start_month=month_start,
         )
         b2 = SpendingBudget(
             workspace_id=workspace_id,
             category_id=cat2.id,
             amount=-50.0,
-            month_start=month_start,
+            start_month=month_start,
         )
         session.add(b1)
         session.add(b2)

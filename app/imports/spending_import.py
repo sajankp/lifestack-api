@@ -337,9 +337,10 @@ async def commit_spending_budgets_chunk(
                 await session.execute(
                     select(SpendingBudget).where(
                         SpendingBudget.workspace_id == workspace_id,
-                        tuple_(SpendingBudget.category_id, SpendingBudget.month_start).in_(
+                        tuple_(SpendingBudget.category_id, SpendingBudget.start_month).in_(
                             budget_keys
                         ),
+                        SpendingBudget.end_month == SpendingBudget.start_month,
                     )
                 )
             )
@@ -347,7 +348,7 @@ async def commit_spending_budgets_chunk(
             .all()
         )
         existing_budgets = {
-            (budget.category_id, budget.month_start): budget for budget in budget_rows
+            (budget.category_id, budget.start_month): budget for budget in budget_rows
         }
 
     inserted = 0
@@ -368,7 +369,8 @@ async def commit_spending_budgets_chunk(
                 workspace_id=workspace_id,
                 category_id=int(p["category_id"]),
                 amount=Decimal(p["amount"]),
-                month_start=month_start_date,
+                start_month=month_start_date,
+                end_month=month_start_date,
                 source_type="imported",
                 source_import_id=batch.id,
                 source_ref=f"{batch.public_id}:{row.row_number}",
