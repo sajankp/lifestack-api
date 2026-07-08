@@ -1,6 +1,6 @@
 # Spec 042 — Net Worth / Balance Sheet Page
 
-**Status:** Approved
+**Status:** Implemented (api#83, merged 2026-07-04)
 **Branch:** `feat/net-worth-page`
 
 ## Problem

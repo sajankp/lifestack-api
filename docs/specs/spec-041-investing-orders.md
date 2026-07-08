@@ -1,7 +1,7 @@
 # Spec-041: Transaction-Based Investing Orders
 
 **Created:** 2026-06-27
-**Status:** Approved
+**Status:** Implemented (api#72, merged 2026-07-04)
 **Source:** `/root/projects/lifestack/docs/PLAN-INVESTING-ORDERS.md`
 
 ---

@@ -1,7 +1,7 @@
 # Spec-050: One Account, One Currency
 
 **Created:** 2026-07-02
-**Status:** Approved (implementation)
+**Status:** Implemented (api#98, merged 2026-07-05)
 **Depends on:** spec-048 (unified cash view), spec-049 (transfer outflow snapshot), the cash
 model documented in `docs/domain/cash-model-ledger-snapshots-reconciliation.md`
 

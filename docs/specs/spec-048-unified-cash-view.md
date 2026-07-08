@@ -1,7 +1,7 @@
 # Spec-048: Unified Account-Centric Cash View
 
 **Created:** 2026-07-01
-**Status:** Approved (implementation)
+**Status:** Implemented (api#95, merged 2026-07-05)
 **Depends on:** spec-008 (Investing MVP), spec-011 (transfers/FX), spec-047 (net-worth cash breakdown), reconciliation endpoint (`GET /finance/accounts/{public_id}/reconciliation`)
 
 ---

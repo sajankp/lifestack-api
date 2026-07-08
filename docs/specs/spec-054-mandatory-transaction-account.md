@@ -1,7 +1,7 @@
 # Spec-054: Mandatory Account on Spending Transactions
 
 **Created:** 2026-07-04
-**Status:** Approved (implementation) — pre-approved by owner 2026-07-04 (design discussed and accepted; see AGENT-TASKS.md Task 12)
+**Status:** Implemented (api#110, merged 2026-07-04)
 **Depends on:** spec-050 (account invariants precedent for forward-only enforcement)
 
 ---

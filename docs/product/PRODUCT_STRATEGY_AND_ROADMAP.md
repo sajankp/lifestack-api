@@ -1,7 +1,7 @@
 # Product Strategy and Roadmap
 
 Date: 2026-06-03
-Last updated: 2026-06-30
+Last updated: 2026-07-08
 
 Scope: current product positioning, implementation status, post-Gate 0 backlog, and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
 
@@ -99,16 +99,15 @@ This roadmap is the living home for product sequencing. Specs remain the source 
 | Proposed/current slices | [`Spec 030`](../specs/spec-030-cli-management-commands.md) | CLI management commands remain a proposed/current implementation candidate. |
 | Deferred future data model | [`Spec 035`](../specs/spec-035-platform-market-data-curation.md) | Platform market-data curation is a deferred backlog item until the workspace-scoped investing flows, permission model, and provenance requirements are ready. |
 | Implemented 2026-06→07 wave | Specs 036–061 and [`063`](../specs/spec-063-cdsl-demat-cas-support.md) | Cash-correctness hardening (040–050), corporate actions/splits ([`051`](../specs/spec-051-corporate-actions-splits.md)), web push (052), CAS PDF imports ([`056`](../specs/spec-056-cams-cas-pdf-import.md) CAMS, [`060`](../specs/spec-060-demat-cas-holdings-verification.md) NSDL verification, 063 CDSL), NSE bhavcopy price feed ([`057`](../specs/spec-057-nse-bhavcopy-price-feed.md)), dashboard insights ([`058`](../specs/spec-058-dashboard-insights.md)), and voice usability (059, 061) are implemented and merged. |
-| In-flight (as of 2026-07-07) | [`062`](../specs/spec-062-category-delete-and-merge.md) (draft), [`064`](../specs/spec-064-category-group-budgets.md) (draft), [`065`](../specs/spec-065-net-worth-over-time.md) (approved) | Current wave: spec-065 implements first (after api#130 merges); spec-062 lands before spec-064 (sequencing notes in both specs). |
-
+| Implemented 2026-07-08 wave | [`062`](../specs/spec-062-category-delete-and-merge.md), [`064`](../specs/spec-064-category-group-budgets.md), [`065`](../specs/spec-065-net-worth-over-time.md) | Category delete/merge and category-group recurring budgets (api#131, web#86), and net-worth-over-time daily snapshots + history graph (api#132, web#87) are implemented and merged. spec-065's snapshot job was fixed pre-merge to compute live via `InvestingSummaryService` instead of depending on the on-demand `portfolio_snapshots` table, and its APScheduler registration was added post-merge. |
 ## 4) Near-Term Roadmap
 
 This is the Post-Gate 0 roadmap backlog, promoted near the top because it contains the next practical product slices. These items should deepen the current finance-led product before Lifestack expands into new life domains.
 
 ### Immediate Focus
 
-1. Merge api#130 (live brokerage cash consistency fix), then implement approved [`spec-065`](../specs/spec-065-net-worth-over-time.md) net-worth-over-time (api PR first, then web PR). Forward-only history accumulation makes this time-sensitive: every unshipped day is a net-worth data point never materialized.
-2. Spending model wave, in order: [`spec-062`](../specs/spec-062-category-delete-and-merge.md) category delete & merge, then [`spec-064`](../specs/spec-064-category-group-budgets.md) recurring date-ranged budgets + category groups (both drafted 2026-07-07, pending approval; 062 first so merge/delete logic never needs group-awareness rework).
+1. ~~Merge api#130, then implement spec-065 net-worth-over-time~~ — done 2026-07-08 (api#132, web#87). Daily history now accumulates via the `net_worth_snapshot` scheduler job (07:00 UTC) plus an opportunistic upsert on every `GET /finance/net-worth` read.
+2. ~~Spending model wave: spec-062 category delete & merge, then spec-064 recurring date-ranged budgets + category groups~~ — done 2026-07-08 (api#131, web#86).
 3. Gate the e2e suite in CI — the suite exists and runs against the composed stack; the remaining work is CI wiring. Longest-standing open structural item, keeps losing to feature work.
 4. Keep the standing deferrals: [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md) hybrid-catalog expansion after workspace-scoped investing flows settle, and platform-wide constituent/price-data curation until there is a clear admin persona, provenance model, and rollback workflow.
 
@@ -125,8 +124,7 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 | Currency display | Remaining frontend-wide display polish, locale/date/number profiles, and historical FX replay for every view. | These are consistency and polish tracks after the implemented finance settings foundation. |
 | Voice/capture | WebRTC-grade production transport, broader capture domains, multi-item capture, AI-assisted routing, and ADK migration planning. | Capture is useful as an input layer; Google ADK evaluation and voice-first migration guide is documented in [spec-039-adk-evaluation-and-migration-guide.md](../specs/spec-039-adk-evaluation-and-migration-guide.md) for Phase 2. |
 | Weekly summaries | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
-| Category management (spec'd, draft) | Deletable system categories and category merge ([`spec-062`](../specs/spec-062-category-delete-and-merge.md), drafted 2026-07-07). | Sequenced before spec-064 so merge/delete logic is written once, without group awareness. |
-| Budget model (spec'd, draft) | Recurring date-ranged budgets and category groups ([`spec-064`](../specs/spec-064-category-group-budgets.md), drafted 2026-07-07; destructive rebuild of the unused budgets table). Custom financial KPIs remain parked for intentional design. | The "grouped budgets" expansion is now designed; sequenced after spec-062. |
+| Custom financial KPIs | User-defined budget/spend KPIs beyond the implemented category and category-group budgets. | Parked for intentional design; not scoped by spec-064. |
 | Wallet ledger (reconciliation) | Statement matching, multi-account reconciliation view, and richer transfer timeline UX. | Deeper finance-product work building on the implemented ledger foundation. |
 | JWT library maintenance | Migrate from `python-jose` to `PyJWT` or `joserfc`. | python-jose is no longer actively maintained; planning migration mitigates dependency security risk. |
 
@@ -136,7 +134,6 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 |---|---|---|
 | Investing performance | Richer return math, deeper visualization, benchmark comparison, dividend/total-return views, and scheduled/background price-refresh cadence. | On-demand automated price refresh is implemented; deeper performance analytics and scheduled pricing should be scoped as explicit product slices. |
 | Investing summary valuation | Query latest price data from `HoldingPrice` table instead of using cost basis. | Resolves misleading investing overview totals when asset values fluctuate. |
-| Portfolio daily change / net-worth history | Superseded by [`spec-065`](../specs/spec-065-net-worth-over-time.md) (approved 2026-07-07): live brokerage cash for all display surfaces, holdings-only `daily_change`, and a materialized `net_worth_snapshots` daily series feeding a net-worth-over-time graph. | Next implementation slice after api#130 merges; forward-only history makes shipping time-sensitive. |
 | Hybrid instrument catalog | [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md): global public instruments/companies with workspace-scoped tenant overrides. | This reduces duplicate public securities and redundant provider calls, but should wait until the current workspace-scoped investing flows settle. |
 | Look-through analytics | UX alerts, quality scoring, company identity normalization, derivative look-through, and deeper constituent-provider coverage. | Look-through analytics and automated ETF/MF constituent ingestion are implemented; these are advanced accuracy, scale, and UX tracks after V1 correctness. |
 | Corporate actions (stock splits) | **Implemented ([`spec-051`](../specs/spec-051-corporate-actions-splits.md), api#102, merged 2026-07-04):** splits, reverse splits, and bonus issues are first-class replayed events, golden-tested. | Closes the un-applied-split risk (understated share counts, distorted FIFO cost basis, e.g. NVDA 10:1, GOOGL 20:1 in imported IND Money data); manual order edits are no longer the workaround. |

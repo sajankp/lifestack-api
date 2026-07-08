@@ -174,10 +174,23 @@ erDiagram
         string name
     }
 
+    CATEGORY_GROUPS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        string name
+        string normalized_name
+        string color
+        string icon
+        datetime created_at
+        datetime updated_at
+    }
+
     SPENDING_CATEGORIES {
         int id PK
         uuid public_id UK
         int workspace_id FK
+        int category_group_id FK
         string name
         string normalized_name
         boolean is_system
@@ -207,8 +220,10 @@ erDiagram
         uuid public_id UK
         int workspace_id FK
         int category_id FK
+        int category_group_id FK
         decimal amount
-        date month_start
+        date start_month
+        date end_month
         string source_type
         string source_ref
         int source_import_id FK
@@ -239,16 +254,25 @@ erDiagram
         datetime updated_at
     }
 
+    WORKSPACES ||--o{ CATEGORY_GROUPS : scopes
     WORKSPACES ||--o{ SPENDING_CATEGORIES : scopes
+    CATEGORY_GROUPS ||--o{ SPENDING_CATEGORIES : groups
     WORKSPACES ||--o{ SPENDING_TRANSACTIONS : scopes
     USERS ||--o{ SPENDING_TRANSACTIONS : records
     SPENDING_CATEGORIES ||--o{ SPENDING_TRANSACTIONS : categorizes
     WORKSPACES ||--o{ SPENDING_BUDGETS : scopes
     SPENDING_CATEGORIES ||--o{ SPENDING_BUDGETS : budgets
+    CATEGORY_GROUPS ||--o{ SPENDING_BUDGETS : "group budgets"
     WORKSPACES ||--o{ RECURRING_TRANSACTIONS : scopes
     USERS ||--o{ RECURRING_TRANSACTIONS : configures
     SPENDING_CATEGORIES ||--o{ RECURRING_TRANSACTIONS : categorizes
 ```
+
+A budget scopes to exactly one of `category_id` or `category_group_id` (DB check
+constraint `ck_budget_scope`), and `start_month`/`end_month` (nullable = ongoing)
+replaced the old single `month_start` field so budgets can be date-ranged
+(spec-064). Category delete/merge (spec-062) reassigns transactions and
+recurring rules to a target category before removing the source.
 
 ## Finance
 
@@ -366,13 +390,34 @@ erDiagram
     CURRENCIES ||--o{ USER_FINANCE_SETTINGS : reporting_override
     CURRENCIES ||--o{ FX_RATES : base_currency
     CURRENCIES ||--o{ FX_RATES : quote_currency
+    NET_WORTH_SNAPSHOTS {
+        int id PK
+        int workspace_id FK
+        date snapshot_date
+        string reporting_currency
+        decimal holdings_value
+        decimal investing_cash
+        decimal spending_cash
+        decimal total_net_worth
+        json fx_rates_used
+        datetime created_at
+    }
+
     WORKSPACES ||--o{ CAPITAL_TRANSFERS : scopes
     USERS ||--o{ CAPITAL_TRANSFERS : initiates
     ACCOUNTS ||--o{ CAPITAL_TRANSFERS : from_account
     ACCOUNTS ||--o{ CAPITAL_TRANSFERS : to_account
     CURRENCIES ||--o{ CAPITAL_TRANSFERS : from_currency
     CURRENCIES ||--o{ CAPITAL_TRANSFERS : to_currency
+    WORKSPACES ||--o{ NET_WORTH_SNAPSHOTS : "one per day"
 ```
+
+`net_worth_snapshots` is unique on `(workspace_id, snapshot_date)` and is
+upserted two ways (spec-065): opportunistically on every `GET /finance/net-worth`
+read for today, and by the daily `net_worth_snapshot_job` cron. Both paths
+compute holdings/cash live via `InvestingSummaryService` rather than reading
+the (investing-only, cache-prone) `portfolio_snapshots` table, so the job
+doesn't depend on a dashboard visit having happened that day.
 
 ## Investing
 

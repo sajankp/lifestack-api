@@ -1,6 +1,6 @@
 # Spec 061 — Voice Agent: Backdated Spending Transactions
 
-**Status:** Approved (maintainer directive, 2026-07-07) — decisions A and B locked to the recommended options.
+**Status:** Implemented (api#126, merged 2026-07-07)
 **Repos:** lifestack-api (capture layer only)
 **Depends on:** spec-021 (voice agent function calling), spec-054 (mandatory transaction account), spec-055 (workspace awareness), spec-059 (voice agent usability)
 
