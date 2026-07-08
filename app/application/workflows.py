@@ -17,6 +17,9 @@ from app.config import settings
 from app.core.audit import AuditLogger, snapshot_columns
 from app.core.recurrence import advance_due_date
 from app.dashboard.schemas import (
+    BriefingLine,
+    BriefingResponse,
+    BriefingSource,
     DashboardSummary,
     InvestingSummary,
     SpendingSummary,
@@ -26,10 +29,11 @@ from app.dashboard.schemas import (
 from app.exports.models import ExportRecord, ExportStatus
 from app.exports.repository import ExportRepository
 from app.exports.service import ExportService
-from app.finance.repository import CurrencyRepository, FxRateRepository
+from app.finance.repository import CurrencyRepository, FinanceSettingRepository, FxRateRepository
 from app.finance.schemas import FxRateUpsert
 from app.finance.service import FxRateService
 from app.imports.models import ImportBatch, ImportPreviewRow
+from app.imports.repository import ImportRepository
 from app.investing.performance_service import PerformanceService
 from app.notifications.push import send_web_push
 from app.notifications.repository import NotificationRepository, PushSubscriptionRepository
@@ -47,8 +51,10 @@ from app.spending.schemas import BudgetSpotlightItem
 from app.spending.service import (
     BudgetService,
     CategoryService,
+    RecurringTransactionService,
     TransactionService,
 )
+from app.summaries.repository import WeeklySummaryRepository
 from app.todo.models import PriorityEnum, RecurringTodoRule, Todo
 from app.todo.repository import TodoRepository
 from app.todo.service import _TODO_AUDIT_FIELDS, TodoService
@@ -237,6 +243,342 @@ class DashboardSummaryWorkflow:
             investing=investing_res,
             system=SystemSummary(generated_at=now),
         )
+
+
+# ---------------------------------------------------------------------------
+# Morning Briefing Workflow (spec-067)
+# ---------------------------------------------------------------------------
+
+_BRIEFING_MAX_LINES = 10
+_BRIEFING_FRESH_INSIGHT_HOURS = 48
+_BRIEFING_WEEKLY_SUMMARY_FRESH_HOURS = 48
+_BRIEFING_BUDGET_WARNING_PCT = 85.0
+_BRIEFING_BUDGET_CRITICAL_PCT = 100.0
+_BRIEFING_SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
+
+# Line-type domain order (spec-067 table) — the fixed tiebreak used once two
+# lines share the same severity.
+_DOMAIN_OVERDUE_TODOS = 0
+_DOMAIN_DUE_TODAY_TODOS = 1
+_DOMAIN_BUDGET_GUARDRAILS = 2
+_DOMAIN_RECURRING_DUE = 3
+_DOMAIN_NET_WORTH = 4
+_DOMAIN_PENDING_REVIEW = 5
+_DOMAIN_WEEKLY_SUMMARY = 6
+_DOMAIN_FRESH_INSIGHTS = 7
+
+_INSIGHT_ENTITY_ROUTES = {
+    "spending_category_anomaly": "/spending",
+    "spending_budget_pace": "/spending",
+    "spending_category_recurring": "/spending",
+}
+
+
+class MorningBriefingWorkflow:
+    """Composes the deterministic morning briefing (spec-067): one ordered,
+    severity-ranked list over existing read models, zero LLM involvement.
+    Each line type is built independently and degrades to omission on
+    failure — the same per-section isolation as ``DashboardSummaryWorkflow``
+    — so one failing domain never blanks the whole briefing."""
+
+    def __init__(
+        self,
+        todo_service: TodoService,
+        budget_service: BudgetService,
+        investing_performance_service: PerformanceService,
+        recurring_transaction_service: RecurringTransactionService,
+        notification_service: NotificationService,
+        import_repo: ImportRepository,
+        weekly_summary_repo: WeeklySummaryRepository,
+        finance_setting_repo: FinanceSettingRepository,
+    ):
+        self.todo_service = todo_service
+        self.budget_service = budget_service
+        self.investing_performance_service = investing_performance_service
+        self.recurring_transaction_service = recurring_transaction_service
+        self.notification_service = notification_service
+        self.import_repo = import_repo
+        self.weekly_summary_repo = weekly_summary_repo
+        self.finance_setting_repo = finance_setting_repo
+
+    async def get_briefing(self, workspace_id: int, user_id: int) -> BriefingResponse:
+        now = datetime.now(UTC)
+        raw_lines: list[tuple[int, BriefingLine]] = []
+
+        builders = [
+            (_DOMAIN_OVERDUE_TODOS, self._overdue_todo_lines(workspace_id, now)),
+            (_DOMAIN_DUE_TODAY_TODOS, self._due_today_todo_lines(workspace_id, now)),
+            (_DOMAIN_BUDGET_GUARDRAILS, self._budget_guardrail_lines(workspace_id, now)),
+            (_DOMAIN_RECURRING_DUE, self._recurring_due_lines(workspace_id, now)),
+            (_DOMAIN_NET_WORTH, self._net_worth_lines(workspace_id)),
+            (_DOMAIN_PENDING_REVIEW, self._pending_review_lines(workspace_id)),
+            (_DOMAIN_WEEKLY_SUMMARY, self._weekly_summary_lines(workspace_id, now)),
+            (_DOMAIN_FRESH_INSIGHTS, self._fresh_insight_lines(workspace_id, user_id, now)),
+        ]
+        for domain_order, coro in builders:
+            try:
+                lines = await coro
+            except Exception:
+                logger.exception(
+                    "morning_briefing_line_failed", workspace_id=workspace_id, domain=domain_order
+                )
+                continue
+            for line in lines:
+                raw_lines.append((domain_order, line))
+
+        def _sort_key(item: tuple[int, BriefingLine]):
+            domain_order, line = item
+            pid = line.source.entity_public_id
+            return (
+                _BRIEFING_SEVERITY_RANK.get(line.severity, 3),
+                domain_order,
+                0 if pid else 1,
+                pid or "",
+                line.source.route,
+                line.text,
+            )
+
+        raw_lines.sort(key=_sort_key)
+        lines = [line for _, line in raw_lines]
+
+        if len(lines) > _BRIEFING_MAX_LINES:
+            overflow_count = len(lines) - (_BRIEFING_MAX_LINES - 1)
+            lines = lines[: _BRIEFING_MAX_LINES - 1]
+            lines.append(
+                BriefingLine(
+                    severity="info",
+                    text=f"...and {overflow_count} more item{'s' if overflow_count != 1 else ''}",
+                    source=BriefingSource(route="/notifications"),
+                )
+            )
+
+        reporting_currency = "USD"
+        try:
+            setting = await self.finance_setting_repo.get_by_workspace(workspace_id)
+            if setting and setting.reporting_currency_code:
+                reporting_currency = setting.reporting_currency_code
+        except Exception:
+            logger.exception("morning_briefing_currency_lookup_failed", workspace_id=workspace_id)
+
+        return BriefingResponse(
+            generated_at=now,
+            all_clear=len(lines) == 0,
+            reporting_currency=reporting_currency,
+            lines=lines,
+        )
+
+    async def _overdue_todo_lines(self, workspace_id: int, now: datetime) -> list[BriefingLine]:
+        _open_count, overdue_count = await self.todo_service.get_summary_counts(workspace_id, now)
+        if overdue_count <= 0:
+            return []
+        top_items = await self.todo_service.get_overdue_items(workspace_id, now, limit=1)
+        top = top_items[0] if top_items else None
+        plural = "s" if overdue_count != 1 else ""
+        text = (
+            f'{overdue_count} overdue task{plural} — top: "{top.title}"'
+            if top
+            else (f"{overdue_count} overdue task{plural}")
+        )
+        return [
+            BriefingLine(
+                severity="critical",
+                text=text,
+                source=BriefingSource(
+                    entity_type="todo",
+                    entity_public_id=str(top.public_id) if top else None,
+                    route="/todo",
+                ),
+            )
+        ]
+
+    async def _due_today_todo_lines(self, workspace_id: int, now: datetime) -> list[BriefingLine]:
+        upcoming = await self.todo_service.get_next_due_items(workspace_id, now, limit=20)
+        today = now.date()
+        due_today = [item for item in upcoming if item.due_date and item.due_date.date() == today]
+        if not due_today:
+            return []
+        top = due_today[0]
+        plural = "s" if len(due_today) != 1 else ""
+        return [
+            BriefingLine(
+                severity="warning",
+                text=f'{len(due_today)} task{plural} due today — next: "{top.title}"',
+                source=BriefingSource(
+                    entity_type="todo", entity_public_id=str(top.public_id), route="/todo"
+                ),
+            )
+        ]
+
+    async def _budget_guardrail_lines(self, workspace_id: int, now: datetime) -> list[BriefingLine]:
+        today = now.date()
+        month_start = today.replace(day=1)
+        perf = await self.budget_service.get_budget_performance(
+            workspace_id, month_start, month_start
+        )
+        _, days_in_month = calendar.monthrange(today.year, today.month)
+        days_remaining = max(1, days_in_month - today.day + 1)
+
+        lines: list[BriefingLine] = []
+        for item in perf.groups:
+            if item.budget_amount is None or item.budget_amount == Decimal("0"):
+                continue
+            utilization_pct = item.utilization_pct or 0.0
+            if utilization_pct < _BRIEFING_BUDGET_WARNING_PCT:
+                continue
+            severity = "critical" if utilization_pct >= _BRIEFING_BUDGET_CRITICAL_PCT else "warning"
+            day_word = "day" if days_remaining == 1 else "days"
+            lines.append(
+                BriefingLine(
+                    severity=severity,
+                    text=(
+                        f"{item.category_group_name} budget at {utilization_pct:.0f}% "
+                        f"with {days_remaining} {day_word} left"
+                    ),
+                    source=BriefingSource(
+                        entity_type="budget_group",
+                        entity_public_id=str(item.category_group_id)
+                        if item.category_group_id
+                        else None,
+                        route="/spending?tab=budgets",
+                    ),
+                )
+            )
+        return lines
+
+    async def _recurring_due_lines(self, workspace_id: int, now: datetime) -> list[BriefingLine]:
+        today = now.date()
+        tomorrow = today + timedelta(days=1)
+        lines: list[BriefingLine] = []
+
+        due_transactions = await self.recurring_transaction_service.get_due_between(
+            workspace_id, today, tomorrow
+        )
+        for rule, category_name in due_transactions:
+            due_word = "today" if rule.next_due_date == today else "tomorrow"
+            label = rule.description or category_name
+            lines.append(
+                BriefingLine(
+                    severity="info",
+                    text=f"Recurring {rule.type} due {due_word}: {label} ({rule.amount:.2f})",
+                    source=BriefingSource(
+                        entity_type="recurring_transaction",
+                        entity_public_id=str(rule.public_id),
+                        route="/spending?tab=recurring",
+                    ),
+                )
+            )
+
+        due_todo_rules = await self.todo_service.get_recurring_rules_due_between(
+            workspace_id, today, tomorrow
+        )
+        for rule in due_todo_rules:
+            due_word = "today" if rule.next_due_date == today else "tomorrow"
+            lines.append(
+                BriefingLine(
+                    severity="info",
+                    text=f'Recurring todo due {due_word}: "{rule.title}"',
+                    source=BriefingSource(
+                        entity_type="recurring_todo_rule",
+                        entity_public_id=str(rule.public_id),
+                        route="/todo?tab=recurring",
+                    ),
+                )
+            )
+        return lines
+
+    async def _net_worth_lines(self, workspace_id: int) -> list[BriefingLine]:
+        performance = await self.investing_performance_service.summary(workspace_id)
+        if performance.daily_change is None:
+            return []
+        degraded = performance.valuation_status in ("partial", "conversion_required")
+        sign = "+" if performance.daily_change >= 0 else ""
+        pct_text = (
+            f" ({sign}{performance.daily_change_pct:.2f}%)"
+            if performance.daily_change_pct is not None
+            else ""
+        )
+        text = f"Portfolio {sign}{performance.daily_change:.2f}{pct_text} today"
+        if degraded:
+            text += f" — valuation {performance.valuation_status}"
+        return [
+            BriefingLine(
+                severity="warning" if degraded else "info",
+                text=text,
+                source=BriefingSource(route="/investing"),
+            )
+        ]
+
+    async def _pending_review_lines(self, workspace_id: int) -> list[BriefingLine]:
+        batches, total = await self.import_repo.list_pending_review(workspace_id, limit=1)
+        if total <= 0:
+            return []
+        plural = "s" if total != 1 else ""
+        top = batches[0] if batches else None
+        return [
+            BriefingLine(
+                severity="warning",
+                text=f"{total} import{plural} awaiting commit",
+                source=BriefingSource(
+                    entity_type="import_batch",
+                    entity_public_id=str(top.public_id) if top else None,
+                    route="/imports",
+                ),
+            )
+        ]
+
+    async def _weekly_summary_lines(self, workspace_id: int, now: datetime) -> list[BriefingLine]:
+        latest = await self.weekly_summary_repo.latest(workspace_id)
+        if latest is None:
+            return []
+        age = now - latest.generated_at
+        if age > timedelta(hours=_BRIEFING_WEEKLY_SUMMARY_FRESH_HOURS):
+            return []
+        return [
+            BriefingLine(
+                severity="info",
+                text=f"Weekly summary for week of {latest.week_start.isoformat()} is ready",
+                source=BriefingSource(
+                    entity_type="weekly_summary",
+                    entity_public_id=str(latest.public_id),
+                    route="/summaries",
+                ),
+            )
+        ]
+
+    async def _fresh_insight_lines(
+        self, workspace_id: int, user_id: int, now: datetime
+    ) -> list[BriefingLine]:
+        since = now - timedelta(hours=_BRIEFING_FRESH_INSIGHT_HOURS)
+        notifications = await self.notification_service.list_recent_unread(
+            workspace_id, user_id, "insight", since, limit=5
+        )
+        lines = []
+        for notification in notifications:
+            severity = (
+                notification.severity
+                if notification.severity
+                in (
+                    "critical",
+                    "warning",
+                    "info",
+                )
+                else "info"
+            )
+            route = _INSIGHT_ENTITY_ROUTES.get(notification.entity_type or "", "/notifications")
+            lines.append(
+                BriefingLine(
+                    severity=severity,
+                    text=notification.title,
+                    source=BriefingSource(
+                        entity_type=notification.entity_type,
+                        entity_public_id=str(notification.entity_public_id)
+                        if notification.entity_public_id
+                        else None,
+                        route=route,
+                    ),
+                )
+            )
+        return lines
 
 
 # ---------------------------------------------------------------------------

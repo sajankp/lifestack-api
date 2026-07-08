@@ -725,3 +725,21 @@ class RecurringTransactionRepository(BaseRepository[RecurringTransaction]):
                 )
             )
         ).scalar_one_or_none()
+
+    async def get_due_between(
+        self, workspace_id: int, start_date: date, end_date: date
+    ) -> Sequence[RecurringTransaction]:
+        """Active recurring rules whose next occurrence falls in [start_date,
+        end_date] — used by the morning briefing's "recurring due soon" line
+        (spec-067). Ordered by next_due_date so the earliest is named first."""
+        result = await self.session.execute(
+            select(RecurringTransaction)
+            .where(
+                RecurringTransaction.workspace_id == workspace_id,
+                RecurringTransaction.is_active == True,  # noqa: E712
+                RecurringTransaction.next_due_date >= start_date,
+                RecurringTransaction.next_due_date <= end_date,
+            )
+            .order_by(RecurringTransaction.next_due_date.asc())
+        )
+        return result.scalars().all()

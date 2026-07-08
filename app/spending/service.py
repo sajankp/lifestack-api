@@ -2045,6 +2045,19 @@ class RecurringTransactionService:
         cats, _ = await self.category_repo.get_all(workspace_id, limit=10000, offset=0)
         return {c.id: c.public_id for c in cats}
 
+    async def get_due_between(
+        self, workspace_id: int, start_date, end_date
+    ) -> list[tuple[RecurringTransaction, str]]:
+        """Active recurring rules due in [start_date, end_date], paired with
+        their category name — the morning briefing's "recurring due soon"
+        line (spec-067) needs a human label, not just a category_id."""
+        rules = await self.recurring_repo.get_due_between(workspace_id, start_date, end_date)
+        if not rules:
+            return []
+        cats, _ = await self.category_repo.get_all(workspace_id, limit=10000, offset=0)
+        name_by_id = {c.id: c.name for c in cats}
+        return [(rule, name_by_id.get(rule.category_id, "Uncategorized")) for rule in rules]
+
     async def list_recurring_with_details(
         self,
         workspace_id: int,

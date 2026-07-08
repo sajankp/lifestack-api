@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.insights import generate_workspace_insights
 from app.application.workflows import (
+    MorningBriefingWorkflow,
     cleanup_expired_exports,
     cleanup_expired_sessions,
     cleanup_import_previews,
@@ -41,6 +42,7 @@ from app.core.constants import (
     ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
     ADVISORY_LOCK_INVESTMENT_CLOSING_PRICES,
+    ADVISORY_LOCK_MORNING_BRIEFING,
     ADVISORY_LOCK_NET_WORTH_SNAPSHOT,
     ADVISORY_LOCK_PUSH_DELIVERY,
     ADVISORY_LOCK_RECURRING_TRANSACTIONS,
@@ -49,7 +51,8 @@ from app.core.constants import (
     ADVISORY_LOCK_WEEKLY_SUMMARY,
 )
 from app.core.database import postgres
-from app.finance.repository import FinanceSettingRepository, FxRateRepository
+from app.finance.repository import AccountRepository, FinanceSettingRepository, FxRateRepository
+from app.imports.repository import ImportRepository
 from app.investing import service as investing_service
 from app.investing.models import InstrumentType
 from app.investing.performance_service import PerformanceService
@@ -63,8 +66,18 @@ from app.investing.repository import (
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole
+from app.spending.repository import (
+    BudgetRepository,
+    CategoryGroupRepository,
+    CategoryRepository,
+    RecurringTransactionRepository,
+    TransactionRepository,
+)
+from app.spending.service import BudgetService, RecurringTransactionService
 from app.summaries.repository import WeeklySummaryRepository
 from app.summaries.service import WeeklySummaryService
+from app.todo.repository import TodoRepository
+from app.todo.service import TodoService
 
 logger = structlog.get_logger(__name__)
 # ... (rest unchanged)
@@ -922,4 +935,101 @@ async def net_worth_snapshot_job(workspace_id: int | None = None) -> None:
         lock_key=NET_WORTH_SNAPSHOT_LOCK_KEY,
         workspace_id=workspace_id,
         process_workspace=_process_workspace,
+    )
+
+
+# Advisory lock key — see app.core.constants for the full registry
+MORNING_BRIEFING_LOCK_KEY = ADVISORY_LOCK_MORNING_BRIEFING
+
+_BRIEFING_SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
+
+
+async def morning_briefing_job(workspace_id: int | None = None) -> None:
+    """Cron-triggered job that composes each workspace's morning briefing
+    (spec-067) and, if not ``all_clear``, writes ONE ``Notification``
+    (category="briefing", severity = the briefing's most severe line, body =
+    its top 3 line texts). All-clear workspaces get nothing — calm by
+    default. Push delivery for this category defaults ON for users with an
+    active push subscription even absent an explicit preference row (see
+    ``NotificationService.notify``'s "briefing" special case)."""
+
+    async def _process_workspace(session: AsyncSession, workspace: Workspace) -> None:
+        if workspace.id is None:
+            return
+
+        members_res = await session.execute(
+            select(WorkspaceMembership.user_id)
+            .where(WorkspaceMembership.workspace_id == workspace.id)
+            .order_by(
+                (WorkspaceMembership.role == "owner").desc(), WorkspaceMembership.created_at.asc()
+            )
+            .limit(1)
+        )
+        user_id = members_res.scalar()
+        if not user_id:
+            logger.warning("morning_briefing_no_members", workspace_id=workspace.id)
+            return
+
+        category_repo = CategoryRepository(session)
+        category_group_repo = CategoryGroupRepository(session)
+        budget_repo = BudgetRepository(session)
+        finance_setting_repo = FinanceSettingRepository(session)
+        fx_rate_repo = FxRateRepository(session)
+        account_repo = AccountRepository(session)
+        instrument_repo = InstrumentRepository(session)
+        holding_repo = HoldingRepository(session)
+        cash_repo = CashBalanceRepository(session)
+        holding_price_repo = HoldingPriceRepository(session)
+        snapshot_repo = PortfolioSnapshotRepository(session)
+        notification_repo = NotificationRepository(session)
+        notification_service = NotificationService(notification_repo)
+
+        workflow = MorningBriefingWorkflow(
+            todo_service=TodoService(TodoRepository(session)),
+            budget_service=BudgetService(budget_repo, category_repo, category_group_repo),
+            investing_performance_service=PerformanceService(
+                holding_repo,
+                cash_repo,
+                holding_price_repo,
+                snapshot_repo,
+                finance_setting_repo,
+                fx_rate_repo,
+                instrument_repo,
+                account_repo,
+            ),
+            recurring_transaction_service=RecurringTransactionService(
+                RecurringTransactionRepository(session),
+                TransactionRepository(session),
+                category_repo,
+            ),
+            notification_service=notification_service,
+            import_repo=ImportRepository(session),
+            weekly_summary_repo=WeeklySummaryRepository(session),
+            finance_setting_repo=finance_setting_repo,
+        )
+
+        briefing = await workflow.get_briefing(workspace.id, user_id)
+        if briefing.all_clear:
+            return
+
+        top_severity = min(
+            (line.severity for line in briefing.lines),
+            key=lambda severity: _BRIEFING_SEVERITY_RANK.get(severity, 3),
+        )
+        body = " · ".join(line.text for line in briefing.lines[:3])
+        await notification_service.notify(
+            workspace_id=workspace.id,
+            user_id=user_id,
+            category="briefing",
+            severity=top_severity,
+            title="Morning briefing",
+            body=body,
+            module="application",
+        )
+
+    await run_workspace_job(
+        job_name="morning_briefing_job",
+        lock_key=MORNING_BRIEFING_LOCK_KEY,
+        process_workspace=_process_workspace,
+        workspace_id=workspace_id,
     )

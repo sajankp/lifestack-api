@@ -22,6 +22,7 @@
 #   1011 – todo_reminder_job
 #   1012 – net_worth_snapshot_job
 #   1013 – investment_closing_prices_job
+#   1014 – morning_briefing_job
 # ---------------------------------------------------------------------------
 
 ADVISORY_LOCK_BUDGET_GUARDRAILS: int = 1001
@@ -37,3 +38,4 @@ ADVISORY_LOCK_PUSH_DELIVERY: int = 1010
 ADVISORY_LOCK_TODO_REMINDER: int = 1011
 ADVISORY_LOCK_NET_WORTH_SNAPSHOT: int = 1012
 ADVISORY_LOCK_INVESTMENT_CLOSING_PRICES: int = 1013
+ADVISORY_LOCK_MORNING_BRIEFING: int = 1014

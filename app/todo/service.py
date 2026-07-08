@@ -84,6 +84,18 @@ class TodoService:
     async def get_active_guardrail_todo_count(self, workspace_id: int) -> int:
         return await self.repository.get_active_guardrail_todo_count(workspace_id)
 
+    async def get_overdue_items(
+        self, workspace_id: int, now: datetime, limit: int = 5
+    ) -> Sequence[Todo]:
+        return await self.repository.get_overdue_items(workspace_id, now, limit)
+
+    async def get_recurring_rules_due_between(
+        self, workspace_id: int, start_date, end_date
+    ) -> Sequence[RecurringTodoRule]:
+        return await self.repository.get_recurring_rules_due_between(
+            workspace_id, start_date, end_date
+        )
+
     async def get_todo(self, workspace_id: int, public_id: uuid.UUID) -> Todo:
         todo = await self.repository.get_by_public_id(workspace_id, public_id)
         if not todo:

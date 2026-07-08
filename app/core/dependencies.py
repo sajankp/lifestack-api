@@ -2,7 +2,11 @@ from fastapi import Depends, Request
 from slowapi import Limiter
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.workflows import DashboardSummaryWorkflow, UserRegistrationWorkflow
+from app.application.workflows import (
+    DashboardSummaryWorkflow,
+    MorningBriefingWorkflow,
+    UserRegistrationWorkflow,
+)
 from app.auth.dependencies import get_auth_service as get_auth_service
 from app.auth.dependencies import get_auth_session_repo as get_auth_session_repo
 from app.auth.dependencies import get_current_user as get_current_user
@@ -722,4 +726,28 @@ async def get_dashboard_summary_workflow(
         transaction_service=transaction_service,
         budget_service=budget_service,
         investing_performance_service=investing_performance_service,
+    )
+
+
+async def get_morning_briefing_workflow(
+    todo_service: TodoService = Depends(get_todo_service),
+    budget_service: BudgetService = Depends(get_spending_budget_service),
+    investing_performance_service: PerformanceService = Depends(get_investing_performance_service),
+    recurring_transaction_service: RecurringTransactionService = Depends(
+        get_spending_recurring_service
+    ),
+    notification_service: NotificationService = Depends(get_notification_service),
+    import_repo: ImportRepository = Depends(get_import_repo),
+    weekly_summary_repo: WeeklySummaryRepository = Depends(get_weekly_summary_repo),
+    finance_setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
+) -> MorningBriefingWorkflow:
+    return MorningBriefingWorkflow(
+        todo_service=todo_service,
+        budget_service=budget_service,
+        investing_performance_service=investing_performance_service,
+        recurring_transaction_service=recurring_transaction_service,
+        notification_service=notification_service,
+        import_repo=import_repo,
+        weekly_summary_repo=weekly_summary_repo,
+        finance_setting_repo=finance_setting_repo,
     )

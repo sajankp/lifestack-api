@@ -73,6 +73,33 @@ class ImportRepository:
         rows = (await self.session.execute(rows_stmt)).scalars().all()
         return rows, total
 
+    async def list_pending_review(
+        self, workspace_id: int, limit: int = 5
+    ) -> tuple[Sequence[ImportBatch], int]:
+        """Import batches validated but not yet committed — the morning
+        briefing's "pending review" line (spec-067)."""
+        pending_statuses = (ImportStatus.uploaded, ImportStatus.validated)
+        count_stmt = (
+            select(func.count())
+            .select_from(ImportBatch)
+            .where(
+                ImportBatch.workspace_id == workspace_id,
+                ImportBatch.status.in_(pending_statuses),
+            )
+        )
+        total = (await self.session.execute(count_stmt)).scalar_one()
+        rows_stmt = (
+            select(ImportBatch)
+            .where(
+                ImportBatch.workspace_id == workspace_id,
+                ImportBatch.status.in_(pending_statuses),
+            )
+            .order_by(ImportBatch.created_at.asc())
+            .limit(limit)
+        )
+        rows = (await self.session.execute(rows_stmt)).scalars().all()
+        return rows, int(total)
+
     async def list_errors(self, import_batch_id: int, limit: int = 200) -> Sequence[ImportError]:
         res = await self.session.execute(
             select(ImportError)

@@ -48,8 +48,21 @@ class NotificationService:
         })
 
         # Push is opt-in: no preference row means channel_push defaults to
-        # False, same as the model default (spec-052).
-        if pref and pref.channel_push:
+        # False, same as the model default (spec-052) — EXCEPT the
+        # "briefing" category (spec-067 owner decision), which defaults to
+        # push-ON absent an explicit row when the user already has an
+        # active push subscription (subscribing already expressed intent;
+        # an explicit preference row, muted or not, always wins over this
+        # default). Every other category is unaffected.
+        should_push = bool(pref and pref.channel_push)
+        if pref is None and category == "briefing":
+            if has_push_subscription is None:
+                has_push_subscription = await self.repository.has_active_push_subscription(
+                    workspace_id, user_id
+                )
+            should_push = bool(has_push_subscription)
+
+        if should_push:
             if has_push_subscription is None:
                 has_push_subscription = await self.repository.has_active_push_subscription(
                     workspace_id, user_id
@@ -83,6 +96,13 @@ class NotificationService:
         if not n:
             raise NotFoundError(detail=f"Notification with id {public_id} not found")
         await self.repository.delete_notification(n)
+
+    async def list_recent_unread(
+        self, workspace_id: int, user_id: int, category: str, since, limit: int = 5
+    ):
+        return await self.repository.list_recent_unread(
+            workspace_id, user_id, category, since, limit
+        )
 
     async def get_preferences(self, workspace_id: int, user_id: int):
         return await self.repository.get_preferences(workspace_id, user_id)

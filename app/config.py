@@ -118,6 +118,12 @@ class Settings(BaseSettings):
     PUSH_DELIVERY_INTERVAL_MINUTES: int = 1
     TODO_REMINDER_INTERVAL_MINUTES: int = 5
 
+    # Morning briefing (spec-067) — daily at ~08:00 IST by default, after
+    # Monday's 01:30 UTC weekly_summary cron so a fresh summary lands in
+    # that same Monday briefing.
+    BRIEFING_JOB_HOUR_UTC: int = 2
+    BRIEFING_JOB_MINUTE_UTC: int = 30
+
     # Bulk import storage (Spec 020)
     MAX_MULTIPART_BODY_BYTES: int = 10 * 1024 * 1024
     IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3

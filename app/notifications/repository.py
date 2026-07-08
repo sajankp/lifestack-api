@@ -103,6 +103,26 @@ class NotificationRepository:
         await self.session.delete(notification)
         await self.session.flush()
 
+    async def list_recent_unread(
+        self, workspace_id: int, user_id: int, category: str, since: datetime, limit: int = 5
+    ) -> list[Notification]:
+        """Unread notifications of a category created since ``since`` — the
+        morning briefing's "fresh insights" line (spec-067) surfaces
+        spec-058 insight notifications within their 48h freshness window."""
+        result = await self.session.execute(
+            select(Notification)
+            .where(
+                Notification.workspace_id == workspace_id,
+                Notification.user_id == user_id,
+                Notification.category == category,
+                Notification.is_read.is_(False),
+                Notification.created_at >= since,
+            )
+            .order_by(Notification.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def get_preferences(
         self, workspace_id: int, user_id: int
     ) -> list[NotificationPreference]:

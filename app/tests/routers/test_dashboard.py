@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -126,3 +126,77 @@ async def test_dashboard_workspace_isolation(client: AsyncClient):
     summary = summary_res.json()
 
     assert summary["todos"]["open_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_briefing_all_clear_on_empty_workspace(client: AsyncClient):
+    user = {"email": "briefing1@example.com", "username": "briefing1", "password": "TestPass123!"}
+    await client.post("/v1/auth/register", json=user)
+    await client.post(
+        "/v1/auth/login", data={"username": user["username"], "password": user["password"]}
+    )
+
+    res = await client.get("/v1/dashboard/briefing")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["all_clear"] is True
+    assert body["lines"] == []
+    assert "generated_at" in body
+    assert "reporting_currency" in body
+
+
+@pytest.mark.asyncio
+async def test_briefing_surfaces_overdue_todo(client: AsyncClient):
+    user = {"email": "briefing2@example.com", "username": "briefing2", "password": "TestPass123!"}
+    await client.post("/v1/auth/register", json=user)
+    await client.post(
+        "/v1/auth/login", data={"username": user["username"], "password": user["password"]}
+    )
+
+    past_due = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    todo_res = await client.post(
+        "/v1/todo/",
+        json={"title": "Overdue thing", "priority": "high", "due_date": past_due},
+    )
+    assert todo_res.status_code == 201
+
+    res = await client.get("/v1/dashboard/briefing")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["all_clear"] is False
+    overdue_lines = [line for line in body["lines"] if line["source"]["route"] == "/todo"]
+    assert len(overdue_lines) == 1
+    assert overdue_lines[0]["severity"] == "critical"
+    assert "Overdue thing" in overdue_lines[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_briefing_workspace_isolation(client: AsyncClient):
+    user1 = {
+        "email": "briefing_iso1@example.com",
+        "username": "briefing_iso1",
+        "password": "TestPass123!",
+    }
+    await client.post("/v1/auth/register", json=user1)
+    await client.post(
+        "/v1/auth/login", data={"username": user1["username"], "password": user1["password"]}
+    )
+    past_due = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    await client.post(
+        "/v1/todo/", json={"title": "U1 overdue", "priority": "high", "due_date": past_due}
+    )
+
+    await client.post("/v1/auth/logout")
+    user2 = {
+        "email": "briefing_iso2@example.com",
+        "username": "briefing_iso2",
+        "password": "TestPass123!",
+    }
+    await client.post("/v1/auth/register", json=user2)
+    await client.post(
+        "/v1/auth/login", data={"username": user2["username"], "password": user2["password"]}
+    )
+
+    res = await client.get("/v1/dashboard/briefing")
+    assert res.status_code == 200
+    assert res.json()["all_clear"] is True
