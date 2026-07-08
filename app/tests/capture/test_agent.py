@@ -114,6 +114,7 @@ async def test_execute_agent_tool_create_todo(seed_agent_test_data):
     assert res["title"] == "Buy groceries tomorrow"
     assert res["due_date"] == "2026-05-29T10:30:00+00:00"
     assert res["priority"] == "high"
+    assert res["summary"] == "Added todo 'Buy groceries tomorrow'"
 
     # Query DB to verify
     async with postgres.async_session_maker() as session:
@@ -173,6 +174,7 @@ async def test_execute_agent_tool_log_spending(seed_agent_test_data):
     assert res["category"].lower() == "food"
     assert res["description"] == "Lunch at restaurant"
     assert res["account_name"] == "Everyday Wallet"
+    assert res["summary"] == "Added $15.50 'Lunch at restaurant' to Spending"
 
     # Query DB to verify
     async with postgres.async_session_maker() as session:
@@ -681,11 +683,12 @@ async def test_create_recurring_todo_tool(seed_agent_test_data):
         workspace_id=20,
     )
     assert res["status"] == "success"
-    assert res["entity_type"] == "recurring_todo_rule"
+    assert res["entity_type"] == "recurring_todo"
     assert res["frequency"] == "daily"
     assert res["interval"] == 2
     assert res["due_time"] == "09:00:00"
     assert res["timezone"] == "Asia/Kolkata"
+    assert res["summary"] == "Added recurring todo 'Take medication'"
 
     async with postgres.async_session_maker() as session:
         rules = (
@@ -981,3 +984,78 @@ def test_spending_prompt_mentions_backdating_and_future_block():
     system_text = setup["setup"]["systemInstruction"]["parts"][0]["text"]
     assert "occurred_at" in system_text
     assert "future" in system_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_tool_update_todo(seed_agent_test_data):
+    # First create a todo
+    res_create = await execute_agent_tool(
+        name="create_todo_task",
+        args={"title": "Original Todo"},
+        user_id=10,
+        workspace_id=20,
+    )
+    public_id = res_create["entity_public_id"]
+
+    # Test standard update
+    res = await execute_agent_tool(
+        name="update_todo",
+        args={"public_id": public_id, "title": "Updated Todo Title"},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert res["status"] == "success"
+    assert res["entity_type"] == "todo"
+    assert res["entity_public_id"] == public_id
+    assert res["title"] == "Updated Todo Title"
+    assert res["summary"] == "Updated todo 'Updated Todo Title'"
+
+    # Test completed update (True)
+    res_complete = await execute_agent_tool(
+        name="update_todo",
+        args={"public_id": public_id, "completed": True},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert res_complete["status"] == "success"
+    assert res_complete["entity_type"] == "todo"
+    assert res_complete["entity_public_id"] == public_id
+    assert res_complete["completed"] is True
+    assert res_complete["summary"] == "Completed todo 'Updated Todo Title'"
+
+    # Test completed update (False)
+    res_reopen = await execute_agent_tool(
+        name="update_todo",
+        args={"public_id": public_id, "completed": False},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert res_reopen["status"] == "success"
+    assert res_reopen["entity_type"] == "todo"
+    assert res_reopen["entity_public_id"] == public_id
+    assert res_reopen["completed"] is False
+    assert res_reopen["summary"] == "Reopened todo 'Updated Todo Title'"
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_tool_delete_todo(seed_agent_test_data):
+    # First create a todo
+    res_create = await execute_agent_tool(
+        name="create_todo_task",
+        args={"title": "Delete Target"},
+        user_id=10,
+        workspace_id=20,
+    )
+    public_id = res_create["entity_public_id"]
+
+    # Delete it
+    res = await execute_agent_tool(
+        name="delete_todo",
+        args={"public_id": public_id},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert res["status"] == "success"
+    assert res["entity_type"] == "todo"
+    assert res["entity_public_id"] == public_id
+    assert res["summary"] == "Deleted todo 'Delete Target'"

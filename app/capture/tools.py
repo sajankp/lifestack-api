@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditLogger
 from app.core.exceptions import APIError
 from app.finance.models import Account, AccountType
-from app.finance.repository import AccountRepository, FinanceSettingRepository, FxRateRepository
+from app.finance.repository import (
+    AccountRepository,
+    CurrencyRepository,
+    FinanceSettingRepository,
+    FxRateRepository,
+)
 from app.investing.performance_service import InvestingSummaryService
 from app.investing.repository import (
     CashBalanceRepository,
@@ -157,6 +162,7 @@ class AgentTools:
             "title": todo.title,
             "due_date": todo.due_date.isoformat() if todo.due_date else None,
             "priority": todo.priority,
+            "summary": f"Added todo '{todo.title}'",
         }
 
     async def create_recurring_todo(
@@ -250,13 +256,14 @@ class AgentTools:
         return {
             "status": "success",
             "entity_public_id": str(rule.public_id),
-            "entity_type": "recurring_todo_rule",
+            "entity_type": "recurring_todo",
             "title": rule.title,
             "frequency": rule.frequency,
             "interval": rule.interval,
             "due_time": rule.due_time.isoformat() if rule.due_time else None,
             "timezone": rule.timezone,
             "next_due_date": rule.next_due_date.isoformat() if rule.next_due_date else None,
+            "summary": f"Added recurring todo '{rule.title}'",
         }
 
     async def list_todos(
@@ -375,13 +382,22 @@ class AgentTools:
                 "message": "An internal error occurred while executing the tool.",
             }
 
+        summary = f"Updated todo '{todo.title}'"
+        if "completed" in supplied_fields:
+            if completed:
+                summary = f"Completed todo '{todo.title}'"
+            else:
+                summary = f"Reopened todo '{todo.title}'"
+
         return {
             "status": "success",
             "entity_public_id": str(todo.public_id),
+            "entity_type": "todo",
             "title": todo.title,
             "due_date": todo.due_date.isoformat() if todo.due_date else None,
             "priority": todo.priority,
             "completed": todo.completed,
+            "summary": summary,
         }
 
     async def delete_todo(self, public_id: str) -> dict:
@@ -390,6 +406,14 @@ class AgentTools:
             pid = uuid.UUID(public_id)
         except Exception:
             return {"status": "error", "message": "Invalid public_id"}
+
+        # Pre-fetch the todo to obtain its title for the summary before deletion
+        try:
+            todo = await self.todo_service.get_todo(self.workspace_id, pid)
+            todo_title = todo.title
+        except Exception:
+            todo_title = "Unknown Todo"
+
         try:
             await self.todo_service.delete_todo(
                 self.workspace_id,
@@ -403,7 +427,12 @@ class AgentTools:
                 "status": "error",
                 "message": "An internal error occurred while executing the tool.",
             }
-        return {"status": "success", "entity_public_id": public_id}
+        return {
+            "status": "success",
+            "entity_public_id": public_id,
+            "entity_type": "todo",
+            "summary": f"Deleted todo '{todo_title}'",
+        }
 
     async def _resolve_spending_account(
         self, account_name: str
@@ -542,6 +571,7 @@ class AgentTools:
         # against spending-eligible accounts (spec-059).
         account_public_id = None
         resolved_account_name = None
+        account_obj = None
         # Whitespace-only names count as omitted — an empty normalized query
         # would containment-match every account into a bogus ambiguity error.
         if account_name and account_name.strip():
@@ -550,6 +580,7 @@ class AgentTools:
                 return resolution_error
             account_public_id = account.public_id
             resolved_account_name = account.name
+            account_obj = account
         else:
             setting = await self.setting_repo.get_by_workspace(self.workspace_id)
             default_account_id = setting.default_spending_account_id if setting else None
@@ -561,6 +592,7 @@ class AgentTools:
             if default_account and default_account.is_active:
                 account_public_id = default_account.public_id
                 resolved_account_name = default_account.name
+                account_obj = default_account
             else:
                 return {
                     "status": "error",
@@ -585,6 +617,15 @@ class AgentTools:
             tx_in=payload,
             audit_logger=self.audit_logger,
         )
+
+        # Resolve currency symbol for the transaction summary
+        symbol = account_obj.default_currency_code if account_obj else ""
+        if account_obj:
+            currency_repo = CurrencyRepository(self.session)
+            currency = await currency_repo.get_by_code(account_obj.default_currency_code)
+            if currency and currency.symbol:
+                symbol = currency.symbol
+
         return {
             "status": "success",
             "entity_public_id": str(tx.public_id),
@@ -595,6 +636,7 @@ class AgentTools:
             "description": tx.description,
             "account_name": resolved_account_name,
             "occurred_at": tx.occurred_at.isoformat(),
+            "summary": f"Added {symbol}{tx.amount} '{tx.description}' to Spending",
         }
 
     async def get_investing_summary(self) -> dict:
