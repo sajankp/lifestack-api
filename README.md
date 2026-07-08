@@ -393,9 +393,10 @@ Supported job names:
 - `session_cleanup`
 - `import_preview_cleanup`
 - `weekly_summary`
+- `net_worth_snapshot`
 
 Options:
-- `--workspace-id`: Limits the execution of `budget_guardrails`, `recurring_transactions`, or `weekly_summary` to a single workspace.
+- `--workspace-id`: Limits the execution of `budget_guardrails`, `recurring_transactions`, `weekly_summary`, or `net_worth_snapshot` to a single workspace.
 - `--week-start`: Specific to `weekly_summary` (Format: `YYYY-MM-DD`), allowing manual generation or re-generation of a specific week.
 
 ## Bulk Import Storage Configuration

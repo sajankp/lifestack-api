@@ -207,10 +207,16 @@ erDiagram
         int user_id FK
         int category_id FK
         int account_id FK
+        int recurring_transaction_id FK
         decimal amount
         string type
         datetime occurred_at
         string description
+        string wallet_name
+        string labels
+        string source_type
+        string source_ref
+        int source_import_id FK
         datetime created_at
         datetime updated_at
     }
@@ -266,6 +272,7 @@ erDiagram
     WORKSPACES ||--o{ RECURRING_TRANSACTIONS : scopes
     USERS ||--o{ RECURRING_TRANSACTIONS : configures
     SPENDING_CATEGORIES ||--o{ RECURRING_TRANSACTIONS : categorizes
+    RECURRING_TRANSACTIONS ||--o{ SPENDING_TRANSACTIONS : generates
 ```
 
 A budget scopes to exactly one of `category_id` or `category_group_id` (DB check
@@ -602,6 +609,22 @@ erDiagram
         datetime created_at
     }
 
+    INVESTING_HOLDING_VERIFICATIONS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int account_id FK
+        int source_import_id FK
+        string source
+        date statement_date
+        int match_count
+        int quantity_drift_count
+        int missing_in_lifestack_count
+        int missing_at_depository_count
+        json report_json
+        datetime created_at
+    }
+
     WORKSPACES ||--o{ INVESTING_COMPANIES : scopes
     WORKSPACES ||--o{ INVESTING_INSTRUMENTS : scopes
     INVESTING_COMPANIES ||--o{ INVESTING_INSTRUMENTS : issuer
@@ -628,6 +651,9 @@ erDiagram
     INVESTING_ORDER_LOTS ||--o{ INVESTING_LOT_CONSUMPTIONS : consumed_from
     WORKSPACES ||--o{ INVESTING_CORPORATE_ACTIONS : scopes
     ACCOUNTS ||--o{ INVESTING_CORPORATE_ACTIONS : applies_to
+    WORKSPACES ||--o{ INVESTING_HOLDING_VERIFICATIONS : scopes
+    ACCOUNTS ||--o{ INVESTING_HOLDING_VERIFICATIONS : verifies
+    IMPORT_BATCHES ||--o{ INVESTING_HOLDING_VERIFICATIONS : produces
 ```
 
 ## Notifications & Summaries
@@ -783,7 +809,7 @@ erDiagram
         json payload_json
     }
 
-    EXPORT_RECORDS {
+    EXPORTS {
         int id PK
         uuid public_id UK
         int workspace_id FK
@@ -805,8 +831,8 @@ erDiagram
     USERS ||--o{ IMPORT_BATCHES : uploads
     IMPORT_BATCHES ||--o{ IMPORT_ERRORS : has_errors
     IMPORT_BATCHES ||--o{ IMPORT_PREVIEW_ROWS : previews
-    WORKSPACES ||--o{ EXPORT_RECORDS : scopes
-    USERS ||--o{ EXPORT_RECORDS : requests
+    WORKSPACES ||--o{ EXPORTS : scopes
+    USERS ||--o{ EXPORTS : requests
 ```
 
 ## Notes

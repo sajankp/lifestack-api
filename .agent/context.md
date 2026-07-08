@@ -5,7 +5,7 @@
 
 ## Project Overview
 
-- Python 3.14, FastAPI, SQLAlchemy (async), PostgreSQL
+- Python 3.13, FastAPI, SQLAlchemy (async), PostgreSQL
 - Architecture: Router → Service → Repository layered pattern
 - Multi-tenant: all data scoped by `workspace_id` via composite foreign keys
 - Auth: JWT in HttpOnly cookies, Argon2id hashing, refresh token rotation, CSRF double-submit

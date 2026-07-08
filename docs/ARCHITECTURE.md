@@ -138,6 +138,8 @@ lifestack-api/
 |   |-- investing/
 |   |   |-- router.py
 |   |   |-- service.py
+|   |   |-- order_service.py
+|   |   |-- performance_service.py
 |   |   |-- repository.py
 |   |   |-- response_helpers.py  # response schema transformations
 |   |   |-- models.py
@@ -146,10 +148,11 @@ lifestack-api/
 |   |
 |   |-- dashboard/
 |   |   |-- router.py
-|   |   `-- service.py
+|   |   `-- schemas.py           # logic lives in application/workflows.py (DashboardSummaryWorkflow)
 |   |
 |   |-- application/
 |   |   |-- workflows.py
+|   |   |-- insights.py
 |   |   `-- jobs.py
 |   |
 |   |-- platform/
