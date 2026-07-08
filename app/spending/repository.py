@@ -646,6 +646,8 @@ class BudgetRepository(BaseRepository[SpendingBudget]):
         return list(result.scalars().all())
 
     async def delete_by_category_ids(self, workspace_id: int, category_ids: list[int]) -> None:
+        if workspace_id is None or not category_ids:
+            return
         stmt = sa.delete(SpendingBudget).where(
             SpendingBudget.workspace_id == workspace_id,
             SpendingBudget.category_id.in_(category_ids),
