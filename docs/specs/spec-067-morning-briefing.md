@@ -3,7 +3,7 @@
 **Created:** 2026-07-08
 **Status:** Draft — owner review required before implementation
 **Scope:** multi-repo, user-facing — `lifestack-api` (composed read endpoint + push job) and `lifestack-web` (briefing surface on the Dashboard). Two PRs, api first.
-**Depends on:** spec-058 (dashboard insights), spec-052 (web push), spec-065 (net-worth snapshots), spec-064 (category-group budgets), weekly summaries (spec-016 lineage), budget guardrails. Product direction: `PRODUCT-ASSESSMENT.md` "The highest-leverage single build", roadmap §1 Flagship Future Workflow and §4 Immediate Focus item 6 — owner-accepted.
+**Depends on:** spec-058 (dashboard insights), spec-052 (web push), spec-065 (net-worth snapshots), spec-064 (category-group budgets), weekly summaries (spec-016 lineage), budget guardrails. Product direction: `docs/product/PRODUCT_STRATEGY_AND_ROADMAP.md` §1 (Flagship Future Workflow — this briefing is its deterministic, finance-and-tasks v1) and §4 Immediate Focus item 6 — owner-accepted (see the roadmap's 2026-07-08 changelog entry).
 
 ---
 
@@ -54,7 +54,7 @@ A new `MorningBriefingWorkflow` in `app/application/workflows.py`, following the
 | 4 | Recurring transactions/todos due today or tomorrow | recurring rules' next-due dates | `info` |
 | 5 | Net-worth daily change + valuation status | spec-065 snapshots (today vs previous) + live valuation status | `info`; `warning` when valuation status is degraded (`partial` / `conversion_required`) |
 | 6 | Pending review work | imports awaiting commit; holdings verifications outstanding | `warning` |
-| 7 | Latest weekly summary | `app/summaries/` most recent | `info`, only within 7 days of generation |
+| 7 | Latest weekly summary | `app/summaries/` most recent | `info`, only within 48h of generation — a fresh-summary pointer, not a permanent fixture. Summaries generate Monday 01:30 UTC (`weekly_summary` cron), so this line appears in Monday's and Tuesday's briefings, never on Sunday |
 | 8 | Fresh insights | unread spec-058 `insight` notifications (≤ 48h old) | inherits the insight's own severity |
 
 **Line shape (API contract):**
@@ -83,32 +83,35 @@ A new `MorningBriefingWorkflow` in `app/application/workflows.py`, following the
 
 - A `morning_briefing_job` run via `run_workspace_job` (session-level advisory lock, skip-if-held, locked/skipped-count logging — same discipline as `budget_guardrails_job`).
 - Per workspace: compose the briefing; if not `all_clear`, write ONE `Notification` (category `briefing`, severity = max line severity, title "Morning briefing", body = top 3 line texts, entity route `/`). Existing `NotificationService.notify` preference-gating applies; spec-052 push delivery picks it up. All-clear days send nothing (calm by default).
-- **Opt-in:** reuses the existing per-category notification-preference row (`briefing`) — no schema change (`category` is a free string with a unique constraint per user/workspace).
-- Schedule: daily at 02:30 UTC (≈ 08:00 IST) via the existing APScheduler registration in `app/main.py`, env-overridable (`BRIEFING_JOB_HOUR_UTC`/`MINUTE`). Registration must be verified wired (the spec-065 job famously missed this).
+- **Default (owner decision, 2026-07-08): ON for users with at least one active push subscription, OFF for everyone else.** Implemented via the existing per-category notification-preference row (`briefing`) — no schema change (`category` is a free string with a unique constraint per user/workspace). Absence of a `briefing` preference row counts as enabled when the user has an active push subscription; an explicit row always wins, and the existing notification-preferences UI is the off switch.
+- Schedule: daily at 02:30 UTC (≈ 08:00 IST) via the existing APScheduler registration in `app/main.py`, env-overridable (`BRIEFING_JOB_HOUR_UTC`/`MINUTE`). This deliberately runs after Monday's 01:30 UTC `weekly_summary` cron, so a fresh weekly summary lands in that same Monday briefing. Registration must be verified wired (the spec-065 job famously missed this).
 
 ### D. Briefing surface (lifestack-web)
 
-**Proposal: the briefing TOPS the Dashboard rather than replacing it** (owner decides at this spec's review — the handoff doc defers this decision here). Justification: the Task 6 batch just made the dashboard cards useful launchpads (deep-linked metrics, insights, "data as of" line); the briefing is the ordered narrative layer those cards lack, not a substitute for at-a-glance numbers. Full replacement would also orphan the first-run checklist (Task 7) placement. If living together proves cluttered, replacement becomes a cheap follow-up — the reverse migration is not.
+**Proposal: the briefing TOPS the Dashboard rather than replacing it** (owner decides at this spec's review). Justification: the 2026-07 UX hardening pass just made the dashboard cards useful launchpads (deep-linked metrics, insights, "data as of" line); the briefing is the ordered narrative layer those cards lack, not a substitute for at-a-glance numbers. Full replacement would also orphan the first-run "Get started" checklist placement. If living together proves cluttered, replacement becomes a cheap follow-up — the reverse migration is not.
 
-- A "Today" briefing card at the top of `DashboardPage` (below the Task 7 first-run checklist while that shows): severity-dotted ordered lines, each a link to its `route`; all-clear state with a distinct calm design; skeleton while loading (existing `FeedbackStates`).
+- A "Today" briefing card at the top of `DashboardPage` (below the first-run "Get started" checklist while that shows): severity-dotted ordered lines, each a link to its `route`; all-clear state with a distinct calm design; skeleton while loading (existing `FeedbackStates`).
 - New query key + Zod-parsed service + type per house conventions.
-- Notifications page: `briefing` appears in the category label map ("Morning briefing") from Task 6's humanization work.
+- Notifications page: `briefing` added to the existing category label map ("Morning briefing").
 
 **Migration notes for DashboardPage:** the metric cards, insight section, and "data as of" line stay; the briefing card is inserted above them. No existing dashboard endpoint changes. If the owner chooses replacement instead, the cards' data needs survive via the existing summary endpoint on a secondary view — scoped then, not now.
 
 ## Test plan
 
 - **api unit (Red first):** one test module per line type — inclusion threshold, severity assignment, text formatting; ordering (severity → domain → id) and the 10-line cap; empty-day → `all_clear`; per-section failure degrades to omission (patterned on `DashboardSummaryWorkflow` tests).
-- **api integration:** `GET /v1/dashboard/briefing` against seeded fixtures (workspace isolation, RBAC member+); `morning_briefing_job` — writes one notification with correct category/severity, skips all-clear workspaces, second concurrent invocation skips on the advisory lock (existing locked-job test pattern), preference-disabled user gets no notification.
+- **api integration:** `GET /v1/dashboard/briefing` against seeded fixtures (workspace isolation, RBAC member+); `morning_briefing_job` — writes one notification with correct category/severity, skips all-clear workspaces, second concurrent invocation skips on the advisory lock (existing locked-job test pattern); default matrix — push-subscribed user with no `briefing` preference row gets the notification, unsubscribed user with no row does not, an explicit off row always wins.
 - **web (Red first):** briefing card renders lines with severity + working links; all-clear state; loading skeleton; service Zod parse. Gates: vitest ≥ 70, `npm run build`, lint.
 - **e2e:** one `briefing.spec.ts` journey — seed an overdue todo + an overspent budget, load the dashboard, assert ordered briefing lines and that clicking a line lands on the resolving page; plus an all-clear assertion on a clean workspace.
 
 ## Rollout
 
-Two PRs: api (workflow + endpoint + job + tests, `docs/JOBS.md` updated in the same pass per house rule), then web. No feature flag — the endpoint is additive and the card degrades to nothing on error. Push is off until a user opts in (see Open questions).
+Two PRs: api (workflow + endpoint + job + tests, `docs/JOBS.md` updated in the same pass per house rule), then web. No feature flag — the endpoint is additive and the card degrades to nothing on error. Push defaults on only for already-push-subscribed users (owner decision below); everyone else opts in via notification preferences.
+
+## Owner decisions (2026-07-08)
+
+- **Morning-push default: ON for users with an active push subscription, OFF otherwise.** Subscribing to push already expressed intent to be notified; users who never subscribed get nothing. The existing preferences UI is the off switch.
+- **Thresholds confirmed:** budget warning at 85% utilization, fresh-insights window at 48h. A configurable rule engine stays a non-goal.
 
 ## Open questions for the owner
 
-1. **Briefing tops vs. replaces the Dashboard** — spec proposes TOPS (justified in §D); explicitly deferred to this review by the handoff doc.
-2. **Morning-push opt-in default** — recommendation: **default OFF** (explicit opt-in via the existing notification preferences UI, surfaced once via a dismissible hint on the briefing card). Consistent with the trust model's conservative-defaults stance and avoids surprising every existing device subscription at 8am; the demo workspace can pre-enable it for the reviewer story. Alternative (default ON for push-subscribed users) maximizes habit formation but sends unrequested pushes.
-3. **Thresholds:** budget warning at 85% utilization and insights window at 48h are proposed constants — confirm or adjust; a configurable rule engine stays a non-goal either way.
+1. **Briefing tops vs. replaces the Dashboard** — spec proposes TOPS (justified in §D); decide at this spec's review.
