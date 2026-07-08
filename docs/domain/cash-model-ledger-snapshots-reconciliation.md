@@ -92,6 +92,15 @@ Consequence: **brokerage net worth is already correct** — it reads the snapsho
 orders/transfers update) plus holdings. Orders were only ever missing from the
 *reconciliation projected* side, not from net worth.
 
+**History (spec-065, 2026-07-08):** net worth is otherwise only ever computed for *now*.
+`net_worth_snapshots` (one row per workspace per day, unique on `(workspace_id,
+snapshot_date)`) materializes a daily series so a history graph doesn't need to replay
+every order/price/FX rate per day — which is also partially impossible, since imported
+(Demat/CAS) holdings have no order history to replay. Written two ways: opportunistically
+on every `GET /finance/net-worth` for today, and by the daily `net_worth_snapshot` cron
+job (07:00 UTC). Both paths share one computation (`NetWorthService._compute_net_worth`)
+so they can't drift.
+
 ## 5. Worked example
 
 Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**

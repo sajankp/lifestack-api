@@ -36,7 +36,7 @@ ingress via Cloudflare Tunnel · encrypted nightly DB backups to S3/R2
 - **Operability** — append-only PII-redacted audit logging, structlog + OpenTelemetry + Prometheus, scheduled jobs guarded by Postgres advisory locks.
 - **Lot-accurate cost basis** — FIFO lot engine with corporate-action handling (splits, reverse splits, bonus issues), golden-tested against broker-statement numbers; Indian market ingestion via CAMS CAS PDF import and the NSE bhavcopy price feed.
 - **Quality gates** — 80% backend / 70% frontend coverage thresholds, 18 Playwright E2E specs, and `pip-audit` + Bandit + TruffleHog in CI.
-- **Spec-driven** — 60 specs under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
+- **Spec-driven** — 65 specs under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
 
 ---
 
@@ -282,6 +282,8 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Notifications inbox + preferences (Spec 015, in-app) | ✅ Done |
 | Weekly summaries API + dashboard integration (Spec 016) | ✅ Done |
 | Spending analytics endpoints (Spec 017) | ✅ Done |
+| Category groups + recurring date-ranged budgets, category delete/merge (Spec 062, 064) | ✅ Done |
+| Net worth over time — daily snapshot job + history graph (Spec 065) | ✅ Done |
 | Quick capture API routing (Spec 018) | Planned |
 | Data import/export lifecycle controls | ✅ Gate 0 foundation |
 | Structured source metadata for spending transactions, budgets, and holdings | ✅ Gate 0 foundation |

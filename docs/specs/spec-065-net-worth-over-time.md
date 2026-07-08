@@ -1,7 +1,7 @@
 # Spec-065: Net Worth Over Time (live cash + daily net-worth history + graph)
 
 **Created:** 2026-07-07
-**Status:** Approved (2026-07-07) — full bundle A+B+C; ready for implementation
+**Status:** Implemented (2026-07-08, api#132, web#87). The daily `net_worth_snapshot_job` was implemented against the on-demand `portfolio_snapshots` table during review, which would have silently skipped nearly every workspace (that table is only populated by a dashboard visit and is dropped daily by the price job); fixed pre-merge to compute holdings/cash live via `InvestingSummaryService`, matching the `GET /finance/net-worth` path. The job also wasn't wired into `app/main.py`'s APScheduler registration — added post-merge (`fix/register-net-worth-snapshot-job`) alongside this doc pass.
 **Scope:** multi-repo, user-facing — `lifestack-api` (data + API) and `lifestack-web` (graph). Delivered as two PRs, api merged first (per one-PR-per-repo rule).
 **Depends on:** spec-048 (orders in reconciliation), spec-050 (brokerage-only cash filter), PR #130 (create_snapshot brokerage filter). Related domain doc: `docs/domain/cash-model-ledger-snapshots-reconciliation.md`.
 

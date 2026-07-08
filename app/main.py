@@ -18,6 +18,7 @@ from app.application.jobs import (
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
     investment_closing_prices_job,
+    net_worth_snapshot_job,
     push_delivery_job,
     recurring_transactions_job,
     session_cleanup_job,
@@ -143,6 +144,11 @@ async def lifespan(_app: FastAPI):
             dashboard_insights_job,
             job_id="dashboard_insights",
             hour_utc=6,
+        )
+        register_daily_job(
+            net_worth_snapshot_job,
+            job_id="net_worth_snapshot",
+            hour_utc=7,
         )
         register_interval_job(
             push_delivery_job,

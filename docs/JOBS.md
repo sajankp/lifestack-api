@@ -89,3 +89,11 @@ All background jobs are subject to **advisory lock coordination** (`pg_try_advis
 - **Workflow Function**: `process_workspace_todo_reminders` (`app/application/workflows.py`)
 - **Purpose**: The first real notification source for push (spec-052) — finds incomplete todos with `due_date` inside the look-ahead window (now → now + interval) that haven't been reminded yet, and creates a `Notification` (`category="todo_reminder"`) for each via the existing `NotificationService.notify`. Push delivery then happens for free through that method's existing enqueue step.
 - **Idempotency**: `Todo.reminded_at` — set when the reminder notification is created; a re-run only picks up todos where it's still `NULL`. Reset to `NULL` whenever a todo's `due_date` changes, so moving a reminder later re-arms it.
+
+## 13. Net Worth Snapshot Job
+- **Job ID**: `net_worth_snapshot`
+- **Schedule**: Daily at 07:00 UTC (after `investment_closing_prices` and `dashboard_insights`)
+- **Job Function**: `net_worth_snapshot_job`
+- **Service Method**: `NetWorthService.create_net_worth_snapshot` (`app/finance/service.py`)
+- **Purpose**: Materializes one `net_worth_snapshots` row per workspace per day so net worth has a real history to graph (spec-065). Computes holdings value, investing cash, and spending cash live via `InvestingSummaryService.get_summary` — the same path `GET /finance/net-worth` uses — rather than reading the cached, investing-only `portfolio_snapshots` table, so it doesn't depend on a dashboard visit having happened that day and doesn't skip spending-only workspaces. Skips a workspace silently if it has no reporting currency configured, or if any balance can't be FX-converted to it.
+- **Idempotency**: Upserted on the unique `(workspace_id, snapshot_date)` constraint. `GET /finance/net-worth` also opportunistically upserts today's row on every read, so the cron run for "today" is frequently a no-op update of a value that already exists.
