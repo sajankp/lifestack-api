@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -14,6 +14,7 @@ from app.finance.models import (
     Currency,
     CurrencyDisplayPreference,
     FxRate,
+    NetWorthSnapshot,
     UserFinanceSetting,
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
@@ -693,3 +694,52 @@ class CapitalTransferRepository(BaseRepository[CapitalTransfer]):
             )
         )
         return result.scalar_one_or_none()
+
+
+class NetWorthSnapshotRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def upsert(self, snapshot: NetWorthSnapshot) -> NetWorthSnapshot:
+        stmt = select(NetWorthSnapshot).where(
+            NetWorthSnapshot.workspace_id == snapshot.workspace_id,
+            NetWorthSnapshot.snapshot_date == snapshot.snapshot_date,
+        )
+        res = await self.session.execute(stmt)
+        existing = res.scalar_one_or_none()
+
+        if existing:
+            existing.reporting_currency = snapshot.reporting_currency
+            existing.holdings_value = snapshot.holdings_value
+            existing.investing_cash = snapshot.investing_cash
+            existing.spending_cash = snapshot.spending_cash
+            existing.total_net_worth = snapshot.total_net_worth
+            existing.fx_rates_used = snapshot.fx_rates_used
+            self.session.add(existing)
+            return existing
+        else:
+            self.session.add(snapshot)
+            return snapshot
+
+    async def get_history(
+        self, workspace_id: int, from_date: date, to_date: date
+    ) -> Sequence[NetWorthSnapshot]:
+        stmt = (
+            select(NetWorthSnapshot)
+            .where(
+                NetWorthSnapshot.workspace_id == workspace_id,
+                NetWorthSnapshot.snapshot_date >= from_date,
+                NetWorthSnapshot.snapshot_date <= to_date,
+            )
+            .order_by(NetWorthSnapshot.snapshot_date.asc())
+        )
+        res = await self.session.execute(stmt)
+        return res.scalars().all()
+
+    async def get_for_date(self, workspace_id: int, snapshot_date: date) -> NetWorthSnapshot | None:
+        stmt = select(NetWorthSnapshot).where(
+            NetWorthSnapshot.workspace_id == workspace_id,
+            NetWorthSnapshot.snapshot_date == snapshot_date,
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()

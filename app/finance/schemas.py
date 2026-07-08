@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -293,5 +293,16 @@ class NetWorthResponse(BaseModel):
     total_net_worth: Decimal | None
     valuation_status: Literal["empty", "ok", "no_reporting_currency", "partial"]
     fx_as_of: datetime | None
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class NetWorthHistoryItem(BaseModel):
+    snapshot_date: date
+    reporting_currency: str
+    holdings_value: Decimal
+    investing_cash: Decimal
+    spending_cash: Decimal
+    total_net_worth: Decimal
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})

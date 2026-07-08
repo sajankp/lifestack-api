@@ -1,8 +1,10 @@
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.audit import AuditLogger
@@ -13,6 +15,8 @@ from app.finance.models import (
     CapitalTransfer,
     Currency,
     CurrencyDisplayPreference,
+    FxRate,
+    NetWorthSnapshot,
     WorkspaceFinanceSetting,
 )
 from app.finance.repository import (
@@ -21,6 +25,7 @@ from app.finance.repository import (
     CurrencyRepository,
     FinanceSettingRepository,
     FxRateRepository,
+    NetWorthSnapshotRepository,
 )
 from app.finance.schemas import (
     AccountCreate,
@@ -31,6 +36,8 @@ from app.finance.schemas import (
     ReconciliationSummary,
 )
 from app.investing.models import CashBalance as InvestingCashBalance
+from app.investing.performance_service import InvestingSummaryService
+from app.investing.repository import CashBalanceRepository
 
 
 class CurrencyService:
@@ -1149,3 +1156,241 @@ class CapitalTransferService:
                     await self.cash_balance_repository.save(from_linked)
 
         return self._serialize_transfer(transfer, from_account, to_account)
+
+
+class NetWorthService:
+    def __init__(
+        self,
+        session: AsyncSession,
+        account_service: AccountService,
+        summary_service: InvestingSummaryService,
+        cash_balance_repo: CashBalanceRepository,
+        setting_repo: FinanceSettingRepository,
+        fx_rate_repo: FxRateRepository,
+        net_worth_snapshot_repo: NetWorthSnapshotRepository,
+    ):
+        self.session = session
+        self.account_service = account_service
+        self.summary_service = summary_service
+        self.cash_balance_repo = cash_balance_repo
+        self.setting_repo = setting_repo
+        self.fx_rate_repo = fx_rate_repo
+        self.net_worth_snapshot_repo = net_worth_snapshot_repo
+
+    def _convert_to_reporting(
+        self,
+        amount: Decimal,
+        currency: str,
+        reporting_currency: str,
+        fx_lookup: dict[tuple[str, str], FxRate],
+    ) -> Decimal | None:
+        currency = currency.upper()
+        reporting_currency = reporting_currency.upper()
+        if currency == reporting_currency:
+            return amount
+        direct = fx_lookup.get((currency, reporting_currency))
+        if direct is not None:
+            return amount * direct.rate
+        inverse = fx_lookup.get((reporting_currency, currency))
+        if inverse is not None and inverse.rate:
+            return amount / inverse.rate
+        return None
+
+    async def _compute_net_worth(self, workspace_id: int) -> tuple[dict, dict | None]:
+        """Compute live net-worth components for a workspace.
+
+        Returns the API response dict plus, when a total is computable, the
+        fields needed to persist a NetWorthSnapshot (None otherwise). Shared by
+        get_net_worth (opportunistic snapshot on read) and
+        create_net_worth_snapshot (cron job) so the job doesn't depend on
+        PortfolioSnapshot existing, which is only created on-demand and would
+        otherwise cause the job to silently skip most workspaces.
+        """
+        accounts, _ = await self.account_service.list_accounts(workspace_id, limit=10000, offset=0)
+
+        # Get reporting currency from workspace settings
+        ws_settings = await self.setting_repo.get_by_workspace(workspace_id)
+        reporting_currency: str | None = None
+        if ws_settings and ws_settings.reporting_currency_code:
+            reporting_currency = ws_settings.reporting_currency_code.upper()
+
+        # Resolve per-account spending balances — brokerage accounts are excluded
+        spending_accounts_list = [a for a in accounts if a.account_type != "brokerage"]
+        raw_balances = await self.account_service.get_spending_balances_bulk(
+            workspace_id, spending_accounts_list
+        )
+
+        # Per-(brokerage account, currency) investing cash for the breakdown table
+        brokerage_by_id = {a.id: a for a in accounts if a.account_type == "brokerage"}
+        cash_rows = [
+            c
+            for c in await self.cash_balance_repo.get_latest_per_account_currency(workspace_id)
+            if c.account_id in brokerage_by_id
+        ]
+
+        # Build FX lookup covering both spending and investing cash currencies -> reporting
+        fx_lookup = {}
+        if reporting_currency:
+            currencies = {b["currency_code"].upper() for b in raw_balances} | {
+                c.currency.upper() for c in cash_rows
+            }
+            foreign = {c for c in currencies if c != reporting_currency}
+            if foreign:
+                pairs = [(c, reporting_currency) for c in foreign] + [
+                    (reporting_currency, c) for c in foreign
+                ]
+                fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(pairs)
+
+        # Assemble spending account list and total
+        spending_accounts = []
+        spending_total = Decimal("0")
+        spending_convertible = True
+        for data in raw_balances:
+            balance = data["spending_balance"]
+            currency = data["currency_code"]
+            balance_in_rc = None
+            if reporting_currency:
+                balance_in_rc = self._convert_to_reporting(
+                    balance, currency, reporting_currency, fx_lookup
+                )
+                if balance_in_rc is None:
+                    spending_convertible = False
+                else:
+                    spending_total += balance_in_rc
+            spending_accounts.append({
+                "account_public_id": data["account_public_id"],
+                "account_name": data["account_name"],
+                "account_type": data["account_type"],
+                "currency_code": currency,
+                "balance": balance,
+                "balance_in_reporting_currency": balance_in_rc,
+            })
+
+        # Get investing totals (already FX-converted to reporting currency by summary service)
+        investing_summary = await self.summary_service.get_summary(workspace_id)
+        investing_cash = investing_summary.cash_total
+        holdings_value = investing_summary.portfolio_value
+        effective_reporting = reporting_currency or investing_summary.reporting_currency
+
+        investing_total = None
+        if investing_cash is not None and holdings_value is not None:
+            investing_total = investing_cash + holdings_value
+
+        # Build the per-account investing cash breakdown
+        investing_accounts = []
+        for cash in cash_rows:
+            account = brokerage_by_id[cash.account_id]
+            currency_code = cash.currency.upper()
+            balance_in_rc = (
+                self._convert_to_reporting(
+                    cash.balance, currency_code, reporting_currency, fx_lookup
+                )
+                if reporting_currency
+                else None
+            )
+            investing_accounts.append({
+                "account_public_id": account.public_id,
+                "account_name": account.name,
+                "currency_code": currency_code,
+                "balance": cash.balance,
+                "balance_in_reporting_currency": balance_in_rc,
+            })
+        investing_accounts.sort(key=lambda a: (a["account_name"].lower(), a["currency_code"]))
+
+        total_net_worth = None
+        if spending_convertible and reporting_currency and investing_total is not None:
+            total_net_worth = spending_total + investing_total
+
+        # Determine valuation status
+        has_any_data = bool(raw_balances) or investing_summary.holdings_count > 0
+        if not has_any_data:
+            valuation_status = "empty"
+        elif total_net_worth is not None:
+            valuation_status = "ok"
+        elif not effective_reporting:
+            valuation_status = "no_reporting_currency"
+        else:
+            valuation_status = "partial"
+
+        res = {
+            "reporting_currency": effective_reporting,
+            "spending_accounts": spending_accounts,
+            "spending_total": spending_total
+            if (spending_convertible and reporting_currency)
+            else None,
+            "investing_accounts": investing_accounts,
+            "investing_cash_total": investing_cash,
+            "holdings_value": holdings_value,
+            "investing_total": investing_total,
+            "total_net_worth": total_net_worth,
+            "valuation_status": valuation_status,
+            "fx_as_of": investing_summary.fx_as_of,
+        }
+
+        # Snapshot fields, populated only when a total is computable
+        snapshot_fields: dict | None = None
+        if total_net_worth is not None and reporting_currency and spending_convertible:
+            # Construct dictionary of rate strings for used currencies
+            used_currencies = sorted(
+                {b["currency_code"].upper() for b in raw_balances}
+                | {c.currency.upper() for c in cash_rows}
+            )
+            rates_used = {}
+            for curr in used_currencies:
+                if curr == reporting_currency:
+                    continue
+                rate = self._convert_to_reporting(
+                    Decimal("1.0"), curr, reporting_currency, fx_lookup
+                )
+                if rate is not None:
+                    rates_used[curr] = str(rate)
+
+            snapshot_fields = {
+                "reporting_currency": reporting_currency,
+                "holdings_value": holdings_value,
+                "investing_cash": investing_cash,
+                "spending_cash": spending_total,
+                "total_net_worth": total_net_worth,
+                "fx_rates_used": rates_used,
+            }
+
+        return res, snapshot_fields
+
+    async def get_net_worth(self, workspace_id: int) -> dict:
+        res, snapshot_fields = await self._compute_net_worth(workspace_id)
+
+        # Opportunistic current-day snapshot upsert
+        if snapshot_fields is not None:
+            today_date = datetime.now(UTC).date()
+            snapshot = NetWorthSnapshot(
+                workspace_id=workspace_id, snapshot_date=today_date, **snapshot_fields
+            )
+            await self.net_worth_snapshot_repo.upsert(snapshot)
+            await self.session.flush()
+
+        return res
+
+    async def create_net_worth_snapshot(self, workspace_id: int, snapshot_date: date) -> None:
+        """Create or update a net worth snapshot for a workspace.
+
+        Valuations are always computed live (current holdings prices, cash
+        balances, and FX rates) via the same path as get_net_worth, so this is
+        only meaningful when snapshot_date is today — which is how the daily
+        cron job calls it. It intentionally does not depend on PortfolioSnapshot,
+        which is only created on-demand and would otherwise cause the job to
+        silently skip most workspaces, including any with no investing accounts.
+        """
+        _res, snapshot_fields = await self._compute_net_worth(workspace_id)
+        if snapshot_fields is None:
+            return
+
+        snapshot = NetWorthSnapshot(
+            workspace_id=workspace_id, snapshot_date=snapshot_date, **snapshot_fields
+        )
+        await self.net_worth_snapshot_repo.upsert(snapshot)
+        await self.session.flush()
+
+    async def get_history(
+        self, workspace_id: int, from_date: date, to_date: date
+    ) -> Sequence[NetWorthSnapshot]:
+        return await self.net_worth_snapshot_repo.get_history(workspace_id, from_date, to_date)

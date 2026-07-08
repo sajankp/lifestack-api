@@ -347,13 +347,30 @@ class PerformanceService:
             daily_change_pct = None
             previous_snapshot_date = None
 
+        reporting_currency = snapshot.currency_code
+        as_of_datetime = datetime.combine(snapshot.snapshot_date, datetime.max.time(), UTC)
+        if self.account_repo is None:
+            raise ValidationError(detail="Account repository is required for live cash calculation")
+        live_cash = await _live_cash_total(
+            workspace_id=workspace_id,
+            reporting_currency=reporting_currency,
+            cash_repo=self.cash_repo,
+            account_repo=self.account_repo,
+            fx_rate_repo=self.fx_rate_repo,
+            as_of=as_of_datetime,
+        )
+        if live_cash is None:
+            raise ValidationError(
+                detail=f"FX rate from cash currencies to {reporting_currency} is required for performance summary"
+            )
+
         gain, pct = _value_change(snapshot.holdings_value, snapshot.total_cost)
         return PerformanceSummaryResponse(
             total_value=snapshot.holdings_value,
             total_cost=snapshot.total_cost,
             portfolio_value=snapshot.holdings_value,
             invested_value=snapshot.total_cost,
-            cash_total=snapshot.cash_value,
+            cash_total=live_cash,
             total_gain_loss=gain,
             total_gain_loss_pct=pct,
             daily_change=daily_change,
@@ -365,6 +382,65 @@ class PerformanceService:
             holdings_count=len(holdings),
             fx_rates_used=snapshot.fx_rates_used or {},
         )
+
+
+async def _live_cash_total(
+    workspace_id: int,
+    reporting_currency: str | None,
+    cash_repo: CashBalanceRepository,
+    account_repo: AccountRepository,
+    fx_rate_repo: FxRateRepository | None,
+    as_of: datetime | None = None,
+) -> Decimal | None:
+    """Compute live, brokerage-filtered, FX-converted investing cash total.
+
+    Returns Decimal(0) if no brokerage cash exists, or None if conversion is required
+    but missing. (INV-1)
+    """
+    cash_balances = await cash_repo.get_latest_per_account_currency(workspace_id, as_of=as_of)
+    if not cash_balances:
+        return Decimal("0.00")
+
+    accounts, _ = await account_repo.list_workspace_accounts(workspace_id, limit=10000, offset=0)
+    brokerage_ids = {a.id for a in accounts if a.account_type == "brokerage"}
+    cash_balances = [c for c in cash_balances if c.account_id in brokerage_ids]
+
+    if not cash_balances:
+        return Decimal("0.00")
+
+    # If reporting_currency is None, check if we have single currency
+    if reporting_currency is None:
+        currencies = {c.currency.upper() for c in cash_balances}
+        if len(currencies) == 1:
+            reporting_currency = list(currencies)[0]
+        else:
+            return None
+
+    reporting_currency = reporting_currency.upper()
+    unique_currencies = {c.currency.upper() for c in cash_balances}
+
+    # No conversion needed if all currencies match reporting currency
+    if all(curr == reporting_currency for curr in unique_currencies):
+        return sum(c.balance for c in cash_balances)
+
+    if fx_rate_repo is None:
+        return None
+
+    required_pairs = _build_required_pairs(list(unique_currencies), reporting_currency)
+    fx_lookup = await fx_rate_repo.get_latest_rates_for_pairs(
+        list(required_pairs),
+        as_of=as_of or datetime.now(UTC),
+    )
+
+    converted_cash = Decimal("0")
+    for cash in cash_balances:
+        curr = cash.currency.upper()
+        converted_value = _convert_amount(cash.balance, curr, reporting_currency, fx_lookup)
+        if converted_value is None:
+            return None
+        converted_cash += converted_value
+
+    return converted_cash
 
 
 class InvestingSummaryService:
@@ -455,23 +531,35 @@ class InvestingSummaryService:
             if len(used_currencies) == 1:
                 currency = used_currencies[0]
                 portfolio_value = Decimal("0")
-                cash_total = Decimal("0")
                 for holding in holdings:
                     portfolio_value += holding_values[holding.id]
-                for cash in cash_balances:
-                    cash_total += cash.balance
 
-                # Calculate daily change
+                if self.account_repo is None:
+                    raise ValidationError(
+                        detail="Account repository is required for live cash calculation"
+                    )
+                live_cash = await _live_cash_total(
+                    workspace_id=workspace_id,
+                    reporting_currency=currency,
+                    cash_repo=self.cash_repo,
+                    account_repo=self.account_repo,
+                    fx_rate_repo=self.fx_rate_repo,
+                    as_of=datetime.combine(today, datetime.max.time(), UTC),
+                )
+                if live_cash is None:
+                    live_cash = Decimal("0")
+
+                # Calculate daily change (holdings-only, INV-2)
                 daily_change = None
                 if self.snapshot_repo is not None:
                     prev_snapshot = await self.snapshot_repo.latest_before(workspace_id, today)
                     if prev_snapshot is not None:
-                        daily_change = portfolio_value - prev_snapshot.total_value
+                        daily_change = portfolio_value - prev_snapshot.holdings_value
 
                 return InvestingSummaryResponse(
                     portfolio_value=portfolio_value,
                     holdings_count=len(holdings),
-                    cash_total=cash_total,
+                    cash_total=live_cash,
                     currency_breakdown=breakdown,
                     daily_change=daily_change,
                     reporting_currency=currency,
@@ -530,43 +618,41 @@ class InvestingSummaryService:
                     )
                 converted_portfolio += converted_value
 
-            converted_cash = Decimal("0")
-            for cash in cash_balances:
-                curr = cash.currency.upper()
-                converted_value = _convert_amount(cash.balance, curr, reporting_currency, fx_lookup)
-                if converted_value is None:
-                    return InvestingSummaryResponse(
-                        portfolio_value=None,
-                        holdings_count=len(holdings),
-                        cash_total=None,
-                        currency_breakdown=breakdown,
-                        daily_change=None,
-                        reporting_currency=reporting_currency,
-                        valuation_status="conversion_required",
-                        fx_as_of=None,
-                    )
-                converted_cash += converted_value
+            if self.account_repo is None:
+                raise ValidationError(
+                    detail="Account repository is required for live cash calculation"
+                )
+            live_cash = await _live_cash_total(
+                workspace_id=workspace_id,
+                reporting_currency=reporting_currency,
+                cash_repo=self.cash_repo,
+                account_repo=self.account_repo,
+                fx_rate_repo=self.fx_rate_repo,
+                as_of=datetime.combine(today, datetime.max.time(), UTC),
+            )
+            if live_cash is None:
+                return InvestingSummaryResponse(
+                    portfolio_value=None,
+                    holdings_count=len(holdings),
+                    cash_total=None,
+                    currency_breakdown=breakdown,
+                    daily_change=None,
+                    reporting_currency=reporting_currency,
+                    valuation_status="conversion_required",
+                    fx_as_of=None,
+                )
 
-            # portfolio_value is holdings-only, matching the portfolio_value of
-            # the single-currency paths (cash is reported separately as
-            # cash_total and added by net worth). Including cash here made net
-            # worth double-count cash, since the net-worth router adds cash_total
-            # to portfolio_value. total_value (holdings + cash) is used only for
-            # the daily-change comparison, since snapshots store
-            # total_value = holdings_value + cash_value. (The single-currency
-            # paths compare holdings-only vs snapshot total for daily_change — a
-            # separate pre-existing inconsistency, intentionally left as-is.)
-            total_value = converted_portfolio + converted_cash
+            # Calculate daily change (holdings-only, INV-2)
             daily_change = None
             if self.snapshot_repo is not None:
                 prev_snapshot = await self.snapshot_repo.latest_before(workspace_id, today)
                 if prev_snapshot is not None:
-                    daily_change = total_value - prev_snapshot.total_value
+                    daily_change = converted_portfolio - prev_snapshot.holdings_value
 
             return InvestingSummaryResponse(
                 portfolio_value=converted_portfolio,
                 holdings_count=len(holdings),
-                cash_total=converted_cash,
+                cash_total=live_cash,
                 currency_breakdown=breakdown,
                 daily_change=daily_change,
                 reporting_currency=reporting_currency,
@@ -578,23 +664,33 @@ class InvestingSummaryService:
             )
 
         portfolio_value = Decimal("0")
-        cash_total = Decimal("0")
         for holding in holdings:
             portfolio_value += holding_values[holding.id]
-        for cash in cash_balances:
-            cash_total += cash.balance
 
-        # Calculate daily change
+        if self.account_repo is None:
+            raise ValidationError(detail="Account repository is required for live cash calculation")
+        live_cash = await _live_cash_total(
+            workspace_id=workspace_id,
+            reporting_currency=reporting_currency,
+            cash_repo=self.cash_repo,
+            account_repo=self.account_repo,
+            fx_rate_repo=self.fx_rate_repo,
+            as_of=datetime.combine(today, datetime.max.time(), UTC),
+        )
+        if live_cash is None:
+            live_cash = Decimal("0")
+
+        # Calculate daily change (holdings-only, INV-2)
         daily_change = None
         if self.snapshot_repo is not None:
             prev_snapshot = await self.snapshot_repo.latest_before(workspace_id, today)
             if prev_snapshot is not None:
-                daily_change = portfolio_value - prev_snapshot.total_value
+                daily_change = portfolio_value - prev_snapshot.holdings_value
 
         return InvestingSummaryResponse(
             portfolio_value=portfolio_value,
             holdings_count=len(holdings),
-            cash_total=cash_total,
+            cash_total=live_cash,
             currency_breakdown=breakdown,
             daily_change=daily_change,
             reporting_currency=reporting_currency,
