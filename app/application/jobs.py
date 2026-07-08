@@ -210,7 +210,7 @@ async def _release_session_advisory_lock(
 INVESTMENT_CLOSING_PRICES_LOCK_KEY = ADVISORY_LOCK_INVESTMENT_CLOSING_PRICES
 
 
-async def investment_closing_prices_job() -> None:
+async def investment_closing_prices_job(workspace_id: int | None = None) -> None:
     """Cache each workspace's latest completed market close once per day.
 
     Brought under run_workspace_job's session-level advisory lock (was
@@ -240,6 +240,7 @@ async def investment_closing_prices_job() -> None:
         job_name="investment_closing_prices_job",
         lock_key=INVESTMENT_CLOSING_PRICES_LOCK_KEY,
         process_workspace=_process_workspace,
+        workspace_id=workspace_id,
     )
 
 
