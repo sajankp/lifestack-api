@@ -1,7 +1,7 @@
 # Spec-067: Morning Briefing (deterministic, source-linked daily briefing)
 
 **Created:** 2026-07-08
-**Status:** Draft — owner review required before implementation
+**Status:** Approved — owner decisions recorded 2026-07-08; ready for implementation
 **Scope:** multi-repo, user-facing — `lifestack-api` (composed read endpoint + push job) and `lifestack-web` (briefing surface on the Dashboard). Two PRs, api first.
 **Depends on:** spec-058 (dashboard insights), spec-052 (web push), spec-065 (net-worth snapshots), spec-064 (category-group budgets), weekly summaries (spec-016 lineage), budget guardrails. Product direction: `docs/product/PRODUCT_STRATEGY_AND_ROADMAP.md` §1 (Flagship Future Workflow — this briefing is its deterministic, finance-and-tasks v1) and §4 Immediate Focus item 6 — owner-accepted (see the roadmap's 2026-07-08 changelog entry).
 
