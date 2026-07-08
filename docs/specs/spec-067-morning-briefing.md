@@ -69,7 +69,7 @@ A new `MorningBriefingWorkflow` in `app/application/workflows.py`, following the
 
 `route` is a client-routable path; `entity_public_id` is null for aggregate lines (e.g. "3 overdue todos"). Text is composed server-side from the same formatting rules the dashboard already uses (reporting currency, ISO dates) — the client renders it verbatim, which keeps web and push wording identical.
 
-**Ordering rule (deterministic):** severity rank (`critical` > `warning` > `info`), then the table order above as a fixed domain tiebreak, then source public_id for total stability. Cap: 10 lines; overflow collapses into a final "and N more…" line linking to the relevant page.
+**Ordering rule (deterministic):** severity rank (`critical` > `warning` > `info`), then the table order above as a fixed domain tiebreak, then source public_id (nulls last, then route/text as fallback) for total stability. Cap: 10 lines; overflow collapses into a final "and N more…" line linking to the relevant page.
 
 **Empty day:** `lines: []` plus `all_clear: true`; the endpoint always also returns `generated_at` and `reporting_currency`.
 
@@ -83,8 +83,8 @@ A new `MorningBriefingWorkflow` in `app/application/workflows.py`, following the
 
 - A `morning_briefing_job` run via `run_workspace_job` (session-level advisory lock, skip-if-held, locked/skipped-count logging — same discipline as `budget_guardrails_job`).
 - Per workspace: compose the briefing; if not `all_clear`, write ONE `Notification` (category `briefing`, severity = max line severity, title "Morning briefing", body = top 3 line texts, entity route `/`). Existing `NotificationService.notify` preference-gating applies; spec-052 push delivery picks it up. All-clear days send nothing (calm by default).
-- **Default (owner decision, 2026-07-08): ON for users with at least one active push subscription, OFF for everyone else.** Implemented via the existing per-category notification-preference row (`briefing`) — no schema change (`category` is a free string with a unique constraint per user/workspace). Absence of a `briefing` preference row counts as enabled when the user has an active push subscription; an explicit row always wins, and the existing notification-preferences UI is the off switch.
-- Schedule: daily at 02:30 UTC (≈ 08:00 IST) via the existing APScheduler registration in `app/main.py`, env-overridable (`BRIEFING_JOB_HOUR_UTC`/`MINUTE`). This deliberately runs after Monday's 01:30 UTC `weekly_summary` cron, so a fresh weekly summary lands in that same Monday briefing. Registration must be verified wired (the spec-065 job famously missed this).
+- **Default (owner decision, 2026-07-08): ON for users with at least one active push subscription, OFF for everyone else.** Implemented via the existing per-category notification-preference row (`briefing`) — no schema change (`category` is a free string with a unique constraint per user/workspace). Absence of a `briefing` preference row counts as enabled when the user has an active push subscription; an explicit row always wins, and the existing notification-preferences UI is the off switch. *Implementation detail:* To support this, `NotificationService.notify` (in `app/notifications/service.py`) must be updated to handle the `briefing` category as a special case: if no explicit preference row exists for `briefing`, default to `True` if the user has an active push subscription (rather than skipping). The opt-in logic for all other categories remains strictly unaffected.
+- Schedule: daily at 02:30 UTC (≈ 08:00 IST) via adding a new APScheduler registration in `app/main.py`, env-overridable (`BRIEFING_JOB_HOUR_UTC`/`MINUTE`). This deliberately runs after Monday's 01:30 UTC `weekly_summary` cron, so a fresh weekly summary lands in that same Monday briefing. Registration must be verified wired (the spec-065 job famously missed this).
 
 ### D. Briefing surface (lifestack-web)
 
