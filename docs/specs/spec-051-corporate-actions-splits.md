@@ -1,7 +1,7 @@
 # Spec-051: Corporate Actions (Splits, Reverse Splits, Bonus Issues)
 
 **Created:** 2026-07-03
-**Status:** Approved (implementation)
+**Status:** Implemented (api#102, merged 2026-07-04)
 **Depends on:** spec-044 (FIFO lot-based cost basis), spec-046 (fee-inclusive buy cost)
 
 ---
@@ -342,9 +342,7 @@ New `app/investing/tests/test_corporate_actions.py`, alongside `test_order_servi
 
 - **Automatic detection.** No attempt to auto-detect an un-applied corporate action from
   price discontinuities in this spec — that's explicitly called out as CAMS-CAS-import
-  preview UX in Task 6 of `docs/AGENT-TASKS.md` at the **lifestack workspace root** (one
-  level above this repo, not this repo's `docs/`), which depends on this spec being merged
-  first.
+  preview UX that depends on this spec being merged first.
 - **Backfill / auto-migration of existing holdings.** No script retroactively finds and fixes
   already-imported un-split holdings (e.g. existing NVDA/GOOGL rows). The user records the
   corporate action manually per the new endpoint; this spec only removes the *need* to
@@ -352,10 +350,7 @@ New `app/investing/tests/test_corporate_actions.py`, alongside `test_order_servi
 - **Update endpoint for a recorded corporate action.** Delete + re-create covers correction
   of a fat-fingered entry and keeps the API surface small; `PATCH` can be added later if this
   proves inconvenient in practice.
-- **UI.** This spec is backend-only (per Task 4 in the workspace-root `docs/AGENT-TASKS.md`);
-  a `lifestack-web` form to record a corporate action is a separate, quick follow-up once this is merged —
-  and now only needs to be built once for all three action types, which is the whole
-  motivation for combining them here.
+- **UI.** This spec is backend-only; a `lifestack-web` form to record a corporate action is a separate, quick follow-up once this is merged — and now only needs to be built once for all three action types, which is the whole motivation for combining them here.
 - **Cross-account corporate-action entry.** An action is entered per-account (matching how
   orders/lots are already scoped per `(workspace_id, symbol, account_id)` — see spec-044's
   CBDT Circular 768 citation on per-demat-account FIFO). A user holding the same symbol in

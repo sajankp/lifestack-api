@@ -1,7 +1,7 @@
 # Spec-055: Capture Agent Workspace Awareness
 
 **Created:** 2026-07-04
-**Status:** Approved (implementation) — pre-approved by owner 2026-07-04 (design discussed and accepted; see AGENT-TASKS.md Task 13)
+**Status:** Implemented (api#112, merged 2026-07-04)
 **Depends on:** spec-054 (default spending account), spec-053 (calendar recurrence fields — merged 2026-07-04, lifestack-api#109, so the pass-through is in scope from the start)
 
 ---

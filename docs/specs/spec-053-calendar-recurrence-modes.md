@@ -1,7 +1,7 @@
 # Spec-053: Calendar Recurrence Modes (Month-End, Nth Weekday)
 
 **Created:** 2026-07-03
-**Status:** Approved (implementation) — 2026-07-03
+**Status:** Implemented (api#109, merged 2026-07-04)
 **Depends on:** existing recurring workflows (`RecurringTodoRule`, `RecurringTransaction`, `app/application/workflows.py` generation jobs)
 
 ---

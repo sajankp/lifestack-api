@@ -1,7 +1,7 @@
 # Spec-049: Transfer Brokerage-Outflow Cash Snapshot
 
 **Created:** 2026-07-01
-**Status:** Approved (implementation)
+**Status:** Implemented (api#97, merged 2026-07-05)
 **Depends on:** spec-011 (transfers/FX), the cash model documented in
 `docs/domain/cash-model-ledger-snapshots-reconciliation.md`
 

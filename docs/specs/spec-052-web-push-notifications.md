@@ -1,7 +1,7 @@
 # Spec-052: Web Push Notification Delivery
 
 **Created:** 2026-07-03
-**Status:** Approved (implementation) — 2026-07-03
+**Status:** Implemented (api#108, merged 2026-07-04)
 **Depends on:** existing notifications module (specs 019/020 era), scheduler foundation (`app/application/jobs.py`), existing PWA shell (`lifestack-web/public/sw.js`)
 
 ---

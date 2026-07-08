@@ -837,6 +837,25 @@ This balances developer velocity (fast push feedback) with release confidence (f
 | Weekly summary enrichment generation (Spec 016) | ✅ Done |
 | Multi-currency finance accounts, display setting preferences & FX rates | ✅ Done |
 | E2E tests (Playwright, full Docker Compose) | ✅ Done |
+| Transaction-based investing orders — trade management, FIFO lots, CSV import (Spec 041, 044, 046) | ✅ Done |
+| Net worth balance sheet endpoint (Spec 042) | ✅ Done |
+| Transfer-inclusive ledger and reconciliation UI (Spec 040) | ✅ Done |
+| Unified cash view — per-account snapshots, reconciliation, orders (Spec 048) | ✅ Done |
+| Transfer brokerage outflow snapshot — auto-decrement on investing withdrawals (Spec 049) | ✅ Done |
+| One account, one currency invariant + net-worth aggregation fix (Spec 050) | ✅ Done |
+| Corporate actions — splits, reverse splits, bonus issues with FIFO replay (Spec 051) | ✅ Done |
+| CAMS CAS PDF import for mutual funds (Spec 056) | ✅ Done |
+| NSE Bhavcopy price feed for INR stock holdings (Spec 057) | ✅ Done |
+| Dashboard insights background job (Spec 058) | ✅ Done |
+| Web push notifications (Spec 052) | ✅ Done |
+| Calendar recurrence modes — monthly, anchor-day clamping (Spec 053) | ✅ Done |
+| Mandatory spending transaction account (Spec 054) | ✅ Done |
+| Capture agent workspace awareness (Spec 055) | ✅ Done |
+| Voice agent usability — fuzzy accounts, read-only investing, barge-in (Spec 059) | ✅ Done |
+| Demat CAS holdings verification + CDSL support (Spec 060, 063) | ✅ Done |
+| Voice agent backdated spending transactions (Spec 061) | ✅ Done |
+| Category delete/merge + category groups + recurring date-ranged budgets (Spec 062, 064) | ✅ Done |
+| Net worth history — daily snapshot job + stacked-area history chart (Spec 065) | ✅ Done |
 
 ### Phase 2 - AI and Integrations
 - design AI adapter architecture (provider-agnostic)
