@@ -40,6 +40,7 @@ from app.core.constants import (
     ADVISORY_LOCK_EXPORT_CLEANUP,
     ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
+    ADVISORY_LOCK_NET_WORTH_SNAPSHOT,
     ADVISORY_LOCK_PUSH_DELIVERY,
     ADVISORY_LOCK_RECURRING_TRANSACTIONS,
     ADVISORY_LOCK_SESSION_CLEANUP,
@@ -841,4 +842,78 @@ async def todo_reminder_job(workspace_id: int | None = None) -> None:
         lock_key=TODO_REMINDER_LOCK_KEY,
         workspace_id=workspace_id,
         process_workspace=lambda s, ws: process_workspace_todo_reminders(s, ws, window_end),
+    )
+
+
+# Advisory lock key — see app.core.constants for the full registry
+NET_WORTH_SNAPSHOT_LOCK_KEY = ADVISORY_LOCK_NET_WORTH_SNAPSHOT
+
+
+async def net_worth_snapshot_job(workspace_id: int | None = None) -> None:
+    """Cron-triggered job that materializes the daily net worth snapshot
+    for each active workspace (spec-065)."""
+
+    async def _process_workspace(session: AsyncSession, workspace: Workspace) -> None:
+        from app.finance.repository import (  # noqa: PLC0415
+            AccountRepository,
+            CurrencyRepository,
+            FinanceSettingRepository,
+            FxRateRepository,
+            NetWorthSnapshotRepository,
+        )
+        from app.finance.service import AccountService, NetWorthService  # noqa: PLC0415
+        from app.investing.performance_service import InvestingSummaryService  # noqa: PLC0415
+        from app.investing.repository import CashBalanceRepository  # noqa: PLC0415
+
+        account_repo = AccountRepository(session)
+        currency_repo = CurrencyRepository(session)
+        setting_repo = FinanceSettingRepository(session)
+        fx_rate_repo = FxRateRepository(session)
+        net_worth_snapshot_repo = NetWorthSnapshotRepository(session)
+        cash_balance_repo = CashBalanceRepository(session)
+
+        account_service = AccountService(
+            account_repository=account_repo,
+            currency_repository=currency_repo,
+            setting_repository=setting_repo,
+        )
+
+        from app.investing.repository import (  # noqa: PLC0415
+            HoldingPriceRepository,
+            HoldingRepository,
+            PortfolioSnapshotRepository,
+        )
+
+        holding_repo = HoldingRepository(session)
+        holding_price_repo = HoldingPriceRepository(session)
+        snapshot_repo = PortfolioSnapshotRepository(session)
+
+        summary_service = InvestingSummaryService(
+            holding_repo=holding_repo,
+            cash_repo=cash_balance_repo,
+            finance_setting_repo=setting_repo,
+            fx_rate_repo=fx_rate_repo,
+            holding_price_repo=holding_price_repo,
+            snapshot_repo=snapshot_repo,
+            account_repo=account_repo,
+        )
+
+        net_worth_service = NetWorthService(
+            session=session,
+            account_service=account_service,
+            summary_service=summary_service,
+            cash_balance_repo=cash_balance_repo,
+            setting_repo=setting_repo,
+            fx_rate_repo=fx_rate_repo,
+            net_worth_snapshot_repo=net_worth_snapshot_repo,
+        )
+
+        today_date = datetime.now(UTC).date()
+        await net_worth_service.create_net_worth_snapshot(workspace.id, today_date)
+
+    await run_workspace_job(
+        job_name="net_worth_snapshot_job",
+        lock_key=NET_WORTH_SNAPSHOT_LOCK_KEY,
+        workspace_id=workspace_id,
+        process_workspace=_process_workspace,
     )

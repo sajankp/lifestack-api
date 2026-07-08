@@ -1,9 +1,10 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
 
 import sqlalchemy as sa
+from pydantic import field_validator
 from sqlmodel import Field, SQLModel
 
 
@@ -229,3 +230,42 @@ class CapitalTransfer(SQLModel, table=True):
             name="fk_capital_transfers_to_account_workspace",
         ),
     )
+
+
+class NetWorthSnapshot(SQLModel, table=True):
+    __tablename__ = "net_worth_snapshots"
+
+    id: int | None = Field(default=None, primary_key=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    snapshot_date: date = Field(sa_type=sa.Date())
+    reporting_currency: str = Field(max_length=10)
+    holdings_value: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    investing_cash: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    spending_cash: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    total_net_worth: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    fx_rates_used: dict = Field(default_factory=dict, sa_type=sa.JSON())
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "workspace_id",
+            "snapshot_date",
+            name="uq_workspace_net_worth_snapshot_day",
+        ),
+    )
+
+    model_config = {
+        "validate_default": True,
+        "validate_assignment": True,
+    }
+
+    @field_validator("fx_rates_used")
+    @classmethod
+    def validate_fx_rates(cls, v: dict | None) -> dict | None:
+        if v is None:
+            return v
+        if not isinstance(v, dict):
+            raise ValueError("fx_rates_used must be a dictionary")
+        return v

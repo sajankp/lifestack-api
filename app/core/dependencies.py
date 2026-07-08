@@ -21,6 +21,7 @@ from app.finance.repository import (
     CurrencyRepository,
     FinanceSettingRepository,
     FxRateRepository,
+    NetWorthSnapshotRepository,
 )
 from app.finance.service import (
     AccountService,
@@ -28,6 +29,7 @@ from app.finance.service import (
     CurrencyService,
     FinanceSettingService,
     FxRateService,
+    NetWorthService,
 )
 from app.imports.repository import ImportRepository
 from app.imports.service import ImportService
@@ -512,6 +514,34 @@ async def get_finance_transfer_service(
     cash_balance_repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
 ) -> CapitalTransferService:
     return CapitalTransferService(transfer_repo, account_repo, currency_repo, cash_balance_repo)
+
+
+async def get_finance_net_worth_snapshot_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> NetWorthSnapshotRepository:
+    return NetWorthSnapshotRepository(session)
+
+
+async def get_finance_net_worth_service(
+    session: AsyncSession = Depends(get_db_session),
+    account_service: AccountService = Depends(get_finance_account_service),
+    summary_service: InvestingSummaryService = Depends(get_investing_summary_service),
+    cash_balance_repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
+    setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
+    fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
+    net_worth_snapshot_repo: NetWorthSnapshotRepository = Depends(
+        get_finance_net_worth_snapshot_repo
+    ),
+) -> NetWorthService:
+    return NetWorthService(
+        session=session,
+        account_service=account_service,
+        summary_service=summary_service,
+        cash_balance_repo=cash_balance_repo,
+        setting_repo=setting_repo,
+        fx_rate_repo=fx_rate_repo,
+        net_worth_snapshot_repo=net_worth_snapshot_repo,
+    )
 
 
 # ---------------------------------------------------------------------------
