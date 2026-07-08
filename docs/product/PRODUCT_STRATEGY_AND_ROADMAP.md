@@ -5,6 +5,10 @@ Last updated: 2026-07-08
 
 Scope: current product positioning, implementation status, post-Gate 0 backlog, and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
 
+## Changelog
+
+- **2026-07-08 — external product assessment folded in (owner-accepted).** An external product review (`PRODUCT-ASSESSMENT.md` + `UX-REVIEW.md`, dated 2026-07-08) proposed four rethinks; the owner accepted all four. Changes in this revision: Immediate Focus now includes demo-path UX hardening and capture consolidation at parity with CI gating, plus Morning Briefing as the next major product slice; Voice/capture promoted from Experimental to Secondary; Track 2 (Health Memory) re-sequenced ahead of Track 1 (Mobile Companion, now shrunk to camera upload + native health-app sync); finance correctness campaign (specs 040–065) declared V1-complete.
+
 ## 1) Product Thesis
 
 Lifestack should evolve from a personal productivity and finance system into a private personal coach powered by structured life data.
@@ -68,7 +72,7 @@ This gives the current application a clear center of gravity while still leaving
 | Todos and notifications | Action layer for reminders, follow-ups, and system-generated work. | Secondary |
 | Workspaces and RBAC | Trust boundary and demo credibility layer. | Supporting |
 | Master config | Admin/settings surface, not a main destination. | Supporting |
-| Voice/capture | Experimental input layer over structured services. | Experimental |
+| Voice/capture | Universal input layer; text-first with voice mode. | Secondary |
 
 ### Reviewer Demo Journey
 
@@ -109,7 +113,10 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 1. ~~Merge api#130, then implement spec-065 net-worth-over-time~~ — done 2026-07-08 (api#132, web#87). Daily history now accumulates via the `net_worth_snapshot` scheduler job (07:00 UTC) plus an opportunistic upsert on every `GET /finance/net-worth` read.
 2. ~~Spending model wave: spec-062 category delete & merge, then spec-064 recurring date-ranged budgets + category groups~~ — done 2026-07-08 (api#131, web#86).
 3. Gate the e2e suite in CI — the suite exists and runs against the composed stack; the remaining work is CI wiring. Longest-standing open structural item, keeps losing to feature work.
-4. Keep the standing deferrals: [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md) hybrid-catalog expansion after workspace-scoped investing flows settle, and platform-wide constituent/price-data curation until there is a clear admin persona, provenance model, and rollback workflow.
+4. Demo-path UX hardening — the UX-REVIEW.md P0 (destructive-action safety, one feedback layer) and P1 (naming, dashboard launchpad, nav, notifications) batches, at parity with CI gating. The dashboard is currently the weakest screen despite being step 1 of the Reviewer Demo Journey (§2); this converts already-shipped backend depth (specs 058, 062, 064, 065) into something a reviewer can feel.
+5. Capture consolidation — promote capture into one model: text-first, voice as a mode, structured confirmation cards instead of raw JSON or tool-call narration, entry point in nav/header. Prerequisite for the briefing habit and for Track 1/2's mobile capture story.
+6. Morning Briefing — the next major product slice: a deterministic, source-linked composition of existing read models (dashboard insights spec-058, weekly summaries, budget guardrails, overdue todos, net-worth snapshots spec-065) with optional push delivery (spec-052). Zero LLM involvement in v1. This is the finance-and-tasks version of the Flagship Future Workflow (§1) — buildable now, and the dashboard's natural successor.
+7. Keep the standing deferrals: [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md) hybrid-catalog expansion after workspace-scoped investing flows settle, and platform-wide constituent/price-data curation until there is a clear admin persona, provenance model, and rollback workflow.
 
 ### Core Product Depth
 
@@ -129,6 +136,8 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 | JWT library maintenance | Migrate from `python-jose` to `PyJWT` or `joserfc`. | python-jose is no longer actively maintained; planning migration mitigates dependency security risk. |
 
 ### Investing and Market Data
+
+**2026-07-08 — Finance depth: V1 complete.** The cash-correctness and investing-accuracy campaign (specs 040–065: transfer-inclusive reconciliation, FIFO cost basis, corporate actions, account-currency invariant, CAMS/NSDL/CDSL CAS imports, bhavcopy pricing, net-worth history) is done. New finance specs now require explicit justification against briefing, health, and capture priorities rather than being the default next slice — each additional India-specific ingestion or reconciliation spec has diminishing reviewer-visible value (see `PRODUCT-ASSESSMENT.md` Rethink 4).
 
 | Area | Roadmap Item | Why It Belongs Here |
 |---|---|---|
@@ -176,11 +185,13 @@ MCP should be treated as a later-stage integration layer with real product value
 
 The roadmap can use stage numbers for planning, but user-facing product eras should have memorable names:
 
+**2026-07-08 — re-sequenced (owner-accepted):** Health Memory now precedes Mobile Companion. Web push (spec-052) and an installable PWA (web spec-005) already ship, so manual health tracking (weight, medications) has no mobile dependency; Mobile Companion is shrunk to the items that are genuinely mobile-only (camera upload, native health-app sync) and follows once those are worth building. Health Sync still follows Health Memory, unchanged.
+
 | Era | Product Name | Purpose |
 |---|---|---|
 | Gate 0 | Foundation | Make the current product secure, reliable, demoable, and honest in docs. |
-| Track 1 | Mobile Companion | Move reminders, capture, camera upload, and health sync to the device people carry. |
-| Track 2 | Health Memory | Add health metrics, medications, workouts, and source-aware longitudinal records. |
+| Track 1 | Health Memory | Add health metrics, medications, workouts, and source-aware longitudinal records — manual, web/PWA-first. |
+| Track 2 | Mobile Companion | Camera upload for documents and native health-app sync, once a native wrapper earns its cost. |
 | Track 3 | Health Sync | Reduce manual logging through mobile health-app integrations. |
 | Track 4 | Document Intelligence | Turn documents into source-linked structured records. |
 | Track 5 | Source-Backed Second Brain | Connect documents, notes, records, and activity through cited retrieval. |
@@ -208,28 +219,9 @@ Closed acceptance criteria:
 - Mobile shell/navigation is responsive enough for lightweight capture and review flows.
 - READMEs separate current features from planned roadmap scope.
 
-### Track 1: Mobile Companion Foundation
+### Track 1: Health Memory
 
-Goal: make the phone the natural capture and sync surface.
-
-Scope:
-
-- Mobile app shell with shared design language.
-- Quick capture for todo, spending, and journal-like notes.
-- Push notifications for reminders and summaries.
-- Camera upload for documents.
-- Background sync plumbing.
-- Health-app sync architecture for Apple Health, Google Health Connect, or equivalent providers.
-
-Non-goals:
-
-- Full health analytics.
-- General personal coach automation.
-- Multi-user SaaS mobile features.
-
-### Track 2: Health Memory
-
-Goal: support manual health tracking before depending on external sync.
+Goal: support manual health tracking before depending on external sync. Web/PWA-first — no mobile dependency, since installable PWA (web spec-005) and web push (spec-052) already ship.
 
 Scope:
 
@@ -244,6 +236,23 @@ Data rules:
 - Every health record has source metadata: manual, mobile sync, document extraction, or import.
 - Health records are exportable.
 - The UI distinguishes measured, user-entered, and extracted values.
+
+### Track 2: Mobile Companion Foundation
+
+Goal: cover the parts of the capture and sync surface that genuinely require a phone. Shrunk from the original mobile-shell scope: quick capture, push notifications, and an installable app shell are already delivered on web (voice/capture endpoint, spec-052 web push, spec-005 PWA manifest) — rebuilding them natively is not in scope here.
+
+Scope:
+
+- Camera upload for documents.
+- Health-app sync architecture for Apple Health, Google Health Connect, or equivalent providers.
+- Background sync plumbing for the above.
+
+Non-goals:
+
+- Full health analytics.
+- General personal coach automation.
+- Multi-user SaaS mobile features.
+- Rebuilding capture, push notifications, or an installable shell already shipped on web.
 
 ### Track 3: Health Sync
 
