@@ -361,6 +361,7 @@ class CategoryGroupService:
             "icon": group.icon,
         }
         await self.category_repo.ungroup_categories(workspace_id, group.id)
+        await self.budget_repo.delete_by_group_id(workspace_id, group.id)
         await self.repository.delete(group)
 
         if audit_logger and actor_id is not None:
@@ -1734,6 +1735,9 @@ class BudgetService:
         new_end = budget.end_month
         if budget_in.end_month is not None:
             new_end = budget_in.end_month
+
+        if new_end is not None and new_end < budget.start_month:
+            raise ValidationError(detail="end_month cannot be before the budget's start_month")
 
         overlapping = await self.budget_repo.get_overlapping_budgets(
             workspace_id,

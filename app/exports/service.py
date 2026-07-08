@@ -186,7 +186,7 @@ class ExportService:
                     stream = await self.session.stream_scalars(
                         select(SpendingBudget)
                         .where(SpendingBudget.workspace_id == workspace_id)
-                        .order_by(SpendingBudget.month_start.asc())
+                        .order_by(SpendingBudget.start_month.asc())
                     )
                     first = True
                     async for row in stream:
@@ -260,7 +260,7 @@ class ExportService:
                         "spending/budgets.csv",
                         select(SpendingBudget)
                         .where(SpendingBudget.workspace_id == workspace_id)
-                        .order_by(SpendingBudget.month_start.asc()),
+                        .order_by(SpendingBudget.start_month.asc()),
                     )
                 elif module == "investing":
                     await self._write_csv_section(

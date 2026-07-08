@@ -209,6 +209,31 @@ async def test_export_cleanup_workflow(client: AsyncClient, monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_spending_export_includes_budgets(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    cookies = creds["cookies"]
+
+    cats = (await client.get("/v1/spending/categories", cookies=cookies)).json()["items"]
+    category_id = cats[0]["public_id"]
+
+    budget_resp = await client.post(
+        "/v1/spending/budgets",
+        json={"category_id": category_id, "amount": "500.00", "start_month": "2026-06-01"},
+        cookies=cookies,
+    )
+    assert budget_resp.status_code == 201, budget_resp.text
+
+    for export_format in ("json", "csv"):
+        create_resp = await client.post(
+            "/v1/exports",
+            json={"format": export_format, "modules": ["spending"]},
+            cookies=cookies,
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        assert create_resp.json()["status"] == ExportStatus.ready
+
+
+@pytest.mark.asyncio
 async def test_export_workspace_isolation(client: AsyncClient):
     creds_a = await _register_and_login(client, "ws_a")
     creds_b = await _register_and_login(client, "ws_b")

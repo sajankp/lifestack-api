@@ -654,6 +654,15 @@ class BudgetRepository(BaseRepository[SpendingBudget]):
         )
         await self.session.execute(stmt)
 
+    async def delete_by_group_id(self, workspace_id: int, category_group_id: int) -> None:
+        if workspace_id is None or category_group_id is None:
+            return
+        stmt = sa.delete(SpendingBudget).where(
+            SpendingBudget.workspace_id == workspace_id,
+            SpendingBudget.category_group_id == category_group_id,
+        )
+        await self.session.execute(stmt)
+
     async def has_current_or_future_budget(self, workspace_id: int, category_group_id: int) -> bool:
         today = date.today()
         first_of_month = date(today.year, today.month, 1)
