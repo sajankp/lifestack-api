@@ -5,9 +5,7 @@ This document details all background jobs registered in Lifestack's FastAPI life
 Most background jobs are subject to **advisory lock coordination** on Postgres to prevent split-brain conflicts during rolling deployment windows, using one of two primitives:
 
 - **Transaction-scoped** (`pg_try_advisory_xact_lock`, released automatically on commit): `fx_rate_ingestion`, `export_cleanup`, `session_cleanup`, `import_preview_cleanup`, `push_delivery`.
-- **Session-scoped** (`pg_try_advisory_lock`, held across the per-workspace loop and released explicitly): the remaining per-workspace jobs, via the shared `run_workspace_job` helper — this primitive is used instead of the transaction-scoped one specifically so the lock survives `COMMIT` between workspaces in the loop (see the helper's docstring).
-
-**`investment_closing_prices_job` currently acquires no advisory lock at all** — it is the only per-workspace job not using `run_workspace_job`. Two instances running concurrently during a rolling deploy can double-write `holding_prices` for the same close date. This is a known gap being fixed separately.
+- **Session-scoped** (`pg_try_advisory_lock`, held across the per-workspace loop and released explicitly): the remaining per-workspace jobs, via the shared `run_workspace_job` helper — this primitive is used instead of the transaction-scoped one specifically so the lock survives `COMMIT` between workspaces in the loop (see the helper's docstring). `investment_closing_prices_job` was the last per-workspace job managing its own per-workspace sessions with no lock at all; it now uses `run_workspace_job` too (key 1013, see `app/core/constants.py`).
 
 Additionally, non-idempotent scheduler jobs are blocked from registering unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly configured.
 

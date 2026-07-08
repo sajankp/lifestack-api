@@ -20,7 +20,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
 from app.application.jobs import (
+    INVESTMENT_CLOSING_PRICES_LOCK_KEY,
     budget_guardrails_job,
+    investment_closing_prices_job,
     recurring_transactions_job,
     run_workspace_job,
     weekly_summary_job,
@@ -31,6 +33,7 @@ from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.core.scheduler import register_interval_job, scheduler
+from app.investing.performance_service import PerformanceService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction
 from app.summaries.service import WeeklySummaryService
@@ -696,3 +699,59 @@ async def test_weekly_summary_job_holds_single_connection(override_database_url)
     assert state["engine_connects"] == 0, (
         "weekly_summary_job must not hold a dedicated lock connection alongside its work session"
     )
+
+
+@pytest.mark.asyncio
+async def test_investment_closing_prices_job_holds_single_connection(override_database_url):
+    """Regression guard: this job used to open a fresh session per workspace
+    with no advisory lock at all (see docs/JOBS.md history). It must now share
+    ONE connection for the lock + per-workspace work, like the other jobs."""
+    with (
+        patch.object(
+            PerformanceService, "refresh_workspace_prices", new=AsyncMock(return_value={})
+        ),
+        _track_concurrent_db_holds() as state,
+    ):
+        await investment_closing_prices_job()
+
+    assert state["peak"] == 1, (
+        f"investment_closing_prices_job held {state['peak']} sessions at once"
+    )
+    assert state["engine_connects"] == 0, (
+        "investment_closing_prices_job must not hold a dedicated lock connection "
+        "alongside its work session"
+    )
+
+
+@pytest.mark.asyncio
+async def test_investment_closing_prices_job_skips_when_lock_held(
+    override_database_url, test_database_engine
+):
+    """A second concurrent instance must skip, not double-write holding_prices.
+
+    Takes the advisory lock on a genuinely separate physical connection (not
+    one bound to the test's savepoint-isolated session_maker, which would
+    reuse the same backend session and let the "second" acquisition through)
+    to prove the job actually detects contention and skips its per-workspace
+    work rather than racing another instance.
+    """
+    refresh_mock = AsyncMock(return_value={})
+    other_connection = await test_database_engine.connect()
+    try:
+        lock_res = await other_connection.execute(
+            sa.select(sa.func.pg_try_advisory_lock(INVESTMENT_CLOSING_PRICES_LOCK_KEY))
+        )
+        assert lock_res.scalar() is True, (
+            "setup: failed to acquire the lock on the other connection"
+        )
+
+        with patch.object(PerformanceService, "refresh_workspace_prices", new=refresh_mock):
+            await investment_closing_prices_job()
+
+        refresh_mock.assert_not_called()
+    finally:
+        await other_connection.execute(
+            sa.select(sa.func.pg_advisory_unlock(INVESTMENT_CLOSING_PRICES_LOCK_KEY))
+        )
+        await other_connection.commit()
+        await other_connection.close()

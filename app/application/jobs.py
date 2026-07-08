@@ -40,6 +40,7 @@ from app.core.constants import (
     ADVISORY_LOCK_EXPORT_CLEANUP,
     ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
+    ADVISORY_LOCK_INVESTMENT_CLOSING_PRICES,
     ADVISORY_LOCK_NET_WORTH_SNAPSHOT,
     ADVISORY_LOCK_PUSH_DELIVERY,
     ADVISORY_LOCK_RECURRING_TRANSACTIONS,
@@ -205,37 +206,42 @@ async def _release_session_advisory_lock(
         logger.warning(f"{job_name}_lock_release_failed", job_name=job_name, exc_info=True)
 
 
-async def investment_closing_prices_job() -> None:
-    """Cache each workspace's latest completed market close once per day."""
-    async with postgres.async_session_maker() as session:
-        workspace_ids = (
-            (await session.execute(select(Workspace.id).where(Workspace.is_active))).scalars().all()
+# Advisory lock key — see app.core.constants for the full registry
+INVESTMENT_CLOSING_PRICES_LOCK_KEY = ADVISORY_LOCK_INVESTMENT_CLOSING_PRICES
+
+
+async def investment_closing_prices_job(workspace_id: int | None = None) -> None:
+    """Cache each workspace's latest completed market close once per day.
+
+    Brought under run_workspace_job's session-level advisory lock (was
+    previously the only per-workspace job managing its own per-workspace
+    sessions with no lock at all — two concurrent instances during a rolling
+    deploy could double-write holding_prices for the same close date).
+    """
+
+    async def _process_workspace(session: AsyncSession, workspace: Workspace) -> None:
+        service = PerformanceService(
+            HoldingRepository(session),
+            CashBalanceRepository(session),
+            HoldingPriceRepository(session),
+            PortfolioSnapshotRepository(session),
+            FinanceSettingRepository(session),
+            FxRateRepository(session),
+            InstrumentRepository(session),
+        )
+        updated = await service.refresh_workspace_prices(workspace.id)
+        logger.info(
+            "investment_closing_prices_workspace_completed",
+            workspace_id=workspace.id,
+            updated_symbols=sorted(updated),
         )
 
-    for workspace_id in workspace_ids:
-        try:
-            async with postgres.async_session_maker() as session, session.begin():
-                service = PerformanceService(
-                    HoldingRepository(session),
-                    CashBalanceRepository(session),
-                    HoldingPriceRepository(session),
-                    PortfolioSnapshotRepository(session),
-                    FinanceSettingRepository(session),
-                    FxRateRepository(session),
-                    InstrumentRepository(session),
-                )
-                updated = await service.refresh_workspace_prices(workspace_id)
-                logger.info(
-                    "investment_closing_prices_workspace_completed",
-                    workspace_id=workspace_id,
-                    updated_symbols=sorted(updated),
-                )
-        except Exception:
-            logger.error(
-                "investment_closing_prices_workspace_failed",
-                workspace_id=workspace_id,
-                exc_info=True,
-            )
+    await run_workspace_job(
+        job_name="investment_closing_prices_job",
+        lock_key=INVESTMENT_CLOSING_PRICES_LOCK_KEY,
+        process_workspace=_process_workspace,
+        workspace_id=workspace_id,
+    )
 
 
 # Advisory lock key — see app.core.constants for the full registry
