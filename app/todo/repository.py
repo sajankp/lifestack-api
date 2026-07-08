@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from sqlalchemy import case, func, select
@@ -53,6 +53,41 @@ class TodoRepository(BaseRepository[Todo]):
             )
             .order_by(Todo.due_date.asc())
             .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def get_overdue_items(
+        self, workspace_id: int, now: datetime, limit: int = 5
+    ) -> Sequence[Todo]:
+        """Incomplete overdue todos, oldest-due first — the morning briefing
+        (spec-067) names the most-overdue item as the representative example."""
+        result = await self.session.execute(
+            select(Todo)
+            .where(
+                Todo.workspace_id == workspace_id,
+                Todo.completed.is_(False),
+                Todo.due_date.is_not(None),
+                Todo.due_date < now,
+            )
+            .order_by(Todo.due_date.asc())
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def get_recurring_rules_due_between(
+        self, workspace_id: int, start_date: date, end_date: date
+    ) -> Sequence[RecurringTodoRule]:
+        """Active recurring todo rules whose next occurrence falls in
+        [start_date, end_date] — briefing "recurring due soon" line (spec-067)."""
+        result = await self.session.execute(
+            select(RecurringTodoRule)
+            .where(
+                RecurringTodoRule.workspace_id == workspace_id,
+                RecurringTodoRule.is_active == True,  # noqa: E712
+                RecurringTodoRule.next_due_date >= start_date,
+                RecurringTodoRule.next_due_date <= end_date,
+            )
+            .order_by(RecurringTodoRule.next_due_date.asc())
         )
         return result.scalars().all()
 

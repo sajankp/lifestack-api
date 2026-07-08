@@ -18,6 +18,7 @@ from app.application.jobs import (
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
     investment_closing_prices_job,
+    morning_briefing_job,
     net_worth_snapshot_job,
     push_delivery_job,
     recurring_transactions_job,
@@ -171,6 +172,12 @@ async def lifespan(_app: FastAPI):
             id="weekly_summary",
             replace_existing=True,
             timezone="UTC",
+        )
+        register_daily_job(
+            morning_briefing_job,
+            job_id="morning_briefing",
+            hour_utc=settings.BRIEFING_JOB_HOUR_UTC,
+            minute_utc=settings.BRIEFING_JOB_MINUTE_UTC,
         )
         start_scheduler()
     yield

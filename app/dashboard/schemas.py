@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -47,3 +48,22 @@ class DashboardSummary(BaseModel):
     system: SystemSummary
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class BriefingSource(BaseModel):
+    entity_type: str | None = None
+    entity_public_id: str | None = None
+    route: str
+
+
+class BriefingLine(BaseModel):
+    severity: Literal["critical", "warning", "info"]
+    text: str
+    source: BriefingSource
+
+
+class BriefingResponse(BaseModel):
+    generated_at: datetime
+    all_clear: bool
+    reporting_currency: str
+    lines: list[BriefingLine] = []
