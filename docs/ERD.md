@@ -116,6 +116,7 @@ erDiagram
         uuid public_id UK
         int workspace_id FK
         int user_id FK
+        int parent_id FK
         string title
         string description
         datetime due_date
@@ -153,6 +154,7 @@ erDiagram
 
     USERS ||--o{ TODOS : owns
     WORKSPACES ||--o{ TODOS : scopes
+    TODOS ||--o{ TODOS : "parent_id (one level, ON DELETE CASCADE)"
     USERS ||--o{ RECURRING_TODO_RULES : configures
     WORKSPACES ||--o{ RECURRING_TODO_RULES : scopes
 ```
