@@ -49,7 +49,7 @@ Platform baseline, first finance/investing/workflow features, and the original v
 | [Spec 023: Spending Wallet Ledger and Transfers](./spec-023-spending-wallet-ledger-and-transfers.md) | Implemented (Account/Transfer V1) | Wallet/account model, transfers, and future ledger depth. |
 | [Spec 024: Phase 1 Runtime API Integration Contract](./spec-024-phase1-runtime-api-integration-contract.md) | Implemented | Runtime contract for session, workspace, finance, investing, dashboard, and imports. |
 | [Spec 027: Investing Account Identity Migration](./spec-027-investing-account-migration.md) | Implemented | Investing account identity migration and frontend/API alignment. |
-| [Spec 030: CLI Management Commands](./spec-030-cli-management-commands.md) | Proposed/current | CLI runner for background jobs and production-safe E2E route gating checks. |
+| [Spec 030: CLI Management Commands](./spec-030-cli-management-commands.md) | Implemented | CLI runner for background jobs and production-safe E2E route gating checks. |
 | [Spec 031: Automated Price Updates and Investing UI Enhancements](./spec-031-automated-price-updates-and-ui.md) | Implemented | On-demand price refresh, current valuation fields, and investing holdings UI enhancements. |
 | [Spec 032: Automated Constituent Ingestion](./spec-032-automated-constituent-ingestion.md) | Archived - retired | Historical Yahoo ingestion implementation; automated ingestion was removed in favor of CSV constituent import. |
 | [Spec 033: Hybrid Instrument Catalog with Tenant Overrides](./spec-033-hybrid-instrument-catalog.md) | Deferred | Future global public instrument/company catalog with workspace-scoped overrides. |
