@@ -380,7 +380,14 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
             CapitalTransfer.id.label("id"),
             CapitalTransfer.public_id.label("public_id"),
             CapitalTransfer.occurred_at.label("occurred_at"),
-            CapitalTransfer.gross_amount.label("amount"),
+            # net_amount_received: what the destination account actually received,
+            # in to_currency (correct for the receiving leg). gross_amount is in
+            # from_currency and is only correct for the leg that lost it. See the
+            # matching comment in app/finance/repository.py's reconciliation query.
+            case(
+                (CapitalTransfer.from_account_id == account_id, CapitalTransfer.gross_amount),
+                else_=CapitalTransfer.net_amount_received,
+            ).label("amount"),
             case(
                 (CapitalTransfer.from_account_id == account_id, literal("transfer_out")),
                 else_=literal("transfer_in"),
@@ -447,7 +454,7 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         AND capital transfer contributions.
 
         balance = SUM(income txns) - SUM(expense txns)
-                + SUM(transfer_in gross_amount) - SUM(transfer_out gross_amount)
+                + SUM(transfer_in net_amount_received) - SUM(transfer_out gross_amount)
 
         ``before_row`` restricts the query to entries strictly preceding that row
         (used for computing the running balance tail in paginated ledger views).
@@ -517,8 +524,10 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         _apply_date_filters(xfer_where_in, CapitalTransfer.occurred_at)
         _apply_date_filters(xfer_where_out, CapitalTransfer.occurred_at)
 
+        # net_amount_received (not gross_amount) for inflows — see the comment on
+        # the matching CASE in get_ledger_page above.
         inflow_stmt = select(
-            func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0"))
+            func.coalesce(func.sum(CapitalTransfer.net_amount_received), Decimal("0"))
         ).where(*xfer_where_in)
         outflow_stmt = select(
             func.coalesce(func.sum(CapitalTransfer.gross_amount), Decimal("0"))
