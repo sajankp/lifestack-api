@@ -688,7 +688,11 @@ class AgentTools:
         if weight <= 0:
             return {"status": "error", "message": "Weight must be a positive number."}
 
-        payload = WeightEntryCreate(measured_at=datetime.now(UTC), weight_kg=weight, note=note)
+        try:
+            payload = WeightEntryCreate(measured_at=datetime.now(UTC), weight_kg=weight, note=note)
+        except (PydanticValidationError, ValueError) as exc:
+            return {"status": "error", "message": f"Validation failed: {exc}"}
+
         try:
             entry = await self.health_service.create_weight_entry(
                 self.user_id, self.workspace_id, payload, audit_logger=self.audit_logger
@@ -749,7 +753,11 @@ class AgentTools:
         else:
             scheduled_for = datetime.now(UTC)
 
-        payload = MedicationEventUpsert(scheduled_for=scheduled_for, status=status_value)
+        try:
+            payload = MedicationEventUpsert(scheduled_for=scheduled_for, status=status_value)
+        except (PydanticValidationError, ValueError) as exc:
+            return {"status": "error", "message": f"Validation failed: {exc}"}
+
         try:
             event = await self.health_service.upsert_event(
                 self.user_id,

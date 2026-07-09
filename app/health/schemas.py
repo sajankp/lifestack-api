@@ -52,10 +52,10 @@ class MedicationBase(BaseModel):
                 raise ValueError("days_of_week entries must be 0-6 (Mon-Sun)")
         if self.end_date is not None and self.anchor_date > self.end_date:
             raise ValueError("anchor_date cannot be after end_date")
-        self.times = [_validate_time_str(t) for t in self.times]
+        self.times = sorted({_validate_time_str(t) for t in self.times})
         try:
             ZoneInfo(self.timezone)
-        except ZoneInfoNotFoundError as exc:
+        except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError(f"Unknown timezone: {self.timezone}") from exc
         return self
 
@@ -77,6 +77,25 @@ class MedicationUpdate(BaseModel):
     times: list[str] | None = Field(default=None, min_length=1)
     is_active: bool | None = Field(default=None)
     reminders_enabled: bool | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def _validate_update(self) -> "MedicationUpdate":
+        if self.times is not None:
+            self.times = sorted({_validate_time_str(t) for t in self.times})
+        if self.timezone is not None:
+            try:
+                ZoneInfo(self.timezone)
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise ValueError(f"Unknown timezone: {self.timezone}") from exc
+        if self.days_of_week is not None and any(d < 0 or d > 6 for d in self.days_of_week):
+            raise ValueError("days_of_week entries must be 0-6 (Mon-Sun)")
+        if (
+            self.anchor_date is not None
+            and self.end_date is not None
+            and self.anchor_date > self.end_date
+        ):
+            raise ValueError("anchor_date cannot be after end_date")
+        return self
 
 
 class MedicationResponse(BaseModel):

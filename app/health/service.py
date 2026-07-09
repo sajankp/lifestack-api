@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from app.config import settings
 from app.core.audit import AuditLogger, snapshot_columns
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
 from app.health.models import Medication, MedicationEvent, WeightEntry
 from app.health.repository import (
@@ -148,6 +148,12 @@ class HealthService:
         update_data = payload.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             setattr(med, key, value)
+        if med.frequency != "weekly":
+            med.days_of_week = None
+        elif med.frequency == "weekly" and not med.days_of_week:
+            raise ValidationError(detail="days_of_week is required when frequency is weekly")
+        if med.end_date is not None and med.anchor_date > med.end_date:
+            raise ValidationError(detail="anchor_date cannot be after end_date")
         med.updated_at = datetime.now(UTC)
         med = await self.medication_repo.save(med)
 
@@ -383,6 +389,8 @@ class HealthService:
 
         def _delta_since(days_back: int) -> Decimal | None:
             cutoff = end - timedelta(days=days_back)
+            if latest.measured_at <= cutoff:
+                return None
             prior = [e for e in entries if e.measured_at <= cutoff]
             if not prior:
                 return None

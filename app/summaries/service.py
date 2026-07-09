@@ -490,7 +490,7 @@ class WeeklySummaryService:
             ordered = sorted(weight_entries, key=lambda e: e.measured_at)
             weight_delta_kg = str(ordered[-1].weight_kg - ordered[0].weight_kg)
 
-        if scheduled_count == 0 and not weight_entries:
+        if scheduled_count == 0 and taken_count == 0 and skipped_count == 0 and not weight_entries:
             return None
 
         return {

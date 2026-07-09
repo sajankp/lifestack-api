@@ -1420,8 +1420,12 @@ async def process_workspace_medication_reminders(
             for slot in get_dose_slots_in_window(med, now, window_end)
             if med.last_reminded_slot is None or slot > med.last_reminded_slot
         )
+        try:
+            tz = ZoneInfo(med.timezone)
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
+            tz = UTC
         for slot in due_slots:
-            local_time = slot.astimezone(ZoneInfo(med.timezone)).strftime("%H:%M")
+            local_time = slot.astimezone(tz).strftime("%H:%M")
             body = f"{med.dose_text} — {local_time}" if med.dose_text else local_time
             notification = await notification_service.notify(
                 workspace_id=workspace.id,
