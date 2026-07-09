@@ -29,6 +29,7 @@ from app.application.workflows import (
     deliver_pending_push_notifications,
     evaluate_workspace_budget_guardrails,
     ingest_fx_rates,
+    process_workspace_medication_reminders,
     process_workspace_recurring_todos,
     process_workspace_recurring_transactions,
     process_workspace_todo_reminders,
@@ -42,6 +43,7 @@ from app.core.constants import (
     ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
     ADVISORY_LOCK_INVESTMENT_CLOSING_PRICES,
+    ADVISORY_LOCK_MEDICATION_REMINDER,
     ADVISORY_LOCK_MORNING_BRIEFING,
     ADVISORY_LOCK_NET_WORTH_SNAPSHOT,
     ADVISORY_LOCK_PUSH_DELIVERY,
@@ -52,6 +54,12 @@ from app.core.constants import (
 )
 from app.core.database import postgres
 from app.finance.repository import AccountRepository, FinanceSettingRepository, FxRateRepository
+from app.health.repository import (
+    MedicationEventRepository,
+    MedicationRepository,
+    WeightEntryRepository,
+)
+from app.health.service import HealthService
 from app.imports.repository import ImportRepository
 from app.investing import service as investing_service
 from app.investing.models import InstrumentType
@@ -865,6 +873,27 @@ async def todo_reminder_job(workspace_id: int | None = None) -> None:
 
 
 # Advisory lock key — see app.core.constants for the full registry
+MEDICATION_REMINDER_LOCK_KEY = ADVISORY_LOCK_MEDICATION_REMINDER
+
+
+async def medication_reminder_job(workspace_id: int | None = None) -> None:
+    """Cron-triggered job that creates due-reminder Notifications for
+    medication dose slots (spec-069) — clone of todo_reminder_job. Idempotent
+    via Medication.last_reminded_slot."""
+    now = datetime.now(UTC)
+    window_end = now + timedelta(minutes=settings.HEALTH_REMINDER_INTERVAL_MINUTES)
+
+    await run_workspace_job(
+        job_name="medication_reminder_job",
+        lock_key=MEDICATION_REMINDER_LOCK_KEY,
+        workspace_id=workspace_id,
+        process_workspace=lambda s, ws: process_workspace_medication_reminders(
+            s, ws, now, window_end
+        ),
+    )
+
+
+# Advisory lock key — see app.core.constants for the full registry
 NET_WORTH_SNAPSHOT_LOCK_KEY = ADVISORY_LOCK_NET_WORTH_SNAPSHOT
 
 
@@ -1006,6 +1035,11 @@ async def morning_briefing_job(workspace_id: int | None = None) -> None:
             import_repo=ImportRepository(session),
             weekly_summary_repo=WeeklySummaryRepository(session),
             finance_setting_repo=finance_setting_repo,
+            health_service=HealthService(
+                MedicationRepository(session),
+                MedicationEventRepository(session),
+                WeightEntryRepository(session),
+            ),
         )
 
         briefing = await workflow.get_briefing(workspace.id, user_id)

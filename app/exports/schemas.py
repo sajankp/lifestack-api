@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.exports.models import ExportFormat, ExportStatus
 
-SUPPORTED_MODULES = {"todo", "spending", "investing"}
+SUPPORTED_MODULES = {"todo", "spending", "investing", "health"}
 
 
 class ExportCreate(BaseModel):
