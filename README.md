@@ -9,7 +9,7 @@ The core idea is simple: tasks, spending, investing, health, documents, and pers
 The long-term wedge is a calm daily briefing: what needs attention today, what changed across money and health, which documents or reports need follow-up, and what the personal coach recommends with visible source context.
 
 <p align="center">
-  <video src="https://www.sajankp.com/assets/lifestack-demo.mp4" poster="https://www.sajankp.com/assets/lifestack-demo-poster.jpg" width="800" controls muted loop playsinline>
+  <video src="https://www.sajankp.com/assets/lifestack-demo.mp4" poster="https://www.sajankp.com/assets/lifestack-demo-poster.jpg" width="800" style="max-width: 100%;" controls autoplay muted loop playsinline>
     Demo: dashboard briefing, spending budgets, validated imports, investing holdings, and workspace administration.
   </video>
 </p>
