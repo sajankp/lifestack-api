@@ -110,7 +110,10 @@ Corporate actions, web push, CAS PDF ingestion (CAMS/NSDL/CDSL), NSE bhavcopy pr
 | [Spec 063: CDSL Demat CAS Support (Holdings Verification)](./spec-063-cdsl-demat-cas-support.md) | Implemented | CDSL Demat CAS holdings verification import. |
 | [Spec 064: Recurring Date-Ranged Budgets & Category Groups](./spec-064-category-group-budgets.md) | Implemented (api#131, web#86) | Category groups and recurring date-ranged budgets. |
 | [Spec 065: Net Worth Over Time](./spec-065-net-worth-over-time.md) | Implemented (api#132, web#87) | Live cash + daily net-worth history and graph. |
-| [Spec 068: Todo Organization](./spec-068-todo-organization.md) | In progress (api branch `feat/spec-068-todo-organization`) | Date-grouped task view with one level of subtasks. |
+| [Spec 066: Capture Consolidation](./spec-066-capture-consolidation.md) | Implemented (api#139, web#91) | Unified capture input layer and confirmation cards. |
+| [Spec 067: Morning Briefing](./spec-067-morning-briefing.md) | Implemented (api#140, web#93) | Deterministic morning briefing workflow and insights generation. |
+| [Spec 068: Todo Organization](./spec-068-todo-organization.md) | Implemented (api#144, web#102) | Date-grouped task view with one level of subtasks. |
+| [Spec 069: Health Memory v1](./spec-069-health-memory-v1.md) | Implemented (api#145, web#103) | Medications and weight tracking, dose checklist, and weekly health summary. |
 
 ## Roadmap Alignment
 
