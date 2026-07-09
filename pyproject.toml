@@ -45,6 +45,7 @@ dependencies = [
     "pyjwt[crypto]>=2.10.1",
     "pdfplumber>=0.11.10",
     "pywebpush>=2.3.0",
+    "tzdata",
 ]
 
 [dependency-groups]
