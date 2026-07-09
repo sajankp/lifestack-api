@@ -1,12 +1,13 @@
 from collections.abc import Sequence
 from datetime import date, datetime
+from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select
 
 from app.core.pagination import DEFAULT_LIMIT
 from app.core.repository import BaseRepository
-from app.todo.models import RecurringTodoRule, Todo
+from app.todo.models import PriorityEnum, RecurringTodoRule, Todo
 
 
 class TodoRepository(BaseRepository[Todo]):
@@ -16,6 +17,7 @@ class TodoRepository(BaseRepository[Todo]):
         completed: bool | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
+        sort: Literal["created_at", "due_date"] = "created_at",
     ) -> tuple[Sequence[Todo], int]:
         base = select(Todo).where(Todo.workspace_id == workspace_id)
         if completed is not None:
@@ -24,9 +26,74 @@ class TodoRepository(BaseRepository[Todo]):
         total_q = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(total_q)).scalar_one()
 
-        items_q = base.order_by(Todo.created_at.desc()).limit(limit).offset(offset)
+        if sort == "due_date":
+            priority_rank = case(
+                (Todo.priority == PriorityEnum.high.value, 0),
+                (Todo.priority == PriorityEnum.medium.value, 1),
+                (Todo.priority == PriorityEnum.low.value, 2),
+                else_=3,
+            )
+            items_q = (
+                base
+                .order_by(
+                    Todo.due_date.asc().nulls_last(),
+                    priority_rank,
+                    Todo.created_at.asc(),
+                )
+                .limit(limit)
+                .offset(offset)
+            )
+        else:
+            items_q = base.order_by(Todo.created_at.desc()).limit(limit).offset(offset)
+
         result = await self.session.execute(items_q)
         return result.scalars().all(), total
+
+    async def get_subtask_counts(self, parent_ids: Sequence[int]) -> dict[int, int]:
+        """Grouped count of children for a set of todo ids — one query
+        regardless of page size, avoiding N+1 (spec-068)."""
+        if not parent_ids:
+            return {}
+        result = await self.session.execute(
+            select(Todo.parent_id, func.count(Todo.id))
+            .where(Todo.parent_id.in_(parent_ids))
+            .group_by(Todo.parent_id)
+        )
+        return dict(result.all())
+
+    async def get_public_ids_by_ids(self, ids: Sequence[int]) -> dict[int, UUID]:
+        if not ids:
+            return {}
+        result = await self.session.execute(select(Todo.id, Todo.public_id).where(Todo.id.in_(ids)))
+        return dict(result.all())
+
+    async def get_child_count(self, workspace_id: int, todo_id: int) -> int:
+        result = await self.session.execute(
+            select(func.count(Todo.id)).where(
+                Todo.workspace_id == workspace_id, Todo.parent_id == todo_id
+            )
+        )
+        return int(result.scalar() or 0)
+
+    async def get_open_children(self, workspace_id: int, parent_id: int) -> Sequence[Todo]:
+        result = await self.session.execute(
+            select(Todo).where(
+                Todo.workspace_id == workspace_id,
+                Todo.parent_id == parent_id,
+                Todo.completed.is_(False),
+            )
+        )
+        return result.scalars().all()
+
+    async def delete_completed(self, workspace_id: int) -> int:
+        """Bulk-delete all completed todos in the workspace (Clear completed,
+        spec-068). Returns the number of rows deleted."""
+        if workspace_id is None:
+            return 0
+        stmt = delete(Todo).where(Todo.workspace_id == workspace_id, Todo.completed.is_(True))
+        result = await self.session.execute(stmt)
+        await self.session.flush()
+        return result.rowcount
 
     async def get_summary_counts(self, workspace_id: int, now: datetime) -> tuple[int, int]:
         """Return (open_count, overdue_count) using efficient SQL aggregation."""

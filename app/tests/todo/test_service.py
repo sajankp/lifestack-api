@@ -23,7 +23,7 @@ def service(mock_repo):
 async def test_list_todos(service, mock_repo):
     mock_repo.get_all.return_value = ([], 0)
     result = await service.list_todos(workspace_id=1, completed=True)
-    mock_repo.get_all.assert_called_once_with(1, True, 50, 0)
+    mock_repo.get_all.assert_called_once_with(1, True, 50, 0, "created_at")
     assert result == ([], 0)
 
 

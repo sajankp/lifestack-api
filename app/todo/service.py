@@ -14,6 +14,7 @@ from app.todo.schemas import (
     RecurringTodoRuleCreate,
     RecurringTodoRuleUpdate,
     TodoCreate,
+    TodoResponse,
     TodoUpdate,
 )
 
@@ -70,8 +71,53 @@ class TodoService:
         completed: bool | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
-    ) -> tuple[Sequence[Todo], int]:
-        return await self.repository.get_all(workspace_id, completed, limit, offset)
+        sort: Literal["created_at", "due_date"] = "created_at",
+    ) -> tuple[list[TodoResponse], int]:
+        items, total = await self.repository.get_all(workspace_id, completed, limit, offset, sort)
+        return await self._to_responses(items), total
+
+    async def _to_responses(self, items: Sequence[Todo]) -> list[TodoResponse]:
+        if not items:
+            return []
+        ids = [t.id for t in items]
+        parent_ids = [t.parent_id for t in items if t.parent_id is not None]
+        subtask_counts = await self.repository.get_subtask_counts(ids)
+        parent_public_ids = await self.repository.get_public_ids_by_ids(parent_ids)
+        return [
+            self._build_response(
+                t,
+                subtask_count=subtask_counts.get(t.id, 0),
+                parent_public_id=parent_public_ids.get(t.parent_id) if t.parent_id else None,
+            )
+            for t in items
+        ]
+
+    async def to_response(self, workspace_id: int, todo: Todo) -> TodoResponse:
+        subtask_count = await self.repository.get_child_count(workspace_id, todo.id)
+        parent_public_id = None
+        if todo.parent_id is not None:
+            ids_map = await self.repository.get_public_ids_by_ids([todo.parent_id])
+            parent_public_id = ids_map.get(todo.parent_id)
+        return self._build_response(
+            todo, subtask_count=subtask_count, parent_public_id=parent_public_id
+        )
+
+    @staticmethod
+    def _build_response(
+        todo: Todo, *, subtask_count: int, parent_public_id: uuid.UUID | None
+    ) -> TodoResponse:
+        return TodoResponse(
+            public_id=todo.public_id,
+            title=todo.title,
+            description=todo.description,
+            due_date=todo.due_date,
+            priority=todo.priority,
+            completed=todo.completed,
+            parent_public_id=parent_public_id,
+            subtask_count=subtask_count,
+            created_at=todo.created_at,
+            updated_at=todo.updated_at,
+        )
 
     async def get_summary_counts(self, workspace_id: int, now: datetime) -> tuple[int, int]:
         return await self.repository.get_summary_counts(workspace_id, now)
@@ -101,6 +147,22 @@ class TodoService:
         if not todo:
             raise NotFoundError(detail=f"Todo with id {public_id} not found")
         return todo
+
+    async def get_todo_response(self, workspace_id: int, public_id: uuid.UUID) -> TodoResponse:
+        todo = await self.get_todo(workspace_id, public_id)
+        return await self.to_response(workspace_id, todo)
+
+    async def _resolve_parent(
+        self, workspace_id: int, parent_public_id: uuid.UUID, *, child: Todo | None = None
+    ) -> Todo:
+        parent = await self.repository.get_by_public_id(workspace_id, parent_public_id)
+        if not parent:
+            raise ValidationError(detail=f"Parent todo {parent_public_id} not found")
+        if parent.parent_id is not None:
+            raise ValidationError(detail="A subtask cannot itself be a parent (one level only)")
+        if child is not None and parent.id == child.id:
+            raise ValidationError(detail="A todo cannot be its own parent")
+        return parent
 
     async def ensure_system_task(
         self,
@@ -192,7 +254,13 @@ class TodoService:
         todo_in: TodoCreate,
         audit_logger: AuditLogger | None = None,
     ) -> Todo:
-        new_todo = Todo(user_id=user_id, workspace_id=workspace_id, **todo_in.model_dump())
+        data = todo_in.model_dump(exclude={"parent_public_id"})
+        parent_id = None
+        if todo_in.parent_public_id is not None:
+            parent = await self._resolve_parent(workspace_id, todo_in.parent_public_id)
+            parent_id = parent.id
+
+        new_todo = Todo(user_id=user_id, workspace_id=workspace_id, parent_id=parent_id, **data)
         todo = await self.repository.create(new_todo)
 
         if audit_logger:
@@ -228,6 +296,20 @@ class TodoService:
         if not update_data:
             return todo
 
+        reparent_set = "parent_public_id" in update_data
+        new_parent_public_id = update_data.pop("parent_public_id", None)
+
+        if reparent_set:
+            if new_parent_public_id is None:
+                todo.parent_id = None
+            else:
+                if await self.repository.get_child_count(workspace_id, todo.id) > 0:
+                    raise ValidationError(
+                        detail="A todo with subtasks cannot itself be made a subtask"
+                    )
+                parent = await self._resolve_parent(workspace_id, new_parent_public_id, child=todo)
+                todo.parent_id = parent.id
+
         # A moved due_date re-arms the reminder (spec-052) — reset the dedup
         # marker so todo_reminder_job treats it as not-yet-reminded.
         if "due_date" in update_data and update_data["due_date"] != todo.due_date:
@@ -239,14 +321,13 @@ class TodoService:
         todo.updated_at = datetime.now(UTC)
         todo = await self.repository.save(todo)
 
+        after_snap = _snapshot_todo(todo)
+        changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
+        action = "update"
+        if "completed" in changed_fields and after_snap["completed"] is True:
+            action = "complete"
+
         if audit_logger and actor_id is not None:
-            after_snap = _snapshot_todo(todo)
-            changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
-
-            action = "update"
-            if "completed" in changed_fields and after_snap["completed"] is True:
-                action = "complete"
-
             await audit_logger.log(
                 workspace_id=workspace_id,
                 actor_id=actor_id,
@@ -261,7 +342,48 @@ class TodoService:
                     "changed_fields": changed_fields,
                 },
             )
+
+        if action == "complete" and todo.parent_id is None:
+            await self._cascade_complete_children(
+                workspace_id, todo, actor_id=actor_id, audit_logger=audit_logger
+            )
+
         return todo
+
+    async def _cascade_complete_children(
+        self,
+        workspace_id: int,
+        parent: Todo,
+        *,
+        actor_id: int | None,
+        audit_logger: AuditLogger | None,
+    ) -> None:
+        """Completing a parent also completes its open subtasks (spec-068),
+        each recorded as its own audit entry noting the cascade."""
+        open_children = await self.repository.get_open_children(workspace_id, parent.id)
+        for child in open_children:
+            before_snap = _snapshot_todo(child)
+            child.completed = True
+            child.updated_at = datetime.now(UTC)
+            if audit_logger and actor_id is not None:
+                after_snap = _snapshot_todo(child)
+                await audit_logger.log(
+                    workspace_id=workspace_id,
+                    actor_id=actor_id,
+                    action="complete",
+                    module="todo",
+                    entity_type="todo",
+                    entity_id=child.id,
+                    details={
+                        "entity_public_id": str(child.public_id),
+                        "before": before_snap,
+                        "after": after_snap,
+                        "changed_fields": ["completed"],
+                        "cascade_from_parent": str(parent.public_id),
+                    },
+                )
+        if open_children:
+            await self.repository.session.flush()
 
     async def delete_todo(
         self,
@@ -272,8 +394,9 @@ class TodoService:
     ) -> None:
         todo = await self.get_todo(workspace_id, public_id)
         before_snap = _snapshot_todo(todo)
+        subtask_count = await self.repository.get_child_count(workspace_id, todo.id)
 
-        await self.repository.delete(todo)
+        await self.repository.delete(todo)  # ON DELETE CASCADE removes subtasks at the DB level
 
         if audit_logger and actor_id is not None:
             await audit_logger.log(
@@ -288,8 +411,35 @@ class TodoService:
                     "before": before_snap,
                     "after": None,
                     "changed_fields": [],
+                    "subtasks_deleted": subtask_count,
                 },
             )
+
+    async def delete_completed_todos(
+        self,
+        workspace_id: int,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> int:
+        """Clear completed (spec-068) — bulk-delete all completed todos in the
+        workspace, audit-logged as one entry with the count."""
+        deleted = await self.repository.delete_completed(workspace_id)
+        if audit_logger and actor_id is not None and deleted:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="delete",
+                module="todo",
+                entity_type="todo",
+                entity_id=0,
+                details={
+                    "entity_public_id": "bulk:clear_completed",
+                    "before": {"deleted_count": deleted},
+                    "after": None,
+                    "changed_fields": [],
+                },
+            )
+        return deleted
 
     async def list_recurring_rules(
         self,

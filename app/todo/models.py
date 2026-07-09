@@ -30,6 +30,18 @@ class Todo(SQLModel, table=True):
 
     system_key: str | None = Field(default=None, max_length=100, index=True)
 
+    # One level of subtasks (spec-068). NULL = top-level todo. Enforced
+    # app-side that a parent cannot itself have a parent (see TodoService).
+    parent_id: int | None = Field(
+        default=None,
+        sa_column=sa.Column(
+            sa.Integer(),
+            sa.ForeignKey("todos.id", ondelete="CASCADE", name="fk_todos_parent_id_todos"),
+            index=True,
+            nullable=True,
+        ),
+    )
+
     # Set when todo_reminder_job creates the due-reminder Notification
     # (spec-052) — makes the job idempotent without a joins-based "does a
     # notification already exist" probe. Reset to None on any due_date

@@ -17,7 +17,7 @@ class TodoBase(BaseModel):
 
 
 class TodoCreate(TodoBase):
-    pass
+    parent_public_id: uuid.UUID | None = Field(default=None)
 
 
 class TodoUpdate(BaseModel):
@@ -26,14 +26,21 @@ class TodoUpdate(BaseModel):
     due_date: datetime | None = Field(None)
     priority: PriorityEnum | None = Field(None)
     completed: bool | None = Field(None)
+    parent_public_id: uuid.UUID | None = Field(None)
 
 
 class TodoResponse(TodoBase):
     public_id: uuid.UUID
+    parent_public_id: uuid.UUID | None = None
+    subtask_count: int = 0
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DeleteCompletedResponse(BaseModel):
+    deleted: int
 
 
 class RecurringTodoRuleCreate(BaseModel):
