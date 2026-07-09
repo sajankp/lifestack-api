@@ -365,7 +365,6 @@ class TodoService:
             before_snap = _snapshot_todo(child)
             child.completed = True
             child.updated_at = datetime.now(UTC)
-            child = await self.repository.save(child)
             if audit_logger and actor_id is not None:
                 after_snap = _snapshot_todo(child)
                 await audit_logger.log(
@@ -383,6 +382,8 @@ class TodoService:
                         "cascade_from_parent": str(parent.public_id),
                     },
                 )
+        if open_children:
+            await self.repository.session.flush()
 
     async def delete_todo(
         self,

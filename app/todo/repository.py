@@ -3,7 +3,7 @@ from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select
 
 from app.core.pagination import DEFAULT_LIMIT
 from app.core.repository import BaseRepository
@@ -36,8 +36,7 @@ class TodoRepository(BaseRepository[Todo]):
             items_q = (
                 base
                 .order_by(
-                    Todo.due_date.is_(None),
-                    Todo.due_date.asc(),
+                    Todo.due_date.asc().nulls_last(),
                     priority_rank,
                     Todo.created_at.asc(),
                 )
@@ -89,19 +88,12 @@ class TodoRepository(BaseRepository[Todo]):
     async def delete_completed(self, workspace_id: int) -> int:
         """Bulk-delete all completed todos in the workspace (Clear completed,
         spec-068). Returns the number of rows deleted."""
-        todos = (
-            (
-                await self.session.execute(
-                    select(Todo).where(Todo.workspace_id == workspace_id, Todo.completed.is_(True))
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for todo in todos:
-            await self.session.delete(todo)
+        if workspace_id is None:
+            return 0
+        stmt = delete(Todo).where(Todo.workspace_id == workspace_id, Todo.completed.is_(True))
+        result = await self.session.execute(stmt)
         await self.session.flush()
-        return len(todos)
+        return result.rowcount
 
     async def get_summary_counts(self, workspace_id: int, now: datetime) -> tuple[int, int]:
         """Return (open_count, overdue_count) using efficient SQL aggregation."""
