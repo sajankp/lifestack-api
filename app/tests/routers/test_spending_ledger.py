@@ -139,3 +139,53 @@ async def test_ledger_pagination(client: AsyncClient):
     page1_ids = {item["public_id"] for item in data["items"]}
     page2_ids = {item["public_id"] for item in data2["items"]}
     assert page1_ids.isdisjoint(page2_ids)
+
+
+@pytest.mark.asyncio
+async def test_ledger_cross_currency_transfer_uses_net_amount_on_receiving_leg(client: AsyncClient):
+    """A transfer_in ledger entry (and running balance) must reflect net_amount_received
+    in the destination currency, not gross_amount (which is denominated in the source
+    currency). Regression test: the ledger previously used gross_amount for both legs,
+    which silently over-credited the receiving account by the fee amount whenever fees
+    or an FX rate were involved — see app/spending/repository.py get_account_ledger."""
+    cookies = await _register_and_login(client, "ledger_xfer@example.com", "ledger_xfer")
+    usd_account = await _create_account(client, cookies, "USD Source", "USD")
+    gbp_account = await _create_account(client, cookies, "GBP Destination", "GBP")
+
+    transfer_res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "spending",
+            "from_account_id": usd_account,
+            "to_account_id": gbp_account,
+            "from_currency_code": "USD",
+            "to_currency_code": "GBP",
+            "gross_amount": "100.00",
+            "fx_rate_used": "0.8000000000",
+            "fx_fee_amount": "1.00",
+            "platform_fee_amount": "2.00",
+            "tax_amount": "0.00",
+            "net_amount_received": "77.00",
+            "occurred_at": "2026-06-01T10:00:00Z",
+            "notes": "cross currency",
+        },
+        cookies=cookies,
+    )
+    assert transfer_res.status_code == 201, transfer_res.text
+
+    source_ledger = await client.get(f"/v1/spending/accounts/{usd_account}/ledger", cookies=cookies)
+    assert source_ledger.status_code == 200
+    source_items = source_ledger.json()["items"]
+    assert len(source_items) == 1
+    assert source_items[0]["entry_kind"] == "transfer_out"
+    assert float(source_items[0]["amount"]) == 100.00
+    assert float(source_ledger.json()["closing_balance"]) == -100.00
+
+    dest_ledger = await client.get(f"/v1/spending/accounts/{gbp_account}/ledger", cookies=cookies)
+    assert dest_ledger.status_code == 200
+    dest_items = dest_ledger.json()["items"]
+    assert len(dest_items) == 1
+    assert dest_items[0]["entry_kind"] == "transfer_in"
+    assert float(dest_items[0]["amount"]) == 77.00
+    assert float(dest_ledger.json()["closing_balance"]) == 77.00
