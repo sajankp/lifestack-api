@@ -31,6 +31,17 @@ async def test_cli_runner_medication_reminder():
 
 
 @pytest.mark.asyncio
+async def test_cli_runner_morning_briefing():
+    mock_job = AsyncMock()
+    with (
+        patch("app.cli.run.JOBS", {"morning_briefing": mock_job}),
+        patch.object(sys, "argv", ["run.py", "morning_briefing", "--workspace-id", "123"]),
+    ):
+        await main()
+        mock_job.assert_called_once_with(workspace_id=123)
+
+
+@pytest.mark.asyncio
 async def test_cli_runner_weekly_summary_with_week_start():
     mock_job = AsyncMock()
     with (
