@@ -218,3 +218,36 @@ async def test_weight_entry_rejects_non_positive(client: AsyncClient):
         json={"measured_at": datetime.now(UTC).isoformat(), "weight_kg": "-5.0"},
     )
     assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_medication_create_supports_legacy_and_standard_timezones(client: AsyncClient):
+    await _register_and_login(client, "tzuser")
+
+    # Test legacy/deprecated timezone name 'Asia/Calcutta'
+    payload_legacy = {
+        "name": "Elicit DS",
+        "dose_text": "20",
+        "frequency": "daily",
+        "interval": 1,
+        "anchor_date": "2026-07-09",
+        "timezone": "Asia/Calcutta",
+        "times": ["21:00"],
+    }
+    res_legacy = await client.post("/v1/health/medications", json=payload_legacy)
+    assert res_legacy.status_code == 201, res_legacy.text
+    assert res_legacy.json()["timezone"] == "Asia/Calcutta"
+
+    # Test standard canonical timezone name 'Asia/Kolkata'
+    payload_standard = {
+        "name": "Elicit DS 2",
+        "dose_text": "20",
+        "frequency": "daily",
+        "interval": 1,
+        "anchor_date": "2026-07-09",
+        "timezone": "Asia/Kolkata",
+        "times": ["21:00"],
+    }
+    res_standard = await client.post("/v1/health/medications", json=payload_standard)
+    assert res_standard.status_code == 201, res_standard.text
+    assert res_standard.json()["timezone"] == "Asia/Kolkata"
