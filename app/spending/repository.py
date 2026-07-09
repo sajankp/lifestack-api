@@ -525,7 +525,7 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         _apply_date_filters(xfer_where_out, CapitalTransfer.occurred_at)
 
         # net_amount_received (not gross_amount) for inflows — see the comment on
-        # the matching CASE in get_account_ledger above.
+        # the matching CASE in get_ledger_page above.
         inflow_stmt = select(
             func.coalesce(func.sum(CapitalTransfer.net_amount_received), Decimal("0"))
         ).where(*xfer_where_in)

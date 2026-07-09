@@ -147,7 +147,7 @@ async def test_ledger_cross_currency_transfer_uses_net_amount_on_receiving_leg(c
     in the destination currency, not gross_amount (which is denominated in the source
     currency). Regression test: the ledger previously used gross_amount for both legs,
     which silently over-credited the receiving account by the fee amount whenever fees
-    or an FX rate were involved — see app/spending/repository.py get_account_ledger."""
+    or an FX rate were involved — see app/spending/repository.py get_ledger_page."""
     cookies = await _register_and_login(client, "ledger_xfer@example.com", "ledger_xfer")
     usd_account = await _create_account(client, cookies, "USD Source", "USD")
     gbp_account = await _create_account(client, cookies, "GBP Destination", "GBP")
