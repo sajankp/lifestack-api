@@ -8,6 +8,12 @@ The core idea is simple: tasks, spending, investing, health, documents, and pers
 
 The long-term wedge is a calm daily briefing: what needs attention today, what changed across money and health, which documents or reports need follow-up, and what the personal coach recommends with visible source context.
 
+<p align="center">
+  <video src="docs/media/lifestack-demo.mp4" poster="docs/media/lifestack-demo-poster.jpg" width="800" controls muted loop playsinline>
+    Demo: dashboard briefing, spending budgets, validated imports, investing holdings, and workspace administration.
+  </video>
+</p>
+
 ---
 
 ## This repo is the backend of a three-part system
@@ -36,7 +42,7 @@ ingress via Cloudflare Tunnel · encrypted nightly DB backups to S3/R2
 - **Operability** — append-only PII-redacted audit logging, structlog + OpenTelemetry + Prometheus, scheduled jobs guarded by Postgres advisory locks.
 - **Lot-accurate cost basis** — FIFO lot engine with corporate-action handling (splits, reverse splits, bonus issues), golden-tested against broker-statement numbers; Indian market ingestion via CAMS CAS PDF import and the NSE bhavcopy price feed.
 - **Quality gates** — 80% backend / 70% frontend coverage thresholds, 18 Playwright E2E specs, and `pip-audit` + Bandit + TruffleHog in CI.
-- **Spec-driven** — 65 specs under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
+- **Spec-driven** — 68 specs under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
 
 ---
 
