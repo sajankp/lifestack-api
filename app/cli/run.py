@@ -9,6 +9,8 @@ from app.application.jobs import (
     export_cleanup_job,
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
+    medication_reminder_job,
+    morning_briefing_job,
     net_worth_snapshot_job,
     recurring_transactions_job,
     session_cleanup_job,
@@ -24,6 +26,8 @@ JOBS = {
     "import_preview_cleanup": import_preview_cleanup_job,
     "weekly_summary": weekly_summary_job,
     "net_worth_snapshot": net_worth_snapshot_job,
+    "medication_reminder": medication_reminder_job,
+    "morning_briefing": morning_briefing_job,
 }
 
 
@@ -74,6 +78,8 @@ async def main() -> None:
         "recurring_transactions",
         "weekly_summary",
         "net_worth_snapshot",
+        "medication_reminder",
+        "morning_briefing",
     }:
         print(
             f"Error: --workspace-id is not supported for job '{args.job}'.",
@@ -91,6 +97,8 @@ async def main() -> None:
         "recurring_transactions",
         "weekly_summary",
         "net_worth_snapshot",
+        "medication_reminder",
+        "morning_briefing",
     }:
         kwargs["workspace_id"] = args.workspace_id
     if args.job == "weekly_summary":
