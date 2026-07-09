@@ -9,6 +9,7 @@ from app.application.jobs import weekly_summary_job
 from app.auth.repository import UserRepository
 from app.core.database import postgres
 from app.finance.models import Account, AccountType
+from app.health.models import Medication, MedicationEvent, WeightEntry
 from app.investing.models import PortfolioSnapshot
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
@@ -271,3 +272,101 @@ async def test_weekly_summary_computes_budget_breached_for_categorized_spend(
     assert summary.spending_summary["budgets_breached"] == 1
     assert summary.spending_summary["budget_utilization_pct"] == "150.0"
     assert summary.spending_summary["top_categories"][0]["amount"] == "75.00"
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_health_summary_omitted_without_health_data(client: AsyncClient):
+    creds = await _register_and_login(client, "sumhealthnone")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_repo = NotificationRepository(session)
+        notification_service = NotificationService(notification_repo)
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.health_summary is None
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_computes_health_summary(client: AsyncClient):
+    creds = await _register_and_login(client, "sumhealthdata")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+        start_dt = datetime.combine(week_start, datetime.min.time(), tzinfo=UTC)
+
+        med = Medication(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            name="Metformin",
+            frequency="daily",
+            interval=1,
+            anchor_date=week_start,
+            timezone="UTC",
+            times=["09:00"],
+            is_active=True,
+        )
+        session.add(med)
+        await session.flush()
+
+        # Log one dose taken (day 0) — the rest of the week's slots are
+        # unlogged and count as "missed" (past, no event).
+        session.add(
+            MedicationEvent(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                medication_id=med.id,
+                scheduled_for=start_dt.replace(hour=9),
+                status="taken",
+            )
+        )
+        session.add_all([
+            WeightEntry(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                measured_at=start_dt,
+                weight_kg=Decimal("80.0"),
+            ),
+            WeightEntry(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                measured_at=start_dt + timedelta(days=2),
+                weight_kg=Decimal("79.5"),
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_repo = NotificationRepository(session)
+        notification_service = NotificationService(notification_repo)
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.health_summary is not None
+    assert summary.health_summary["doses_scheduled"] == 7
+    assert summary.health_summary["doses_taken"] == 1
+    assert summary.health_summary["weight_entries_logged"] == 2
+    assert summary.health_summary["weight_delta_kg"] == "-0.50"

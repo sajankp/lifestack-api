@@ -356,3 +356,200 @@ async def test_section_failure_degrades_to_omission(workflow, mock_todo_service,
     # one failing domain must not blank the whole briefing.
     assert any(line.source.route == "/imports" for line in result.lines)
     assert result.all_clear is False
+
+
+def _make_dose_slot(*, status="pending"):
+    slot = MagicMock()
+    slot.status = status
+    return slot
+
+
+def _make_weight_trend(*, entries=None, delta_7d_kg=None):
+    trend = MagicMock()
+    trend.entries = entries or []
+    trend.delta_7d_kg = delta_7d_kg
+    return trend
+
+
+@pytest.fixture
+def mock_health_service():
+    svc = AsyncMock()
+    svc.get_schedule.return_value = []
+    svc.get_weight_trend.return_value = _make_weight_trend()
+    return svc
+
+
+def _workflow_with_health(
+    mock_todo_service,
+    mock_budget_service,
+    mock_investing_service,
+    mock_recurring_transaction_service,
+    mock_notification_service,
+    mock_import_repo,
+    mock_weekly_summary_repo,
+    mock_finance_setting_repo,
+    mock_health_service,
+):
+    return MorningBriefingWorkflow(
+        todo_service=mock_todo_service,
+        budget_service=mock_budget_service,
+        investing_performance_service=mock_investing_service,
+        recurring_transaction_service=mock_recurring_transaction_service,
+        notification_service=mock_notification_service,
+        import_repo=mock_import_repo,
+        weekly_summary_repo=mock_weekly_summary_repo,
+        finance_setting_repo=mock_finance_setting_repo,
+        health_service=mock_health_service,
+    )
+
+
+@pytest.mark.asyncio
+async def test_health_service_none_omits_health_lines(workflow):
+    # The shared `workflow` fixture doesn't wire health_service (defaults to
+    # None) — the health line type must degrade to omission, not error.
+    result = await workflow.get_briefing(workspace_id=1, user_id=1)
+    assert result.all_clear is True
+
+
+@pytest.mark.asyncio
+async def test_doses_due_today_line_is_info_when_none_missed(
+    mock_todo_service,
+    mock_budget_service,
+    mock_investing_service,
+    mock_recurring_transaction_service,
+    mock_notification_service,
+    mock_import_repo,
+    mock_weekly_summary_repo,
+    mock_finance_setting_repo,
+    mock_health_service,
+):
+    mock_health_service.get_schedule.side_effect = [
+        [_make_dose_slot(status="pending"), _make_dose_slot(status="taken")],  # today
+        [],  # yesterday
+    ]
+    wf = _workflow_with_health(
+        mock_todo_service,
+        mock_budget_service,
+        mock_investing_service,
+        mock_recurring_transaction_service,
+        mock_notification_service,
+        mock_import_repo,
+        mock_weekly_summary_repo,
+        mock_finance_setting_repo,
+        mock_health_service,
+    )
+
+    result = await wf.get_briefing(workspace_id=1, user_id=1)
+
+    health_lines = [line for line in result.lines if line.source.route == "/health"]
+    assert len(health_lines) == 1
+    assert health_lines[0].severity == "info"
+    assert "2 doses due today" in health_lines[0].text
+
+
+@pytest.mark.asyncio
+async def test_missed_yesterday_line_is_warning(
+    mock_todo_service,
+    mock_budget_service,
+    mock_investing_service,
+    mock_recurring_transaction_service,
+    mock_notification_service,
+    mock_import_repo,
+    mock_weekly_summary_repo,
+    mock_finance_setting_repo,
+    mock_health_service,
+):
+    mock_health_service.get_schedule.side_effect = [
+        [],  # today
+        [_make_dose_slot(status="missed")],  # yesterday
+    ]
+    wf = _workflow_with_health(
+        mock_todo_service,
+        mock_budget_service,
+        mock_investing_service,
+        mock_recurring_transaction_service,
+        mock_notification_service,
+        mock_import_repo,
+        mock_weekly_summary_repo,
+        mock_finance_setting_repo,
+        mock_health_service,
+    )
+
+    result = await wf.get_briefing(workspace_id=1, user_id=1)
+
+    health_lines = [line for line in result.lines if line.source.route == "/health"]
+    assert len(health_lines) == 1
+    assert health_lines[0].severity == "warning"
+    assert "1 missed yesterday" in health_lines[0].text
+
+
+@pytest.mark.asyncio
+async def test_weight_weekly_move_line_requires_two_entries_in_7_days(
+    mock_todo_service,
+    mock_budget_service,
+    mock_investing_service,
+    mock_recurring_transaction_service,
+    mock_notification_service,
+    mock_import_repo,
+    mock_weekly_summary_repo,
+    mock_finance_setting_repo,
+    mock_health_service,
+):
+    now = datetime.now(UTC)
+    entry_a = MagicMock(measured_at=now - timedelta(days=6), weight_kg=Decimal("80.0"))
+    entry_b = MagicMock(measured_at=now, weight_kg=Decimal("79.6"))
+    mock_health_service.get_weight_trend.return_value = _make_weight_trend(
+        entries=[entry_a, entry_b], delta_7d_kg=Decimal("-0.4")
+    )
+    wf = _workflow_with_health(
+        mock_todo_service,
+        mock_budget_service,
+        mock_investing_service,
+        mock_recurring_transaction_service,
+        mock_notification_service,
+        mock_import_repo,
+        mock_weekly_summary_repo,
+        mock_finance_setting_repo,
+        mock_health_service,
+    )
+
+    result = await wf.get_briefing(workspace_id=1, user_id=1)
+
+    weight_lines = [line for line in result.lines if "weight" in line.text]
+    assert len(weight_lines) == 1
+    assert weight_lines[0].severity == "info"
+    assert "-0.4 kg this week" in weight_lines[0].text
+
+
+@pytest.mark.asyncio
+async def test_weight_line_omitted_with_fewer_than_two_entries(
+    mock_todo_service,
+    mock_budget_service,
+    mock_investing_service,
+    mock_recurring_transaction_service,
+    mock_notification_service,
+    mock_import_repo,
+    mock_weekly_summary_repo,
+    mock_finance_setting_repo,
+    mock_health_service,
+):
+    now = datetime.now(UTC)
+    entry_a = MagicMock(measured_at=now, weight_kg=Decimal("79.6"))
+    mock_health_service.get_weight_trend.return_value = _make_weight_trend(
+        entries=[entry_a], delta_7d_kg=None
+    )
+    wf = _workflow_with_health(
+        mock_todo_service,
+        mock_budget_service,
+        mock_investing_service,
+        mock_recurring_transaction_service,
+        mock_notification_service,
+        mock_import_repo,
+        mock_weekly_summary_repo,
+        mock_finance_setting_repo,
+        mock_health_service,
+    )
+
+    result = await wf.get_briefing(workspace_id=1, user_id=1)
+
+    assert not any("weight" in line.text for line in result.lines)

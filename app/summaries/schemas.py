@@ -12,6 +12,7 @@ class WeeklySummaryResponse(BaseModel):
     todo_summary: dict
     spending_summary: dict
     investing_summary: dict
+    health_summary: dict | None = None
     highlights: dict
 
     model_config = ConfigDict(from_attributes=True)

@@ -35,6 +35,12 @@ from app.finance.service import (
     FxRateService,
     NetWorthService,
 )
+from app.health.repository import (
+    MedicationEventRepository,
+    MedicationRepository,
+    WeightEntryRepository,
+)
+from app.health.service import HealthService
 from app.imports.repository import ImportRepository
 from app.imports.service import ImportService
 from app.investing.order_service import InvestingOrderService
@@ -127,6 +133,37 @@ async def get_todo_repo(session: AsyncSession = Depends(get_db_session)) -> Todo
 
 async def get_todo_service(repo: TodoRepository = Depends(get_todo_repo)) -> TodoService:
     return TodoService(repo)
+
+
+# ---------------------------------------------------------------------------
+# Health (spec-069)
+# ---------------------------------------------------------------------------
+
+
+async def get_medication_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> MedicationRepository:
+    return MedicationRepository(session)
+
+
+async def get_medication_event_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> MedicationEventRepository:
+    return MedicationEventRepository(session)
+
+
+async def get_weight_entry_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> WeightEntryRepository:
+    return WeightEntryRepository(session)
+
+
+async def get_health_service(
+    medication_repo: MedicationRepository = Depends(get_medication_repo),
+    event_repo: MedicationEventRepository = Depends(get_medication_event_repo),
+    weight_repo: WeightEntryRepository = Depends(get_weight_entry_repo),
+) -> HealthService:
+    return HealthService(medication_repo, event_repo, weight_repo)
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +777,7 @@ async def get_morning_briefing_workflow(
     import_repo: ImportRepository = Depends(get_import_repo),
     weekly_summary_repo: WeeklySummaryRepository = Depends(get_weekly_summary_repo),
     finance_setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
+    health_service: HealthService = Depends(get_health_service),
 ) -> MorningBriefingWorkflow:
     return MorningBriefingWorkflow(
         todo_service=todo_service,
@@ -750,4 +788,5 @@ async def get_morning_briefing_workflow(
         import_repo=import_repo,
         weekly_summary_repo=weekly_summary_repo,
         finance_setting_repo=finance_setting_repo,
+        health_service=health_service,
     )

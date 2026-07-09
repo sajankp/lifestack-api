@@ -9,6 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
 from app.finance.models import Account
+from app.health.repository import (
+    MedicationEventRepository,
+    MedicationRepository,
+    WeightEntryRepository,
+)
+from app.health.schedule import get_dose_slots_for_date
 from app.investing.models import PortfolioSnapshot
 from app.notifications.service import NotificationService
 from app.spending.models import (
@@ -177,6 +183,9 @@ class WeeklySummaryService:
         }
 
         investing_summary = await self._investing_summary(workspace_id, week_start, week_end)
+        health_summary = await self._health_summary(
+            workspace_id, week_start, week_end, start_dt, end_dt
+        )
         flags: list[dict[str, str]] = []
         if completion_rate is not None and completion_rate >= Decimal("90"):
             flags.append({
@@ -208,6 +217,7 @@ class WeeklySummaryService:
             existing.todo_summary = todo_summary
             existing.spending_summary = spending_summary
             existing.investing_summary = investing_summary
+            existing.health_summary = health_summary
             existing.highlights = {"flags": flags}
             existing.generated_at = datetime.now(UTC)
             summary = existing
@@ -219,6 +229,7 @@ class WeeklySummaryService:
                 todo_summary=todo_summary,
                 spending_summary=spending_summary,
                 investing_summary=investing_summary,
+                health_summary=health_summary,
                 highlights={"flags": flags},
             )
             self.session.add(summary)
@@ -428,4 +439,66 @@ class WeeklySummaryService:
             "currency": end_snapshot.currency_code,
             "start_snapshot_date": start_snapshot.snapshot_date.isoformat(),
             "end_snapshot_date": end_snapshot.snapshot_date.isoformat(),
+        }
+
+    async def _health_summary(
+        self,
+        workspace_id: int,
+        week_start: date,
+        week_end: date,
+        start_dt: datetime,
+        end_dt: datetime,
+    ) -> dict | None:
+        """Doses scheduled/taken/missed + adherence %, weight delta
+        (spec-069 §C) — additive, omitted (None) when the workspace has no
+        health data at all that week."""
+        medication_repo = MedicationRepository(self.session)
+        event_repo = MedicationEventRepository(self.session)
+        weight_repo = WeightEntryRepository(self.session)
+
+        medications, _total = await medication_repo.get_all(
+            workspace_id, is_active=None, limit=1000
+        )
+        scheduled_count = 0
+        day = week_start
+        while day <= week_end:
+            for med in medications:
+                scheduled_count += len(get_dose_slots_for_date(med, day))
+            day += timedelta(days=1)
+
+        status_counts = await event_repo.get_status_counts_for_workspace(
+            workspace_id, start_dt, end_dt
+        )
+        taken_count = status_counts.get("taken", 0)
+        skipped_count = status_counts.get("skipped", 0)
+        missed_count = max(0, scheduled_count - taken_count - skipped_count)
+        adherence_pct = (
+            str(
+                (Decimal(taken_count) / Decimal(scheduled_count) * Decimal("100")).quantize(
+                    Decimal("0.1")
+                )
+            )
+            if scheduled_count > 0
+            else None
+        )
+
+        weight_entries, _wtotal = await weight_repo.get_range(
+            workspace_id, start_dt, end_dt, limit=1000, offset=0
+        )
+        weight_delta_kg = None
+        if len(weight_entries) >= 2:
+            ordered = sorted(weight_entries, key=lambda e: e.measured_at)
+            weight_delta_kg = str(ordered[-1].weight_kg - ordered[0].weight_kg)
+
+        if scheduled_count == 0 and not weight_entries:
+            return None
+
+        return {
+            "doses_scheduled": scheduled_count,
+            "doses_taken": taken_count,
+            "doses_skipped": skipped_count,
+            "doses_missed": missed_count,
+            "adherence_pct": adherence_pct,
+            "weight_entries_logged": len(weight_entries),
+            "weight_delta_kg": weight_delta_kg,
         }

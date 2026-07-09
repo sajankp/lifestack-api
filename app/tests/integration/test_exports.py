@@ -260,3 +260,46 @@ async def test_export_workspace_isolation(client: AsyncClient):
     # User B attempts to delete User A's export -> 404
     del_resp = await client.delete(f"/v1/exports/{export_id}", cookies=creds_b["cookies"])
     assert del_resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_health_export_json_and_csv(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    cookies = creds["cookies"]
+
+    med_resp = await client.post(
+        "/v1/health/medications",
+        json={
+            "name": "Metformin",
+            "frequency": "daily",
+            "anchor_date": "2026-01-01",
+            "timezone": "UTC",
+            "times": ["09:00"],
+        },
+        cookies=cookies,
+    )
+    assert med_resp.status_code == 201, med_resp.text
+
+    weight_resp = await client.post(
+        "/v1/health/weight",
+        json={"measured_at": datetime.now(UTC).isoformat(), "weight_kg": "72.4"},
+        cookies=cookies,
+    )
+    assert weight_resp.status_code == 201, weight_resp.text
+
+    json_resp = await client.post(
+        "/v1/exports", json={"format": "json", "modules": ["health"]}, cookies=cookies
+    )
+    assert json_resp.status_code == 201, json_resp.text
+    export_id = json_resp.json()["public_id"]
+    download_resp = await client.get(f"/v1/exports/{export_id}/download", cookies=cookies)
+    assert download_resp.status_code == 200
+    data = download_resp.json()["data"]["health"]
+    assert len(data["medications"]) == 1
+    assert len(data["weight_entries"]) == 1
+    assert data["medications"][0]["name"] == "Metformin"
+
+    csv_resp = await client.post(
+        "/v1/exports", json={"format": "csv", "modules": ["health"]}, cookies=cookies
+    )
+    assert csv_resp.status_code == 201, csv_resp.text

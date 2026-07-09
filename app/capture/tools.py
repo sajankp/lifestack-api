@@ -16,6 +16,13 @@ from app.finance.repository import (
     FinanceSettingRepository,
     FxRateRepository,
 )
+from app.health.repository import (
+    MedicationEventRepository,
+    MedicationRepository,
+    WeightEntryRepository,
+)
+from app.health.schemas import MedicationEventUpsert, WeightEntryCreate
+from app.health.service import HealthService
 from app.investing.performance_service import InvestingSummaryService
 from app.investing.repository import (
     CashBalanceRepository,
@@ -120,6 +127,13 @@ class AgentTools:
             HoldingPriceRepository(session),
             PortfolioSnapshotRepository(session),
             self.account_repo,
+        )
+
+        self.medication_repo = MedicationRepository(session)
+        self.medication_event_repo = MedicationEventRepository(session)
+        self.weight_repo = WeightEntryRepository(session)
+        self.health_service = HealthService(
+            self.medication_repo, self.medication_event_repo, self.weight_repo
         )
 
         self.audit_logger = AuditLogger(session)
@@ -655,4 +669,108 @@ class AgentTools:
             "daily_change": _dec(summary.daily_change),
             "reporting_currency": summary.reporting_currency,
             "valuation_status": summary.valuation_status,
+        }
+
+    async def log_weight(self, weight_kg: str, note: str | None = None) -> dict:
+        """Log a body weight measurement (spec-069). Kilograms only in v1.
+
+        Args:
+            weight_kg: The weight in kilograms as a string (e.g., '72.4').
+            note: Optional short note.
+        """
+        try:
+            weight = Decimal(weight_kg)
+        except Exception:
+            return {
+                "status": "error",
+                "message": "Invalid weight format. Must be a decimal number.",
+            }
+        if weight <= 0:
+            return {"status": "error", "message": "Weight must be a positive number."}
+
+        payload = WeightEntryCreate(measured_at=datetime.now(UTC), weight_kg=weight, note=note)
+        try:
+            entry = await self.health_service.create_weight_entry(
+                self.user_id, self.workspace_id, payload, audit_logger=self.audit_logger
+            )
+        except Exception:
+            await self.session.rollback()
+            logger.error("log_weight_failed", exc_info=True)
+            return {
+                "status": "error",
+                "message": "An internal error occurred while executing the tool.",
+            }
+
+        return {
+            "status": "success",
+            "entity_public_id": str(entry.public_id),
+            "entity_type": "weight_entry",
+            "weight_kg": str(entry.weight_kg),
+            "summary": f"Logged weight {entry.weight_kg} kg",
+        }
+
+    async def log_medication_event(
+        self, name: str, status: str, dose_time: str | None = None
+    ) -> dict:
+        """Log a medication dose as taken or skipped (spec-069). Never
+        guesses on an ambiguous name — asks for clarification instead.
+
+        Args:
+            name: The medication's name (fuzzy-matched against active medications).
+            status: Either 'taken' or 'skipped'.
+            dose_time: Optional ISO date-time for the dose slot; defaults to now.
+        """
+        status_value = status.strip().lower()
+        if status_value not in ("taken", "skipped"):
+            return {"status": "error", "message": "status must be 'taken' or 'skipped'."}
+
+        medications = await self.medication_repo.get_active(self.workspace_id)
+        normalized_query = _normalize_name(name)
+        exact = [m for m in medications if _normalize_name(m.name) == normalized_query]
+        candidates = exact or [
+            m for m in medications if normalized_query in _normalize_name(m.name)
+        ]
+        if not candidates:
+            return {"status": "error", "message": f"No active medication named '{name}' found."}
+        if len(candidates) > 1:
+            return {
+                "status": "error",
+                "needs_medication": True,
+                "candidates": [c.name for c in candidates],
+                "message": f"Multiple medications match '{name}' — which one did you mean?",
+            }
+        medication = candidates[0]
+
+        if dose_time and dose_time.strip():
+            try:
+                scheduled_for = _parse_due_datetime(dose_time)
+            except ValueError:
+                return {"status": "error", "message": "Invalid time format. Use an ISO date-time."}
+        else:
+            scheduled_for = datetime.now(UTC)
+
+        payload = MedicationEventUpsert(scheduled_for=scheduled_for, status=status_value)
+        try:
+            event = await self.health_service.upsert_event(
+                self.user_id,
+                self.workspace_id,
+                medication.public_id,
+                payload,
+                audit_logger=self.audit_logger,
+            )
+        except Exception:
+            await self.session.rollback()
+            logger.error("log_medication_event_failed", exc_info=True)
+            return {
+                "status": "error",
+                "message": "An internal error occurred while executing the tool.",
+            }
+
+        return {
+            "status": "success",
+            "entity_public_id": str(event.public_id),
+            "entity_type": "medication_event",
+            "medication_name": medication.name,
+            "status_logged": event.status,
+            "summary": f"Logged {medication.name} as {event.status}",
         }

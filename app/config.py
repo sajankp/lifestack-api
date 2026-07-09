@@ -124,6 +124,10 @@ class Settings(BaseSettings):
     BRIEFING_JOB_HOUR_UTC: int = 2
     BRIEFING_JOB_MINUTE_UTC: int = 30
 
+    # Health Memory v1 (spec-069)
+    HEALTH_DOSE_GRACE_HOURS: int = 4  # owner-confirmed grace window before a dose reads as "missed"
+    HEALTH_REMINDER_INTERVAL_MINUTES: int = 5
+
     # Bulk import storage (Spec 020)
     MAX_MULTIPART_BODY_BYTES: int = 10 * 1024 * 1024
     IMPORT_STORAGE_BACKEND: str = "none"  # none|local|s3

@@ -18,6 +18,7 @@ class WeeklySummary(SQLModel, table=True):
     todo_summary: dict = Field(sa_type=sa.JSON())
     spending_summary: dict = Field(sa_type=sa.JSON())
     investing_summary: dict = Field(sa_type=sa.JSON())
+    health_summary: dict | None = Field(default=None, sa_type=sa.JSON())
     highlights: dict = Field(sa_type=sa.JSON())
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

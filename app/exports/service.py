@@ -19,6 +19,7 @@ from app.core.exceptions import APIError, ConflictError, NotFoundError, Validati
 from app.exports.models import ExportFormat, ExportRecord, ExportStatus
 from app.exports.repository import ExportRepository
 from app.exports.schemas import SUPPORTED_MODULES, ExportCreate
+from app.health.models import Medication, MedicationEvent, WeightEntry
 from app.investing.models import CashBalance, Holding
 from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction
 from app.todo.models import Todo
@@ -85,14 +86,38 @@ class ExportService:
             budget_count = int(counts_row.budget_count or 0)
             return category_count + tx_count + budget_count
 
-        # investing
-        holding_count_q = select(func.count(Holding.id)).where(Holding.workspace_id == workspace_id)
-        cash_count_q = select(func.count(CashBalance.id)).where(
-            CashBalance.workspace_id == workspace_id
+        if module == "investing":
+            holding_count_q = select(func.count(Holding.id)).where(
+                Holding.workspace_id == workspace_id
+            )
+            cash_count_q = select(func.count(CashBalance.id)).where(
+                CashBalance.workspace_id == workspace_id
+            )
+            holding_count = int((await self.session.execute(holding_count_q)).scalar() or 0)
+            cash_count = int((await self.session.execute(cash_count_q)).scalar() or 0)
+            return holding_count + cash_count
+
+        # health
+        counts_q = select(
+            select(func.count(Medication.id))
+            .where(Medication.workspace_id == workspace_id)
+            .scalar_subquery()
+            .label("medication_count"),
+            select(func.count(MedicationEvent.id))
+            .where(MedicationEvent.workspace_id == workspace_id)
+            .scalar_subquery()
+            .label("event_count"),
+            select(func.count(WeightEntry.id))
+            .where(WeightEntry.workspace_id == workspace_id)
+            .scalar_subquery()
+            .label("weight_count"),
         )
-        holding_count = int((await self.session.execute(holding_count_q)).scalar() or 0)
-        cash_count = int((await self.session.execute(cash_count_q)).scalar() or 0)
-        return holding_count + cash_count
+        counts_row = (await self.session.execute(counts_q)).one()
+        return (
+            int(counts_row.medication_count or 0)
+            + int(counts_row.event_count or 0)
+            + int(counts_row.weight_count or 0)
+        )
 
     def _get_s3_client(self):
         if self._s3_client is not None:
@@ -225,6 +250,49 @@ class ExportService:
                         f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
                     f.write("]")
 
+                elif module == "health":
+                    f.write('"medications": [')
+                    stream = await self.session.stream_scalars(
+                        select(Medication)
+                        .where(Medication.workspace_id == workspace_id)
+                        .order_by(Medication.created_at.asc())
+                    )
+                    first = True
+                    async for row in stream:
+                        if not first:
+                            f.write(",")
+                        first = False
+                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
+                    f.write("],")
+
+                    f.write('"medication_events": [')
+                    stream = await self.session.stream_scalars(
+                        select(MedicationEvent)
+                        .where(MedicationEvent.workspace_id == workspace_id)
+                        .order_by(MedicationEvent.scheduled_for.asc())
+                    )
+                    first = True
+                    async for row in stream:
+                        if not first:
+                            f.write(",")
+                        first = False
+                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
+                    f.write("],")
+
+                    f.write('"weight_entries": [')
+                    stream = await self.session.stream_scalars(
+                        select(WeightEntry)
+                        .where(WeightEntry.workspace_id == workspace_id)
+                        .order_by(WeightEntry.measured_at.asc())
+                    )
+                    first = True
+                    async for row in stream:
+                        if not first:
+                            f.write(",")
+                        first = False
+                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
+                    f.write("]")
+
                 f.write("}")
             f.write("}}")
 
@@ -276,6 +344,28 @@ class ExportService:
                         select(CashBalance)
                         .where(CashBalance.workspace_id == workspace_id)
                         .order_by(CashBalance.created_at.asc()),
+                    )
+                elif module == "health":
+                    await self._write_csv_section(
+                        archive,
+                        "health/medications.csv",
+                        select(Medication)
+                        .where(Medication.workspace_id == workspace_id)
+                        .order_by(Medication.created_at.asc()),
+                    )
+                    await self._write_csv_section(
+                        archive,
+                        "health/medication_events.csv",
+                        select(MedicationEvent)
+                        .where(MedicationEvent.workspace_id == workspace_id)
+                        .order_by(MedicationEvent.scheduled_for.asc()),
+                    )
+                    await self._write_csv_section(
+                        archive,
+                        "health/weight_entries.csv",
+                        select(WeightEntry)
+                        .where(WeightEntry.workspace_id == workspace_id)
+                        .order_by(WeightEntry.measured_at.asc()),
                     )
 
     async def _write_csv_section(self, archive: ZipFile, arcname: str, query) -> None:

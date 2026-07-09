@@ -18,6 +18,7 @@ from app.application.jobs import (
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
     investment_closing_prices_job,
+    medication_reminder_job,
     morning_briefing_job,
     net_worth_snapshot_job,
     push_delivery_job,
@@ -56,6 +57,7 @@ from app.core.scheduler import (
 from app.dashboard.router import router as dashboard_router
 from app.exports.router import router as exports_router
 from app.finance.router import router as finance_router
+from app.health.router import router as health_module_router
 from app.imports.router import router as imports_router
 from app.investing.router import router as investing_router
 from app.notifications.router import router as notifications_router
@@ -163,6 +165,12 @@ async def lifespan(_app: FastAPI):
             minutes=settings.TODO_REMINDER_INTERVAL_MINUTES,
             idempotent=True,
         )
+        register_interval_job(
+            medication_reminder_job,
+            job_id="medication_reminder",
+            minutes=settings.HEALTH_REMINDER_INTERVAL_MINUTES,
+            idempotent=True,
+        )
         scheduler.add_job(
             weekly_summary_job,
             "cron",
@@ -248,6 +256,7 @@ def create_app() -> FastAPI:
     # Include routers under /v1 prefix
     _app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
     _app.include_router(todo_router, prefix=settings.API_V1_STR)
+    _app.include_router(health_module_router, prefix=settings.API_V1_STR)
     _app.include_router(spending_router, prefix=settings.API_V1_STR)
     _app.include_router(investing_router, prefix=settings.API_V1_STR)
     _app.include_router(finance_router, prefix=settings.API_V1_STR)

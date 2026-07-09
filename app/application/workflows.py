@@ -32,6 +32,9 @@ from app.exports.service import ExportService
 from app.finance.repository import CurrencyRepository, FinanceSettingRepository, FxRateRepository
 from app.finance.schemas import FxRateUpsert
 from app.finance.service import FxRateService
+from app.health.repository import MedicationRepository
+from app.health.schedule import get_dose_slots_in_window
+from app.health.service import HealthService
 from app.imports.models import ImportBatch, ImportPreviewRow
 from app.imports.repository import ImportRepository
 from app.investing.performance_service import PerformanceService
@@ -257,15 +260,17 @@ _BRIEFING_BUDGET_CRITICAL_PCT = 100.0
 _BRIEFING_SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
 
 # Line-type domain order (spec-067 table) — the fixed tiebreak used once two
-# lines share the same severity.
+# lines share the same severity. Health (spec-069) sits after todos, before
+# budget lines — "health is the day's 'life' half" (spec-069 §C).
 _DOMAIN_OVERDUE_TODOS = 0
 _DOMAIN_DUE_TODAY_TODOS = 1
-_DOMAIN_BUDGET_GUARDRAILS = 2
-_DOMAIN_RECURRING_DUE = 3
-_DOMAIN_NET_WORTH = 4
-_DOMAIN_PENDING_REVIEW = 5
-_DOMAIN_WEEKLY_SUMMARY = 6
-_DOMAIN_FRESH_INSIGHTS = 7
+_DOMAIN_HEALTH = 2
+_DOMAIN_BUDGET_GUARDRAILS = 3
+_DOMAIN_RECURRING_DUE = 4
+_DOMAIN_NET_WORTH = 5
+_DOMAIN_PENDING_REVIEW = 6
+_DOMAIN_WEEKLY_SUMMARY = 7
+_DOMAIN_FRESH_INSIGHTS = 8
 
 _INSIGHT_ENTITY_ROUTES = {
     "spending_category_anomaly": "/spending",
@@ -291,6 +296,7 @@ class MorningBriefingWorkflow:
         import_repo: ImportRepository,
         weekly_summary_repo: WeeklySummaryRepository,
         finance_setting_repo: FinanceSettingRepository,
+        health_service: HealthService | None = None,
     ):
         self.todo_service = todo_service
         self.budget_service = budget_service
@@ -300,6 +306,7 @@ class MorningBriefingWorkflow:
         self.import_repo = import_repo
         self.weekly_summary_repo = weekly_summary_repo
         self.finance_setting_repo = finance_setting_repo
+        self.health_service = health_service
 
     async def get_briefing(self, workspace_id: int, user_id: int) -> BriefingResponse:
         now = datetime.now(UTC)
@@ -308,6 +315,7 @@ class MorningBriefingWorkflow:
         builders = [
             (_DOMAIN_OVERDUE_TODOS, self._overdue_todo_lines(workspace_id, now)),
             (_DOMAIN_DUE_TODAY_TODOS, self._due_today_todo_lines(workspace_id, now)),
+            (_DOMAIN_HEALTH, self._health_lines(workspace_id, now)),
             (_DOMAIN_BUDGET_GUARDRAILS, self._budget_guardrail_lines(workspace_id, now)),
             (_DOMAIN_RECURRING_DUE, self._recurring_due_lines(workspace_id, now)),
             (_DOMAIN_NET_WORTH, self._net_worth_lines(workspace_id)),
@@ -408,6 +416,50 @@ class MorningBriefingWorkflow:
                 ),
             )
         ]
+
+    async def _health_lines(self, workspace_id: int, now: datetime) -> list[BriefingLine]:
+        """Two Health Memory line types (spec-069 §C): (a) doses due today /
+        missed yesterday, (b) weight weekly move. Facts only — no advice, per
+        the trust boundary. No-op when health_service isn't wired (feature
+        can be toggled off without touching the workflow signature)."""
+        if self.health_service is None:
+            return []
+        today = now.date()
+        yesterday = today - timedelta(days=1)
+        today_slots = await self.health_service.get_schedule(workspace_id, today)
+        yesterday_slots = await self.health_service.get_schedule(workspace_id, yesterday)
+        missed_yesterday = sum(1 for s in yesterday_slots if s.status == "missed")
+
+        lines: list[BriefingLine] = []
+        if today_slots or missed_yesterday:
+            parts = []
+            if today_slots:
+                plural = "s" if len(today_slots) != 1 else ""
+                parts.append(f"{len(today_slots)} dose{plural} due today")
+            if missed_yesterday:
+                plural = "s" if missed_yesterday != 1 else ""
+                parts.append(f"{missed_yesterday} missed yesterday")
+            lines.append(
+                BriefingLine(
+                    severity="warning" if missed_yesterday else "info",
+                    text=", ".join(parts),
+                    source=BriefingSource(route="/health"),
+                )
+            )
+
+        trend = await self.health_service.get_weight_trend(workspace_id, days=30)
+        week_ago = now - timedelta(days=7)
+        recent_entries = [e for e in trend.entries if e.measured_at >= week_ago]
+        if len(recent_entries) >= 2 and trend.delta_7d_kg is not None:
+            sign = "+" if trend.delta_7d_kg >= 0 else ""
+            lines.append(
+                BriefingLine(
+                    severity="info",
+                    text=f"weight {sign}{trend.delta_7d_kg:.1f} kg this week",
+                    source=BriefingSource(route="/health"),
+                )
+            )
+        return lines
 
     async def _budget_guardrail_lines(self, workspace_id: int, now: datetime) -> list[BriefingLine]:
         today = now.date()
@@ -1323,6 +1375,71 @@ async def process_workspace_todo_reminders(
             todo.reminded_at = datetime.now(UTC)
             session.add(todo)
             reminded += 1
+    if reminded:
+        await session.flush()
+    return reminded
+
+
+async def process_workspace_medication_reminders(
+    session: AsyncSession, workspace: Workspace, now: datetime, window_end: datetime
+) -> int:
+    """Create exactly one due-reminder Notification per dose slot for active
+    medications with reminders_enabled (spec-069 §C) — clone of
+    process_workspace_todo_reminders. Idempotent via
+    Medication.last_reminded_slot (the reminded_at pattern, keyed to the
+    slot datetime rather than a boolean)."""
+    if workspace.id is None:
+        return 0
+
+    medication_repo = MedicationRepository(session)
+    medications = await medication_repo.get_active_with_reminders(workspace.id)
+    if not medications:
+        return 0
+
+    notification_repo = NotificationRepository(session)
+    notification_service = NotificationService(notification_repo)
+
+    distinct_user_ids = {med.user_id for med in medications}
+    preference_cache = await notification_repo.get_preferences_for_users(
+        workspace.id, distinct_user_ids, "medication_reminder"
+    )
+    users_needing_push = {
+        user_id
+        for user_id in distinct_user_ids
+        if (pref := preference_cache.get(user_id)) and pref.channel_push
+    }
+    users_with_push = await notification_repo.users_with_active_push_subscription(
+        workspace.id, users_needing_push
+    )
+    subscription_cache = {user_id: user_id in users_with_push for user_id in users_needing_push}
+
+    reminded = 0
+    for med in medications:
+        due_slots = sorted(
+            slot
+            for slot in get_dose_slots_in_window(med, now, window_end)
+            if med.last_reminded_slot is None or slot > med.last_reminded_slot
+        )
+        for slot in due_slots:
+            local_time = slot.astimezone(ZoneInfo(med.timezone)).strftime("%H:%M")
+            body = f"{med.dose_text} — {local_time}" if med.dose_text else local_time
+            notification = await notification_service.notify(
+                workspace_id=workspace.id,
+                user_id=med.user_id,
+                category="medication_reminder",
+                severity="info",
+                title=med.name,
+                body=body,
+                module="health",
+                entity_type="medication",
+                entity_public_id=med.public_id,
+                preference=preference_cache.get(med.user_id),
+                has_push_subscription=subscription_cache.get(med.user_id),
+            )
+            if notification is not None:
+                med.last_reminded_slot = slot
+                session.add(med)
+                reminded += 1
     if reminded:
         await session.flush()
     return reminded

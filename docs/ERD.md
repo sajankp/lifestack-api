@@ -159,6 +159,91 @@ erDiagram
     WORKSPACES ||--o{ RECURRING_TODO_RULES : scopes
 ```
 
+## Health (spec-069)
+
+Medications + weight only in v1 (owner decision D9) — sleep/workouts/vitals/labs are later slices,
+same table patterns. Dose slots are never stored: they're derived on read from
+(frequency, interval, anchor_date, days_of_week, times, timezone, end_date) via
+`app/health/schedule.py`, reusing the `RecurringTodoRule` recurrence vocabulary
+(`core/recurrence.py::advance_due_date` semantics for daily/monthly, with
+`days_of_week` as the one weekly extension). Every table carries the
+`source_type`/`source_ref`/`source_import_id` triplet (the same pattern as
+`spending_transactions`) so device sync/extraction can slot in later without
+migration churn — `source_type` is always `"manual"` in v1.
+
+```mermaid
+erDiagram
+    MEDICATIONS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        string name
+        string dose_text
+        string refill_note
+        string frequency
+        int interval
+        json days_of_week
+        date anchor_date
+        date end_date
+        string timezone
+        json times
+        boolean is_active
+        boolean reminders_enabled
+        datetime last_reminded_slot
+        string source_type
+        string source_ref
+        int source_import_id FK
+        datetime created_at
+        datetime updated_at
+    }
+
+    MEDICATION_EVENTS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        int medication_id FK
+        datetime scheduled_for
+        string status
+        datetime logged_at
+        string note
+        string source_type
+        string source_ref
+        int source_import_id FK
+        datetime created_at
+        datetime updated_at
+    }
+
+    WEIGHT_ENTRIES {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        datetime measured_at
+        decimal weight_kg
+        string note
+        string source_type
+        string source_ref
+        int source_import_id FK
+        datetime created_at
+        datetime updated_at
+    }
+
+    USERS ||--o{ MEDICATIONS : owns
+    WORKSPACES ||--o{ MEDICATIONS : scopes
+    MEDICATIONS ||--o{ MEDICATION_EVENTS : "ON DELETE CASCADE"
+    USERS ||--o{ WEIGHT_ENTRIES : owns
+    WORKSPACES ||--o{ WEIGHT_ENTRIES : scopes
+```
+
+A dose slot's status is computed on read (never stored): `taken`/`skipped` if a
+`MEDICATION_EVENTS` row exists for that `(medication_id, scheduled_for)` slot
+(unique constraint enforces one answer per slot), `pending` if in the future,
+`missed` if more than `HEALTH_DOSE_GRACE_HOURS` (default 4) past with no
+event. Logging late flips a missed slot to taken/skipped — no reconciliation
+job needed.
+
 ## Spending
 
 ```mermaid
