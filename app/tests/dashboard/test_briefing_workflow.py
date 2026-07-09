@@ -130,10 +130,10 @@ async def test_overdue_todos_line_is_critical(workflow, mock_todo_service):
 
 @pytest.mark.asyncio
 async def test_due_today_todos_line_is_warning(workflow, mock_todo_service):
-    now = datetime(2026, 7, 8, 9, 0, tzinfo=UTC)
-    due_today_item = _make_todo(title="Call bank", due_date=now.replace(hour=18))
+    now = datetime.now(UTC)
+    due_today_item = _make_todo(title="Call bank", due_date=now.replace(hour=18, minute=0))
     due_tomorrow_item = _make_todo(
-        title="Later thing", due_date=now.replace(hour=18) + timedelta(days=1)
+        title="Later thing", due_date=now.replace(hour=18, minute=0) + timedelta(days=1)
     )
     mock_todo_service.get_next_due_items.return_value = [due_today_item, due_tomorrow_item]
 
