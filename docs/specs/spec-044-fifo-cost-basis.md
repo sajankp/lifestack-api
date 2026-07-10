@@ -1,7 +1,7 @@
 # Spec-044: FIFO Lot-Based Cost Basis
 
 **Created:** 2026-06-30
-**Status:** Draft
+**Status:** Implemented (`2b4adb0`, merged 2026-06-30)
 **Depends on:** spec-041 (Transaction-Based Investing Orders)
 
 ---

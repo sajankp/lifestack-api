@@ -1,7 +1,7 @@
 # Spec-066: Capture Consolidation (one capture model, text-first, confirmation cards)
 
 **Created:** 2026-07-08
-**Status:** Approved — owner decisions recorded 2026-07-08; ready for implementation
+**Status:** Implemented (api#139, web#91, merged 2026-07-08)
 **Scope:** multi-repo, user-facing — primarily `lifestack-web`; `lifestack-api` changes are additive-only (tool-result normalization, no REST or schema changes).
 **Depends on:** spec-021 (voice agent function calling), spec-059 (voice usability), spec-061 (voice transaction date). Owner decisions (2026-07-08 — binding inputs, not proposals): capture is promoted to a first-class surface (nav/header entry, text-first, voice as a mode, confirmation cards); the voice widget stays but must be hideable, use a mic icon, phrase messages as outcomes, and connect only on explicit user action. Related: `docs/product/PRODUCT_STRATEGY_AND_ROADMAP.md` §2 (Voice/capture promoted to Secondary: "Universal input layer; text-first with voice mode") and its 2026-07-08 changelog entry.
 

@@ -1,5 +1,7 @@
 # Spec 043 — Transfer Edit & Delete
 
+**Status:** Implemented (api `47cb123`, web `48aa4ca`, merged 2026-06-29)
+
 ## Problem
 
 Capital transfers imported via CSV cannot currently be edited or deleted. When a transfer is

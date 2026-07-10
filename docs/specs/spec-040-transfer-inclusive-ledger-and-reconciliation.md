@@ -1,6 +1,6 @@
 # Spec 040 – Transfer-Inclusive Ledger and Account Reconciliation
 
-**Status:** Draft
+**Status:** Implemented (`b4975e9`, merged 2026-06-26)
 **Spec ID:** 040
 **Created:** 2026-06-26
 
