@@ -5,7 +5,27 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.exports.models import ExportFormat, ExportStatus
 
-SUPPORTED_MODULES = {"todo", "spending", "investing", "health"}
+# The single source of truth for what each export module contains (spec-070).
+# The web UI and the OpenAPI-exposed GET /exports/modules are both derived from
+# this map so backend and frontend can never disagree on which modules exist.
+# Investing exports the authoritative order history (spec-041) alongside the
+# derived holdings snapshot; finance carries accounts + capital transfers so an
+# export is self-consistent and round-trips what import can create.
+EXPORT_MODULES: dict[str, list[str]] = {
+    "todo": ["todos", "recurring_rules"],
+    "spending": [
+        "category_groups",
+        "categories",
+        "transactions",
+        "budgets",
+        "recurring_transactions",
+    ],
+    "investing": ["holdings", "cash_balances", "orders", "order_lots", "corporate_actions"],
+    "finance": ["accounts", "capital_transfers", "finance_settings", "workspace_currencies"],
+    "health": ["medications", "medication_events", "weight_entries"],
+}
+
+SUPPORTED_MODULES = set(EXPORT_MODULES)
 
 
 class ExportCreate(BaseModel):

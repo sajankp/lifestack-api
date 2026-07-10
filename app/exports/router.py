@@ -14,7 +14,7 @@ from app.core.dependencies import (
     require_min_role,
 )
 from app.core.exceptions import NotFoundError
-from app.exports.schemas import ExportCreate, ExportResponse
+from app.exports.schemas import EXPORT_MODULES, ExportCreate, ExportResponse
 from app.exports.service import ExportService
 
 # RBAC is applied per-endpoint (matching every other router) rather than at
@@ -45,6 +45,19 @@ async def create_export(
         audit_logger=audit_logger,
     )
     return ExportResponse.model_validate(record)
+
+
+@router.get("/modules")
+async def list_export_modules(
+    _user: dict = Depends(get_current_user),
+):
+    """Return the export module → entity manifest (spec-070).
+
+    Single source of truth the web UI aligns to so backend and frontend can
+    never disagree on which modules exist. Registered before the
+    ``/{export_public_id}`` route so the literal path wins over the UUID param.
+    """
+    return {"modules": EXPORT_MODULES}
 
 
 @router.get("/{export_public_id}", response_model=ExportResponse)

@@ -19,17 +19,35 @@ from app.core.exceptions import APIError, ConflictError, NotFoundError, Validati
 from app.exports.models import ExportFormat, ExportRecord, ExportStatus
 from app.exports.repository import ExportRepository
 from app.exports.schemas import SUPPORTED_MODULES, ExportCreate
+from app.finance.models import (
+    Account,
+    CapitalTransfer,
+    WorkspaceCurrency,
+    WorkspaceFinanceSetting,
+)
 from app.health.models import Medication, MedicationEvent, WeightEntry
-from app.investing.models import CashBalance, Holding
-from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction
-from app.todo.models import Todo
+from app.investing.models import (
+    CashBalance,
+    CorporateAction,
+    Holding,
+    InvestingOrder,
+    OrderLot,
+)
+from app.spending.models import (
+    CategoryGroup,
+    RecurringTransaction,
+    SpendingBudget,
+    SpendingCategory,
+    SpendingTransaction,
+)
+from app.todo.models import RecurringTodoRule, Todo
 
 try:
     import boto3  # type: ignore
 except Exception:  # pragma: no cover
     boto3 = None
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SYNC_LIMIT_PER_MODULE = 5000
 
 logger = structlog.get_logger(__name__)
@@ -59,65 +77,169 @@ class ExportService:
         self.session = repository.session
         self._s3_client = None
 
-    async def _count_module_rows(self, workspace_id: int, module: str) -> int:
+    def _module_sections(self, workspace_id: int, module: str) -> list[tuple[str, object]]:
+        """The ordered (entity_key, query) sections that make up one module.
+
+        Single source of truth for both the JSON and CSV writers and the row
+        counter, so a new entity is added in exactly one place (spec-070).
+        Entity keys match ``schemas.EXPORT_MODULES``.
+        """
         if module == "todo":
-            query = select(func.count(Todo.id)).where(Todo.workspace_id == workspace_id)
-            result = await self.session.execute(query)
-            return int(result.scalar() or 0)
-
+            return [
+                (
+                    "todos",
+                    select(Todo)
+                    .where(Todo.workspace_id == workspace_id)
+                    .order_by(Todo.created_at.asc()),
+                ),
+                (
+                    "recurring_rules",
+                    select(RecurringTodoRule)
+                    .where(RecurringTodoRule.workspace_id == workspace_id)
+                    .order_by(RecurringTodoRule.created_at.asc()),
+                ),
+            ]
         if module == "spending":
-            counts_q = select(
-                select(func.count(SpendingCategory.id))
-                .where(SpendingCategory.workspace_id == workspace_id)
-                .scalar_subquery()
-                .label("category_count"),
-                select(func.count(SpendingTransaction.id))
-                .where(SpendingTransaction.workspace_id == workspace_id)
-                .scalar_subquery()
-                .label("tx_count"),
-                select(func.count(SpendingBudget.id))
-                .where(SpendingBudget.workspace_id == workspace_id)
-                .scalar_subquery()
-                .label("budget_count"),
-            )
-            counts_row = (await self.session.execute(counts_q)).one()
-            category_count = int(counts_row.category_count or 0)
-            tx_count = int(counts_row.tx_count or 0)
-            budget_count = int(counts_row.budget_count or 0)
-            return category_count + tx_count + budget_count
-
+            return [
+                (
+                    "category_groups",
+                    select(CategoryGroup)
+                    .where(CategoryGroup.workspace_id == workspace_id)
+                    .order_by(CategoryGroup.created_at.asc()),
+                ),
+                (
+                    "categories",
+                    select(SpendingCategory)
+                    .where(SpendingCategory.workspace_id == workspace_id)
+                    .order_by(SpendingCategory.created_at.asc()),
+                ),
+                (
+                    "transactions",
+                    select(SpendingTransaction)
+                    .where(SpendingTransaction.workspace_id == workspace_id)
+                    .order_by(SpendingTransaction.occurred_at.asc()),
+                ),
+                (
+                    "budgets",
+                    select(SpendingBudget)
+                    .where(SpendingBudget.workspace_id == workspace_id)
+                    .order_by(SpendingBudget.start_month.asc()),
+                ),
+                (
+                    "recurring_transactions",
+                    select(RecurringTransaction)
+                    .where(RecurringTransaction.workspace_id == workspace_id)
+                    .order_by(RecurringTransaction.created_at.asc()),
+                ),
+            ]
         if module == "investing":
-            holding_count_q = select(func.count(Holding.id)).where(
-                Holding.workspace_id == workspace_id
-            )
-            cash_count_q = select(func.count(CashBalance.id)).where(
-                CashBalance.workspace_id == workspace_id
-            )
-            holding_count = int((await self.session.execute(holding_count_q)).scalar() or 0)
-            cash_count = int((await self.session.execute(cash_count_q)).scalar() or 0)
-            return holding_count + cash_count
-
+            return [
+                (
+                    "holdings",
+                    select(Holding)
+                    .where(Holding.workspace_id == workspace_id)
+                    .order_by(Holding.created_at.asc()),
+                ),
+                (
+                    "cash_balances",
+                    select(CashBalance)
+                    .where(CashBalance.workspace_id == workspace_id)
+                    .order_by(CashBalance.created_at.asc()),
+                ),
+                (
+                    "orders",
+                    select(InvestingOrder)
+                    .where(InvestingOrder.workspace_id == workspace_id)
+                    .order_by(InvestingOrder.occurred_at.asc()),
+                ),
+                (
+                    "order_lots",
+                    select(OrderLot)
+                    .where(OrderLot.workspace_id == workspace_id)
+                    .order_by(OrderLot.acquired_at.asc()),
+                ),
+                (
+                    "corporate_actions",
+                    select(CorporateAction)
+                    .where(CorporateAction.workspace_id == workspace_id)
+                    .order_by(CorporateAction.ex_date.asc()),
+                ),
+            ]
+        if module == "finance":
+            return self._finance_sections(workspace_id)
         # health
-        counts_q = select(
-            select(func.count(Medication.id))
-            .where(Medication.workspace_id == workspace_id)
-            .scalar_subquery()
-            .label("medication_count"),
-            select(func.count(MedicationEvent.id))
-            .where(MedicationEvent.workspace_id == workspace_id)
-            .scalar_subquery()
-            .label("event_count"),
-            select(func.count(WeightEntry.id))
-            .where(WeightEntry.workspace_id == workspace_id)
-            .scalar_subquery()
-            .label("weight_count"),
-        )
-        counts_row = (await self.session.execute(counts_q)).one()
+        return [
+            (
+                "medications",
+                select(Medication)
+                .where(Medication.workspace_id == workspace_id)
+                .order_by(Medication.created_at.asc()),
+            ),
+            (
+                "medication_events",
+                select(MedicationEvent)
+                .where(MedicationEvent.workspace_id == workspace_id)
+                .order_by(MedicationEvent.scheduled_for.asc()),
+            ),
+            (
+                "weight_entries",
+                select(WeightEntry)
+                .where(WeightEntry.workspace_id == workspace_id)
+                .order_by(WeightEntry.measured_at.asc()),
+            ),
+        ]
+
+    def _accounts_section(self, workspace_id: int) -> tuple[str, object]:
         return (
-            int(counts_row.medication_count or 0)
-            + int(counts_row.event_count or 0)
-            + int(counts_row.weight_count or 0)
+            "accounts",
+            select(Account)
+            .where(Account.workspace_id == workspace_id)
+            .order_by(Account.created_at.asc()),
         )
+
+    def _finance_sections(self, workspace_id: int) -> list[tuple[str, object]]:
+        return [
+            self._accounts_section(workspace_id),
+            (
+                "capital_transfers",
+                select(CapitalTransfer)
+                .where(CapitalTransfer.workspace_id == workspace_id)
+                .order_by(CapitalTransfer.occurred_at.asc()),
+            ),
+            (
+                "finance_settings",
+                select(WorkspaceFinanceSetting).where(
+                    WorkspaceFinanceSetting.workspace_id == workspace_id
+                ),
+            ),
+            (
+                "workspace_currencies",
+                select(WorkspaceCurrency)
+                .where(WorkspaceCurrency.workspace_id == workspace_id)
+                .order_by(WorkspaceCurrency.currency_code.asc()),
+            ),
+        ]
+
+    def _resolve_module_blocks(
+        self, workspace_id: int, modules: list[str]
+    ) -> list[tuple[str, list[tuple[str, object]]]]:
+        """Expand requested modules into ordered (module, sections) blocks.
+
+        Auto-includes an accounts-only ``finance`` block when a module that
+        references accounts (investing/spending) is selected without the finance
+        module itself, so every exported account reference resolves (INV-3).
+        """
+        blocks = [(module, self._module_sections(workspace_id, module)) for module in modules]
+        if "finance" not in modules and {"investing", "spending"} & set(modules):
+            blocks.append(("finance", [self._accounts_section(workspace_id)]))
+        return blocks
+
+    async def _count_module_rows(self, workspace_id: int, module: str) -> int:
+        total = 0
+        for _key, query in self._module_sections(workspace_id, module):
+            count_q = select(func.count()).select_from(query.order_by(None).subquery())
+            total += int((await self.session.execute(count_q)).scalar() or 0)
+        return total
 
     def _get_s3_client(self):
         if self._s3_client is not None:
@@ -153,220 +275,41 @@ class ExportService:
     async def _write_json_export(
         self, workspace_id: int, modules: list[str], filepath: str
     ) -> None:
+        blocks = self._resolve_module_blocks(workspace_id, modules)
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(
                 f'{{"schema_version": {SCHEMA_VERSION}, "workspace_id": {workspace_id}, '
                 f'"generated_at": "{datetime.now(UTC).isoformat()}", "data": {{'
             )
-            for i, module in enumerate(modules):
+            for i, (module, sections) in enumerate(blocks):
                 if i > 0:
                     f.write(",")
                 f.write(f'"{module}": {{')
-
-                if module == "todo":
-                    f.write('"todos": [')
-                    stream = await self.session.stream_scalars(
-                        select(Todo)
-                        .where(Todo.workspace_id == workspace_id)
-                        .order_by(Todo.created_at.asc())
-                    )
-                    first = True
-                    async for row in stream:
-                        if not first:
-                            f.write(",")
-                        first = False
-                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
-                    f.write("]")
-
-                elif module == "spending":
-                    f.write('"categories": [')
-                    stream = await self.session.stream_scalars(
-                        select(SpendingCategory)
-                        .where(SpendingCategory.workspace_id == workspace_id)
-                        .order_by(SpendingCategory.created_at.asc())
-                    )
-                    first = True
-                    async for row in stream:
-                        if not first:
-                            f.write(",")
-                        first = False
-                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
-                    f.write("],")
-
-                    f.write('"transactions": [')
-                    stream = await self.session.stream_scalars(
-                        select(SpendingTransaction)
-                        .where(SpendingTransaction.workspace_id == workspace_id)
-                        .order_by(SpendingTransaction.occurred_at.asc())
-                    )
-                    first = True
-                    async for row in stream:
-                        if not first:
-                            f.write(",")
-                        first = False
-                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
-                    f.write("],")
-
-                    f.write('"budgets": [')
-                    stream = await self.session.stream_scalars(
-                        select(SpendingBudget)
-                        .where(SpendingBudget.workspace_id == workspace_id)
-                        .order_by(SpendingBudget.start_month.asc())
-                    )
-                    first = True
-                    async for row in stream:
-                        if not first:
-                            f.write(",")
-                        first = False
-                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
-                    f.write("]")
-
-                elif module == "investing":
-                    f.write('"holdings": [')
-                    stream = await self.session.stream_scalars(
-                        select(Holding)
-                        .where(Holding.workspace_id == workspace_id)
-                        .order_by(Holding.created_at.asc())
-                    )
-                    first = True
-                    async for row in stream:
-                        if not first:
-                            f.write(",")
-                        first = False
-                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
-                    f.write("],")
-
-                    f.write('"cash_balances": [')
-                    stream = await self.session.stream_scalars(
-                        select(CashBalance)
-                        .where(CashBalance.workspace_id == workspace_id)
-                        .order_by(CashBalance.created_at.asc())
-                    )
-                    first = True
-                    async for row in stream:
-                        if not first:
-                            f.write(",")
-                        first = False
-                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
-                    f.write("]")
-
-                elif module == "health":
-                    f.write('"medications": [')
-                    stream = await self.session.stream_scalars(
-                        select(Medication)
-                        .where(Medication.workspace_id == workspace_id)
-                        .order_by(Medication.created_at.asc())
-                    )
-                    first = True
-                    async for row in stream:
-                        if not first:
-                            f.write(",")
-                        first = False
-                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
-                    f.write("],")
-
-                    f.write('"medication_events": [')
-                    stream = await self.session.stream_scalars(
-                        select(MedicationEvent)
-                        .where(MedicationEvent.workspace_id == workspace_id)
-                        .order_by(MedicationEvent.scheduled_for.asc())
-                    )
-                    first = True
-                    async for row in stream:
-                        if not first:
-                            f.write(",")
-                        first = False
-                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
-                    f.write("],")
-
-                    f.write('"weight_entries": [')
-                    stream = await self.session.stream_scalars(
-                        select(WeightEntry)
-                        .where(WeightEntry.workspace_id == workspace_id)
-                        .order_by(WeightEntry.measured_at.asc())
-                    )
-                    first = True
-                    async for row in stream:
-                        if not first:
-                            f.write(",")
-                        first = False
-                        f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
-                    f.write("]")
-
+                for j, (key, query) in enumerate(sections):
+                    if j > 0:
+                        f.write(",")
+                    await self._write_json_array(f, key, query)
                 f.write("}")
             f.write("}}")
 
+    async def _write_json_array(self, f, key: str, query) -> None:
+        f.write(f'"{key}": [')
+        stream = await self.session.stream_scalars(query)
+        first = True
+        async for row in stream:
+            if not first:
+                f.write(",")
+            first = False
+            f.write(json.dumps(_row_to_dict(row), ensure_ascii=False))
+        f.write("]")
+
     async def _write_csv_export(self, workspace_id: int, modules: list[str], filepath: str) -> None:
         # ZipFile expects a local file path
+        blocks = self._resolve_module_blocks(workspace_id, modules)
         with ZipFile(filepath, mode="w", compression=ZIP_DEFLATED) as archive:
-            for module in modules:
-                if module == "todo":
-                    await self._write_csv_section(
-                        archive,
-                        "todo/todos.csv",
-                        select(Todo)
-                        .where(Todo.workspace_id == workspace_id)
-                        .order_by(Todo.created_at.asc()),
-                    )
-                elif module == "spending":
-                    await self._write_csv_section(
-                        archive,
-                        "spending/categories.csv",
-                        select(SpendingCategory)
-                        .where(SpendingCategory.workspace_id == workspace_id)
-                        .order_by(SpendingCategory.created_at.asc()),
-                    )
-                    await self._write_csv_section(
-                        archive,
-                        "spending/transactions.csv",
-                        select(SpendingTransaction)
-                        .where(SpendingTransaction.workspace_id == workspace_id)
-                        .order_by(SpendingTransaction.occurred_at.asc()),
-                    )
-                    await self._write_csv_section(
-                        archive,
-                        "spending/budgets.csv",
-                        select(SpendingBudget)
-                        .where(SpendingBudget.workspace_id == workspace_id)
-                        .order_by(SpendingBudget.start_month.asc()),
-                    )
-                elif module == "investing":
-                    await self._write_csv_section(
-                        archive,
-                        "investing/holdings.csv",
-                        select(Holding)
-                        .where(Holding.workspace_id == workspace_id)
-                        .order_by(Holding.created_at.asc()),
-                    )
-                    await self._write_csv_section(
-                        archive,
-                        "investing/cash_balances.csv",
-                        select(CashBalance)
-                        .where(CashBalance.workspace_id == workspace_id)
-                        .order_by(CashBalance.created_at.asc()),
-                    )
-                elif module == "health":
-                    await self._write_csv_section(
-                        archive,
-                        "health/medications.csv",
-                        select(Medication)
-                        .where(Medication.workspace_id == workspace_id)
-                        .order_by(Medication.created_at.asc()),
-                    )
-                    await self._write_csv_section(
-                        archive,
-                        "health/medication_events.csv",
-                        select(MedicationEvent)
-                        .where(MedicationEvent.workspace_id == workspace_id)
-                        .order_by(MedicationEvent.scheduled_for.asc()),
-                    )
-                    await self._write_csv_section(
-                        archive,
-                        "health/weight_entries.csv",
-                        select(WeightEntry)
-                        .where(WeightEntry.workspace_id == workspace_id)
-                        .order_by(WeightEntry.measured_at.asc()),
-                    )
+            for module, sections in blocks:
+                for key, query in sections:
+                    await self._write_csv_section(archive, f"{module}/{key}.csv", query)
 
     async def _write_csv_section(self, archive: ZipFile, arcname: str, query) -> None:
         with (
