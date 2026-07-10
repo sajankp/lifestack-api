@@ -32,7 +32,13 @@ from app.finance.schemas import (
     AccountUpdate,
     CapitalTransferCreate,
     CapitalTransferUpdate,
+    FxRateHistoryImportRequest,
+    FxRateHistoryImportResult,
+    FxRateHistoryRejectedRow,
     FxRateUpsert,
+    NetWorthHistoryImportRequest,
+    NetWorthHistoryImportResult,
+    NetWorthHistoryRejectedRow,
     ReconciliationSummary,
 )
 from app.investing.models import CashBalance as InvestingCashBalance
@@ -529,6 +535,73 @@ class FxRateService:
         return await self.repository.get_latest_rate(
             base_currency.upper(), quote_currency.upper(), as_of=as_of
         )
+
+    async def resolve_historical_rate(
+        self, workspace_id: int, base_currency: str, quote_currency: str, as_of: datetime
+    ) -> tuple[Decimal, str] | None:
+        """Past-dated resolution: system rate -> user historical rate ->
+        None (spec-072 INV-3). Used by past-dated valuation and spec-071's
+        cross-currency XIRR aggregate; never used for present-day figures."""
+        base = base_currency.upper()
+        quote = quote_currency.upper()
+        if base == quote:
+            return Decimal("1"), "system"
+        return await self.repository.get_historical_rate_with_source(
+            workspace_id, base, quote, as_of
+        )
+
+    async def import_historical_rates(
+        self, workspace_id: int, request: FxRateHistoryImportRequest
+    ) -> FxRateHistoryImportResult:
+        imported = 0
+        skipped = 0
+        rejected: list[FxRateHistoryRejectedRow] = []
+        today = datetime.now(UTC).date()
+
+        for idx, row in enumerate(request.rows):
+            try:
+                if row.as_of_date > today:
+                    rejected.append(
+                        FxRateHistoryRejectedRow(row=idx, reason="date must not be in the future")
+                    )
+                    continue
+                for code in (row.base_currency_code, row.quote_currency_code):
+                    if not await self._is_active_currency(code):
+                        rejected.append(
+                            FxRateHistoryRejectedRow(
+                                row=idx, reason=f"unsupported currency code '{code}'"
+                            )
+                        )
+                        break
+                else:
+                    as_of_dt = datetime.combine(row.as_of_date, datetime.min.time(), tzinfo=UTC)
+                    existing = await self.repository.get_user_rate_for_date(
+                        workspace_id, row.base_currency_code, row.quote_currency_code, as_of_dt
+                    )
+                    if existing is not None and Decimal(str(existing.rate)) == row.rate:
+                        skipped += 1
+                        continue
+                    await self.repository.upsert_user_rate(
+                        workspace_id,
+                        row.base_currency_code,
+                        row.quote_currency_code,
+                        row.rate,
+                        as_of_dt,
+                    )
+                    imported += 1
+            except ValidationError as exc:
+                rejected.append(FxRateHistoryRejectedRow(row=idx, reason=str(exc.detail)))
+
+        return FxRateHistoryImportResult(imported=imported, skipped=skipped, rejected=rejected)
+
+    async def list_user_rates(self, workspace_id: int, limit: int = 200, offset: int = 0):
+        return await self.repository.list_user_rates(workspace_id, limit, offset)
+
+    async def delete_user_rate(self, workspace_id: int, row_id: int) -> None:
+        row = await self.repository.get_user_rate_by_id(workspace_id, row_id)
+        if row is None:
+            raise NotFoundError(detail=f"User-provided FX rate {row_id} not found")
+        await self.repository.delete_user_rate(row)
 
 
 class CapitalTransferService:
@@ -1396,3 +1469,98 @@ class NetWorthService:
         self, workspace_id: int, from_date: date, to_date: date
     ) -> Sequence[NetWorthSnapshot]:
         return await self.net_worth_snapshot_repo.get_history(workspace_id, from_date, to_date)
+
+    async def import_backfill_points(
+        self, workspace_id: int, request: NetWorthHistoryImportRequest
+    ) -> NetWorthHistoryImportResult:
+        """User net-worth backfill points (spec-072). INV-2: only accepted
+        for dates strictly before the workspace's earliest live snapshot (or
+        before today when none exists) -- this makes "live wins" structural:
+        the daily job can never collide with a user row on the unique
+        constraint. Components are all-or-none per row."""
+        imported = 0
+        skipped = 0
+        rejected: list[NetWorthHistoryRejectedRow] = []
+
+        earliest_live = await self.net_worth_snapshot_repo.get_earliest_live_date(workspace_id)
+        boundary = earliest_live if earliest_live is not None else datetime.now(UTC).date()
+
+        for idx, row in enumerate(request.rows):
+            try:
+                if row.date >= boundary:
+                    rejected.append(
+                        NetWorthHistoryRejectedRow(
+                            row=idx,
+                            reason=(
+                                "date_not_backfill: on or after the earliest live "
+                                "snapshot date; user points only fill dates strictly "
+                                "before live history begins"
+                            ),
+                        )
+                    )
+                    continue
+
+                components = [row.holdings_value, row.investing_cash, row.spending_cash]
+                given = [c for c in components if c is not None]
+                if given and len(given) != 3:
+                    rejected.append(
+                        NetWorthHistoryRejectedRow(
+                            row=idx, reason="components must be all given or all omitted"
+                        )
+                    )
+                    continue
+                if len(given) == 3:
+                    total_check = (
+                        (row.holdings_value or Decimal("0"))
+                        + (row.investing_cash or Decimal("0"))
+                        + (row.spending_cash or Decimal("0"))
+                    )
+                    if total_check != row.total_net_worth:
+                        rejected.append(
+                            NetWorthHistoryRejectedRow(
+                                row=idx,
+                                reason="total_net_worth does not equal the sum of components",
+                            )
+                        )
+                        continue
+
+                existing = await self.net_worth_snapshot_repo.get_for_date(workspace_id, row.date)
+                if (
+                    existing is not None
+                    and existing.source == "user_provided"
+                    and existing.total_net_worth == row.total_net_worth
+                    and existing.holdings_value == row.holdings_value
+                    and existing.investing_cash == row.investing_cash
+                    and existing.spending_cash == row.spending_cash
+                ):
+                    skipped += 1
+                    continue
+
+                snapshot = NetWorthSnapshot(
+                    workspace_id=workspace_id,
+                    snapshot_date=row.date,
+                    reporting_currency=row.reporting_currency,
+                    holdings_value=row.holdings_value,
+                    investing_cash=row.investing_cash,
+                    spending_cash=row.spending_cash,
+                    total_net_worth=row.total_net_worth,
+                    fx_rates_used={},
+                    source="user_provided",
+                )
+                await self.net_worth_snapshot_repo.create_user_point(snapshot)
+                imported += 1
+            except ValidationError as exc:
+                rejected.append(NetWorthHistoryRejectedRow(row=idx, reason=str(exc.detail)))
+
+        return NetWorthHistoryImportResult(imported=imported, skipped=skipped, rejected=rejected)
+
+    async def list_user_points(
+        self, workspace_id: int, limit: int = 200, offset: int = 0
+    ) -> tuple[Sequence[NetWorthSnapshot], int]:
+        return await self.net_worth_snapshot_repo.list_user_points(workspace_id, limit, offset)
+
+    async def delete_user_point(self, workspace_id: int, point_id: int) -> None:
+        row = await self.net_worth_snapshot_repo.get_user_point_by_id(workspace_id, point_id)
+        if row is None:
+            raise NotFoundError(detail=f"User-provided net-worth point {point_id} not found")
+        await self.net_worth_snapshot_repo.delete_user_point(row)

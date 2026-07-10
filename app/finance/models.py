@@ -153,9 +153,21 @@ class UserFinanceSetting(SQLModel, table=True):
 
 
 class FxRate(SQLModel, table=True):
+    """A system-fetched OR user-provided historical FX rate (spec-072).
+
+    ``workspace_id`` NULL = system/global rate (all rows before spec-072,
+    and all live-fetched rows going forward); set = a user-provided
+    historical rate visible only to that workspace. Callers resolving a
+    *live/current* rate must filter ``workspace_id IS NULL`` explicitly —
+    user rows must never leak into present-day valuation (INV-3).
+    """
+
     __tablename__ = "fx_rates"
 
     id: int | None = Field(default=None, primary_key=True)
+    workspace_id: int | None = Field(
+        default=None, foreign_key="workspaces.id", index=True, nullable=True
+    )
     base_currency_code: str = Field(foreign_key="currencies.code", max_length=10, index=True)
     quote_currency_code: str = Field(foreign_key="currencies.code", max_length=10, index=True)
     rate: Decimal = Field(sa_type=sa.Numeric(precision=20, scale=10))
@@ -177,6 +189,15 @@ class FxRate(SQLModel, table=True):
             "as_of",
             "source",
             name="uq_fx_rate_pair_asof_source",
+        ),
+        sa.Index(
+            "uq_fx_rate_user_row",
+            "workspace_id",
+            "base_currency_code",
+            "quote_currency_code",
+            "as_of",
+            unique=True,
+            postgresql_where=sa.text("workspace_id IS NOT NULL"),
         ),
     )
 
@@ -233,17 +254,27 @@ class CapitalTransfer(SQLModel, table=True):
 
 
 class NetWorthSnapshot(SQLModel, table=True):
+    """A daily net-worth point: live-computed (default) or user-backfilled
+    (spec-072). ``source='live'`` rows (the only kind the daily job writes)
+    always populate all three components; a ``source='user_provided'`` row
+    may carry only ``total_net_worth`` with the components left null (a
+    bare-total point still draws the line but is excluded from the
+    stacked-area component view). A live row for a date always wins — user
+    points are only ever accepted for dates before the workspace's earliest
+    live snapshot (INV-2, enforced at the service layer)."""
+
     __tablename__ = "net_worth_snapshots"
 
     id: int | None = Field(default=None, primary_key=True)
     workspace_id: int = Field(foreign_key="workspaces.id", index=True)
     snapshot_date: date = Field(sa_type=sa.Date())
     reporting_currency: str = Field(max_length=10)
-    holdings_value: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
-    investing_cash: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
-    spending_cash: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    holdings_value: Decimal | None = Field(default=None, sa_type=sa.Numeric(precision=18, scale=2))
+    investing_cash: Decimal | None = Field(default=None, sa_type=sa.Numeric(precision=18, scale=2))
+    spending_cash: Decimal | None = Field(default=None, sa_type=sa.Numeric(precision=18, scale=2))
     total_net_worth: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
     fx_rates_used: dict = Field(default_factory=dict, sa_type=sa.JSON())
+    source: str = Field(default="live", sa_type=sa.String(length=20))
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
@@ -253,6 +284,14 @@ class NetWorthSnapshot(SQLModel, table=True):
             "workspace_id",
             "snapshot_date",
             name="uq_workspace_net_worth_snapshot_day",
+        ),
+        sa.CheckConstraint(
+            "source IN ('live', 'user_provided')", name="ck_net_worth_snapshots_source"
+        ),
+        sa.CheckConstraint(
+            "(source != 'live') OR "
+            "(holdings_value IS NOT NULL AND investing_cash IS NOT NULL AND spending_cash IS NOT NULL)",
+            name="ck_net_worth_snapshots_live_components_complete",
         ),
     )
 
