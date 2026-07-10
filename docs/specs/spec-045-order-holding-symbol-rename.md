@@ -1,5 +1,7 @@
 # Spec 045 — Rename Symbol on Order-Derived Holdings
 
+**Status:** Implemented (api#92, web#59, merged 2026-06-30)
+
 ## Problem
 
 `Holding.symbol` is the field used to fetch market prices (`_fetch_stock_price`, keyed off

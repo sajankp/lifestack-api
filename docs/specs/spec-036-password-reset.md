@@ -1,6 +1,6 @@
 # Feature Spec 036: Password Reset Functionality
 
-**Status:** Proposed
+**Status:** Implemented (`5d8dcfa`, merged 2026-06-14)
 **Spec ID:** 036
 
 ---

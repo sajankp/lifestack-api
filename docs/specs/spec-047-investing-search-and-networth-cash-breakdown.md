@@ -1,7 +1,7 @@
 # Spec-047: Investing Substring Search + Net-Worth Brokerage Cash Breakdown
 
 **Created:** 2026-06-30
-**Status:** Draft
+**Status:** Implemented (`10b08f9`, merged 2026-07-01)
 **Depends on:** spec-008 (Investing MVP), spec-011 (transfers/FX), spec-007 (dashboard/net worth reads)
 
 ---

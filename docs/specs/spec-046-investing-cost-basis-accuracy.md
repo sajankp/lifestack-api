@@ -1,7 +1,7 @@
 # Spec-046: Investing Cost-Basis Accuracy — Fee Capitalization and Book-Value Precision
 
 **Created:** 2026-06-30
-**Status:** Draft
+**Status:** Implemented (`18c341d`, merged 2026-06-30)
 **Depends on:** spec-044 (FIFO Lot-Based Cost Basis), spec-041 (Transaction-Based Investing Orders)
 
 ---

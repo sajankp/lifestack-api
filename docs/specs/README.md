@@ -77,14 +77,14 @@ Transfer-inclusive reconciliation, FIFO cost basis, and account-currency invaria
 
 | Spec | Status | Purpose |
 |---|---|---|
-| [Spec 040: Transfer-Inclusive Ledger and Account Reconciliation](./spec-040-transfer-inclusive-ledger-and-reconciliation.md) | Draft | Transfer-inclusive ledger and reconciliation model; verify implementation status against code. |
+| [Spec 040: Transfer-Inclusive Ledger and Account Reconciliation](./spec-040-transfer-inclusive-ledger-and-reconciliation.md) | Implemented (`b4975e9`) | Transfer-inclusive ledger and reconciliation model. |
 | [Spec 041: Transaction-Based Investing Orders](./spec-041-investing-orders.md) | Implemented (api#72) | Investing orders modeled as transactions. |
 | [Spec 042: Net Worth / Balance Sheet Page](./spec-042-net-worth-page.md) | Implemented (api#83) | Net worth / balance sheet aggregation and page. |
 | [Spec 043: Transfer Edit & Delete](./spec-043-transfer-edit-delete.md) | Implemented | Transfer edit and delete workflow. |
-| [Spec 044: FIFO Lot-Based Cost Basis](./spec-044-fifo-cost-basis.md) | Draft | FIFO lot-based cost basis model; verify implementation status against code. |
+| [Spec 044: FIFO Lot-Based Cost Basis](./spec-044-fifo-cost-basis.md) | Implemented (`2b4adb0`) | FIFO lot-based cost basis model. |
 | [Spec 045: Rename Symbol on Order-Derived Holdings](./spec-045-order-holding-symbol-rename.md) | Implemented | Symbol rename propagation for order-derived holdings. |
-| [Spec 046: Investing Cost-Basis Accuracy](./spec-046-investing-cost-basis-accuracy.md) | Draft | Fee capitalization and book-value precision; verify implementation status against code. |
-| [Spec 047: Investing Substring Search + Net-Worth Brokerage Cash Breakdown](./spec-047-investing-search-and-networth-cash-breakdown.md) | Draft | Investing search and net-worth cash breakdown; verify implementation status against code. |
+| [Spec 046: Investing Cost-Basis Accuracy](./spec-046-investing-cost-basis-accuracy.md) | Implemented (`18c341d`) | Fee capitalization and book-value precision. |
+| [Spec 047: Investing Substring Search + Net-Worth Brokerage Cash Breakdown](./spec-047-investing-search-and-networth-cash-breakdown.md) | Implemented (`10b08f9`) | Investing search and net-worth cash breakdown. |
 | [Spec 048: Unified Account-Centric Cash View](./spec-048-unified-cash-view.md) | Implemented (api#95) | Unified account-centric cash view. |
 | [Spec 049: Transfer Brokerage-Outflow Cash Snapshot](./spec-049-transfer-brokerage-outflow-snapshot.md) | Implemented (api#97) | Brokerage-outflow cash snapshot on transfer. |
 | [Spec 050: One Account, One Currency](./spec-050-account-currency-invariant.md) | Implemented (api#98) | Account-currency invariant. |

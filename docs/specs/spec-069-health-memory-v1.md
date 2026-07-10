@@ -1,7 +1,7 @@
 # Spec-069: Health Memory v1 — medications + weight (manual, web/PWA-first)
 
 **Created:** 2026-07-09
-**Status:** Owner decisions recorded 2026-07-09 (all open questions resolved) — awaiting owner commit; ready for implementation once committed
+**Status:** Implemented (api#145, web#103, merged 2026-07-09)
 **Scope:** multi-repo, user-facing — `lifestack-api` (new `health` module, reminder job, briefing/summary/export integration) and `lifestack-web` (a lean Health page). ~3 PRs.
 **Depends on:** spec-052 (web push), spec-053 (calendar recurrence modes — schedule vocabulary reused), spec-067 (morning briefing — live; health lines slot in as new line types), weekly summaries, exports module. Product direction: roadmap Track 1 "Health Memory" (re-sequenced ahead of Mobile Companion, owner-accepted 2026-07-08) and PRODUCT-ASSESSMENT "Rethink 2". **Owner decision D9 (2026-07-08): v1 scope is medications + weight only.**
 

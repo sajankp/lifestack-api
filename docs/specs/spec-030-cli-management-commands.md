@@ -1,6 +1,6 @@
 # Spec 030: CLI Management Commands
 
-**Status:** Proposed
+**Status:** Implemented (`0c1eb2e`, merged 2026-06-12)
 **Spec ID:** 030
 
 ## Problem Statement

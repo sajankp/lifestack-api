@@ -303,3 +303,118 @@ async def test_health_export_json_and_csv(client: AsyncClient):
         "/v1/exports", json={"format": "csv", "modules": ["health"]}, cookies=cookies
     )
     assert csv_resp.status_code == 201, csv_resp.text
+
+
+@pytest.mark.asyncio
+async def test_export_modules_manifest(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    resp = await client.get("/v1/exports/modules", cookies=creds["cookies"])
+    assert resp.status_code == 200, resp.text
+    modules = resp.json()["modules"]
+    # Backend↔web contract: finance module exists and investing carries orders.
+    assert set(modules) == {"todo", "spending", "investing", "finance", "health"}
+    assert "orders" in modules["investing"]
+    assert "capital_transfers" in modules["finance"]
+    assert "accounts" in modules["finance"]
+
+
+@pytest.mark.asyncio
+async def test_investing_export_includes_orders_and_auto_accounts(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    cookies = creds["cookies"]
+
+    acct_resp = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Brokerage One",
+            "account_type": "brokerage",
+            "default_currency_code": "usd",
+        },
+        cookies=cookies,
+    )
+    assert acct_resp.status_code == 201, acct_resp.text
+    account_id = acct_resp.json()["public_id"]
+
+    await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": account_id,
+            "balance": "5000.00",
+            "currency": "USD",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+        cookies=cookies,
+    )
+    order_resp = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": account_id,
+            "order_type": "buy",
+            "symbol": "AAPL",
+            "quantity": "3.00000000",
+            "price_per_unit": "180.00",
+            "currency": "usd",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+        cookies=cookies,
+    )
+    assert order_resp.status_code == 201, order_resp.text
+
+    create_resp = await client.post(
+        "/v1/exports",
+        json={"format": "json", "modules": ["investing"]},
+        cookies=cookies,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    export_id = create_resp.json()["public_id"]
+
+    download_resp = await client.get(f"/v1/exports/{export_id}/download", cookies=cookies)
+    assert download_resp.status_code == 200
+    body = download_resp.json()
+    assert body["schema_version"] == 2
+
+    investing = body["data"]["investing"]
+    assert len(investing["orders"]) == 1
+    assert investing["orders"][0]["symbol"] == "AAPL"
+    # A buy order creates a FIFO lot and the derived holding snapshot.
+    assert len(investing["order_lots"]) == 1
+    assert len(investing["holdings"]) == 1
+
+    # INV-3: accounts auto-included even though finance was not requested.
+    assert "finance" in body["data"]
+    accounts = body["data"]["finance"]["accounts"]
+    assert any(a["name"] == "Brokerage One" for a in accounts)
+
+
+@pytest.mark.asyncio
+async def test_finance_module_export_json_and_csv(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    cookies = creds["cookies"]
+
+    await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "Wallet",
+            "account_type": "wallet",
+            "default_currency_code": "usd",
+        },
+        cookies=cookies,
+    )
+
+    json_resp = await client.post(
+        "/v1/exports", json={"format": "json", "modules": ["finance"]}, cookies=cookies
+    )
+    assert json_resp.status_code == 201, json_resp.text
+    export_id = json_resp.json()["public_id"]
+    download_resp = await client.get(f"/v1/exports/{export_id}/download", cookies=cookies)
+    assert download_resp.status_code == 200
+    finance = download_resp.json()["data"]["finance"]
+    assert {"accounts", "capital_transfers", "finance_settings", "workspace_currencies"}.issubset(
+        finance.keys()
+    )
+    assert any(a["name"] == "Wallet" for a in finance["accounts"])
+
+    csv_resp = await client.post(
+        "/v1/exports", json={"format": "csv", "modules": ["finance"]}, cookies=cookies
+    )
+    assert csv_resp.status_code == 201, csv_resp.text

@@ -1,7 +1,7 @@
 # Spec-068: Todo organization — date-grouped task view + subtasks
 
 **Created:** 2026-07-09
-**Status:** Owner decisions recorded 2026-07-09 (all open questions resolved, one requirement added) — awaiting owner commit; ready for implementation once committed
+**Status:** Implemented (api#144, web#102, merged 2026-07-09)
 **Scope:** multi-repo, user-facing — `lifestack-api` (subtask model + list-sort option) and `lifestack-web` (regrouped Todo page). Two PRs, api first.
 **Depends on:** spec-019 (recurring todos), spec-052 (push reminders), spec-053 (calendar recurrence modes), spec-067 (morning briefing — shares the "due today" vocabulary). Product direction: the todo module was inspired by Google Tasks the way Spending was inspired by Spendee and Net Worth by INDmoney — but unlike those two, it never adopted its inspiration's organizing skeleton (owner assessment, 2026-07-09).
 
