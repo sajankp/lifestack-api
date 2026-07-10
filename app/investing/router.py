@@ -13,6 +13,7 @@ from app.core.dependencies import (
     get_investing_analytics_service,
     get_investing_cash_balance_service,
     get_investing_constituent_service,
+    get_investing_dividend_service,
     get_investing_holding_service,
     get_investing_holding_verification_repo,
     get_investing_instrument_service,
@@ -33,6 +34,11 @@ from app.investing.schemas import (
     CashBalanceUpdate,
     CorporateActionCreate,
     CorporateActionResponse,
+    DividendBulkImportRequest,
+    DividendBulkImportResult,
+    DividendCreate,
+    DividendResponse,
+    DividendUpdate,
     ExposureAnalyticsResponse,
     HoldingPriceBulkCreate,
     HoldingResponse,
@@ -54,6 +60,7 @@ from app.investing.schemas import (
 from app.investing.service import (
     CashBalanceService,
     ConstituentService,
+    DividendService,
     ExposureAnalyticsService,
     HoldingService,
     InstrumentService,
@@ -671,6 +678,127 @@ async def delete_corporate_action(
         audit_logger=audit_logger,
     )
     await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
+
+
+def _dividend_response(dividend, account) -> DividendResponse:
+    return DividendResponse.model_validate({
+        "public_id": dividend.public_id,
+        "account_id": account.public_id,
+        "account_name": account.name,
+        "holding_id": None,
+        "symbol": dividend.symbol,
+        "income_type": dividend.income_type,
+        "gross_amount": dividend.gross_amount,
+        "tax_withheld": dividend.tax_withheld,
+        "net_amount": dividend.net_amount,
+        "currency": dividend.currency,
+        "pay_date": dividend.pay_date,
+        "external_ref": dividend.external_ref,
+        "notes": dividend.notes,
+        "created_at": dividend.created_at,
+        "updated_at": dividend.updated_at,
+    })
+
+
+@router.post("/dividends", response_model=DividendResponse, status_code=status.HTTP_201_CREATED)
+async def create_dividend(
+    dividend_in: DividendCreate,
+    dividend_service: Annotated[DividendService, Depends(get_investing_dividend_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    dividend, account = await dividend_service.create_dividend(
+        workspace_id=workspace_id,
+        user_id=user["id"],
+        dividend_in=dividend_in,
+        audit_logger=audit_logger,
+    )
+    return _dividend_response(dividend, account)
+
+
+@router.get("/dividends", response_model=PaginatedResponse[DividendResponse])
+async def list_dividends(
+    dividend_service: Annotated[DividendService, Depends(get_investing_dividend_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+    symbol: str | None = None,
+    account_id: uuid.UUID | None = None,
+):
+    rows, total, accounts = await dividend_service.list_dividends(
+        workspace_id, pagination.limit, pagination.offset, account_id=account_id, symbol=symbol
+    )
+    items = [
+        _dividend_response(d, accounts[d.account_id]) for d in rows if d.account_id in accounts
+    ]
+    return build_page(items, total, pagination)
+
+
+@router.get("/dividends/{dividend_id}", response_model=DividendResponse)
+async def get_dividend(
+    dividend_id: uuid.UUID,
+    dividend_service: Annotated[DividendService, Depends(get_investing_dividend_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    dividend, account = await dividend_service.get_dividend(workspace_id, dividend_id)
+    return _dividend_response(dividend, account)
+
+
+@router.patch("/dividends/{dividend_id}", response_model=DividendResponse)
+async def update_dividend(
+    dividend_id: uuid.UUID,
+    dividend_in: DividendUpdate,
+    dividend_service: Annotated[DividendService, Depends(get_investing_dividend_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    dividend, account = await dividend_service.update_dividend(
+        workspace_id=workspace_id,
+        public_id=dividend_id,
+        dividend_in=dividend_in,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
+    return _dividend_response(dividend, account)
+
+
+@router.delete("/dividends/{dividend_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_dividend(
+    dividend_id: uuid.UUID,
+    dividend_service: Annotated[DividendService, Depends(get_investing_dividend_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    await dividend_service.delete_dividend(
+        workspace_id=workspace_id,
+        public_id=dividend_id,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
+
+
+@router.post("/dividends/bulk", response_model=DividendBulkImportResult)
+async def bulk_import_dividends(
+    request: DividendBulkImportRequest,
+    dividend_service: Annotated[DividendService, Depends(get_investing_dividend_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    return await dividend_service.bulk_import(
+        workspace_id=workspace_id,
+        user_id=user["id"],
+        request=request,
+        audit_logger=audit_logger,
+    )
 
 
 def _holding_verification_response(

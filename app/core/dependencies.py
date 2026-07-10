@@ -49,6 +49,7 @@ from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
     CorporateActionRepository,
+    DividendRepository,
     HoldingPriceRepository,
     HoldingRepository,
     HoldingVerificationRepository,
@@ -61,6 +62,7 @@ from app.investing.repository import (
 from app.investing.service import (
     CashBalanceService,
     ConstituentService,
+    DividendService,
     ExposureAnalyticsService,
     HoldingService,
     InstrumentService,
@@ -286,6 +288,12 @@ async def get_investing_cash_balance_repo(
     return CashBalanceRepository(session)
 
 
+async def get_investing_dividend_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> DividendRepository:
+    return DividendRepository(session)
+
+
 async def get_investing_instrument_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> InstrumentRepository:
@@ -378,6 +386,16 @@ async def get_investing_cash_balance_service(
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
 ) -> CashBalanceService:
     return CashBalanceService(repo, account_repo, currency_repo)
+
+
+async def get_investing_dividend_service(
+    repo: DividendRepository = Depends(get_investing_dividend_repo),
+    cash_balance_repo: CashBalanceRepository = Depends(get_investing_cash_balance_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
+    currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+) -> DividendService:
+    return DividendService(repo, cash_balance_repo, account_repo, holding_repo, currency_repo)
 
 
 async def get_investing_summary_service(

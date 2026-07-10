@@ -261,6 +261,7 @@ class AccountService:
             tx_count,
             transfer_count,
             order_count,
+            dividend_count,
             snapshot_balance,
             snapshot_as_of,
         ) = await self.account_repository.get_reconciliation_summary(workspace_id, account.id)
@@ -278,6 +279,7 @@ class AccountService:
             transaction_count=tx_count,
             transfer_count=transfer_count,
             order_count=order_count,
+            dividend_count=dividend_count,
         )
 
 

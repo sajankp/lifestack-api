@@ -252,6 +252,7 @@ class ReconciliationSummary(BaseModel):
     transaction_count: int
     transfer_count: int
     order_count: int = 0
+    dividend_count: int = 0
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 

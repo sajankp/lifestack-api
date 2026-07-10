@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import delete, func, or_, select, update
@@ -11,6 +12,7 @@ from app.investing.models import (
     CashBalance,
     Company,
     CorporateAction,
+    Dividend,
     Holding,
     HoldingPrice,
     HoldingVerification,
@@ -786,3 +788,78 @@ class PortfolioSnapshotRepository:
                 .limit(1)
             )
         ).scalar_one_or_none()
+
+
+class DividendRepository(BaseRepository[Dividend]):
+    async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> Dividend | None:
+        result = await self.session.execute(
+            select(Dividend).where(
+                Dividend.workspace_id == workspace_id,
+                Dividend.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_external_ref(
+        self, workspace_id: int, account_id: int, external_ref: str
+    ) -> Dividend | None:
+        result = await self.session.execute(
+            select(Dividend).where(
+                Dividend.workspace_id == workspace_id,
+                Dividend.account_id == account_id,
+                Dividend.external_ref == external_ref,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_fallback_key(
+        self, workspace_id: int, account_id: int, symbol: str | None, pay_date: date
+    ) -> Dividend | None:
+        """Fallback import identity for rows without external_ref (spec-073
+        INV-5): (workspace, account, symbol, pay_date). symbol is normalized
+        upper() by the caller; None matches account-level income rows."""
+        result = await self.session.execute(
+            select(Dividend).where(
+                Dividend.workspace_id == workspace_id,
+                Dividend.account_id == account_id,
+                Dividend.symbol == symbol,
+                Dividend.pay_date == pay_date,
+                Dividend.external_ref.is_(None),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_by_workspace(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        account_id: int | None = None,
+        symbol: str | None = None,
+    ) -> tuple[Sequence[Dividend], int]:
+        base = select(Dividend).where(Dividend.workspace_id == workspace_id)
+        if account_id is not None:
+            base = base.where(Dividend.account_id == account_id)
+        if symbol is not None:
+            base = base.where(Dividend.symbol == symbol.upper())
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(Dividend.pay_date.desc(), Dividend.id.desc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), total
+
+    async def sum_net_amount_by_account(
+        self, workspace_id: int, account_id: int
+    ) -> tuple[Decimal, int]:
+        """Total net dividend/income credited to this account and row count —
+        the term the reconciliation projected-ledger query adds (spec-073 INV-2)."""
+        result = await self.session.execute(
+            select(func.coalesce(func.sum(Dividend.net_amount), Decimal("0")), func.count()).where(
+                Dividend.workspace_id == workspace_id,
+                Dividend.account_id == account_id,
+            )
+        )
+        row = result.one()
+        return Decimal(str(row[0] or "0")), int(row[1] or 0)

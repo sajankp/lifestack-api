@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.investing.models import CorporateActionType, InstrumentType, OrderType
 from app.spending.schemas import SourceMetadataResponse
 
+DIVIDEND_INCOME_TYPES = ("dividend", "interest", "coupon")
+
 
 class HoldingUpdate(BaseModel):
     symbol: str | None = Field(default=None, min_length=1, max_length=20)
@@ -405,3 +407,129 @@ class PerformanceSummaryResponse(BaseModel):
     fx_rates_used: dict[str, Decimal] = Field(default_factory=dict)
 
     model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+# ---------------------------------------------------------------------------
+# Dividends / income events (spec-073)
+# ---------------------------------------------------------------------------
+
+
+class DividendCreate(BaseModel):
+    account_id: uuid.UUID
+    symbol: str | None = Field(default=None, min_length=1, max_length=20)
+    income_type: str = Field(default="dividend")
+    gross_amount: Decimal = Field(..., gt=0, decimal_places=2)
+    tax_withheld: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
+    currency: str = Field(..., min_length=1, max_length=10)
+    pay_date: date
+    external_ref: str | None = Field(default=None, max_length=128)
+    notes: str | None = Field(default=None, max_length=500)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("income_type")
+    @classmethod
+    def validate_income_type(cls, value: str) -> str:
+        if value not in DIVIDEND_INCOME_TYPES:
+            raise ValueError(f"income_type must be one of {DIVIDEND_INCOME_TYPES}")
+        return value
+
+    @model_validator(mode="after")
+    def validate_net_and_attribution(self) -> "DividendCreate":
+        if self.tax_withheld > self.gross_amount:
+            raise ValueError("tax_withheld cannot exceed gross_amount")
+        return self
+
+
+class DividendUpdate(BaseModel):
+    symbol: str | None = Field(default=None, min_length=1, max_length=20)
+    income_type: str | None = None
+    gross_amount: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    tax_withheld: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    currency: str | None = Field(default=None, min_length=1, max_length=10)
+    pay_date: date | None = None
+    external_ref: str | None = Field(default=None, max_length=128)
+    notes: str | None = Field(default=None, max_length=500)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
+
+    @field_validator("income_type")
+    @classmethod
+    def validate_income_type(cls, value: str | None) -> str | None:
+        if value is not None and value not in DIVIDEND_INCOME_TYPES:
+            raise ValueError(f"income_type must be one of {DIVIDEND_INCOME_TYPES}")
+        return value
+
+
+class DividendResponse(BaseModel):
+    public_id: uuid.UUID
+    account_id: uuid.UUID
+    account_name: str
+    holding_id: uuid.UUID | None = None
+    symbol: str | None = None
+    income_type: str
+    gross_amount: Decimal
+    tax_withheld: Decimal
+    net_amount: Decimal
+    currency: str
+    pay_date: date
+    external_ref: str | None = None
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class DividendBulkImportRow(BaseModel):
+    account_id: uuid.UUID
+    symbol: str | None = Field(default=None, max_length=20)
+    income_type: str = Field(default="dividend")
+    gross_amount: Decimal = Field(..., gt=0, decimal_places=2)
+    tax_withheld: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
+    currency: str = Field(..., min_length=1, max_length=10)
+    pay_date: date
+    external_ref: str | None = Field(default=None, max_length=128)
+    notes: str | None = Field(default=None, max_length=500)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class DividendBulkImportRequest(BaseModel):
+    rows: list[DividendBulkImportRow]
+
+
+class DividendBulkImportRejectedRow(BaseModel):
+    row: int
+    reason: str
+
+
+class DividendBulkImportResult(BaseModel):
+    imported: int
+    updated: int
+    skipped: int
+    rejected: list[DividendBulkImportRejectedRow]

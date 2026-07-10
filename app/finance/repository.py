@@ -19,7 +19,7 @@ from app.finance.models import (
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
 )
-from app.investing.models import CashBalance, Holding, InvestingOrder
+from app.investing.models import CashBalance, Dividend, Holding, InvestingOrder
 from app.spending.models import SpendingTransaction
 
 
@@ -407,12 +407,13 @@ class AccountRepository(BaseRepository[Account]):
 
     async def get_reconciliation_summary(
         self, workspace_id: int, account_id: int
-    ) -> tuple[Decimal, int, int, int, Decimal | None, "datetime | None"]:
+    ) -> tuple[Decimal, int, int, int, int, Decimal | None, "datetime | None"]:
         """Return (projected_balance, tx_count, transfer_count, order_count,
-        snapshot_balance, snapshot_as_of).
+        dividend_count, snapshot_balance, snapshot_as_of).
 
         projected_balance = (income - expense) + (transfer_in - transfer_out)
                           + (sell net - buy net)   ← investing order cash impact
+                          + dividend net credits    ← spec-073 INV-2
         snapshot_balance is the most recent CashBalance.balance for this account,
         or None if no snapshot exists.
         """
@@ -452,7 +453,24 @@ class AccountRepository(BaseRepository[Account]):
         orders_net = Decimal(str(orders_result[0] or "0"))
         order_count = int(orders_result[1] or 0)
 
-        projected_balance = ledger_balance + orders_net
+        # Dividend/income cash impact (spec-073 INV-2): a dividend credits cash
+        # with no offsetting debit anywhere, so — like orders — it must appear
+        # on the projected side too, or it manufactures a permanent discrepancy
+        # equal to the dividend total.
+        dividend_row = await self.session.execute(
+            select(
+                func.coalesce(func.sum(Dividend.net_amount), Decimal("0")),
+                func.count(Dividend.id),
+            ).where(
+                Dividend.workspace_id == workspace_id,
+                Dividend.account_id == account_id,
+            )
+        )
+        dividend_result = dividend_row.one()
+        dividend_net = Decimal(str(dividend_result[0] or "0"))
+        dividend_count = int(dividend_result[1] or 0)
+
+        projected_balance = ledger_balance + orders_net + dividend_net
 
         snapshot_row = await self.session.execute(
             select(CashBalance.balance, CashBalance.as_of)
@@ -475,6 +493,7 @@ class AccountRepository(BaseRepository[Account]):
             tx_count,
             transfer_count,
             order_count,
+            dividend_count,
             snapshot_balance,
             snapshot_as_of,
         )
