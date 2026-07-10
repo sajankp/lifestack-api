@@ -3491,3 +3491,156 @@ async def test_return_metrics_empty_workspace_returns_zeroed_scopes(client: Asyn
     data = res.json()
     assert data["overall"]["xirr"] is None
     assert data["by_account"] == []
+
+
+@pytest.mark.asyncio
+async def test_return_metrics_total_return_not_inflated_by_terminal_value(client: AsyncClient):
+    """A flat open position (market value == book value) must show 0% total
+    return. The terminal market-value flow is already part of the position's
+    flow series, so net_flow must not add market value a second time — the
+    double-count would render a flat position as +100%."""
+    account_map = await _register_and_login(
+        client, email="returns-flat@example.com", username="returns-flat", password="TestPass123!"
+    )
+    broker_id = account_map["brokerage"]
+    await _fund_brokerage(client, broker_id)
+
+    buy_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "buy",
+            "symbol": "NVDA",
+            "quantity": "10.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": "2024-01-01T10:00:00Z",
+        },
+    )
+    assert buy_res.status_code == 201, buy_res.text
+
+    res = await client.get("/v1/investing/performance/returns")
+    assert res.status_code == 200, res.text
+    overall = res.json()["overall"]
+    # No price history -> market value defaults to book value -> flat.
+    assert overall["open"]["total_return_pct"] == "0.00"
+    # Scope level also carries total_return_pct (spec-071 §B) so the UI can
+    # show the INV-7 simple-return fallback for sub-year spans.
+    assert overall["total_return_pct"] == "0.00"
+
+
+@pytest.mark.asyncio
+async def test_return_metrics_account_level_income_included_in_all_scopes(client: AsyncClient):
+    """Account-level income (interest, no symbol) must flow into overall and
+    by_currency, not just by_account — otherwise overall realized disagrees
+    with the sum of the account blocks."""
+    account_map = await _register_and_login(
+        client,
+        email="returns-interest@example.com",
+        username="returns-interest",
+        password="TestPass123!",
+    )
+    broker_id = account_map["brokerage"]
+
+    div_res = await client.post(
+        "/v1/investing/dividends",
+        json={
+            "account_id": broker_id,
+            "income_type": "interest",
+            "gross_amount": "25.00",
+            "currency": "USD",
+            "pay_date": "2026-06-15",
+        },
+    )
+    assert div_res.status_code == 201, div_res.text
+
+    res = await client.get("/v1/investing/performance/returns")
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert float(data["overall"]["realized"]) == 25.0
+    assert len(data["by_currency"]) == 1
+    assert float(data["by_currency"][0]["realized"]) == 25.0
+    assert len(data["by_account"]) == 1
+    assert float(data["by_account"][0]["realized"]) == 25.0
+
+
+@pytest.mark.asyncio
+async def test_create_dividend_rejects_tax_equal_to_gross(client: AsyncClient):
+    """net_amount must stay > 0 (DB CHECK): full withholding must be a clean
+    422, never an IntegrityError 500."""
+    account_map = await _register_and_login(
+        client,
+        email="dividend-full-tax@example.com",
+        username="dividend-full-tax",
+        password="TestPass123!",
+    )
+    res = await client.post(
+        "/v1/investing/dividends",
+        json={
+            "account_id": account_map["brokerage"],
+            "gross_amount": "50.00",
+            "tax_withheld": "50.00",
+            "currency": "USD",
+            "pay_date": "2026-06-15",
+        },
+    )
+    assert res.status_code == 422, res.text
+    assert "less than" in res.text
+
+
+@pytest.mark.asyncio
+async def test_dividend_bulk_import_rejects_bad_tax_rows_per_row(client: AsyncClient):
+    """A row with tax_withheld >= gross_amount must be rejected per-row (both
+    the create path and the external_ref update path), leaving the rest of
+    the batch to import — never a 500 for the whole request."""
+    account_map = await _register_and_login(
+        client,
+        email="dividend-bulk-badtax@example.com",
+        username="dividend-bulk-badtax",
+        password="TestPass123!",
+    )
+    broker_id = account_map["brokerage"]
+
+    seed = {
+        "account_id": broker_id,
+        "symbol": "NVDA",
+        "gross_amount": "100.00",
+        "currency": "USD",
+        "pay_date": "2026-06-15",
+        "external_ref": "ref-badtax",
+    }
+    res0 = await client.post("/v1/investing/dividends/bulk", json={"rows": [seed]})
+    assert res0.status_code == 200, res0.text
+    assert res0.json()["imported"] == 1
+
+    rows = [
+        # create path: tax > gross
+        {
+            "account_id": broker_id,
+            "symbol": "AAPL",
+            "gross_amount": "100.00",
+            "tax_withheld": "150.00",
+            "currency": "USD",
+            "pay_date": "2026-06-15",
+        },
+        # update path (existing external_ref): tax == gross
+        {**seed, "tax_withheld": "100.00"},
+        # good row
+        {
+            "account_id": broker_id,
+            "symbol": "MSFT",
+            "gross_amount": "40.00",
+            "currency": "USD",
+            "pay_date": "2026-06-16",
+        },
+    ]
+    res = await client.post("/v1/investing/dividends/bulk", json={"rows": rows})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["imported"] == 1
+    assert body["updated"] == 0
+    assert len(body["rejected"]) == 2
+    assert all("less than" in r["reason"] for r in body["rejected"])
+
+    list_res = await client.get("/v1/investing/dividends", params={"account_id": broker_id})
+    assert list_res.json()["total"] == 2  # seed + MSFT; nothing corrupted
