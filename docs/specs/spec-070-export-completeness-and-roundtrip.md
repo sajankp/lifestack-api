@@ -60,9 +60,9 @@ Extend the module content so each module exports its authoritative entities:
 
 Decision required (see Open questions). Default recommendation: **surface it** — add `health` to `MODULE_OPTIONS` (label "Health") so the existing backend capability is usable, rather than deleting working code. If the owner considers health export premature, remove `health` from backend `SUPPORTED_MODULES` instead. Not both.
 
-### D. Retire the dead holdings import (lifestack-api)
+### D. Retire the dead holdings import (lifestack-api) — CONFIRMED, no code change needed
 
-- `ImportModule.investing_holdings` stays in the enum for historic-row deserialization (its comment already says so) but is confirmed absent from `TEMPLATE_HEADERS`, any upload path, and the web import UI. Verify no live code offers it; if any surface still does, remove that surface. No migration — enum value retained for old `import_batches` rows.
+- `ImportModule.investing_holdings` stays in the enum for historic-row deserialization (its comment already says so). Verified: `validate_upload` hard-rejects it with `ValidationError("investing-holdings imports are no longer supported")` (`app/imports/service.py:464-465`) before any file processing; it is absent from `TEMPLATE_HEADERS` and `REQUIRED_HEADERS`; and `lifestack-web`'s `ImportsPage.tsx` `MODULE_OPTIONS` never offers it as an upload choice (only present in the `ImportModule` TS type, with an explicit backward-compat comment, so historic `import_batches` rows still render). No live surface exists to remove. No migration — enum value retained for old rows.
 
 ## Now vs. Proposed
 
