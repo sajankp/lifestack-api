@@ -167,27 +167,28 @@ class ExportService:
             ]
         if module == "finance":
             return self._finance_sections(workspace_id)
-        # health
-        return [
-            (
-                "medications",
-                select(Medication)
-                .where(Medication.workspace_id == workspace_id)
-                .order_by(Medication.created_at.asc()),
-            ),
-            (
-                "medication_events",
-                select(MedicationEvent)
-                .where(MedicationEvent.workspace_id == workspace_id)
-                .order_by(MedicationEvent.scheduled_for.asc()),
-            ),
-            (
-                "weight_entries",
-                select(WeightEntry)
-                .where(WeightEntry.workspace_id == workspace_id)
-                .order_by(WeightEntry.measured_at.asc()),
-            ),
-        ]
+        if module == "health":
+            return [
+                (
+                    "medications",
+                    select(Medication)
+                    .where(Medication.workspace_id == workspace_id)
+                    .order_by(Medication.created_at.asc()),
+                ),
+                (
+                    "medication_events",
+                    select(MedicationEvent)
+                    .where(MedicationEvent.workspace_id == workspace_id)
+                    .order_by(MedicationEvent.scheduled_for.asc()),
+                ),
+                (
+                    "weight_entries",
+                    select(WeightEntry)
+                    .where(WeightEntry.workspace_id == workspace_id)
+                    .order_by(WeightEntry.measured_at.asc()),
+                ),
+            ]
+        raise ValueError(f"Unknown export module: {module}")
 
     def _accounts_section(self, workspace_id: int) -> tuple[str, object]:
         return (
