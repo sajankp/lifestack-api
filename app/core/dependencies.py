@@ -59,6 +59,7 @@ from app.investing.repository import (
     LotRepository,
     PortfolioSnapshotRepository,
 )
+from app.investing.return_metrics_service import ReturnMetricsService
 from app.investing.service import (
     CashBalanceService,
     ConstituentService,
@@ -579,6 +580,30 @@ async def get_finance_net_worth_snapshot_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> NetWorthSnapshotRepository:
     return NetWorthSnapshotRepository(session)
+
+
+async def get_investing_return_metrics_service(
+    order_repo: InvestingOrderRepository = Depends(get_investing_order_repo),
+    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
+    holding_price_repo: HoldingPriceRepository = Depends(get_investing_holding_price_repo),
+    dividend_repo: DividendRepository = Depends(get_investing_dividend_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    net_worth_snapshot_repo: NetWorthSnapshotRepository = Depends(
+        get_finance_net_worth_snapshot_repo
+    ),
+    fx_rate_service: FxRateService = Depends(get_finance_fx_rate_service),
+    finance_setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
+) -> ReturnMetricsService:
+    return ReturnMetricsService(
+        order_repo,
+        holding_repo,
+        holding_price_repo,
+        dividend_repo,
+        account_repo,
+        net_worth_snapshot_repo,
+        fx_rate_service,
+        finance_setting_repo,
+    )
 
 
 async def get_finance_net_worth_service(

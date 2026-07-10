@@ -3205,3 +3205,289 @@ async def test_dividend_bulk_import_two_same_day_dividends_distinct_refs_both_im
     body = res.json()
     assert body["imported"] == 2
     assert body["rejected"] == []
+
+
+# ---------------------------------------------------------------------------
+# Return metrics: XIRR / open-closed / realized-unrealized (spec-071)
+# ---------------------------------------------------------------------------
+
+
+async def _fund_brokerage(client: AsyncClient, broker_id: str, amount: str = "100000.00") -> None:
+    res = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": broker_id,
+            "balance": amount,
+            "currency": "USD",
+            "as_of": "2023-12-01T00:00:00Z",
+        },
+    )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.asyncio
+async def test_return_metrics_open_position_includes_terminal_value(client: AsyncClient):
+    account_map = await _register_and_login(
+        client, email="returns-open@example.com", username="returns-open", password="TestPass123!"
+    )
+    broker_id = account_map["brokerage"]
+    await _fund_brokerage(client, broker_id)
+
+    buy_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "buy",
+            "symbol": "NVDA",
+            "quantity": "10.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": "2024-01-01T10:00:00Z",
+        },
+    )
+    assert buy_res.status_code == 201, buy_res.text
+
+    res = await client.get("/v1/investing/performance/returns")
+    assert res.status_code == 200, res.text
+    data = res.json()
+    overall = data["overall"]
+    # Open block should carry the position (market value defaults to book
+    # value in this test since no price history was recorded).
+    assert overall["open"]["invested"] == "1000.00"
+    assert overall["closed"]["invested"] == "0.00"
+    assert overall["open"]["market_value"] == "1000.00"
+
+
+@pytest.mark.asyncio
+async def test_return_metrics_closed_position_has_no_terminal_value(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="returns-closed@example.com",
+        username="returns-closed",
+        password="TestPass123!",
+    )
+    broker_id = account_map["brokerage"]
+    await _fund_brokerage(client, broker_id)
+
+    await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "buy",
+            "symbol": "NVDA",
+            "quantity": "10.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": "2024-01-01T10:00:00Z",
+        },
+    )
+    sell_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "sell",
+            "symbol": "NVDA",
+            "quantity": "10.00000000",
+            "price_per_unit": "150.00",
+            "currency": "USD",
+            "occurred_at": "2024-06-01T10:00:00Z",
+        },
+    )
+    assert sell_res.status_code == 201, sell_res.text
+
+    res = await client.get("/v1/investing/performance/returns")
+    data = res.json()["overall"]
+    assert data["open"]["invested"] == "0.00"
+    assert data["closed"]["invested"] == "1000.00"
+    assert data["closed"]["market_value"] == "0.00"
+    assert float(data["closed"]["realized"]) == 500.0
+
+
+@pytest.mark.asyncio
+async def test_return_metrics_dividend_is_income_not_contribution(client: AsyncClient):
+    """INV-6: a dividend enters the flow series as positive income but is
+    excluded from invested capital -- so invested reflects only the buy,
+    while realized includes the dividend net amount."""
+    account_map = await _register_and_login(
+        client,
+        email="returns-dividend@example.com",
+        username="returns-dividend",
+        password="TestPass123!",
+    )
+    broker_id = account_map["brokerage"]
+    await _fund_brokerage(client, broker_id)
+
+    await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "buy",
+            "symbol": "NVDA",
+            "quantity": "10.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": "2024-01-01T10:00:00Z",
+        },
+    )
+    div_res = await client.post(
+        "/v1/investing/dividends",
+        json={
+            "account_id": broker_id,
+            "symbol": "NVDA",
+            "gross_amount": "50.00",
+            "currency": "USD",
+            "pay_date": "2024-03-01",
+        },
+    )
+    assert div_res.status_code == 201, div_res.text
+
+    res = await client.get("/v1/investing/performance/returns")
+    data = res.json()["overall"]
+    assert data["open"]["invested"] == "1000.00"  # dividend excluded
+    assert float(data["open"]["realized"]) == 50.0  # dividend is realized income
+
+
+@pytest.mark.asyncio
+async def test_return_metrics_sub_year_annualization_not_reliable(client: AsyncClient):
+    """INV-7: a position held under 365 days never gets an annualized
+    figure, even though XIRR itself may still be solvable."""
+    account_map = await _register_and_login(
+        client,
+        email="returns-subyear@example.com",
+        username="returns-subyear",
+        password="TestPass123!",
+    )
+    broker_id = account_map["brokerage"]
+    await _fund_brokerage(client, broker_id, amount="100000.00")
+
+    await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "buy",
+            "symbol": "NVDA",
+            "quantity": "10.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": "2026-06-01T10:00:00Z",
+        },
+    )
+
+    res = await client.get("/v1/investing/performance/returns")
+    data = res.json()["overall"]
+    assert data["annualization_reliable"] is False
+    assert data["annualized_return_pct"] is None
+
+
+@pytest.mark.asyncio
+async def test_return_metrics_open_closed_partition_reconciles_to_overall(client: AsyncClient):
+    """INV-5: open and closed realized components sum to the overall
+    realized total -- the partition is exhaustive and disjoint."""
+    account_map = await _register_and_login(
+        client,
+        email="returns-partition@example.com",
+        username="returns-partition",
+        password="TestPass123!",
+    )
+    broker_id = account_map["brokerage"]
+    await _fund_brokerage(client, broker_id)
+
+    # NVDA: fully closed with realized gain.
+    await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "buy",
+            "symbol": "NVDA",
+            "quantity": "10.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": "2024-01-01T10:00:00Z",
+        },
+    )
+    await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "sell",
+            "symbol": "NVDA",
+            "quantity": "10.00000000",
+            "price_per_unit": "150.00",
+            "currency": "USD",
+            "occurred_at": "2024-06-01T10:00:00Z",
+        },
+    )
+    # AAPL: still open, with a dividend as realized income.
+    await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "buy",
+            "symbol": "AAPL",
+            "quantity": "5.00000000",
+            "price_per_unit": "50.00",
+            "currency": "USD",
+            "occurred_at": "2024-02-01T10:00:00Z",
+        },
+    )
+    await client.post(
+        "/v1/investing/dividends",
+        json={
+            "account_id": broker_id,
+            "symbol": "AAPL",
+            "gross_amount": "20.00",
+            "currency": "USD",
+            "pay_date": "2024-05-01",
+        },
+    )
+
+    res = await client.get("/v1/investing/performance/returns")
+    data = res.json()["overall"]
+    open_realized = Decimal(data["open"]["realized"])
+    closed_realized = Decimal(data["closed"]["realized"])
+    assert open_realized + closed_realized == Decimal(data["realized"])
+    assert closed_realized == Decimal("500.00")
+    assert open_realized == Decimal("20.00")
+
+
+@pytest.mark.asyncio
+async def test_return_metrics_by_account_present(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="returns-by-account@example.com",
+        username="returns-by-account",
+        password="TestPass123!",
+    )
+    broker_id = account_map["brokerage"]
+    await _fund_brokerage(client, broker_id)
+
+    await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "buy",
+            "symbol": "NVDA",
+            "quantity": "10.00000000",
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": "2024-01-01T10:00:00Z",
+        },
+    )
+
+    res = await client.get("/v1/investing/performance/returns")
+    data = res.json()
+    assert len(data["by_account"]) == 1
+    assert data["by_account"][0]["account_id"] == broker_id
+    assert data["by_account"][0]["currency"] == "USD"
+
+
+@pytest.mark.asyncio
+async def test_return_metrics_empty_workspace_returns_zeroed_scopes(client: AsyncClient):
+    await _register_and_login(
+        client, email="returns-empty@example.com", username="returns-empty", password="TestPass123!"
+    )
+    res = await client.get("/v1/investing/performance/returns")
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["overall"]["xirr"] is None
+    assert data["by_account"] == []

@@ -19,6 +19,7 @@ from app.core.dependencies import (
     get_investing_instrument_service,
     get_investing_order_service,
     get_investing_performance_service,
+    get_investing_return_metrics_service,
     get_investing_snapshot_repo,
     get_investing_summary_service,
     require_min_role,
@@ -28,6 +29,7 @@ from app.finance.service import AccountService
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService, PerformanceService
 from app.investing.repository import HoldingVerificationRepository, PortfolioSnapshotRepository
+from app.investing.return_metrics_service import ReturnMetricsService
 from app.investing.schemas import (
     CashBalanceCreate,
     CashBalanceResponse,
@@ -56,6 +58,7 @@ from app.investing.schemas import (
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
     PerformanceSummaryResponse,
+    ReturnMetricsResponse,
 )
 from app.investing.service import (
     CashBalanceService,
@@ -381,6 +384,21 @@ async def get_performance_summary(
     _user: Annotated[dict, Depends(get_current_user)],
 ):
     return await performance_service.summary(workspace_id)
+
+
+@router.get("/performance/returns", response_model=ReturnMetricsResponse)
+async def get_return_metrics(
+    return_metrics_service: Annotated[
+        ReturnMetricsService, Depends(get_investing_return_metrics_service)
+    ],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    """XIRR / annualized-return / realized-unrealized-split metrics
+    (spec-071), overall + per-account + per-currency, split into open vs
+    closed positions. Additive to /performance/summary -- that endpoint is
+    unchanged."""
+    return await return_metrics_service.get_return_metrics(workspace_id)
 
 
 def _order_response(

@@ -533,3 +533,68 @@ class DividendBulkImportResult(BaseModel):
     updated: int
     skipped: int
     rejected: list[DividendBulkImportRejectedRow]
+
+
+# ---------------------------------------------------------------------------
+# Return metrics: XIRR / annualized / realized-split (spec-071)
+# ---------------------------------------------------------------------------
+
+
+class PositionMetrics(BaseModel):
+    xirr: Decimal | None = None
+    annualized_return_pct: Decimal | None = None
+    annualization_reliable: bool = False
+    holding_days: int | None = None
+    total_return_pct: Decimal | None = None
+    realized: Decimal = Decimal("0")
+    unrealized: Decimal = Decimal("0")
+    market_value: Decimal = Decimal("0")
+    invested: Decimal = Decimal("0")
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class ScopeReturnMetrics(BaseModel):
+    xirr: Decimal | None = None
+    annualized_return_pct: Decimal | None = None
+    annualization_reliable: bool = False
+    holding_days: int | None = None
+    realized: Decimal = Decimal("0")
+    unrealized: Decimal = Decimal("0")
+    data_quality: str = "complete"
+    open: PositionMetrics
+    closed: PositionMetrics
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class MaxDrawdown(BaseModel):
+    pct: Decimal
+    peak_date: date
+    trough_date: date
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class AccountReturnMetrics(ScopeReturnMetrics):
+    account_id: uuid.UUID
+    account_name: str
+    currency: str
+
+
+class CurrencyReturnMetrics(ScopeReturnMetrics):
+    currency: str
+
+
+class OverallReturnMetrics(ScopeReturnMetrics):
+    max_drawdown: MaxDrawdown | None = None
+
+
+class ReturnMetricsResponse(BaseModel):
+    currency: str | None = None
+    valuation_status: str
+    overall: OverallReturnMetrics
+    by_account: list[AccountReturnMetrics]
+    by_currency: list[CurrencyReturnMetrics]
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
