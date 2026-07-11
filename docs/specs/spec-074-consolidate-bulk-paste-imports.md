@@ -1,7 +1,7 @@
 # Spec-074: Consolidate bespoke bulk-paste flows into the imports framework
 
 **Created:** 2026-07-11
-**Status:** Draft — owner-approved in principle (2026-07-11, "one umbrella spec now"); awaiting review of this document before implementation.
+**Status:** Implemented (api `eed67bc`, web `eb254bb`, both 2026-07-11) — all three modules (dividends, FX rates, net-worth history) shipped end-to-end; old bespoke bulk endpoints and client-side CSV parsers removed.
 **Scope:** multi-repo, user-facing — `lifestack-api` (three new import modules; retire three bespoke bulk endpoints) and `lifestack-web` (route bulk entry through `/imports`; delete three client-side CSV parsers). **One api PR + one web PR** (per-module commits within each); api merges first. The web changes only wire modules into the existing `/imports` UX and delete dead paste code, so they need no dedicated frontend spec. *Coordination note:* another change is touching the Cash tab (pagination) — rebase the `DividendsSection.tsx` edit onto it to avoid a collision.
 **Supersedes/absorbs:** the dividend piece of **spec-073 rev. 5** (dividends is module 1 of this initiative — see §Modules). spec-073 remains the source of truth for the dividend *event model*; this spec owns the *consolidation approach* shared across all three.
 **Related:** spec-065 (net-worth history), spec-072 (historical data), the imports framework (`app/imports/`).

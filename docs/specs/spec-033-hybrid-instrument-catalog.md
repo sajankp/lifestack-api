@@ -1,14 +1,14 @@
 # Feature Spec 033: Hybrid Instrument Catalog with Tenant Overrides
 
-**Status:** Deferred (Backlog / Future Roadmap)
+**Status:** Implemented (migration `0032_hybrid_instrument_catalog.py`, 2026-06-24).
 **Spec ID:** 033
 
 ---
 
 ## 1. Overview
 Historically, workspace-scoped instruments caused redundant Yahoo Finance requests for common public
-securities. That unreliable automated constituent runtime was retired on 2026-06-19; this deferred
-proposal is retained only as design history.
+securities. That unreliable automated constituent runtime was retired on 2026-06-19; the hybrid catalog
+model below was subsequently built.
 
 This spec proposes transitioning to a **Hybrid Catalog Model** where:
 * Public reference data is stored globally (`workspace_id IS NULL`).

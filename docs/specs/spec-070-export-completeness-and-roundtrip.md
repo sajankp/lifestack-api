@@ -1,7 +1,7 @@
 # Spec-070: Export Completeness & Import/Export Round-Trip
 
 **Created:** 2026-07-10
-**Status:** Approved (2026-07-10). Decisions: (1) health export is **surfaced in the UI**; (2) accounts are **auto-included when referenced** (INV-3); (3) transfers + accounts + settings form a **new `finance` module**.
+**Status:** Implemented (api `fa01f25`/`15617f6`, web `a12e612`, 2026-07-10). Decisions: (1) health export is **surfaced in the UI**; (2) accounts are **auto-included when referenced** (INV-3); (3) transfers + accounts + settings form a **new `finance` module**.
 **Scope:** multi-repo, user-facing — `lifestack-api` (export data + module contract) and `lifestack-web` (export UI). Delivered as two PRs, api merged first (per one-PR-per-repo rule). No e2e-blocking behavior change expected; add e2e coverage for the new export modules opportunistically.
 **Depends on:** spec-041 (investing orders as source of truth), spec-049/050 (capital transfers + brokerage snapshots), spec-056/060/063 (CAS imports). Related domain doc: `docs/domain/cash-model-ledger-snapshots-reconciliation.md`.
 
