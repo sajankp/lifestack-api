@@ -34,6 +34,7 @@ from app.imports.repository import ImportRepository
 from app.investing.models import (
     CashBalance,
     Company,
+    Dividend,
     Holding,
     Instrument,
     InstrumentConstituent,
@@ -42,6 +43,7 @@ from app.investing.models import (
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
+    DividendRepository,
     HoldingPriceRepository,
     HoldingRepository,
     InstrumentConstituentRepository,
@@ -53,6 +55,11 @@ from app.investing.response_helpers import instrument_response, populate_valuati
 from app.investing.schemas import (
     CashBalanceCreate,
     CashBalanceUpdate,
+    DividendBulkImportRejectedRow,
+    DividendBulkImportRequest,
+    DividendBulkImportResult,
+    DividendCreate,
+    DividendUpdate,
     ExposureAnalyticsResponse,
     ExposureCompanyRow,
     HoldingResponse,
@@ -662,6 +669,436 @@ class CashBalanceService:
                     "changed_fields": [],
                 },
             )
+
+
+_DIVIDEND_AUDIT_FIELDS = (
+    "account_id",
+    "symbol",
+    "income_type",
+    "gross_amount",
+    "tax_withheld",
+    "net_amount",
+    "currency",
+    "pay_date",
+)
+
+
+def _snapshot_dividend(dividend: Dividend) -> dict:
+    data = snapshot_columns(dividend, _DIVIDEND_AUDIT_FIELDS)
+    for field in ("gross_amount", "tax_withheld", "net_amount"):
+        if data.get(field) is not None:
+            data[field] = str(data[field])
+    if data.get("pay_date") is not None:
+        data["pay_date"] = (
+            data["pay_date"].isoformat()
+            if hasattr(data["pay_date"], "isoformat")
+            else str(data["pay_date"])
+        )
+    return data
+
+
+class DividendService:
+    """Dividend/interest/coupon income events (spec-073).
+
+    A dividend credits investing_cash_balances with NO offsetting debit
+    anywhere (INV-1) — the structural fix for the former workaround of a
+    fake wallet->brokerage transfer. account_id must be a brokerage account
+    (snapshot-managed); interest/coupon on a bank/wallet account belongs in
+    the ordinary spending ledger, not here.
+    """
+
+    def __init__(
+        self,
+        repository: DividendRepository,
+        cash_balance_repository: CashBalanceRepository,
+        account_repository: AccountRepository,
+        holding_repository: HoldingRepository,
+        currency_repository: CurrencyRepository | None = None,
+    ):
+        self.repository = repository
+        self.cash_balance_repository = cash_balance_repository
+        self.account_repository = account_repository
+        self.holding_repository = holding_repository
+        self.currency_repository = currency_repository
+
+    async def _validate_account_and_currency(
+        self, workspace_id: int, account_public_id: uuid.UUID, currency: str
+    ) -> Account:
+        account = await self.account_repository.get_by_public_id(workspace_id, account_public_id)
+        if not account or not account.is_active:
+            raise ValidationError(detail="account_id is invalid for this workspace")
+        if account.account_type != "brokerage":
+            raise ValidationError(
+                detail=(
+                    "Dividends/income can only be recorded on brokerage accounts; "
+                    f"'{account.name}' is a {account.account_type} account. Bank/wallet "
+                    "interest belongs in the ordinary spending ledger."
+                )
+            )
+        code = currency.upper()
+        if self.currency_repository is not None:
+            currency_row = await self.currency_repository.get_by_code(code)
+            if not currency_row or not currency_row.is_active:
+                raise ValidationError(detail=f"Unsupported currency code '{code}'")
+        if code != account.default_currency_code.upper():
+            raise ValidationError(
+                detail=(
+                    f"Currency '{code}' does not match account '{account.name}' "
+                    f"({account.default_currency_code})"
+                )
+            )
+        return account
+
+    async def _resolve_holding(
+        self, workspace_id: int, account_id: int, symbol: str | None
+    ) -> int | None:
+        if symbol is None:
+            return None
+        holding = await self.holding_repository.get_by_unique_key(workspace_id, symbol, account_id)
+        return holding.id if holding else None
+
+    async def _credit_cash(
+        self, workspace_id: int, user_id: int, account: Account, dividend: Dividend
+    ) -> None:
+        latest_cash = await self.cash_balance_repository.get_latest_for_account_currency(
+            workspace_id, account.id, dividend.currency
+        )
+        prev_balance = latest_cash.balance if latest_cash is not None else Decimal("0")
+        new_cash = CashBalance(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            account_id=account.id,
+            balance=prev_balance + dividend.net_amount,
+            currency=dividend.currency,
+            as_of=datetime.combine(dividend.pay_date, datetime.min.time(), tzinfo=UTC),
+            trigger_type="dividend",
+            trigger_ref=dividend.public_id,
+        )
+        await self.cash_balance_repository.create(new_cash)
+
+    async def list_dividends(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        account_id: uuid.UUID | None = None,
+        symbol: str | None = None,
+    ) -> tuple[Sequence[Dividend], int, dict[int, Account]]:
+        internal_account_id = None
+        if account_id is not None:
+            account = await self.account_repository.get_by_public_id(workspace_id, account_id)
+            if not account:
+                raise ValidationError(detail="account_id is invalid for this workspace")
+            internal_account_id = account.id
+        rows, total = await self.repository.list_by_workspace(
+            workspace_id, limit, offset, account_id=internal_account_id, symbol=symbol
+        )
+        account_ids = {r.account_id for r in rows}
+        accounts = {
+            a.id: a
+            for a in [
+                await self.account_repository.get_by_id(workspace_id, aid) for aid in account_ids
+            ]
+            if a is not None
+        }
+        return rows, total, accounts
+
+    async def get_dividend(
+        self, workspace_id: int, public_id: uuid.UUID
+    ) -> tuple[Dividend, Account]:
+        dividend = await self.repository.get_by_public_id(workspace_id, public_id)
+        if not dividend:
+            raise NotFoundError(detail=f"Dividend with id {public_id} not found in this workspace")
+        account = await self.account_repository.get_by_id(workspace_id, dividend.account_id)
+        if not account:
+            raise ValidationError(detail="Associated account is missing")
+        return dividend, account
+
+    async def create_dividend(
+        self,
+        workspace_id: int,
+        user_id: int,
+        dividend_in: DividendCreate,
+        audit_logger: AuditLogger | None = None,
+    ) -> tuple[Dividend, Account]:
+        account = await self._validate_account_and_currency(
+            workspace_id, dividend_in.account_id, dividend_in.currency
+        )
+        holding_id = await self._resolve_holding(workspace_id, account.id, dividend_in.symbol)
+        net_amount = (dividend_in.gross_amount - dividend_in.tax_withheld).quantize(MONEY_QUANT)
+        dividend = Dividend(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            account_id=account.id,
+            holding_id=holding_id,
+            symbol=dividend_in.symbol,
+            income_type=dividend_in.income_type,
+            gross_amount=dividend_in.gross_amount,
+            tax_withheld=dividend_in.tax_withheld,
+            net_amount=net_amount,
+            currency=dividend_in.currency,
+            pay_date=dividend_in.pay_date,
+            external_ref=dividend_in.external_ref,
+            notes=dividend_in.notes,
+        )
+        dividend = await self.repository.create(dividend)
+        await self._credit_cash(workspace_id, user_id, account, dividend)
+
+        if audit_logger:
+            after_snap = _snapshot_dividend(dividend)
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action="create",
+                module="investing",
+                entity_type="dividend",
+                entity_id=dividend.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(dividend.public_id),
+                    "before": None,
+                    "after": after_snap,
+                    "changed_fields": list(after_snap.keys()),
+                },
+            )
+        return dividend, account
+
+    async def _check_no_newer_snapshot(self, workspace_id: int, linked: CashBalance) -> None:
+        newer_count = await self.cash_balance_repository.count_newer_than(
+            workspace_id, linked.account_id, linked.currency, linked.created_at
+        )
+        if newer_count > 0:
+            raise ConflictError(
+                detail=(
+                    "Cannot modify this dividend: a newer cash snapshot has been "
+                    "recorded on this account since it was created."
+                )
+            )
+
+    async def delete_dividend(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
+        dividend, _account = await self.get_dividend(workspace_id, public_id)
+        before_snap = _snapshot_dividend(dividend)
+
+        linked = await self.cash_balance_repository.get_by_trigger_ref_and_account(
+            workspace_id, dividend.public_id, dividend.account_id
+        )
+        if linked is not None:
+            await self._check_no_newer_snapshot(workspace_id, linked)
+            await self.cash_balance_repository.delete(linked)
+
+        await self.repository.delete(dividend)
+
+        if audit_logger and actor_id is not None:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="delete",
+                module="investing",
+                entity_type="dividend",
+                entity_id=dividend.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(dividend.public_id),
+                    "before": before_snap,
+                    "after": None,
+                    "changed_fields": [],
+                },
+            )
+
+    async def update_dividend(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        dividend_in: DividendUpdate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> tuple[Dividend, Account]:
+        dividend, account = await self.get_dividend(workspace_id, public_id)
+        return await self._update_dividend_loaded(
+            workspace_id, dividend, account, dividend_in, actor_id, audit_logger
+        )
+
+    async def _update_dividend_loaded(
+        self,
+        workspace_id: int,
+        dividend: Dividend,
+        account: Account,
+        dividend_in: DividendUpdate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> tuple[Dividend, Account]:
+        """Update body operating on already-loaded entities, so bulk import
+        (which has both in hand) doesn't re-query them per row."""
+        before_snap = _snapshot_dividend(dividend)
+        update_data = dividend_in.model_dump(exclude_unset=True)
+        if not update_data:
+            return dividend, account
+
+        # Validate everything BEFORE mutating the managed instance — a
+        # rejected row in a bulk import must not leave a dirty object in the
+        # session for the next autoflush to trip over.
+        next_currency = update_data.get("currency", dividend.currency)
+        if next_currency.upper() != account.default_currency_code.upper():
+            raise ValidationError(
+                detail=(
+                    f"Currency '{next_currency.upper()}' does not match account "
+                    f"'{account.name}' ({account.default_currency_code})"
+                )
+            )
+
+        new_gross = update_data.get("gross_amount", dividend.gross_amount)
+        new_tax = update_data.get("tax_withheld", dividend.tax_withheld)
+        if new_tax >= new_gross:
+            raise ValidationError(detail="tax_withheld must be less than gross_amount")
+
+        cash_affecting = {"gross_amount", "tax_withheld", "currency", "pay_date"}
+        needs_cash_update = cash_affecting.intersection(update_data.keys())
+
+        linked = None
+        if needs_cash_update:
+            linked = await self.cash_balance_repository.get_by_trigger_ref_and_account(
+                workspace_id, dividend.public_id, dividend.account_id
+            )
+            if linked is not None:
+                await self._check_no_newer_snapshot(workspace_id, linked)
+
+        if "symbol" in update_data:
+            dividend.holding_id = await self._resolve_holding(
+                workspace_id, account.id, update_data["symbol"]
+            )
+
+        for key, value in update_data.items():
+            setattr(dividend, key, value)
+
+        dividend.net_amount = (new_gross - new_tax).quantize(MONEY_QUANT)
+        dividend.updated_at = datetime.now(UTC)
+        dividend = await self.repository.save(dividend)
+
+        if needs_cash_update:
+            if linked is not None:
+                await self.cash_balance_repository.delete(linked)
+            await self._credit_cash(workspace_id, dividend.user_id, account, dividend)
+
+        if audit_logger and actor_id is not None:
+            after_snap = _snapshot_dividend(dividend)
+            changed_fields = [k for k in before_snap if before_snap[k] != after_snap[k]]
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="update",
+                module="investing",
+                entity_type="dividend",
+                entity_id=dividend.id,  # type: ignore[arg-type]
+                details={
+                    "entity_public_id": str(dividend.public_id),
+                    "before": before_snap,
+                    "after": after_snap,
+                    "changed_fields": changed_fields,
+                },
+            )
+        return dividend, account
+
+    async def bulk_import(
+        self,
+        workspace_id: int,
+        user_id: int,
+        request: DividendBulkImportRequest,
+        audit_logger: AuditLogger | None = None,
+    ) -> DividendBulkImportResult:
+        imported = 0
+        updated = 0
+        skipped = 0
+        rejected: list[DividendBulkImportRejectedRow] = []
+
+        for idx, row in enumerate(request.rows):
+            try:
+                account = await self.account_repository.get_by_public_id(
+                    workspace_id, row.account_id
+                )
+                if not account or not account.is_active:
+                    rejected.append(
+                        DividendBulkImportRejectedRow(row=idx, reason="unknown account_id")
+                    )
+                    continue
+
+                # Guard here (not only in DividendCreate) so a bad row is a
+                # per-row reject on BOTH paths — constructing DividendCreate
+                # with tax >= gross raises pydantic's ValidationError, which
+                # is not the app ValidationError caught below.
+                if row.tax_withheld >= row.gross_amount:
+                    rejected.append(
+                        DividendBulkImportRejectedRow(
+                            row=idx, reason="tax_withheld must be less than gross_amount"
+                        )
+                    )
+                    continue
+
+                net_amount = (row.gross_amount - row.tax_withheld).quantize(MONEY_QUANT)
+
+                if row.external_ref:
+                    existing = await self.repository.get_by_external_ref(
+                        workspace_id, account.id, row.external_ref
+                    )
+                    if existing is not None:
+                        # Upsert on external_ref: amount corrections are expected
+                        # and allowed (spec-073 INV-5) — this is the identity.
+                        update_in = DividendUpdate(
+                            symbol=row.symbol,
+                            income_type=row.income_type,
+                            gross_amount=row.gross_amount,
+                            tax_withheld=row.tax_withheld,
+                            currency=row.currency,
+                            pay_date=row.pay_date,
+                            notes=row.notes,
+                        )
+                        await self._update_dividend_loaded(
+                            workspace_id, existing, account, update_in, user_id, audit_logger
+                        )
+                        updated += 1
+                        continue
+                else:
+                    existing = await self.repository.get_by_fallback_key(
+                        workspace_id, account.id, row.symbol, row.pay_date
+                    )
+                    if existing is not None:
+                        if existing.net_amount == net_amount:
+                            skipped += 1
+                            continue
+                        rejected.append(
+                            DividendBulkImportRejectedRow(
+                                row=idx,
+                                reason=(
+                                    "amount_mismatch: an existing dividend for this "
+                                    "account/symbol/pay_date has a different amount; "
+                                    "supply external_ref to update it explicitly"
+                                ),
+                            )
+                        )
+                        continue
+
+                create_in = DividendCreate(
+                    account_id=row.account_id,
+                    symbol=row.symbol,
+                    income_type=row.income_type,
+                    gross_amount=row.gross_amount,
+                    tax_withheld=row.tax_withheld,
+                    currency=row.currency,
+                    pay_date=row.pay_date,
+                    external_ref=row.external_ref,
+                    notes=row.notes,
+                )
+                await self.create_dividend(workspace_id, user_id, create_in, audit_logger)
+                imported += 1
+            except (ValidationError, NotFoundError) as exc:
+                rejected.append(DividendBulkImportRejectedRow(row=idx, reason=str(exc.detail)))
+
+        return DividendBulkImportResult(
+            imported=imported, updated=updated, skipped=skipped, rejected=rejected
+        )
 
 
 def _previous_weekday(value: date) -> date:

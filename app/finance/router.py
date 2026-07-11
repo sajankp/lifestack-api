@@ -30,12 +30,18 @@ from app.finance.schemas import (
     CapitalTransferResponse,
     CapitalTransferUpdate,
     CurrencyResponse,
+    FxRateHistoryImportRequest,
+    FxRateHistoryImportResult,
     FxRateResponse,
+    NetWorthHistoryImportRequest,
+    NetWorthHistoryImportResult,
     NetWorthHistoryItem,
     NetWorthResponse,
     ReconciliationSummary,
     UserFinanceSettingResponse,
     UserFinanceSettingUpdate,
+    UserFxRateResponse,
+    UserNetWorthPointResponse,
     WorkspaceFinanceSettingResponse,
     WorkspaceFinanceSettingUpdate,
 )
@@ -252,6 +258,55 @@ async def get_fx_rate(
     return FxRateResponse.model_validate(rate_row)
 
 
+@router.post("/fx/history/import", response_model=FxRateHistoryImportResult)
+async def import_fx_history(
+    request: FxRateHistoryImportRequest,
+    fx_service: Annotated[FxRateService, Depends(get_finance_fx_rate_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    """User-provided historical FX rates (spec-072): workspace-scoped, used
+    only as a fallback for past-dated conversions when no system rate
+    exists for that date — never for present-day live figures."""
+    return await fx_service.import_historical_rates(workspace_id, request)
+
+
+@router.get("/fx/history", response_model=PaginatedResponse[UserFxRateResponse])
+async def list_fx_history(
+    fx_service: Annotated[FxRateService, Depends(get_finance_fx_rate_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+):
+    rows, total = await fx_service.list_user_rates(
+        workspace_id, pagination.limit, pagination.offset
+    )
+    items = [
+        UserFxRateResponse.model_validate({
+            "id": r.id,
+            "base_currency_code": r.base_currency_code,
+            "quote_currency_code": r.quote_currency_code,
+            "rate": r.rate,
+            "as_of_date": r.as_of.date(),
+            "created_at": r.created_at,
+        })
+        for r in rows
+    ]
+    return build_page(items, total, pagination)
+
+
+@router.delete("/fx/history/{row_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_fx_history_row(
+    row_id: int,
+    fx_service: Annotated[FxRateService, Depends(get_finance_fx_rate_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    await fx_service.delete_user_rate(workspace_id, row_id)
+
+
 @router.get("/transfers", response_model=PaginatedResponse[CapitalTransferResponse])
 async def list_transfers(
     transfer_service: Annotated[CapitalTransferService, Depends(get_finance_transfer_service)],
@@ -356,3 +411,44 @@ async def get_net_worth_history(
 
     history = await net_worth_service.get_history(workspace_id, from_dt, to_dt)
     return [NetWorthHistoryItem.model_validate(h) for h in history]
+
+
+@router.post("/net-worth/history/import", response_model=NetWorthHistoryImportResult)
+async def import_net_worth_history(
+    request: NetWorthHistoryImportRequest,
+    net_worth_service: Annotated[NetWorthService, Depends(get_finance_net_worth_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    """User-provided net-worth backfill points (spec-072 Tier A). Only fills
+    dates strictly before the workspace's earliest live snapshot (INV-2) —
+    live always wins and can never be shadowed."""
+    return await net_worth_service.import_backfill_points(workspace_id, request)
+
+
+@router.get(
+    "/net-worth/history/user-points", response_model=PaginatedResponse[UserNetWorthPointResponse]
+)
+async def list_net_worth_user_points(
+    net_worth_service: Annotated[NetWorthService, Depends(get_finance_net_worth_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+):
+    rows, total = await net_worth_service.list_user_points(
+        workspace_id, pagination.limit, pagination.offset
+    )
+    items = [UserNetWorthPointResponse.model_validate(r) for r in rows]
+    return build_page(items, total, pagination)
+
+
+@router.delete("/net-worth/history/user-points/{point_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_net_worth_user_point(
+    point_id: int,
+    net_worth_service: Annotated[NetWorthService, Depends(get_finance_net_worth_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    await net_worth_service.delete_user_point(workspace_id, point_id)

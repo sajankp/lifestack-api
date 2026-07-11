@@ -252,6 +252,7 @@ class ReconciliationSummary(BaseModel):
     transaction_count: int
     transfer_count: int
     order_count: int = 0
+    dividend_count: int = 0
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 
@@ -300,9 +301,98 @@ class NetWorthResponse(BaseModel):
 class NetWorthHistoryItem(BaseModel):
     snapshot_date: date
     reporting_currency: str
-    holdings_value: Decimal
-    investing_cash: Decimal
-    spending_cash: Decimal
+    # Nullable: a user-provided backfill point (spec-072) may carry only a
+    # total, with no component split — null components mean "total-line
+    # only", never zero (which would misrender the stacked-area view).
+    holdings_value: Decimal | None
+    investing_cash: Decimal | None
+    spending_cash: Decimal | None
     total_net_worth: Decimal
+    source: str = "live"
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+# ---------------------------------------------------------------------------
+# Historical data ingestion (spec-072): user-provided FX + net-worth backfill
+# ---------------------------------------------------------------------------
+
+
+class FxRateHistoryImportRow(BaseModel):
+    base_currency_code: str = Field(..., min_length=1, max_length=10)
+    quote_currency_code: str = Field(..., min_length=1, max_length=10)
+    rate: Decimal = Field(..., gt=0)
+    as_of_date: date
+
+    @field_validator("base_currency_code", "quote_currency_code")
+    @classmethod
+    def normalize_code(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class FxRateHistoryImportRequest(BaseModel):
+    rows: list[FxRateHistoryImportRow]
+
+
+class FxRateHistoryRejectedRow(BaseModel):
+    row: int
+    reason: str
+
+
+class FxRateHistoryImportResult(BaseModel):
+    imported: int
+    skipped: int
+    rejected: list[FxRateHistoryRejectedRow]
+
+
+class UserFxRateResponse(BaseModel):
+    id: int
+    base_currency_code: str
+    quote_currency_code: str
+    rate: Decimal
+    as_of_date: date
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class NetWorthHistoryImportRow(BaseModel):
+    date: date
+    total_net_worth: Decimal
+    holdings_value: Decimal | None = None
+    investing_cash: Decimal | None = None
+    spending_cash: Decimal | None = None
+    reporting_currency: str = Field(..., min_length=1, max_length=10)
+
+    @field_validator("reporting_currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class NetWorthHistoryImportRequest(BaseModel):
+    rows: list[NetWorthHistoryImportRow]
+
+
+class NetWorthHistoryRejectedRow(BaseModel):
+    row: int
+    reason: str
+
+
+class NetWorthHistoryImportResult(BaseModel):
+    imported: int
+    skipped: int
+    rejected: list[NetWorthHistoryRejectedRow]
+
+
+class UserNetWorthPointResponse(BaseModel):
+    id: int
+    snapshot_date: date
+    reporting_currency: str
+    holdings_value: Decimal | None
+    investing_cash: Decimal | None
+    spending_cash: Decimal | None
+    total_net_worth: Decimal
+    created_at: datetime
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})

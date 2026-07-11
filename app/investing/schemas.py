@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.investing.models import CorporateActionType, InstrumentType, OrderType
 from app.spending.schemas import SourceMetadataResponse
 
+DIVIDEND_INCOME_TYPES = ("dividend", "interest", "coupon")
+
 
 class HoldingUpdate(BaseModel):
     symbol: str | None = Field(default=None, min_length=1, max_length=20)
@@ -403,5 +405,201 @@ class PerformanceSummaryResponse(BaseModel):
     valuation_status: str
     holdings_count: int
     fx_rates_used: dict[str, Decimal] = Field(default_factory=dict)
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+# ---------------------------------------------------------------------------
+# Dividends / income events (spec-073)
+# ---------------------------------------------------------------------------
+
+
+class DividendCreate(BaseModel):
+    account_id: uuid.UUID
+    symbol: str | None = Field(default=None, min_length=1, max_length=20)
+    income_type: str = Field(default="dividend")
+    gross_amount: Decimal = Field(..., gt=0, decimal_places=2)
+    tax_withheld: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
+    currency: str = Field(..., min_length=1, max_length=10)
+    pay_date: date
+    external_ref: str | None = Field(default=None, max_length=128)
+    notes: str | None = Field(default=None, max_length=500)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("income_type")
+    @classmethod
+    def validate_income_type(cls, value: str) -> str:
+        if value not in DIVIDEND_INCOME_TYPES:
+            raise ValueError(f"income_type must be one of {DIVIDEND_INCOME_TYPES}")
+        return value
+
+    @model_validator(mode="after")
+    def validate_net_and_attribution(self) -> "DividendCreate":
+        # Strictly less: net_amount must stay > 0 (DB CHECK) — full
+        # withholding would otherwise surface as an IntegrityError 500.
+        if self.tax_withheld >= self.gross_amount:
+            raise ValueError("tax_withheld must be less than gross_amount")
+        return self
+
+
+class DividendUpdate(BaseModel):
+    symbol: str | None = Field(default=None, min_length=1, max_length=20)
+    income_type: str | None = None
+    gross_amount: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    tax_withheld: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    currency: str | None = Field(default=None, min_length=1, max_length=10)
+    pay_date: date | None = None
+    external_ref: str | None = Field(default=None, max_length=128)
+    notes: str | None = Field(default=None, max_length=500)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
+
+    @field_validator("income_type")
+    @classmethod
+    def validate_income_type(cls, value: str | None) -> str | None:
+        if value is not None and value not in DIVIDEND_INCOME_TYPES:
+            raise ValueError(f"income_type must be one of {DIVIDEND_INCOME_TYPES}")
+        return value
+
+
+class DividendResponse(BaseModel):
+    public_id: uuid.UUID
+    account_id: uuid.UUID
+    account_name: str
+    holding_id: uuid.UUID | None = None
+    symbol: str | None = None
+    income_type: str
+    gross_amount: Decimal
+    tax_withheld: Decimal
+    net_amount: Decimal
+    currency: str
+    pay_date: date
+    external_ref: str | None = None
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class DividendBulkImportRow(BaseModel):
+    account_id: uuid.UUID
+    symbol: str | None = Field(default=None, max_length=20)
+    income_type: str = Field(default="dividend")
+    gross_amount: Decimal = Field(..., gt=0, decimal_places=2)
+    tax_withheld: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
+    currency: str = Field(..., min_length=1, max_length=10)
+    pay_date: date
+    external_ref: str | None = Field(default=None, max_length=128)
+    notes: str | None = Field(default=None, max_length=500)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str | None) -> str | None:
+        return value.strip().upper() if value else None
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class DividendBulkImportRequest(BaseModel):
+    rows: list[DividendBulkImportRow]
+
+
+class DividendBulkImportRejectedRow(BaseModel):
+    row: int
+    reason: str
+
+
+class DividendBulkImportResult(BaseModel):
+    imported: int
+    updated: int
+    skipped: int
+    rejected: list[DividendBulkImportRejectedRow]
+
+
+# ---------------------------------------------------------------------------
+# Return metrics: XIRR / annualized / realized-split (spec-071)
+# ---------------------------------------------------------------------------
+
+
+class PositionMetrics(BaseModel):
+    xirr: Decimal | None = None
+    annualized_return_pct: Decimal | None = None
+    annualization_reliable: bool = False
+    holding_days: int | None = None
+    total_return_pct: Decimal | None = None
+    realized: Decimal = Decimal("0")
+    unrealized: Decimal = Decimal("0")
+    market_value: Decimal = Decimal("0")
+    invested: Decimal = Decimal("0")
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class ScopeReturnMetrics(BaseModel):
+    xirr: Decimal | None = None
+    annualized_return_pct: Decimal | None = None
+    annualization_reliable: bool = False
+    holding_days: int | None = None
+    # Simple (non-annualized) total return for the scope — the UI's INV-7
+    # fallback for sub-year spans, where no annualized figure may be shown.
+    total_return_pct: Decimal | None = None
+    realized: Decimal = Decimal("0")
+    unrealized: Decimal = Decimal("0")
+    data_quality: str = "complete"
+    open: PositionMetrics
+    closed: PositionMetrics
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class MaxDrawdown(BaseModel):
+    pct: Decimal
+    peak_date: date
+    trough_date: date
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class AccountReturnMetrics(ScopeReturnMetrics):
+    account_id: uuid.UUID
+    account_name: str
+    currency: str
+
+
+class CurrencyReturnMetrics(ScopeReturnMetrics):
+    currency: str
+
+
+class OverallReturnMetrics(ScopeReturnMetrics):
+    max_drawdown: MaxDrawdown | None = None
+
+
+class ReturnMetricsResponse(BaseModel):
+    currency: str | None = None
+    valuation_status: str
+    overall: OverallReturnMetrics
+    by_account: list[AccountReturnMetrics]
+    by_currency: list[CurrencyReturnMetrics]
 
     model_config = ConfigDict(json_encoders={Decimal: str})

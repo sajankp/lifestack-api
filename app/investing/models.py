@@ -465,6 +465,82 @@ class CorporateAction(SQLModel, table=True):
     )
 
 
+class Dividend(SQLModel, table=True):
+    """A dividend/interest/coupon income event (spec-073).
+
+    Credits ``investing_cash_balances`` with no offsetting debit anywhere —
+    the structural fix for the former workaround of a fake wallet->brokerage
+    transfer. ``symbol`` is the user-facing attribution (set for a dividend,
+    null for account-level income like interest); ``holding_id`` is an
+    opportunistic link to a matching ``Holding`` row, set only when one
+    currently exists for that symbol/account — a dividend on an already-
+    exited position still records with ``symbol`` set and ``holding_id``
+    null. ``account_id`` must be a snapshot-managed brokerage account,
+    enforced at the service layer.
+    """
+
+    __tablename__ = "investing_dividends"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    account_id: int = Field(index=True)
+    holding_id: int | None = Field(default=None, foreign_key="investing_holdings.id", index=True)
+    symbol: str | None = Field(default=None, max_length=20)
+    income_type: str = Field(
+        default="dividend",
+        sa_column=sa.Column(sa.String(length=20), nullable=False, server_default="dividend"),
+    )
+    gross_amount: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    tax_withheld: Decimal = Field(default=Decimal("0"), sa_type=sa.Numeric(precision=18, scale=2))
+    net_amount: Decimal = Field(sa_type=sa.Numeric(precision=18, scale=2))
+    currency: str = Field(foreign_key="currencies.code", max_length=10)
+    pay_date: date = Field(sa_type=sa.Date())
+    external_ref: str | None = Field(default=None, max_length=128)
+    notes: str | None = Field(default=None, max_length=500, nullable=True)
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_investing_dividends_account_workspace",
+        ),
+        sa.CheckConstraint(
+            "income_type IN ('dividend', 'interest', 'coupon')",
+            name="ck_investing_dividends_income_type",
+        ),
+        sa.CheckConstraint("gross_amount > 0", name="ck_investing_dividends_gross_positive"),
+        sa.CheckConstraint("tax_withheld >= 0", name="ck_investing_dividends_tax_non_negative"),
+        sa.CheckConstraint("net_amount > 0", name="ck_investing_dividends_net_positive"),
+        sa.CheckConstraint(
+            "net_amount = gross_amount - tax_withheld",
+            name="ck_investing_dividends_net_equals_gross_minus_tax",
+        ),
+        sa.Index(
+            "ix_investing_dividends_workspace_account_paydate",
+            "workspace_id",
+            "account_id",
+            "pay_date",
+        ),
+        sa.Index(
+            "uq_investing_dividends_external_ref",
+            "workspace_id",
+            "account_id",
+            "external_ref",
+            unique=True,
+            postgresql_where=sa.text("external_ref IS NOT NULL"),
+        ),
+    )
+
+
 class LotConsumption(SQLModel, table=True):
     """Records that a sell order consumed (part of) a FIFO lot.
 

@@ -19,7 +19,7 @@ from app.finance.models import (
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
 )
-from app.investing.models import CashBalance, Holding, InvestingOrder
+from app.investing.models import CashBalance, Dividend, Holding, InvestingOrder
 from app.spending.models import SpendingTransaction
 
 
@@ -407,12 +407,13 @@ class AccountRepository(BaseRepository[Account]):
 
     async def get_reconciliation_summary(
         self, workspace_id: int, account_id: int
-    ) -> tuple[Decimal, int, int, int, Decimal | None, "datetime | None"]:
+    ) -> tuple[Decimal, int, int, int, int, Decimal | None, "datetime | None"]:
         """Return (projected_balance, tx_count, transfer_count, order_count,
-        snapshot_balance, snapshot_as_of).
+        dividend_count, snapshot_balance, snapshot_as_of).
 
         projected_balance = (income - expense) + (transfer_in - transfer_out)
                           + (sell net - buy net)   ← investing order cash impact
+                          + dividend net credits    ← spec-073 INV-2
         snapshot_balance is the most recent CashBalance.balance for this account,
         or None if no snapshot exists.
         """
@@ -452,7 +453,24 @@ class AccountRepository(BaseRepository[Account]):
         orders_net = Decimal(str(orders_result[0] or "0"))
         order_count = int(orders_result[1] or 0)
 
-        projected_balance = ledger_balance + orders_net
+        # Dividend/income cash impact (spec-073 INV-2): a dividend credits cash
+        # with no offsetting debit anywhere, so — like orders — it must appear
+        # on the projected side too, or it manufactures a permanent discrepancy
+        # equal to the dividend total.
+        dividend_row = await self.session.execute(
+            select(
+                func.coalesce(func.sum(Dividend.net_amount), Decimal("0")),
+                func.count(Dividend.id),
+            ).where(
+                Dividend.workspace_id == workspace_id,
+                Dividend.account_id == account_id,
+            )
+        )
+        dividend_result = dividend_row.one()
+        dividend_net = Decimal(str(dividend_result[0] or "0"))
+        dividend_count = int(dividend_result[1] or 0)
+
+        projected_balance = ledger_balance + orders_net + dividend_net
 
         snapshot_row = await self.session.execute(
             select(CashBalance.balance, CashBalance.as_of)
@@ -475,6 +493,7 @@ class AccountRepository(BaseRepository[Account]):
             tx_count,
             transfer_count,
             order_count,
+            dividend_count,
             snapshot_balance,
             snapshot_as_of,
         )
@@ -592,8 +611,12 @@ class FxRateRepository:
         fetched_at: datetime,
         source: str,
     ) -> FxRate:
+        # System rows only (workspace_id IS NULL) -- this is the live-fetch
+        # ingestion path; it must never collide with or overwrite a
+        # user-provided historical row (spec-072 INV-3).
         result = await self.session.execute(
             select(FxRate).where(
+                FxRate.workspace_id.is_(None),
                 FxRate.base_currency_code == base_currency_code,
                 FxRate.quote_currency_code == quote_currency_code,
                 FxRate.as_of == as_of,
@@ -629,7 +652,12 @@ class FxRateRepository:
         quote_currency_code: str,
         as_of: datetime | None = None,
     ) -> FxRate | None:
+        # System rows only (workspace_id IS NULL): this feeds live/current
+        # valuation, which must never see a user-provided historical rate
+        # (spec-072 INV-3). Historical resolution with user fallback is
+        # get_historical_rate_with_source below.
         query = select(FxRate).where(
+            FxRate.workspace_id.is_(None),
             FxRate.base_currency_code == base_currency_code,
             FxRate.quote_currency_code == quote_currency_code,
         )
@@ -637,6 +665,110 @@ class FxRateRepository:
             query = query.where(FxRate.as_of <= as_of)
         result = await self.session.execute(query.order_by(FxRate.as_of.desc()).limit(1))
         return result.scalar_one_or_none()
+
+    async def get_historical_rate_with_source(
+        self,
+        workspace_id: int,
+        base_currency_code: str,
+        quote_currency_code: str,
+        as_of: datetime,
+    ) -> tuple[Decimal, str] | None:
+        """Past-dated resolution with precedence: system rate (as of or
+        before the date) -> user rate for that workspace (as of or before
+        the date) -> None. System always wins when both exist (spec-072
+        INV-3). Returns (rate, 'system'|'user_provided') or None."""
+        system = await self.get_latest_rate(base_currency_code, quote_currency_code, as_of=as_of)
+        if system is not None:
+            return Decimal(str(system.rate)), "system"
+
+        result = await self.session.execute(
+            select(FxRate)
+            .where(
+                FxRate.workspace_id == workspace_id,
+                FxRate.base_currency_code == base_currency_code,
+                FxRate.quote_currency_code == quote_currency_code,
+                FxRate.as_of <= as_of,
+            )
+            .order_by(FxRate.as_of.desc())
+            .limit(1)
+        )
+        user_row = result.scalar_one_or_none()
+        if user_row is not None:
+            return Decimal(str(user_row.rate)), "user_provided"
+        return None
+
+    async def get_user_rate_for_date(
+        self,
+        workspace_id: int,
+        base_currency_code: str,
+        quote_currency_code: str,
+        as_of: datetime,
+    ) -> FxRate | None:
+        result = await self.session.execute(
+            select(FxRate).where(
+                FxRate.workspace_id == workspace_id,
+                FxRate.base_currency_code == base_currency_code,
+                FxRate.quote_currency_code == quote_currency_code,
+                FxRate.as_of == as_of,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert_user_rate(
+        self,
+        workspace_id: int,
+        base_currency_code: str,
+        quote_currency_code: str,
+        rate: Decimal,
+        as_of: datetime,
+        existing: FxRate | None = None,
+    ) -> FxRate:
+        """``existing`` is the row previously loaded via
+        ``get_user_rate_for_date`` for the same key — passing it avoids
+        re-running that exact SELECT per imported row."""
+        if existing is not None:
+            existing.rate = rate
+            existing.updated_at = datetime.now(UTC)
+            self.session.add(existing)
+            await self.session.flush()
+            await self.session.refresh(existing)
+            return existing
+
+        row = FxRate(
+            workspace_id=workspace_id,
+            base_currency_code=base_currency_code,
+            quote_currency_code=quote_currency_code,
+            rate=rate,
+            as_of=as_of,
+            fetched_at=datetime.now(UTC),
+            source="user_provided",
+        )
+        self.session.add(row)
+        await self.session.flush()
+        await self.session.refresh(row)
+        return row
+
+    async def list_user_rates(
+        self, workspace_id: int, limit: int = 200, offset: int = 0
+    ) -> tuple[Sequence[FxRate], int]:
+        base = select(FxRate).where(FxRate.workspace_id == workspace_id)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(FxRate.as_of.desc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), total
+
+    async def get_user_rate_by_id(self, workspace_id: int, row_id: int) -> FxRate | None:
+        result = await self.session.execute(
+            select(FxRate).where(FxRate.id == row_id, FxRate.workspace_id == workspace_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def delete_user_rate(self, row: FxRate) -> None:
+        await self.session.delete(row)
+        await self.session.flush()
 
     async def get_latest_rates_for_pairs(
         self,
@@ -648,7 +780,9 @@ class FxRateRepository:
             return {}
         base_codes = {b for b, _ in unique_pairs}
         quote_codes = {q for _, q in unique_pairs}
+        # System rows only -- feeds live valuation (spec-072 INV-3).
         query = select(FxRate).where(
+            FxRate.workspace_id.is_(None),
             FxRate.base_currency_code.in_(base_codes),
             FxRate.quote_currency_code.in_(quote_codes),
         )
@@ -743,3 +877,66 @@ class NetWorthSnapshotRepository:
         )
         res = await self.session.execute(stmt)
         return res.scalar_one_or_none()
+
+    async def get_earliest_live_date(self, workspace_id: int) -> date | None:
+        """The backfill boundary (spec-072 INV-2): a user point is only ever
+        accepted for dates strictly before this, or before today when no
+        live row exists yet -- so the daily job can never collide with a
+        user row on the (workspace, snapshot_date) unique constraint."""
+        result = await self.session.execute(
+            select(func.min(NetWorthSnapshot.snapshot_date)).where(
+                NetWorthSnapshot.workspace_id == workspace_id,
+                NetWorthSnapshot.source == "live",
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def create_user_point(
+        self, snapshot: NetWorthSnapshot, existing: NetWorthSnapshot | None = None
+    ) -> NetWorthSnapshot:
+        """Upsert-keyed on (workspace, date) among user rows only -- INV-2
+        (date-boundary check) is the caller's job before this is called.
+        ``existing`` is the row the caller already loaded via ``get_for_date``
+        for the same key — passing it avoids re-running that SELECT."""
+        if existing is not None:
+            existing.reporting_currency = snapshot.reporting_currency
+            existing.holdings_value = snapshot.holdings_value
+            existing.investing_cash = snapshot.investing_cash
+            existing.spending_cash = snapshot.spending_cash
+            existing.total_net_worth = snapshot.total_net_worth
+            existing.source = "user_provided"
+            self.session.add(existing)
+            await self.session.flush()
+            return existing
+        self.session.add(snapshot)
+        await self.session.flush()
+        return snapshot
+
+    async def list_user_points(
+        self, workspace_id: int, limit: int = 200, offset: int = 0
+    ) -> tuple[Sequence[NetWorthSnapshot], int]:
+        base = select(NetWorthSnapshot).where(
+            NetWorthSnapshot.workspace_id == workspace_id,
+            NetWorthSnapshot.source == "user_provided",
+        )
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(NetWorthSnapshot.snapshot_date.desc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), total
+
+    async def get_user_point_by_id(self, workspace_id: int, row_id: int) -> NetWorthSnapshot | None:
+        result = await self.session.execute(
+            select(NetWorthSnapshot).where(
+                NetWorthSnapshot.id == row_id,
+                NetWorthSnapshot.workspace_id == workspace_id,
+                NetWorthSnapshot.source == "user_provided",
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def delete_user_point(self, row: NetWorthSnapshot) -> None:
+        await self.session.delete(row)
+        await self.session.flush()
