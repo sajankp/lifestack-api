@@ -7,6 +7,7 @@ Scope: current product positioning, implementation status, post-Gate 0 backlog, 
 
 ## Changelog
 
+- **2026-07-12 (owner decision, later same day) — next sequence decided; specs pending.** Following the backlog catch-up below, the owner picked an explicit order for the six items in §4 "Immediate Focus": JWT library migration → currency display polish → weekly summaries enhancements → custom financial KPIs → wallet ledger reconciliation → voice/capture production hardening. Notifications (beyond push) is parked — its only remaining scope is email delivery, out of scope for now. None of these are specced yet; spec drafting (next number 075) is queued for another agent, not started in this pass.
 - **2026-07-12 — Immediate Focus backlog fully cleared; doc caught up to specs 066–074.** Every item in the 2026-07-08 "Immediate Focus" list is now done: e2e CI gating (lifestack-e2e, merged 2026-07-09), demo-path UX hardening P0/P1/P2 (web#90/#94/#95), capture consolidation (spec-066), and Morning Briefing (spec-067). Since then, specs 068–074 also shipped: todo subtasks/organization, **Health Memory V1** (Track 1's first slice — medications + weight, spec-069, ahead of its original long-term sequencing), export completeness/round-trip, dividend income tracking + historical FX/net-worth ingestion + investment return metrics, and consolidation of three bespoke bulk-paste flows into the shared imports framework. A companion full spec-vs-code audit (2026-07-12) also found and fixed 8 stale status headers across specs 033/048/070/073/074 (api) and 003/004/007 (web) — see those specs' own status lines; no roadmap-relevant surprises among them. **No item is currently queued as "next"** — see §4 for the candidate backlog and the owner-sequencing note.
 - **2026-07-08 — external product assessment folded in (owner-accepted).** An external product review (`PRODUCT-ASSESSMENT.md` + `UX-REVIEW.md`, dated 2026-07-08) proposed four rethinks; the owner accepted all four. Changes in this revision: Immediate Focus now includes demo-path UX hardening and capture consolidation at parity with CI gating, plus Morning Briefing as the next major product slice; Voice/capture promoted from Experimental to Secondary; Track 1 (Health Memory) re-sequenced ahead of Track 2 (Mobile Companion, now shrunk to camera upload + native health-app sync); finance correctness campaign (specs 040–065) declared V1-complete.
 
@@ -113,7 +114,7 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 
 ### Immediate Focus
 
-**2026-07-12 — this entire list is now cleared.** All seven items below are done. No replacement "Immediate Focus" list has been decided — see the candidate backlog below the list, and treat sequencing among those as an open owner decision, not something this doc infers on its own.
+**2026-07-12 — this entire list is now cleared.** All seven items below are done. Replaced by an owner-decided sequence (below the list) — spec drafting for that sequence is pending, not yet assigned to an agent.
 
 1. ~~Merge api#130, then implement spec-065 net-worth-over-time~~ — done 2026-07-08 (api#132, web#87). Daily history now accumulates via the `net_worth_snapshot` scheduler job (07:00 UTC) plus an opportunistic upsert on every `GET /finance/net-worth` read.
 2. ~~Spending model wave: spec-062 category delete & merge, then spec-064 recurring date-ranged budgets + category groups~~ — done 2026-07-08 (api#131, web#86).
@@ -123,12 +124,22 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 6. ~~Morning Briefing~~ — done 2026-07-08 (spec-067, api#138/140, web#93): deterministic, source-linked composition of dashboard insights, weekly summaries, budget guardrails, overdue todos, and net-worth snapshots, zero LLM involvement in v1, dashboard card + push delivery.
 7. ~~Keep the standing deferrals on spec-033 and platform-wide market-data curation~~ — spec-033's deferral premise was already stale when this line was written: the hybrid instrument catalog had shipped 2026-06-24 (migration `0032_hybrid_instrument_catalog.py`), corrected 2026-07-12. [`Spec 035`](../specs/spec-035-platform-market-data-curation.md) platform-wide curation remains genuinely deferred — no admin persona/provenance/rollback model yet, still correctly out of scope.
 
-**Candidate backlog (unsequenced — pick with the owner, not from this doc alone):**
+**Next sequence (owner-decided 2026-07-12; specs not yet drafted — next free number 075):**
 
-- **Core Product Depth** (table below): JWT library migration off `python-jose`, notification delivery channels beyond push (email digest), voice/capture production hardening, wallet-reconciliation UX, custom financial KPIs, remaining currency-display polish.
-- **§6 Long-Term Product Sequence:** Track 1 (Health Memory) shipped only its V1 slice — medications + weight (spec-069); sleep, workouts, vitals, labs, and symptoms are explicitly out of scope for v1 (spec-069 non-goals) and are the natural next slice within the same track before moving to Track 2 (Mobile Companion). Tracks 3–7 (Health Sync, Document Intelligence, Second Brain/RAG, Agent Access, Personal Coach) are unstarted.
+1. **JWT library migration** — `python-jose` → `PyJWT`/`joserfc`. Security-adjacent (not user-facing), still needs its own approved spec per the auth/security scope rule.
+2. **Currency display polish** — remaining frontend-wide locale/date/number consistency and historical FX replay for every view.
+3. **Weekly summaries enhancements** — configurable cadence, regeneration/admin-correction flows, expanded insight surfaces.
+4. **Custom financial KPIs** — user-defined budget/spend metrics beyond the implemented category and category-group budgets (spec-064).
+5. **Wallet ledger reconciliation** — statement matching, multi-account reconciliation view, richer transfer timeline UX. Cash/reconciliation-adjacent: read the cash-model domain doc first and expect the same non-retroactivity discipline as specs 040–050.
+6. **Voice/capture production hardening** — WebRTC-grade transport, broader capture domains, multi-item capture, AI-assisted routing. ADK migration itself stays a "no, not now" per spec-039 until its release cadence stabilizes.
+
+**Parked (2026-07-12):** Notifications beyond push — push delivery already ships (spec-052); the only meaningful remaining scope is email delivery, which is explicitly out of scope for now. Revisit only if a concrete need for an email channel surfaces; don't scope real-time transport/grouping/digest variants without one.
+
+**Separately unsequenced — §6 Long-Term Product Sequence:** Track 1 (Health Memory) shipped only its V1 slice — medications + weight (spec-069); sleep, workouts, vitals, labs, and symptoms are explicitly out of scope for v1 (spec-069 non-goals) and are the natural next slice within the same track before moving to Track 2 (Mobile Companion). Tracks 3–7 (Health Sync, Document Intelligence, Second Brain/RAG, Agent Access, Personal Coach) are unstarted. Not part of the sequence above.
 
 ### Core Product Depth
+
+**2026-07-12 — six of these are now the owner-decided next sequence** (JWT library maintenance, currency display, weekly summaries, custom financial KPIs, wallet ledger, voice/capture) **— see the numbered list above §4 "Immediate Focus" for order and spec-numbering status.** Notifications is parked, not sequenced.
 
 | Area | Roadmap Item | Why It Belongs Here |
 |---|---|---|
@@ -137,13 +148,13 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 | Wallet/account balance coupling (Implemented) | Derived spending balance for each account: `GET /finance/accounts/{id}/balance` computes income minus expenses from transaction history. Surfaced as a balance summary card on the Ledger tab. Deliberately independent from investing cash balances. | Implemented under feat/spending-analytics branch. |
 | Imports (Implemented) | Async/background import workers, `.xlsx` imports, smart column mapping, and large-file streaming. | Implemented under feat/spending-analytics branch. |
 | Daily-work surface polish (Implemented) | Overdue todo indicators, recurring status badges, and dashboard cues. | Implemented under feat/spending-analytics branch. |
-| Notifications | Email delivery, push delivery, real-time notification transport, grouping, and digest variants. | Delivery channels depend on mobile/email infrastructure and should be sequenced with notification strategy. |
-| Currency display | Remaining frontend-wide display polish, locale/date/number profiles, and historical FX replay for every view. | These are consistency and polish tracks after the implemented finance settings foundation. |
-| Voice/capture | WebRTC-grade production transport, broader capture domains, multi-item capture, AI-assisted routing, and ADK migration planning. | Capture is useful as an input layer; Google ADK evaluation and voice-first migration guide is documented in [spec-039-adk-evaluation-and-migration-guide.md](../specs/spec-039-adk-evaluation-and-migration-guide.md) for Phase 2. |
-| Weekly summaries | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
-| Custom financial KPIs | User-defined budget/spend KPIs beyond the implemented category and category-group budgets. | Parked for intentional design; not scoped by spec-064. |
-| Wallet ledger (reconciliation) | Statement matching, multi-account reconciliation view, and richer transfer timeline UX. | Deeper finance-product work building on the implemented ledger foundation. |
-| JWT library maintenance | Migrate from `python-jose` to `PyJWT` or `joserfc`. | python-jose is no longer actively maintained; planning migration mitigates dependency security risk. |
+| Notifications (Parked 2026-07-12) | Push delivery already ships (spec-052); the only meaningful remaining scope is email delivery, explicitly out of scope for now. | Deprioritized below the current sequence — don't scope real-time transport/grouping/digest variants without a concrete driver. |
+| Currency display (Sequence #2) | Remaining frontend-wide display polish, locale/date/number profiles, and historical FX replay for every view. | These are consistency and polish tracks after the implemented finance settings foundation. |
+| Voice/capture (Sequence #6) | WebRTC-grade production transport, broader capture domains, multi-item capture, AI-assisted routing, and ADK migration planning. | Capture is useful as an input layer; Google ADK evaluation and voice-first migration guide is documented in [spec-039-adk-evaluation-and-migration-guide.md](../specs/spec-039-adk-evaluation-and-migration-guide.md) for Phase 2. |
+| Weekly summaries (Sequence #3) | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
+| Custom financial KPIs (Sequence #4) | User-defined budget/spend KPIs beyond the implemented category and category-group budgets. | No longer parked as of 2026-07-12 — next in the owner-decided sequence; not scoped by spec-064. |
+| Wallet ledger reconciliation (Sequence #5) | Statement matching, multi-account reconciliation view, and richer transfer timeline UX. | Deeper finance-product work building on the implemented ledger foundation; cash/reconciliation-adjacent, read the cash-model domain doc first. |
+| JWT library maintenance (Sequence #1) | Migrate from `python-jose` to `PyJWT` or `joserfc`. | python-jose is no longer actively maintained; planning migration mitigates dependency security risk. First in the sequence — smallest, fully isolated. |
 
 ### Investing and Market Data
 
