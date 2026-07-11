@@ -444,8 +444,10 @@ class DividendCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_net_and_attribution(self) -> "DividendCreate":
-        if self.tax_withheld > self.gross_amount:
-            raise ValueError("tax_withheld cannot exceed gross_amount")
+        # Strictly less: net_amount must stay > 0 (DB CHECK) — full
+        # withholding would otherwise surface as an IntegrityError 500.
+        if self.tax_withheld >= self.gross_amount:
+            raise ValueError("tax_withheld must be less than gross_amount")
         return self
 
 
@@ -559,6 +561,9 @@ class ScopeReturnMetrics(BaseModel):
     annualized_return_pct: Decimal | None = None
     annualization_reliable: bool = False
     holding_days: int | None = None
+    # Simple (non-annualized) total return for the scope — the UI's INV-7
+    # fallback for sub-year spans, where no annualized figure may be shown.
+    total_return_pct: Decimal | None = None
     realized: Decimal = Decimal("0")
     unrealized: Decimal = Decimal("0")
     data_quality: str = "complete"

@@ -918,11 +918,29 @@ class DividendService:
         audit_logger: AuditLogger | None = None,
     ) -> tuple[Dividend, Account]:
         dividend, account = await self.get_dividend(workspace_id, public_id)
+        return await self._update_dividend_loaded(
+            workspace_id, dividend, account, dividend_in, actor_id, audit_logger
+        )
+
+    async def _update_dividend_loaded(
+        self,
+        workspace_id: int,
+        dividend: Dividend,
+        account: Account,
+        dividend_in: DividendUpdate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> tuple[Dividend, Account]:
+        """Update body operating on already-loaded entities, so bulk import
+        (which has both in hand) doesn't re-query them per row."""
         before_snap = _snapshot_dividend(dividend)
         update_data = dividend_in.model_dump(exclude_unset=True)
         if not update_data:
             return dividend, account
 
+        # Validate everything BEFORE mutating the managed instance — a
+        # rejected row in a bulk import must not leave a dirty object in the
+        # session for the next autoflush to trip over.
         next_currency = update_data.get("currency", dividend.currency)
         if next_currency.upper() != account.default_currency_code.upper():
             raise ValidationError(
@@ -931,6 +949,11 @@ class DividendService:
                     f"'{account.name}' ({account.default_currency_code})"
                 )
             )
+
+        new_gross = update_data.get("gross_amount", dividend.gross_amount)
+        new_tax = update_data.get("tax_withheld", dividend.tax_withheld)
+        if new_tax >= new_gross:
+            raise ValidationError(detail="tax_withheld must be less than gross_amount")
 
         cash_affecting = {"gross_amount", "tax_withheld", "currency", "pay_date"}
         needs_cash_update = cash_affecting.intersection(update_data.keys())
@@ -951,10 +974,6 @@ class DividendService:
         for key, value in update_data.items():
             setattr(dividend, key, value)
 
-        new_gross = update_data.get("gross_amount", dividend.gross_amount)
-        new_tax = update_data.get("tax_withheld", dividend.tax_withheld)
-        if new_tax > new_gross:
-            raise ValidationError(detail="tax_withheld cannot exceed gross_amount")
         dividend.net_amount = (new_gross - new_tax).quantize(MONEY_QUANT)
         dividend.updated_at = datetime.now(UTC)
         dividend = await self.repository.save(dividend)
@@ -1006,6 +1025,18 @@ class DividendService:
                     )
                     continue
 
+                # Guard here (not only in DividendCreate) so a bad row is a
+                # per-row reject on BOTH paths — constructing DividendCreate
+                # with tax >= gross raises pydantic's ValidationError, which
+                # is not the app ValidationError caught below.
+                if row.tax_withheld >= row.gross_amount:
+                    rejected.append(
+                        DividendBulkImportRejectedRow(
+                            row=idx, reason="tax_withheld must be less than gross_amount"
+                        )
+                    )
+                    continue
+
                 net_amount = (row.gross_amount - row.tax_withheld).quantize(MONEY_QUANT)
 
                 if row.external_ref:
@@ -1024,8 +1055,8 @@ class DividendService:
                             pay_date=row.pay_date,
                             notes=row.notes,
                         )
-                        await self.update_dividend(
-                            workspace_id, existing.public_id, update_in, user_id, audit_logger
+                        await self._update_dividend_loaded(
+                            workspace_id, existing, account, update_in, user_id, audit_logger
                         )
                         updated += 1
                         continue

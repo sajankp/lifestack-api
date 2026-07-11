@@ -70,7 +70,9 @@ def _annualize(total_return_pct: Decimal, holding_days: int) -> Decimal | None:
         exponent = Decimal("365") / Decimal(holding_days)
         result = Decimal(str(float(base) ** float(exponent))) - Decimal("1")
         return (result * Decimal("100")).quantize(MONEY_QUANT)
-    except (OverflowError, ValueError, ZeroDivisionError):
+    except (ArithmeticError, ValueError):
+        # ArithmeticError covers Overflow/ZeroDivision AND
+        # decimal.InvalidOperation (quantize of an infinite float round-trip).
         return None
 
 
@@ -92,7 +94,10 @@ def _position_metrics(
         first_date = min(f.when for f in flows)
         last_date = max(f.when for f in flows)
         holding_days = (last_date - first_date).days
-        net_flow = sum((f.amount for f in flows), Decimal("0")) + market_value
+        # flows already carry the terminal market-value flow for open
+        # positions -- adding market_value again would double-count it and
+        # render a flat position as +100%.
+        net_flow = sum((f.amount for f in flows), Decimal("0"))
         if invested > 0:
             total_return_pct = ((net_flow / invested) * Decimal("100")).quantize(MONEY_QUANT)
             reliable = holding_days >= ANNUALIZATION_MIN_DAYS
@@ -136,6 +141,7 @@ def _scope_metrics(positions: Sequence[_Position]) -> dict:
         "annualized_return_pct": overall_metrics.annualized_return_pct,
         "annualization_reliable": overall_metrics.annualization_reliable,
         "holding_days": overall_metrics.holding_days,
+        "total_return_pct": overall_metrics.total_return_pct,
         "realized": overall_metrics.realized,
         "unrealized": overall_metrics.unrealized,
         "open": open_metrics,
@@ -266,6 +272,27 @@ class ReturnMetricsService:
         )
         account_by_id = {a.id: a for a in accounts if a.id is not None}
 
+        # Account-level income (interest -- no symbol) becomes a synthetic
+        # closed "position" merged into the main list so it flows into ALL
+        # scopes (overall, by_currency, by_account) consistently; otherwise
+        # overall realized would disagree with the sum of the account blocks.
+        # It never has an open/closed identity of its own (interest isn't a
+        # security), so is_open is False and it carries no market value.
+        for account_id, extra_flows in account_level_dividend_flows.items():
+            account = account_by_id.get(account_id)
+            if account is None or not extra_flows:
+                continue
+            positions.append(
+                _Position(
+                    account_id=account_id,
+                    symbol="__account_income__",
+                    currency=account.default_currency_code,
+                    is_open=False,
+                    flows=extra_flows,
+                    realized=sum((f.amount for f in extra_flows), Decimal("0")),
+                )
+            )
+
         currencies_present = {p.currency for p in positions}
 
         # --- by_account (single currency per account, spec-050) ---
@@ -278,23 +305,6 @@ class ReturnMetricsService:
             account = account_by_id.get(account_id)
             if account is None:
                 continue
-            extra_flows = account_level_dividend_flows.get(account_id, [])
-            if extra_flows:
-                # Attribute account-level income to the account scope by
-                # folding it into a synthetic closed "position" with no
-                # market value -- it never has an open/closed distinction
-                # of its own (interest isn't a security).
-                account_positions = [
-                    *account_positions,
-                    _Position(
-                        account_id=account_id,
-                        symbol="__account_income__",
-                        currency=account.default_currency_code,
-                        is_open=False,
-                        flows=extra_flows,
-                        realized=sum((f.amount for f in extra_flows), Decimal("0")),
-                    ),
-                ]
             metrics = _scope_metrics(account_positions)
             by_account.append(
                 AccountReturnMetrics(
