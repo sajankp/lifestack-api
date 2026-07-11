@@ -30,11 +30,7 @@ from app.finance.schemas import (
     CapitalTransferResponse,
     CapitalTransferUpdate,
     CurrencyResponse,
-    FxRateHistoryImportRequest,
-    FxRateHistoryImportResult,
     FxRateResponse,
-    NetWorthHistoryImportRequest,
-    NetWorthHistoryImportResult,
     NetWorthHistoryItem,
     NetWorthResponse,
     ReconciliationSummary,
@@ -258,20 +254,6 @@ async def get_fx_rate(
     return FxRateResponse.model_validate(rate_row)
 
 
-@router.post("/fx/history/import", response_model=FxRateHistoryImportResult)
-async def import_fx_history(
-    request: FxRateHistoryImportRequest,
-    fx_service: Annotated[FxRateService, Depends(get_finance_fx_rate_service)],
-    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
-    _role: Annotated[object, Depends(require_min_role("member"))],
-):
-    """User-provided historical FX rates (spec-072): workspace-scoped, used
-    only as a fallback for past-dated conversions when no system rate
-    exists for that date — never for present-day live figures."""
-    return await fx_service.import_historical_rates(workspace_id, request)
-
-
 @router.get("/fx/history", response_model=PaginatedResponse[UserFxRateResponse])
 async def list_fx_history(
     fx_service: Annotated[FxRateService, Depends(get_finance_fx_rate_service)],
@@ -411,20 +393,6 @@ async def get_net_worth_history(
 
     history = await net_worth_service.get_history(workspace_id, from_dt, to_dt)
     return [NetWorthHistoryItem.model_validate(h) for h in history]
-
-
-@router.post("/net-worth/history/import", response_model=NetWorthHistoryImportResult)
-async def import_net_worth_history(
-    request: NetWorthHistoryImportRequest,
-    net_worth_service: Annotated[NetWorthService, Depends(get_finance_net_worth_service)],
-    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
-    _role: Annotated[object, Depends(require_min_role("member"))],
-):
-    """User-provided net-worth backfill points (spec-072 Tier A). Only fills
-    dates strictly before the workspace's earliest live snapshot (INV-2) —
-    live always wins and can never be shadowed."""
-    return await net_worth_service.import_backfill_points(workspace_id, request)
 
 
 @router.get(

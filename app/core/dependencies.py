@@ -525,14 +525,6 @@ async def get_import_repo(
     return ImportRepository(session)
 
 
-async def get_import_service(
-    repo: ImportRepository = Depends(get_import_repo),
-    session: AsyncSession = Depends(get_db_session),
-    order_service: InvestingOrderService = Depends(get_investing_order_service),
-) -> ImportService:
-    return ImportService(repo, session, order_service=order_service)
-
-
 # ---------------------------------------------------------------------------
 # Finance references
 # ---------------------------------------------------------------------------
@@ -625,6 +617,24 @@ async def get_finance_net_worth_service(
         setting_repo=setting_repo,
         fx_rate_repo=fx_rate_repo,
         net_worth_snapshot_repo=net_worth_snapshot_repo,
+    )
+
+
+async def get_import_service(
+    repo: ImportRepository = Depends(get_import_repo),
+    session: AsyncSession = Depends(get_db_session),
+    order_service: InvestingOrderService = Depends(get_investing_order_service),
+    dividend_service: DividendService = Depends(get_investing_dividend_service),
+    fx_rate_service: FxRateService = Depends(get_finance_fx_rate_service),
+    net_worth_service: NetWorthService = Depends(get_finance_net_worth_service),
+) -> ImportService:
+    return ImportService(
+        repo,
+        session,
+        order_service=order_service,
+        dividend_service=dividend_service,
+        fx_rate_service=fx_rate_service,
+        net_worth_service=net_worth_service,
     )
 
 
