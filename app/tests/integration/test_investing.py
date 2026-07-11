@@ -1077,6 +1077,98 @@ async def test_investing_lookthrough_does_not_mix_currencies_without_reporting_c
 
 
 @pytest.mark.asyncio
+async def test_investing_lookthrough_ignores_fully_sold_positions(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="investing-lookthrough-closed@example.com",
+        username="investing-lookthrough-closed",
+        password="TestPass123!",
+    )
+
+    # A mutual fund holding that's fully sold (zero quantity, zero book value)
+    # has no current exposure and no constituent snapshot — it must not
+    # generate warnings or otherwise affect analytics for still-open holdings.
+    await _create_holding_via_order(
+        client,
+        account_map["brokerage"],
+        "118285",
+        "10.00000000",
+        "100.00",
+        "USD",
+        "mutual_fund",
+        instrument_name="Some Fully Sold Fund",
+    )
+    sell_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": account_map["brokerage"],
+            "order_type": "sell",
+            "symbol": "118285",
+            "quantity": "10.00000000",
+            "price_per_unit": "110.00",
+            "currency": "USD",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert sell_res.status_code == 201, sell_res.text
+
+    await _create_holding_via_order(
+        client, account_map["wallet"], "AAPL", "2.00000000", "150.00", "USD"
+    )
+
+    today = datetime.now(UTC).date().isoformat()
+    exposure_res = await client.get("/v1/investing/analytics/exposure", params={"as_of": today})
+    assert exposure_res.status_code == 200
+    exposure = exposure_res.json()
+    assert exposure["analysis_status"] == "complete"
+    assert exposure["warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_investing_lookthrough_closed_position_currency_does_not_block_reporting(
+    client: AsyncClient,
+):
+    account_map = await _register_and_login(
+        client,
+        email="investing-lookthrough-closed-fx@example.com",
+        username="investing-lookthrough-closed-fx",
+        password="TestPass123!",
+    )
+    # One account, one currency (spec-050): the GBP holding needs its own account.
+    gbp_broker_id = await _create_brokerage_account(client, "GBP Brokerage", "GBP")
+
+    await _create_holding_via_order(
+        client, account_map["brokerage"], "AAPL", "1.00000000", "100.00", "USD"
+    )
+    await _create_holding_via_order(client, gbp_broker_id, "VOD", "1.00000000", "100.00", "GBP")
+    sell_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": gbp_broker_id,
+            "order_type": "sell",
+            "symbol": "VOD",
+            "quantity": "1.00000000",
+            "price_per_unit": "110.00",
+            "currency": "GBP",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert sell_res.status_code == 201, sell_res.text
+
+    # The GBP position is fully closed now — with no *open* multi-currency
+    # exposure remaining, analytics should resolve USD automatically instead
+    # of demanding a reporting currency because of a stale closed position.
+    response = await client.get(
+        "/v1/investing/analytics/exposure",
+        params={"as_of": datetime.now(UTC).date().isoformat()},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["analysis_status"] == "complete"
+    assert body["currency"] == "USD"
+
+
+@pytest.mark.asyncio
 async def test_investing_constituent_weights_validation(client: AsyncClient):
     await _register_and_login(
         client,
@@ -3074,139 +3166,6 @@ async def test_update_dividend_amount_recomputes_cash_credit(client: AsyncClient
     assert balances[0]["balance"] == "135.00"
 
 
-@pytest.mark.asyncio
-async def test_dividend_bulk_import_external_ref_upserts_on_amount_correction(
-    client: AsyncClient,
-):
-    account_map = await _register_and_login(
-        client,
-        email="dividend-bulk-ref@example.com",
-        username="dividend-bulk-ref",
-        password="TestPass123!",
-    )
-    broker_id = account_map["brokerage"]
-
-    row = {
-        "account_id": broker_id,
-        "symbol": "NVDA",
-        "gross_amount": "100.00",
-        "currency": "USD",
-        "pay_date": "2026-06-15",
-        "external_ref": "broker-line-1",
-    }
-    res1 = await client.post("/v1/investing/dividends/bulk", json={"rows": [row]})
-    assert res1.status_code == 200, res1.text
-    assert res1.json() == {"imported": 1, "updated": 0, "skipped": 0, "rejected": []}
-
-    corrected = {**row, "gross_amount": "120.00"}
-    res2 = await client.post("/v1/investing/dividends/bulk", json={"rows": [corrected]})
-    assert res2.status_code == 200, res2.text
-    assert res2.json() == {"imported": 0, "updated": 1, "skipped": 0, "rejected": []}
-
-    list_res = await client.get("/v1/investing/dividends", params={"account_id": broker_id})
-    items = list_res.json()["items"]
-    assert len(items) == 1
-    assert items[0]["gross_amount"] == "120.00"
-
-
-@pytest.mark.asyncio
-async def test_dividend_bulk_import_fallback_key_dedupes_exact_reupload(client: AsyncClient):
-    account_map = await _register_and_login(
-        client,
-        email="dividend-bulk-dedupe@example.com",
-        username="dividend-bulk-dedupe",
-        password="TestPass123!",
-    )
-    broker_id = account_map["brokerage"]
-
-    row = {
-        "account_id": broker_id,
-        "symbol": "NVDA",
-        "gross_amount": "100.00",
-        "currency": "USD",
-        "pay_date": "2026-06-15",
-    }
-    res1 = await client.post("/v1/investing/dividends/bulk", json={"rows": [row]})
-    assert res1.json()["imported"] == 1
-
-    res2 = await client.post("/v1/investing/dividends/bulk", json={"rows": [row]})
-    assert res2.json() == {"imported": 0, "updated": 0, "skipped": 1, "rejected": []}
-
-
-@pytest.mark.asyncio
-async def test_dividend_bulk_import_fallback_key_amount_mismatch_rejected(client: AsyncClient):
-    """Without external_ref, amount is never part of the identity: a
-    corrected row at the same (account, symbol, pay_date) is rejected rather
-    than silently duplicated or deduped, per spec-073 INV-5."""
-    account_map = await _register_and_login(
-        client,
-        email="dividend-bulk-mismatch@example.com",
-        username="dividend-bulk-mismatch",
-        password="TestPass123!",
-    )
-    broker_id = account_map["brokerage"]
-
-    row = {
-        "account_id": broker_id,
-        "symbol": "NVDA",
-        "gross_amount": "100.00",
-        "currency": "USD",
-        "pay_date": "2026-06-15",
-    }
-    res1 = await client.post("/v1/investing/dividends/bulk", json={"rows": [row]})
-    assert res1.json()["imported"] == 1
-
-    mismatched = {**row, "gross_amount": "150.00"}
-    res2 = await client.post("/v1/investing/dividends/bulk", json={"rows": [mismatched]})
-    body = res2.json()
-    assert body["imported"] == 0
-    assert body["updated"] == 0
-    assert body["skipped"] == 0
-    assert len(body["rejected"]) == 1
-    assert "amount_mismatch" in body["rejected"][0]["reason"]
-
-    list_res = await client.get("/v1/investing/dividends", params={"account_id": broker_id})
-    assert list_res.json()["total"] == 1
-
-
-@pytest.mark.asyncio
-async def test_dividend_bulk_import_two_same_day_dividends_distinct_refs_both_import(
-    client: AsyncClient,
-):
-    """Two legitimate same-day, same-symbol dividends (e.g. two folios) with
-    distinct external_ref values must both import — amount is not identity."""
-    account_map = await _register_and_login(
-        client,
-        email="dividend-bulk-multi@example.com",
-        username="dividend-bulk-multi",
-        password="TestPass123!",
-    )
-    broker_id = account_map["brokerage"]
-
-    rows = [
-        {
-            "account_id": broker_id,
-            "symbol": "NVDA",
-            "gross_amount": "100.00",
-            "currency": "USD",
-            "pay_date": "2026-06-15",
-            "external_ref": "folio-1",
-        },
-        {
-            "account_id": broker_id,
-            "symbol": "NVDA",
-            "gross_amount": "50.00",
-            "currency": "USD",
-            "pay_date": "2026-06-15",
-            "external_ref": "folio-2",
-        },
-    ]
-    res = await client.post("/v1/investing/dividends/bulk", json={"rows": rows})
-    body = res.json()
-    assert body["imported"] == 2
-    assert body["rejected"] == []
-
-
 # ---------------------------------------------------------------------------
 # Return metrics: XIRR / open-closed / realized-unrealized (spec-071)
 # ---------------------------------------------------------------------------
@@ -3586,61 +3545,3 @@ async def test_create_dividend_rejects_tax_equal_to_gross(client: AsyncClient):
     )
     assert res.status_code == 422, res.text
     assert "less than" in res.text
-
-
-@pytest.mark.asyncio
-async def test_dividend_bulk_import_rejects_bad_tax_rows_per_row(client: AsyncClient):
-    """A row with tax_withheld >= gross_amount must be rejected per-row (both
-    the create path and the external_ref update path), leaving the rest of
-    the batch to import — never a 500 for the whole request."""
-    account_map = await _register_and_login(
-        client,
-        email="dividend-bulk-badtax@example.com",
-        username="dividend-bulk-badtax",
-        password="TestPass123!",
-    )
-    broker_id = account_map["brokerage"]
-
-    seed = {
-        "account_id": broker_id,
-        "symbol": "NVDA",
-        "gross_amount": "100.00",
-        "currency": "USD",
-        "pay_date": "2026-06-15",
-        "external_ref": "ref-badtax",
-    }
-    res0 = await client.post("/v1/investing/dividends/bulk", json={"rows": [seed]})
-    assert res0.status_code == 200, res0.text
-    assert res0.json()["imported"] == 1
-
-    rows = [
-        # create path: tax > gross
-        {
-            "account_id": broker_id,
-            "symbol": "AAPL",
-            "gross_amount": "100.00",
-            "tax_withheld": "150.00",
-            "currency": "USD",
-            "pay_date": "2026-06-15",
-        },
-        # update path (existing external_ref): tax == gross
-        {**seed, "tax_withheld": "100.00"},
-        # good row
-        {
-            "account_id": broker_id,
-            "symbol": "MSFT",
-            "gross_amount": "40.00",
-            "currency": "USD",
-            "pay_date": "2026-06-16",
-        },
-    ]
-    res = await client.post("/v1/investing/dividends/bulk", json={"rows": rows})
-    assert res.status_code == 200, res.text
-    body = res.json()
-    assert body["imported"] == 1
-    assert body["updated"] == 0
-    assert len(body["rejected"]) == 2
-    assert all("less than" in r["reason"] for r in body["rejected"])
-
-    list_res = await client.get("/v1/investing/dividends", params={"account_id": broker_id})
-    assert list_res.json()["total"] == 2  # seed + MSFT; nothing corrupted

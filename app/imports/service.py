@@ -22,11 +22,20 @@ from app.finance.models import (
     Currency,
 )
 from app.finance.repository import AccountRepository, CurrencyRepository
+from app.finance.service import FxRateService, NetWorthService
 from app.imports.cams_cas_import import validate_cams_cas_batch, validate_cams_cas_upload
 from app.imports.demat_cas_import import (
     finalize_demat_cas_commit,
     validate_demat_cas_batch,
     validate_demat_cas_upload,
+)
+from app.imports.finance_fx_rates_import import (
+    commit_finance_fx_rates_chunk,
+    validate_finance_fx_rate_row,
+)
+from app.imports.finance_net_worth_history_import import (
+    commit_finance_net_worth_history_chunk,
+    validate_finance_net_worth_history_row,
 )
 from app.imports.finance_transfers_import import (
     TEMPLATE_ROW as FINANCE_TRANSFERS_TEMPLATE_ROW,
@@ -43,6 +52,10 @@ from app.imports.investing_constituents_import import (
     commit_constituents_chunk,
     prepare_constituents_commit,
     validate_investing_constituent_row,
+)
+from app.imports.investing_dividends_import import (
+    commit_investing_dividends_chunk,
+    validate_investing_dividend_row,
 )
 from app.imports.investing_orders_import import (
     TEMPLATE_ROWS as INVESTING_ORDERS_TEMPLATE_ROWS,
@@ -87,7 +100,7 @@ from app.investing.repository import (
     InvestingOrderRepository,
     LotRepository,
 )
-from app.investing.service import InstrumentService
+from app.investing.service import DividendService, InstrumentService
 from app.spending.models import SpendingCategory
 
 try:
@@ -199,6 +212,18 @@ class ImportService:
             "gross_amount",
             "net_amount_received",
         },
+        ImportModule.investing_dividends: {"account", "gross", "currency", "pay_date"},
+        ImportModule.finance_fx_rates: {
+            "base_currency_code",
+            "quote_currency_code",
+            "rate",
+            "as_of_date",
+        },
+        ImportModule.finance_net_worth_history: {
+            "date",
+            "reporting_currency",
+            "total_net_worth",
+        },
     }
 
     def _smart_match_headers(self, file_headers: list[str], module: ImportModule) -> dict[str, str]:
@@ -236,10 +261,16 @@ class ImportService:
         repository: ImportRepository,
         session: AsyncSession,
         order_service: InvestingOrderService | None = None,
+        dividend_service: DividendService | None = None,
+        fx_rate_service: FxRateService | None = None,
+        net_worth_service: NetWorthService | None = None,
     ):
         self.repository = repository
         self.session = session
         self.order_service = order_service
+        self.dividend_service = dividend_service
+        self.fx_rate_service = fx_rate_service
+        self.net_worth_service = net_worth_service
         self._cash_balance_cache: dict[tuple[int, str], Decimal] = {}
         self._cache_session: AsyncSession = session
 
@@ -563,7 +594,11 @@ class ImportService:
 
         instruments_map = {}
         order_account_pub_map: dict[str, uuid.UUID] = {}
-        if batch.module in {ImportModule.investing_orders, ImportModule.finance_transfers}:
+        if batch.module in {
+            ImportModule.investing_orders,
+            ImportModule.finance_transfers,
+            ImportModule.investing_dividends,
+        }:
             order_account_pub_map = await self._account_public_id_map(workspace_id)
         if batch.module == ImportModule.investing_constituents:
             inst_rows = (
@@ -576,6 +611,33 @@ class ImportService:
                 .all()
             )
             instruments_map = {inst.symbol.upper(): inst for inst in inst_rows}
+
+        account_obj_map = {}
+        if batch.module == ImportModule.investing_dividends:
+            accounts = (
+                (
+                    await self.session.execute(
+                        select(Account).where(
+                            Account.workspace_id == workspace_id,
+                            Account.is_active,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            account_obj_map = {a.name.strip().lower(): a for a in accounts}
+
+        earliest_live_nw_date = None
+        if batch.module == ImportModule.finance_net_worth_history:
+            if self.net_worth_service is not None:
+                earliest_live_nw_date = (
+                    await self.net_worth_service.net_worth_snapshot_repo.get_earliest_live_date(
+                        workspace_id
+                    )
+                )
+            if earliest_live_nw_date is None:
+                earliest_live_nw_date = datetime.now(UTC).date()
 
         is_xlsx = file_path.lower().endswith(".xlsx")
         f = None
@@ -720,13 +782,33 @@ class ImportService:
                         account_map=account_map,
                         currency_set=currency_set,
                     )
-                else:
+                elif batch.module == ImportModule.investing_constituents:
                     payload, weight_entry = validate_investing_constituent_row(
                         row, add_error, instruments_map
                     )
                     if weight_entry is not None:
                         key, weight = weight_entry
                         weight_groups.setdefault(key, []).append(weight)
+                elif batch.module == ImportModule.investing_dividends:
+                    payload, _weight_entry = validate_investing_dividend_row(
+                        row,
+                        add_error,
+                        account_obj_map=account_obj_map,
+                        currency_set=currency_set,
+                    )
+                elif batch.module == ImportModule.finance_fx_rates:
+                    payload, _weight_entry = validate_finance_fx_rate_row(
+                        row,
+                        add_error,
+                        currency_set=currency_set,
+                    )
+                elif batch.module == ImportModule.finance_net_worth_history:
+                    payload, _weight_entry = validate_finance_net_worth_history_row(
+                        row,
+                        add_error,
+                        currency_set=currency_set,
+                        earliest_live_nw_date=earliest_live_nw_date,
+                    )
 
                 if row_errors:
                     errors.extend(row_errors)
@@ -836,6 +918,14 @@ class ImportService:
         inserted = 0
         auto_created_categories: list[str] = []
         demat_cas_report: list[dict] = []
+        extra_json = None
+        if batch.module in {
+            ImportModule.investing_dividends,
+            ImportModule.finance_fx_rates,
+            ImportModule.finance_net_worth_history,
+        }:
+            extra_json = {"imported": 0, "updated": 0, "skipped": 0, "rejected": []}
+
         try:
             if batch.module == ImportModule.investing_constituents:
                 company_cache = await prepare_constituents_commit(
@@ -843,6 +933,7 @@ class ImportService:
                 )
 
             category_name_to_id = await self._category_maps(workspace_id)
+
             by_name, _by_public = category_name_to_id
             offset = 0
             while True:
@@ -893,6 +984,42 @@ class ImportService:
                     # is a single verification snapshot, not N inserted rows.
                     for row in rows:
                         demat_cas_report.append(row.payload_json)
+                elif batch.module == ImportModule.investing_dividends:
+                    if self.dividend_service is None:
+                        raise ValidationError(detail="Dividend service is not available")
+                    inserted_chunk, extra_chunk = await commit_investing_dividends_chunk(
+                        self.dividend_service, workspace_id, user_id, batch, rows, audit_logger
+                    )
+                    inserted += inserted_chunk
+                    if extra_json is not None:
+                        extra_json["imported"] += extra_chunk.get("imported", 0)
+                        extra_json["updated"] += extra_chunk.get("updated", 0)
+                        extra_json["skipped"] += extra_chunk.get("skipped", 0)
+                        extra_json["rejected"].extend(extra_chunk.get("rejected", []))
+                elif batch.module == ImportModule.finance_fx_rates:
+                    if self.fx_rate_service is None:
+                        raise ValidationError(detail="FX rate service is not available")
+                    inserted_chunk, extra_chunk = await commit_finance_fx_rates_chunk(
+                        self.fx_rate_service, workspace_id, user_id, batch, rows
+                    )
+                    inserted += inserted_chunk
+                    if extra_json is not None:
+                        extra_json["imported"] += extra_chunk.get("imported", 0)
+                        extra_json["updated"] += extra_chunk.get("updated", 0)
+                        extra_json["skipped"] += extra_chunk.get("skipped", 0)
+                        extra_json["rejected"].extend(extra_chunk.get("rejected", []))
+                elif batch.module == ImportModule.finance_net_worth_history:
+                    if self.net_worth_service is None:
+                        raise ValidationError(detail="Net worth service is not available")
+                    inserted_chunk, extra_chunk = await commit_finance_net_worth_history_chunk(
+                        self.net_worth_service, workspace_id, user_id, batch, rows
+                    )
+                    inserted += inserted_chunk
+                    if extra_json is not None:
+                        extra_json["imported"] += extra_chunk.get("imported", 0)
+                        extra_json["updated"] += extra_chunk.get("updated", 0)
+                        extra_json["skipped"] += extra_chunk.get("skipped", 0)
+                        extra_json["rejected"].extend(extra_chunk.get("rejected", []))
                 else:  # ImportModule.investing_constituents
                     inserted += await commit_constituents_chunk(
                         self.session, workspace_id, rows, company_cache
@@ -905,6 +1032,9 @@ class ImportService:
                 inserted = await finalize_demat_cas_commit(
                     self.session, workspace_id, batch, demat_cas_report
                 )
+
+            if extra_json is not None:
+                batch.extra_json = extra_json
 
             batch.status = ImportStatus.completed
             batch.committed_at = datetime.now(UTC)

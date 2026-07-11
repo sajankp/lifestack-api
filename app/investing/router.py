@@ -36,8 +36,6 @@ from app.investing.schemas import (
     CashBalanceUpdate,
     CorporateActionCreate,
     CorporateActionResponse,
-    DividendBulkImportRequest,
-    DividendBulkImportResult,
     DividendCreate,
     DividendResponse,
     DividendUpdate,
@@ -798,23 +796,6 @@ async def delete_dividend(
         workspace_id=workspace_id,
         public_id=dividend_id,
         actor_id=user["id"],
-        audit_logger=audit_logger,
-    )
-
-
-@router.post("/dividends/bulk", response_model=DividendBulkImportResult)
-async def bulk_import_dividends(
-    request: DividendBulkImportRequest,
-    dividend_service: Annotated[DividendService, Depends(get_investing_dividend_service)],
-    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    user: Annotated[dict, Depends(get_current_user)],
-    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
-    _role: Annotated[object, Depends(require_min_role("member"))],
-):
-    return await dividend_service.bulk_import(
-        workspace_id=workspace_id,
-        user_id=user["id"],
-        request=request,
         audit_logger=audit_logger,
     )
 

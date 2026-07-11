@@ -58,6 +58,31 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
         "platform_fee_amount",
         "tax_amount",
     ],
+    ImportModule.investing_dividends: [
+        "account",
+        "symbol",
+        "income_type",
+        "gross",
+        "tax",
+        "currency",
+        "pay_date",
+        "external_ref",
+        "notes",
+    ],
+    ImportModule.finance_fx_rates: [
+        "base_currency_code",
+        "quote_currency_code",
+        "rate",
+        "as_of_date",
+    ],
+    ImportModule.finance_net_worth_history: [
+        "date",
+        "reporting_currency",
+        "total_net_worth",
+        "holdings_value",
+        "investing_cash",
+        "spending_cash",
+    ],
 }
 
 SPENDEE_TRANSACTION_HEADERS = [
@@ -96,6 +121,7 @@ class ImportBatchResponse(BaseModel):
     valid_rows: int
     error_rows: int
     commit_error: str | None = None
+    extra_json: dict | None = None
     started_at: datetime
     validated_at: datetime | None
     committed_at: datetime | None
