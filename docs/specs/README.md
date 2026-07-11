@@ -114,10 +114,10 @@ Corporate actions, web push, CAS PDF ingestion (CAMS/NSDL/CDSL), NSE bhavcopy pr
 | [Spec 067: Morning Briefing](./spec-067-morning-briefing.md) | Implemented (api#140, web#93) | Deterministic morning briefing workflow and insights generation. |
 | [Spec 068: Todo Organization](./spec-068-todo-organization.md) | Implemented (api#144, web#102) | Date-grouped task view with one level of subtasks. |
 | [Spec 069: Health Memory v1](./spec-069-health-memory-v1.md) | Implemented (api#145, web#103) | Medications and weight tracking, dose checklist, and weekly health summary. |
-| [Spec 071: Investment Return Metrics](./spec-071-investment-return-metrics.md) | Draft — proposed | XIRR/annualized/realized-split, per-account + open vs closed positions, historical-FX aggregate, max drawdown. |
-| [Spec 072: Historical Data Ingestion](./spec-072-historical-data-ingestion.md) | Draft — proposed | User-uploadable historical FX rates + net-worth backfill points (provenance-tagged); unblocks 071 aggregate and deep dashboards. |
-| [Spec 073: Dividend & Income Tracking](./spec-073-dividend-income-tracking.md) | Draft — proposed | First-class dividend/income events (no phantom transfer); reconciliation-complete; feeds 071 as income. |
-| Corporate Actions UI — web-repo spec: `lifestack-web/docs/specs/spec-008-corporate-actions-ui.md` | Draft — proposed (web repo) | Web-only UI for spec-051's splits/bonus endpoints; no API changes, so the spec lives in the web repo's spec series. |
+| [Spec 071: Investment Return Metrics](./spec-071-investment-return-metrics.md) | Implemented (api#150, web#110) | XIRR/annualized/realized-split, per-account + open vs closed positions, historical-FX aggregate, max drawdown. |
+| [Spec 072: Historical Data Ingestion](./spec-072-historical-data-ingestion.md) | Implemented (api#150, web#110) | User-uploadable historical FX rates + net-worth backfill points (provenance-tagged); unblocks 071 aggregate and deep dashboards. |
+| [Spec 073: Dividend & Income Tracking](./spec-073-dividend-income-tracking.md) | Implemented (api#150, web#110) | First-class dividend/income events (no phantom transfer); reconciliation-complete; feeds 071 as income. |
+| Corporate Actions UI — web-repo spec: `lifestack-web/docs/specs/spec-008-corporate-actions-ui.md` | Implemented (web#110, web repo) | Web-only UI for spec-051's splits/bonus endpoints; no API changes, so the spec lives in the web repo's spec series. |
 
 ## Roadmap Alignment
 
