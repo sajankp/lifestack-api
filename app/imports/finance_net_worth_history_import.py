@@ -107,8 +107,11 @@ def validate_finance_net_worth_history_row(
                 spending_raw,
             )
 
+    # norm() returns "" (not None) for omitted CSV cells, so filter on
+    # truthiness — otherwise every row looks like it supplied all three
+    # components and the all-or-none check below never fires.
     components = [holdings_raw, investing_raw, spending_raw]
-    given_components = [c for c in components if c is not None]
+    given_components = [c for c in components if c]
     if given_components and len(given_components) != 3:
         add_error(
             "total_net_worth",

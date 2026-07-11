@@ -161,6 +161,44 @@ async def test_net_worth_history_import_framework_flow(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_net_worth_history_import_rejects_partial_components(client: AsyncClient):
+    # Components are all-or-none: supplying only some of holdings/investing/
+    # spending must be rejected. Regression guard — empty CSV cells arrive as
+    # "" (not None), so the all-or-none check must filter on truthiness.
+    await _register_and_login(
+        client,
+        email="nw-partial@example.com",
+        username="nw-partial",
+        password="TestPass123!",
+    )
+    headers = [
+        "date",
+        "reporting_currency",
+        "total_net_worth",
+        "holdings_value",
+        "investing_cash",
+        "spending_cash",
+    ]
+    past_date = (datetime.now(UTC).date() - timedelta(days=400)).isoformat()
+    partial_row = {
+        "date": past_date,
+        "reporting_currency": "USD",
+        "total_net_worth": "10000.00",
+        "holdings_value": "5000.00",  # only one of three components supplied
+        "investing_cash": "",
+        "spending_cash": "",
+    }
+    res = await client.post(
+        "/v1/imports",
+        data={"module": "finance-net-worth-history"},
+        files={"file": ("import.csv", _rows_to_csv(headers, [partial_row]), "text/csv")},
+    )
+    assert res.status_code == 200
+    error_codes = {e["error_code"] for e in res.json()["errors"]}
+    assert "components_mismatch" in error_codes
+
+
+@pytest.mark.asyncio
 async def test_retired_endpoints_return_404_405(client: AsyncClient):
     await _register_and_login(
         client,
