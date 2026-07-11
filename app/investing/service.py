@@ -1510,6 +1510,12 @@ class ExposureAnalyticsService:
         self, workspace_id: int, as_of: date, *, apply_display_threshold: bool = True
     ) -> ExposureAnalyticsResponse:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
+        # Fully-sold (closed) positions carry zero quantity and therefore zero
+        # current exposure no matter what — including them below only produces
+        # noise (spurious FX/instrument/constituent warnings for a position
+        # that no longer contributes) and can force an irrelevant multi-currency
+        # reporting-currency requirement from a currency nothing is still held in.
+        holdings = [h for h in holdings if h.quantity != 0]
         used_currencies = sorted({holding.currency.upper() for holding in holdings})
         reporting_currency: str | None = None
         display_threshold_pct = settings.LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT
@@ -1575,6 +1581,18 @@ class ExposureAnalyticsService:
         )
 
         for h in holdings:
+            instrument = None
+            if h.instrument_id is not None:
+                instrument = instruments_by_id.get(h.instrument_id)
+            if instrument is None:
+                instrument = instruments_by_symbol.get(h.symbol)
+            # Prefer the human-readable name (e.g. a mutual fund's scheme name)
+            # over the raw symbol (often an AMFI code/ISIN) in messages shown to users.
+            display_name = instrument.name if instrument and instrument.name else h.symbol
+            if instrument is None:
+                warnings.append(f"Instrument missing for symbol {display_name}")
+                continue
+
             native_value = h.quantity * h.avg_cost
             value = (
                 _convert_amount(
@@ -1589,23 +1607,13 @@ class ExposureAnalyticsService:
             if value is None:
                 warnings.append(
                     f"FX rate from {h.currency.upper()} to {reporting_currency} is required "
-                    f"for {h.symbol}"
+                    f"for {display_name}"
                 )
-                continue
-            instrument = None
-            if h.instrument_id is not None:
-                instrument = instruments_by_id.get(h.instrument_id)
-            if instrument is None:
-                instrument = instruments_by_symbol.get(h.symbol)
-            if instrument is None:
-                warnings.append(f"Instrument missing for symbol {h.symbol}")
                 continue
 
             if instrument.instrument_type == InstrumentType.stock.value:
                 if instrument.company_id is None:
-                    warnings.append(
-                        f"Stock instrument {instrument.symbol} is not linked to a company"
-                    )
+                    warnings.append(f"Stock instrument {display_name} is not linked to a company")
                     continue
                 direct[instrument.company_id] = (
                     direct.get(instrument.company_id, Decimal("0")) + value
@@ -1618,11 +1626,11 @@ class ExposureAnalyticsService:
             decomposable += 1
             rows = constituents_by_instrument.get(instrument.id, [])  # type: ignore[arg-type]
             if not rows:
-                warnings.append(f"No constituent snapshot for {instrument.symbol}")
+                warnings.append(f"No constituent snapshot for {display_name}")
                 continue
             snapshot_date = rows[0].as_of_date
             if (as_of - snapshot_date).days > self.staleness_window_days:
-                warnings.append(f"Stale constituent snapshot for {instrument.symbol}")
+                warnings.append(f"Stale constituent snapshot for {display_name}")
                 continue
             decomposed += 1
             for row in rows:

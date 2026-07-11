@@ -1077,6 +1077,98 @@ async def test_investing_lookthrough_does_not_mix_currencies_without_reporting_c
 
 
 @pytest.mark.asyncio
+async def test_investing_lookthrough_ignores_fully_sold_positions(client: AsyncClient):
+    account_map = await _register_and_login(
+        client,
+        email="investing-lookthrough-closed@example.com",
+        username="investing-lookthrough-closed",
+        password="TestPass123!",
+    )
+
+    # A mutual fund holding that's fully sold (zero quantity, zero book value)
+    # has no current exposure and no constituent snapshot — it must not
+    # generate warnings or otherwise affect analytics for still-open holdings.
+    await _create_holding_via_order(
+        client,
+        account_map["brokerage"],
+        "118285",
+        "10.00000000",
+        "100.00",
+        "USD",
+        "mutual_fund",
+        instrument_name="Some Fully Sold Fund",
+    )
+    sell_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": account_map["brokerage"],
+            "order_type": "sell",
+            "symbol": "118285",
+            "quantity": "10.00000000",
+            "price_per_unit": "110.00",
+            "currency": "USD",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert sell_res.status_code == 201, sell_res.text
+
+    await _create_holding_via_order(
+        client, account_map["wallet"], "AAPL", "2.00000000", "150.00", "USD"
+    )
+
+    today = datetime.now(UTC).date().isoformat()
+    exposure_res = await client.get("/v1/investing/analytics/exposure", params={"as_of": today})
+    assert exposure_res.status_code == 200
+    exposure = exposure_res.json()
+    assert exposure["analysis_status"] == "complete"
+    assert exposure["warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_investing_lookthrough_closed_position_currency_does_not_block_reporting(
+    client: AsyncClient,
+):
+    account_map = await _register_and_login(
+        client,
+        email="investing-lookthrough-closed-fx@example.com",
+        username="investing-lookthrough-closed-fx",
+        password="TestPass123!",
+    )
+    # One account, one currency (spec-050): the GBP holding needs its own account.
+    gbp_broker_id = await _create_brokerage_account(client, "GBP Brokerage", "GBP")
+
+    await _create_holding_via_order(
+        client, account_map["brokerage"], "AAPL", "1.00000000", "100.00", "USD"
+    )
+    await _create_holding_via_order(client, gbp_broker_id, "VOD", "1.00000000", "100.00", "GBP")
+    sell_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": gbp_broker_id,
+            "order_type": "sell",
+            "symbol": "VOD",
+            "quantity": "1.00000000",
+            "price_per_unit": "110.00",
+            "currency": "GBP",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert sell_res.status_code == 201, sell_res.text
+
+    # The GBP position is fully closed now — with no *open* multi-currency
+    # exposure remaining, analytics should resolve USD automatically instead
+    # of demanding a reporting currency because of a stale closed position.
+    response = await client.get(
+        "/v1/investing/analytics/exposure",
+        params={"as_of": datetime.now(UTC).date().isoformat()},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["analysis_status"] == "complete"
+    assert body["currency"] == "USD"
+
+
+@pytest.mark.asyncio
 async def test_investing_constituent_weights_validation(client: AsyncClient):
     await _register_and_login(
         client,
