@@ -1,6 +1,5 @@
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
-from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import delete, func, or_, select, update
@@ -849,17 +848,3 @@ class DividendRepository(BaseRepository[Dividend]):
             base.order_by(Dividend.pay_date.desc(), Dividend.id.desc()).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
-
-    async def sum_net_amount_by_account(
-        self, workspace_id: int, account_id: int
-    ) -> tuple[Decimal, int]:
-        """Total net dividend/income credited to this account and row count —
-        the term the reconciliation projected-ledger query adds (spec-073 INV-2)."""
-        result = await self.session.execute(
-            select(func.coalesce(func.sum(Dividend.net_amount), Decimal("0")), func.count()).where(
-                Dividend.workspace_id == workspace_id,
-                Dividend.account_id == account_id,
-            )
-        )
-        row = result.one()
-        return Decimal(str(row[0] or "0")), int(row[1] or 0)

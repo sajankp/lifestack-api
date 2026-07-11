@@ -587,6 +587,7 @@ class FxRateService:
                         row.quote_currency_code,
                         row.rate,
                         as_of_dt,
+                        existing=existing,
                     )
                     imported += 1
             except ValidationError as exc:
@@ -1547,7 +1548,7 @@ class NetWorthService:
                     fx_rates_used={},
                     source="user_provided",
                 )
-                await self.net_worth_snapshot_repo.create_user_point(snapshot)
+                await self.net_worth_snapshot_repo.create_user_point(snapshot, existing=existing)
                 imported += 1
             except ValidationError as exc:
                 rejected.append(NetWorthHistoryRejectedRow(row=idx, reason=str(exc.detail)))

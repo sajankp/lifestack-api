@@ -721,17 +721,12 @@ class FxRateRepository:
         quote_currency_code: str,
         rate: Decimal,
         as_of: datetime,
+        existing: FxRate | None = None,
     ) -> FxRate:
-        result = await self.session.execute(
-            select(FxRate).where(
-                FxRate.workspace_id == workspace_id,
-                FxRate.base_currency_code == base_currency_code,
-                FxRate.quote_currency_code == quote_currency_code,
-                FxRate.as_of == as_of,
-            )
-        )
-        existing = result.scalar_one_or_none()
-        if existing:
+        """``existing`` is the row previously loaded via
+        ``get_user_rate_for_date`` for the same key — passing it avoids
+        re-running that exact SELECT per imported row."""
+        if existing is not None:
             existing.rate = rate
             existing.updated_at = datetime.now(UTC)
             self.session.add(existing)
@@ -896,14 +891,13 @@ class NetWorthSnapshotRepository:
         )
         return result.scalar_one_or_none()
 
-    async def create_user_point(self, snapshot: NetWorthSnapshot) -> NetWorthSnapshot:
+    async def create_user_point(
+        self, snapshot: NetWorthSnapshot, existing: NetWorthSnapshot | None = None
+    ) -> NetWorthSnapshot:
         """Upsert-keyed on (workspace, date) among user rows only -- INV-2
-        (date-boundary check) is the caller's job before this is called."""
-        stmt = select(NetWorthSnapshot).where(
-            NetWorthSnapshot.workspace_id == snapshot.workspace_id,
-            NetWorthSnapshot.snapshot_date == snapshot.snapshot_date,
-        )
-        existing = (await self.session.execute(stmt)).scalar_one_or_none()
+        (date-boundary check) is the caller's job before this is called.
+        ``existing`` is the row the caller already loaded via ``get_for_date``
+        for the same key — passing it avoids re-running that SELECT."""
         if existing is not None:
             existing.reporting_currency = snapshot.reporting_currency
             existing.holdings_value = snapshot.holdings_value
