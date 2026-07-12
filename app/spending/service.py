@@ -27,6 +27,7 @@ from app.core.exceptions import (
 from app.core.pagination import DEFAULT_LIMIT
 from app.core.recurrence import advance_due_date, validate_recurrence_fields
 from app.finance.repository import AccountRepository, FinanceSettingRepository
+from app.finance.statement_service import StatementService
 from app.spending.models import (
     CategoryGroup,
     FinancialKpi,
@@ -1162,10 +1163,24 @@ class TransactionService:
                     )
                 transaction.account_id = account.id  # type: ignore[assignment]
 
+        breaking_fields = {"amount", "occurred_at", "type"}
+        is_breaking_edit = any(
+            field in update_data and getattr(transaction, field) != update_data[field]
+            for field in breaking_fields
+        )
+
         for key, value in update_data.items():
             setattr(transaction, key, value)
         transaction.updated_at = datetime.now(UTC)
         transaction = await self.transaction_repo.save(transaction)
+
+        if is_breaking_edit and transaction.id is not None:
+            # Statement matching is metadata, never mutation (spec-078
+            # INV-1): this only clears a match *reference* on the
+            # statement_lines side, never touches this transaction further.
+            await StatementService(self.transaction_repo.session).break_matches_for_transaction(
+                workspace_id, transaction.id
+            )
 
         if audit_logger and actor_id is not None:
             after_snap = _snapshot_transaction(transaction)
@@ -1195,6 +1210,18 @@ class TransactionService:
     ) -> None:
         transaction = await self.get_transaction(workspace_id, public_id)
         before_snap = _snapshot_transaction(transaction)
+        transaction_id = transaction.id
+
+        if transaction_id is not None:
+            # Must clear the statement_lines FK reference before deleting
+            # the row it points to (no ON DELETE CASCADE on
+            # matched_transaction_id — the reference is metadata the match
+            # engine owns, not something the transaction delete should
+            # cascade through implicitly).
+            await StatementService(self.transaction_repo.session).break_matches_for_transaction(
+                workspace_id, transaction_id
+            )
+
         await self.transaction_repo.delete(transaction)
 
         if audit_logger and actor_id is not None:

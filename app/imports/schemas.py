@@ -83,6 +83,13 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
         "investing_cash",
         "spending_cash",
     ],
+    ImportModule.finance_account_statement: [
+        "date",
+        "description",
+        "debit",
+        "credit",
+        "balance",
+    ],
 }
 
 SPENDEE_TRANSACTION_HEADERS = [

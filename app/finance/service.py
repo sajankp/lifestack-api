@@ -42,6 +42,7 @@ from app.finance.schemas import (
     NetWorthHistoryRejectedRow,
     ReconciliationSummary,
 )
+from app.finance.statement_service import StatementService
 from app.investing.models import CashBalance as InvestingCashBalance
 from app.investing.performance_service import InvestingSummaryService
 from app.investing.repository import CashBalanceRepository
@@ -1005,6 +1006,14 @@ class CapitalTransferService:
             if from_linked is not None:
                 await self.cash_balance_repository.delete(from_linked)
 
+        # Clear any statement match before deleting the row it references
+        # (spec-078 INV-1: matching is metadata, never mutation — this only
+        # nulls the reference on statement_lines).
+        if transfer.id is not None:
+            await StatementService(self.transfer_repository.session).break_matches_for_transfer(
+                workspace_id, transfer.id
+            )
+
         await self.transfer_repository.delete(transfer)
 
     async def update_transfer(
@@ -1047,6 +1056,7 @@ class CapitalTransferService:
         old_net = transfer.net_amount_received
         new_gross = transfer_in.gross_amount
         old_gross = transfer.gross_amount
+        old_occurred_at = transfer.occurred_at
 
         # One account, one currency (spec-050). Only enforced when the
         # account or currency for that side is actually being touched, so
@@ -1101,6 +1111,11 @@ class CapitalTransferService:
                 and transfer_in.from_currency_code != transfer.from_currency_code
             )
             or (new_gross is not None and new_gross != old_gross)
+        )
+        statement_match_breaking = (
+            to_balance_affecting
+            or from_balance_affecting
+            or (transfer_in.occurred_at is not None and transfer_in.occurred_at != old_occurred_at)
         )
 
         # Safety check: block if newer snapshots exist on either side's
@@ -1181,6 +1196,11 @@ class CapitalTransferService:
         )
 
         transfer = await self.transfer_repository.save(transfer)
+
+        if statement_match_breaking and transfer.id is not None:
+            await StatementService(self.transfer_repository.session).break_matches_for_transfer(
+                workspace_id, transfer.id
+            )
 
         # Rebuild cash balance snapshot(s) if balance-affecting fields changed.
         # to_linked/from_linked were already resolved above (pre-update, keyed
