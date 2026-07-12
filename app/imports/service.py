@@ -1285,20 +1285,82 @@ async def run_background_commit(
     batch_public_id: uuid.UUID,
 ) -> None:
     async with postgres.async_session_maker() as session:
+        # commit_batch dispatches to dividend_service/fx_rate_service/net_worth_service
+        # for their respective modules (investing-dividends, finance-fx-rates,
+        # finance-net-worth-history) same as the synchronous get_import_service DI
+        # wiring — omitting any of these here means those modules' commits always
+        # fail once RUN_BACKGROUND_TASKS_SYNCHRONOUSLY is off (i.e. in production).
+        from app.finance.repository import (  # noqa: PLC0415
+            FinanceSettingRepository,
+            FxRateRepository,
+            NetWorthSnapshotRepository,
+        )
+        from app.finance.service import AccountService  # noqa: PLC0415
+        from app.investing.performance_service import InvestingSummaryService  # noqa: PLC0415
+        from app.investing.repository import (  # noqa: PLC0415
+            DividendRepository,
+            HoldingPriceRepository,
+            PortfolioSnapshotRepository,
+        )
+
         repo = ImportRepository(session)
+        account_repo = AccountRepository(session)
+        currency_repo = CurrencyRepository(session)
+        cash_balance_repo = CashBalanceRepository(session)
+        holding_repo = HoldingRepository(session)
+        setting_repo = FinanceSettingRepository(session)
+        fx_rate_repo = FxRateRepository(session)
+
         order_service = InvestingOrderService(
             order_repository=InvestingOrderRepository(session),
-            holding_repository=HoldingRepository(session),
-            cash_balance_repository=CashBalanceRepository(session),
-            account_repository=AccountRepository(session),
-            currency_repository=CurrencyRepository(session),
+            holding_repository=holding_repo,
+            cash_balance_repository=cash_balance_repo,
+            account_repository=account_repo,
+            currency_repository=currency_repo,
             instrument_service=InstrumentService(
                 InstrumentRepository(session), CompanyRepository(session)
             ),
             lot_repository=LotRepository(session),
             corporate_action_repository=CorporateActionRepository(session),
         )
-        service = ImportService(repo, session, order_service=order_service)
+        dividend_service = DividendService(
+            repository=DividendRepository(session),
+            cash_balance_repository=cash_balance_repo,
+            account_repository=account_repo,
+            holding_repository=holding_repo,
+            currency_repository=currency_repo,
+        )
+        fx_rate_service = FxRateService(fx_rate_repo, currency_repo)
+        summary_service = InvestingSummaryService(
+            holding_repo=holding_repo,
+            cash_repo=cash_balance_repo,
+            finance_setting_repo=setting_repo,
+            fx_rate_repo=fx_rate_repo,
+            holding_price_repo=HoldingPriceRepository(session),
+            snapshot_repo=PortfolioSnapshotRepository(session),
+            account_repo=account_repo,
+        )
+        net_worth_service = NetWorthService(
+            session=session,
+            account_service=AccountService(
+                account_repository=account_repo,
+                currency_repository=currency_repo,
+                setting_repository=setting_repo,
+            ),
+            summary_service=summary_service,
+            cash_balance_repo=cash_balance_repo,
+            setting_repo=setting_repo,
+            fx_rate_repo=fx_rate_repo,
+            net_worth_snapshot_repo=NetWorthSnapshotRepository(session),
+        )
+        service = ImportService(
+            repo,
+            session,
+            order_service=order_service,
+            dividend_service=dividend_service,
+            fx_rate_service=fx_rate_service,
+            net_worth_service=net_worth_service,
+        )
         audit_logger = AuditLogger(session)
         try:
             await service.commit_batch(workspace_id, user_id, batch_public_id, audit_logger)
