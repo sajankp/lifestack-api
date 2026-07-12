@@ -64,15 +64,18 @@ Required backup environment variables:
 * `DB_BACKUP_ENCRYPTION_KEY`: Symmetric key to encrypt SQL dump files prior to egress.
 * `DB_BACKUP_S3_BUCKET`: E.g., `lifestack-db-backups`.
 * `DB_BACKUP_S3_ENDPOINT`: E.g., `https://<account_id>.r2.cloudflarestorage.com`.
-* `AWS_ACCESS_KEY_ID`: Cloudflare R2 / S3 access key.
-* `AWS_SECRET_ACCESS_KEY`: Cloudflare R2 / S3 secret key.
+* `DB_BACKUP_S3_ACCESS_KEY`: Cloudflare R2 / S3 access key.
+* `DB_BACKUP_S3_SECRET_KEY`: Cloudflare R2 / S3 secret key.
 
 ---
 
 ## 4. Launching the Stack
 
-Use the production Compose file to stand up the stack:
+`docker-compose.prod.yml` is an override file (it uses `!override`/`!reset` merge tags on the
+`migrate`/`api` services), so it cannot run standalone — it must be layered on top of the base
+`docker-compose.yml`, which also owns the `postgres`/`redis` services:
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+docker compose --profile local --env-file .env.production \
+  -f docker-compose.yml -f docker-compose.prod.yml up -d --build --force-recreate
 ```
