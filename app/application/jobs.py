@@ -28,6 +28,7 @@ from app.application.workflows import (
     cleanup_import_previews,
     deliver_pending_push_notifications,
     evaluate_workspace_budget_guardrails,
+    evaluate_workspace_kpi_breaches,
     ingest_fx_rates,
     process_workspace_medication_reminders,
     process_workspace_recurring_todos,
@@ -43,6 +44,7 @@ from app.core.constants import (
     ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
     ADVISORY_LOCK_INVESTMENT_CLOSING_PRICES,
+    ADVISORY_LOCK_KPI_GUARDRAILS,
     ADVISORY_LOCK_MEDICATION_REMINDER,
     ADVISORY_LOCK_MORNING_BRIEFING,
     ADVISORY_LOCK_NET_WORTH_SNAPSHOT,
@@ -343,6 +345,24 @@ async def budget_guardrails_job(workspace_id: int | None = None) -> None:
         lock_key=BUDGET_GUARDRAILS_LOCK_KEY,
         workspace_id=workspace_id,
         process_workspace=lambda s, ws: evaluate_workspace_budget_guardrails(s, ws),
+    )
+
+
+# Advisory lock key — separate from budget_guardrails to allow concurrent runs
+KPI_GUARDRAILS_LOCK_KEY = ADVISORY_LOCK_KPI_GUARDRAILS
+
+
+async def kpi_guardrails_job(workspace_id: int | None = None) -> None:
+    """Cron-triggered job that evaluates custom financial KPI targets across
+    all active workspaces (spec-077), writing `Notification` rows
+    (category="kpi") directly on breach — rides the same cadence as
+    budget_guardrails_job but its own advisory lock key so the two can run
+    concurrently."""
+    await run_workspace_job(
+        job_name="kpi_guardrails_job",
+        lock_key=KPI_GUARDRAILS_LOCK_KEY,
+        workspace_id=workspace_id,
+        process_workspace=lambda s, ws: evaluate_workspace_kpi_breaches(s, ws),
     )
 
 

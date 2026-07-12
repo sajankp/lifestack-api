@@ -9,6 +9,7 @@ from app.application.jobs import (
     export_cleanup_job,
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
+    kpi_guardrails_job,
     medication_reminder_job,
     morning_briefing_job,
     net_worth_snapshot_job,
@@ -19,6 +20,7 @@ from app.application.jobs import (
 
 JOBS = {
     "budget_guardrails": budget_guardrails_job,
+    "kpi_guardrails": kpi_guardrails_job,
     "recurring_transactions": recurring_transactions_job,
     "fx_rate_ingestion": fx_rate_ingestion_job,
     "export_cleanup": export_cleanup_job,

@@ -24,6 +24,7 @@
 #   1013 – investment_closing_prices_job
 #   1014 – morning_briefing_job
 #   1015 – medication_reminder_job
+#   1016 – kpi_guardrails_job
 # ---------------------------------------------------------------------------
 
 ADVISORY_LOCK_BUDGET_GUARDRAILS: int = 1001
@@ -41,3 +42,4 @@ ADVISORY_LOCK_NET_WORTH_SNAPSHOT: int = 1012
 ADVISORY_LOCK_INVESTMENT_CLOSING_PRICES: int = 1013
 ADVISORY_LOCK_MORNING_BRIEFING: int = 1014
 ADVISORY_LOCK_MEDICATION_REMINDER: int = 1015
+ADVISORY_LOCK_KPI_GUARDRAILS: int = 1016

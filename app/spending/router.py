@@ -12,6 +12,7 @@ from app.core.dependencies import (
     get_spending_budget_service,
     get_spending_category_group_service,
     get_spending_category_service,
+    get_spending_kpi_service,
     get_spending_recurring_service,
     get_spending_transaction_service,
     require_min_role,
@@ -41,6 +42,9 @@ from app.spending.schemas import (
     CategoryResponse,
     CategorySpendTotal,
     CategoryUpdate,
+    KpiCreate,
+    KpiResponse,
+    KpiUpdate,
     LedgerResponse,
     RecurringTransactionCreate,
     RecurringTransactionResponse,
@@ -57,6 +61,7 @@ from app.spending.service import (
     BudgetService,
     CategoryGroupService,
     CategoryService,
+    KpiService,
     RecurringTransactionService,
     TransactionService,
 )
@@ -674,3 +679,53 @@ async def get_account_ledger(
         limit=limit,
         offset=offset,
     )
+
+
+# ---------------------------------------------------------------------------
+# Custom financial KPIs (spec-077)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/kpis", response_model=PaginatedResponse[KpiResponse])
+async def list_kpis(
+    kpi_service: Annotated[KpiService, Depends(get_spending_kpi_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+):
+    items, total = await kpi_service.list_kpis(workspace_id, pagination.limit, pagination.offset)
+    return build_page(items, total, pagination)
+
+
+@router.post("/kpis", response_model=KpiResponse, status_code=status.HTTP_201_CREATED)
+async def create_kpi(
+    kpi_in: KpiCreate,
+    kpi_service: Annotated[KpiService, Depends(get_spending_kpi_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    return await kpi_service.create_kpi(workspace_id, kpi_in)
+
+
+@router.patch("/kpis/{kpi_id}", response_model=KpiResponse)
+async def update_kpi(
+    kpi_id: uuid.UUID,
+    kpi_in: KpiUpdate,
+    kpi_service: Annotated[KpiService, Depends(get_spending_kpi_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    return await kpi_service.update_kpi(workspace_id, kpi_id, kpi_in)
+
+
+@router.delete("/kpis/{kpi_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_kpi(
+    kpi_id: uuid.UUID,
+    kpi_service: Annotated[KpiService, Depends(get_spending_kpi_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    await kpi_service.delete_kpi(workspace_id, kpi_id)

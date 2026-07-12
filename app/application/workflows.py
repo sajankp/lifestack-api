@@ -29,7 +29,12 @@ from app.dashboard.schemas import (
 from app.exports.models import ExportRecord, ExportStatus
 from app.exports.repository import ExportRepository
 from app.exports.service import ExportService
-from app.finance.repository import CurrencyRepository, FinanceSettingRepository, FxRateRepository
+from app.finance.repository import (
+    AccountRepository,
+    CurrencyRepository,
+    FinanceSettingRepository,
+    FxRateRepository,
+)
 from app.finance.schemas import FxRateUpsert
 from app.finance.service import FxRateService
 from app.health.repository import MedicationRepository
@@ -38,6 +43,7 @@ from app.health.service import HealthService
 from app.imports.models import ImportBatch, ImportPreviewRow
 from app.imports.repository import ImportRepository
 from app.investing.performance_service import PerformanceService
+from app.notifications.models import Notification
 from app.notifications.push import send_web_push
 from app.notifications.repository import NotificationRepository, PushSubscriptionRepository
 from app.notifications.service import NotificationService
@@ -50,10 +56,17 @@ from app.spending.models import (
     SpendingTransaction,
     TransactionType,
 )
+from app.spending.repository import (
+    CategoryGroupRepository,
+    CategoryRepository,
+    KpiRepository,
+)
+from app.spending.repository import TransactionRepository as SpendingTransactionRepository
 from app.spending.schemas import BudgetSpotlightItem
 from app.spending.service import (
     BudgetService,
     CategoryService,
+    KpiService,
     RecurringTransactionService,
     TransactionService,
 )
@@ -817,6 +830,88 @@ async def evaluate_workspace_budget_guardrails(session: AsyncSession, workspace:
                     workspace_id=workspace.id,
                     category=category.name,
                 )
+
+
+async def evaluate_workspace_kpi_breaches(session: AsyncSession, workspace: Workspace) -> None:
+    """Evaluate every active custom financial KPI for a workspace and notify
+    on target breaches (spec-077).
+
+    Unlike budget guardrails (which drive a system Todo, resolved generically
+    by ``todo_reminder_job``), spec-077 names ``Notification(category="kpi")``
+    directly — mirrors ``app.application.insights``'s detector shape:
+    dedup via an existence check on ``Notification.entity_public_id`` scoped
+    to the KPI's current window, rather than a stored breach-state row, since
+    KPI values are always recomputed and never persisted (spec-077: "no new
+    stored aggregates")."""
+    if workspace.id is None:
+        return
+
+    members_res = await session.execute(
+        select(WorkspaceMembership.user_id)
+        .where(WorkspaceMembership.workspace_id == workspace.id)
+        .order_by(
+            (WorkspaceMembership.role == "owner").desc(), WorkspaceMembership.created_at.asc()
+        )
+        .limit(1)
+    )
+    user_id = members_res.scalar()
+    if not user_id:
+        logger.warning("kpi_guardrails_no_members", workspace_id=workspace.id)
+        return
+
+    kpi_service = KpiService(
+        KpiRepository(session),
+        CategoryRepository(session),
+        CategoryGroupRepository(session),
+        AccountRepository(session),
+        SpendingTransactionRepository(session),
+    )
+    notification_service = NotificationService(NotificationRepository(session))
+
+    for kpi, current_value, is_breached in await kpi_service.evaluate_active_kpis(workspace.id):
+        if not is_breached:
+            continue
+
+        _, _, window_start, _ = kpi_service._window_bounds(  # noqa: SLF001 — same-module evaluator
+            kpi.evaluation_window, datetime.now(UTC).date()
+        )
+        window_start_dt = datetime.combine(window_start, datetime.min.time(), tzinfo=UTC)
+
+        already_notified = await session.execute(
+            select(Notification.id).where(
+                Notification.workspace_id == workspace.id,
+                Notification.user_id == user_id,
+                Notification.category == "kpi",
+                Notification.entity_type == "financial_kpi",
+                Notification.entity_public_id == kpi.public_id,
+                Notification.created_at >= window_start_dt,
+            )
+        )
+        if already_notified.scalar() is not None:
+            continue
+
+        direction_text = "at most" if kpi.target_direction == "lte" else "at least"
+        await notification_service.notify(
+            workspace_id=workspace.id,
+            user_id=user_id,
+            category="kpi",
+            severity="warning",
+            title=f"KPI breached: {kpi.name}",
+            body=(
+                f"{kpi.name} is {current_value:.2f} {kpi.currency_code} this "
+                f"{kpi.evaluation_window.replace('_', ' ')}, target is {direction_text} "
+                f"{kpi.target_value:.2f} {kpi.currency_code}."
+            ),
+            module="spending",
+            entity_type="financial_kpi",
+            entity_public_id=kpi.public_id,
+        )
+        logger.info(
+            "kpi_breach_notified",
+            workspace_id=workspace.id,
+            kpi_id=str(kpi.public_id),
+            current_value=str(current_value),
+        )
 
 
 # ---------------------------------------------------------------------------

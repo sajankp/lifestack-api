@@ -76,6 +76,7 @@ from app.spending.repository import (
     BudgetRepository,
     CategoryGroupRepository,
     CategoryRepository,
+    KpiRepository,
     RecurringTransactionRepository,
     TransactionRepository,
 )
@@ -83,6 +84,7 @@ from app.spending.service import (
     BudgetService,
     CategoryGroupService,
     CategoryService,
+    KpiService,
     RecurringTransactionService,
     TransactionService,
 )
@@ -229,6 +231,12 @@ async def get_recurring_repo(
     return RecurringTransactionRepository(session)
 
 
+async def get_kpi_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> KpiRepository:
+    return KpiRepository(session)
+
+
 async def get_spending_category_service(
     repo: CategoryRepository = Depends(get_category_repo),
     budget_repo: BudgetRepository = Depends(get_budget_repo),
@@ -262,6 +270,17 @@ async def get_spending_budget_service(
     group_repo: CategoryGroupRepository = Depends(get_category_group_repo),
 ) -> BudgetService:
     return BudgetService(budget_repo, cat_repo, group_repo)
+
+
+async def get_spending_kpi_service(
+    kpi_repo: KpiRepository = Depends(get_kpi_repo),
+    cat_repo: CategoryRepository = Depends(get_category_repo),
+    group_repo: CategoryGroupRepository = Depends(get_category_group_repo),
+    tx_repo: TransactionRepository = Depends(get_transaction_repo),
+    session: AsyncSession = Depends(get_db_session),
+) -> KpiService:
+    account_repo = AccountRepository(session)
+    return KpiService(kpi_repo, cat_repo, group_repo, account_repo, tx_repo)
 
 
 async def get_spending_recurring_service(

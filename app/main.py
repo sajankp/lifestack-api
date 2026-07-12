@@ -18,6 +18,7 @@ from app.application.jobs import (
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
     investment_closing_prices_job,
+    kpi_guardrails_job,
     medication_reminder_job,
     morning_briefing_job,
     net_worth_snapshot_job,
@@ -103,6 +104,12 @@ async def lifespan(_app: FastAPI):
         register_interval_job(
             budget_guardrails_job,
             job_id="budget_guardrails",
+            hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
+            idempotent=True,
+        )
+        register_interval_job(
+            kpi_guardrails_job,
+            job_id="kpi_guardrails",
             hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
             idempotent=True,
         )

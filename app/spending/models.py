@@ -36,6 +36,27 @@ class TransactionSourceType(StrEnum):
     order = "order"
 
 
+class KpiMetricType(StrEnum):
+    """v1 metric types only — exactly these three (spec-077). Extending this
+    enum (e.g. savings_rate, category_ratio) is a follow-up spec, not a
+    silent addition here."""
+
+    spend_total = "spend_total"
+    income_total = "income_total"
+    net_cash_flow = "net_cash_flow"
+
+
+class KpiWindow(StrEnum):
+    calendar_month = "calendar_month"
+    calendar_week = "calendar_week"
+    rolling_30d = "rolling_30d"
+
+
+class KpiTargetDirection(StrEnum):
+    lte = "lte"
+    gte = "gte"
+
+
 class CategoryGroup(SQLModel, table=True):
     __tablename__ = "category_groups"
 
@@ -242,5 +263,77 @@ class RecurringTransaction(SQLModel, table=True):
         sa.CheckConstraint(
             "by_ordinal IS NULL OR by_ordinal IN (-1, 1, 2, 3, 4)",
             name="ck_recurring_transactions_by_ordinal_range",
+        ),
+    )
+
+
+class FinancialKpi(SQLModel, table=True):
+    """Custom financial KPI definition (spec-077).
+
+    Single-currency-per-KPI is NOT a DB constraint: the filter's resolved
+    account set can change after creation (e.g. an account's currency edited
+    elsewhere), so the constraint is re-checked by the service at evaluation
+    time, not just enforced here at write time.
+    """
+
+    __tablename__ = "financial_kpis"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+
+    name: str = Field(max_length=100)
+    metric_type: KpiMetricType = Field(sa_type=sa.String(length=32))
+    evaluation_window: KpiWindow = Field(sa_type=sa.String(length=20))
+
+    category_id: int | None = Field(default=None, index=True)
+    category_group_id: int | None = Field(default=None, index=True)
+    account_id: int | None = Field(default=None, index=True)
+
+    currency_code: str = Field(foreign_key="currencies.code", max_length=10)
+
+    target_value: Decimal | None = Field(default=None, sa_type=sa.Numeric(precision=14, scale=2))
+    target_direction: KpiTargetDirection | None = Field(default=None, sa_type=sa.String(length=4))
+    display_format: str = Field(default="amount", max_length=20)
+    is_active: bool = Field(default=True)
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            "metric_type IN ('spend_total', 'income_total', 'net_cash_flow')",
+            name="ck_financial_kpis_metric_type",
+        ),
+        sa.CheckConstraint(
+            "evaluation_window IN ('calendar_month', 'calendar_week', 'rolling_30d')",
+            name="ck_financial_kpis_window",
+        ),
+        sa.CheckConstraint(
+            "target_direction IS NULL OR target_direction IN ('lte', 'gte')",
+            name="ck_financial_kpis_target_direction",
+        ),
+        sa.CheckConstraint(
+            "(target_value IS NULL) = (target_direction IS NULL)",
+            name="ck_financial_kpis_target_pair",
+        ),
+        sa.ForeignKeyConstraint(
+            ["category_id", "workspace_id"],
+            ["spending_categories.id", "spending_categories.workspace_id"],
+            name="fk_financial_kpis_category_workspace",
+        ),
+        sa.ForeignKeyConstraint(
+            ["category_group_id", "workspace_id"],
+            ["category_groups.id", "category_groups.workspace_id"],
+            name="fk_financial_kpis_group_workspace",
+        ),
+        sa.ForeignKeyConstraint(
+            ["account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_financial_kpis_account_workspace",
         ),
     )

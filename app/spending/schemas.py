@@ -7,7 +7,13 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validat
 
 from app.core.recurrence import MonthlyModeLiteral, OrdinalLiteral, validate_recurrence_fields
 from app.imports.models import ImportModule
-from app.spending.models import TransactionSourceType, TransactionType
+from app.spending.models import (
+    KpiMetricType,
+    KpiTargetDirection,
+    KpiWindow,
+    TransactionSourceType,
+    TransactionType,
+)
 
 # Ledger entry kinds: regular spending transaction, or a capital transfer in/out
 LedgerEntryKind = Literal["transaction", "transfer_out", "transfer_in"]
@@ -496,6 +502,73 @@ class LedgerEntry(BaseModel):
     source_type: str
     running_balance: Decimal  # cumulative balance AFTER this entry
     created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+class KpiCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    metric_type: KpiMetricType
+    evaluation_window: KpiWindow
+    category_id: uuid.UUID | None = None
+    category_group_id: uuid.UUID | None = None
+    account_id: uuid.UUID | None = None
+    target_value: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    target_direction: KpiTargetDirection | None = None
+    display_format: Literal["amount", "percent"] = "amount"
+
+    @model_validator(mode="after")
+    def validate_filter_and_target(self) -> "KpiCreate":
+        filters_set = sum(
+            f is not None for f in (self.category_id, self.category_group_id, self.account_id)
+        )
+        if filters_set > 1:
+            raise ValueError("At most one of category_id, category_group_id, account_id may be set")
+        if (self.target_value is None) != (self.target_direction is None):
+            raise ValueError("target_value and target_direction must be set together")
+        return self
+
+
+class KpiUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    category_id: uuid.UUID | None = None
+    category_group_id: uuid.UUID | None = None
+    account_id: uuid.UUID | None = None
+    target_value: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    target_direction: KpiTargetDirection | None = None
+    is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_filter_and_target(self) -> "KpiUpdate":
+        filters_set = sum(
+            f is not None for f in (self.category_id, self.category_group_id, self.account_id)
+        )
+        if filters_set > 1:
+            raise ValueError("At most one of category_id, category_group_id, account_id may be set")
+        if (self.target_value is None) != (self.target_direction is None):
+            raise ValueError("target_value and target_direction must be set together")
+        return self
+
+
+class KpiResponse(BaseModel):
+    public_id: uuid.UUID
+    name: str
+    metric_type: KpiMetricType
+    evaluation_window: KpiWindow
+    category_id: uuid.UUID | None = None
+    category_group_id: uuid.UUID | None = None
+    account_id: uuid.UUID | None = None
+    currency_code: str
+    target_value: Decimal | None = None
+    target_direction: KpiTargetDirection | None = None
+    display_format: str
+    is_active: bool
+    current_value: Decimal
+    is_breached: bool
+    window_start: date
+    window_end: date
+    created_at: datetime
+    updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 

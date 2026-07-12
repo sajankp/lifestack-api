@@ -29,6 +29,9 @@ from app.core.recurrence import advance_due_date, validate_recurrence_fields
 from app.finance.repository import AccountRepository, FinanceSettingRepository
 from app.spending.models import (
     CategoryGroup,
+    FinancialKpi,
+    KpiMetricType,
+    KpiWindow,
     RecurringTransaction,
     SpendingBudget,
     SpendingCategory,
@@ -41,6 +44,7 @@ from app.spending.repository import (
     BudgetRepository,
     CategoryGroupRepository,
     CategoryRepository,
+    KpiRepository,
     LedgerRow,
     RecurringTransactionRepository,
     TransactionRepository,
@@ -59,6 +63,9 @@ from app.spending.schemas import (
     CategoryGroupCreate,
     CategoryGroupUpdate,
     CategoryUpdate,
+    KpiCreate,
+    KpiResponse,
+    KpiUpdate,
     LedgerEntry,
     LedgerResponse,
     RecurringTransactionCreate,
@@ -2238,3 +2245,272 @@ class RecurringTransactionService:
             to_date=horizon,
             items=items,
         )
+
+
+class KpiService:
+    """Custom financial KPIs (spec-077).
+
+    Evaluation is read-only over ``spending_transactions`` via the existing
+    aggregation paths — no stored aggregates, KPI values are always
+    recomputed from the ledger. Single-currency-per-KPI is re-validated at
+    every evaluation, not just at create/update, because the resolved
+    account set can drift after the KPI is defined (spec-050 bug class)."""
+
+    def __init__(
+        self,
+        kpi_repo: KpiRepository,
+        category_repo: CategoryRepository,
+        group_repo: CategoryGroupRepository,
+        account_repo: AccountRepository,
+        transaction_repo: TransactionRepository,
+    ) -> None:
+        self.kpi_repo = kpi_repo
+        self.category_repo = category_repo
+        self.group_repo = group_repo
+        self.account_repo = account_repo
+        self.transaction_repo = transaction_repo
+
+    async def _resolve_currency(self, workspace_id: int, account_id: int | None) -> str:
+        """Determine the single currency a KPI's filter resolves to.
+
+        An ``account_id`` filter pins the currency to that one account. Any
+        other filter (category/group/none) can touch transactions across
+        every account in the workspace, so every active account must share
+        one currency — an unfiltered KPI in a mixed-currency workspace is
+        invalid in v1 (spec-077)."""
+        if account_id is not None:
+            account = await self.account_repo.get_by_id(workspace_id, account_id)
+            if not account:
+                raise NotFoundError(detail="Account not found in this workspace")
+            return account.default_currency_code
+
+        accounts, _ = await self.account_repo.list_workspace_accounts(
+            workspace_id, limit=1000, offset=0
+        )
+        currencies = {a.default_currency_code for a in accounts if a.is_active}
+        if not currencies:
+            raise ValidationError(detail="Workspace has no active accounts to evaluate a KPI over")
+        if len(currencies) > 1:
+            raise ValidationError(
+                detail=(
+                    "This KPI's filter spans accounts in multiple currencies "
+                    f"({sorted(currencies)}). Filter by a single account, or keep all "
+                    "workspace accounts on one currency, until cross-currency KPIs land."
+                )
+            )
+        return currencies.pop()
+
+    async def _resolve_filter_ids(
+        self,
+        workspace_id: int,
+        category_public_id: uuid.UUID | None,
+        category_group_public_id: uuid.UUID | None,
+        account_public_id: uuid.UUID | None,
+    ) -> tuple[int | None, int | None, int | None]:
+        category_id = None
+        category_group_id = None
+        account_id = None
+        if category_public_id is not None:
+            category = await self.category_repo.get_by_public_id(workspace_id, category_public_id)
+            if not category:
+                raise NotFoundError(detail="Category not found in this workspace")
+            category_id = category.id
+        if category_group_public_id is not None:
+            group = await self.group_repo.get_by_public_id(workspace_id, category_group_public_id)
+            if not group:
+                raise NotFoundError(detail="Category group not found in this workspace")
+            category_group_id = group.id
+        if account_public_id is not None:
+            account = await self.account_repo.get_by_public_id(workspace_id, account_public_id)
+            if not account:
+                raise NotFoundError(detail="Account not found in this workspace")
+            account_id = account.id
+        return category_id, category_group_id, account_id
+
+    @staticmethod
+    def _window_bounds(
+        evaluation_window: KpiWindow, today: date
+    ) -> tuple[datetime, datetime, date, date]:
+        """Return (from_dt, to_dt, window_start, window_end) for ``today``.
+
+        ``to_dt`` is exclusive; ``window_end`` is the last calendar day
+        included, for display."""
+        if evaluation_window == KpiWindow.calendar_month:
+            start = today.replace(day=1)
+            next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+            from_dt = datetime(start.year, start.month, 1, tzinfo=UTC)
+            to_dt = datetime(next_month.year, next_month.month, 1, tzinfo=UTC)
+            return from_dt, to_dt, start, next_month - timedelta(days=1)
+        if evaluation_window == KpiWindow.calendar_week:
+            start = today - timedelta(days=today.weekday())
+            end = start + timedelta(days=6)
+            from_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
+            to_dt = from_dt + timedelta(days=7)
+            return from_dt, to_dt, start, end
+        # rolling_30d: 30 days inclusive of today
+        start = today - timedelta(days=29)
+        from_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
+        to_dt = datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(days=1)
+        return from_dt, to_dt, start, today
+
+    async def _evaluate_value(
+        self,
+        workspace_id: int,
+        kpi: FinancialKpi,
+        from_dt: datetime,
+        to_dt: datetime,
+    ) -> Decimal:
+        to_dt_inclusive = to_dt - timedelta(microseconds=1)
+        common = {
+            "category_id": kpi.category_id,
+            "account_id": kpi.account_id,
+            "category_group_id": kpi.category_group_id,
+        }
+        if kpi.metric_type == KpiMetricType.spend_total:
+            return await self.transaction_repo.get_sum_by_type(
+                workspace_id, TransactionType.expense, from_dt, to_dt_inclusive, **common
+            )
+        if kpi.metric_type == KpiMetricType.income_total:
+            return await self.transaction_repo.get_sum_by_type(
+                workspace_id, TransactionType.income, from_dt, to_dt_inclusive, **common
+            )
+        income = await self.transaction_repo.get_sum_by_type(
+            workspace_id, TransactionType.income, from_dt, to_dt_inclusive, **common
+        )
+        expense = await self.transaction_repo.get_sum_by_type(
+            workspace_id, TransactionType.expense, from_dt, to_dt_inclusive, **common
+        )
+        return income - expense
+
+    @staticmethod
+    def _is_breached(kpi: FinancialKpi, current_value: Decimal) -> bool:
+        if kpi.target_value is None or kpi.target_direction is None:
+            return False
+        if kpi.target_direction == "lte":
+            return current_value > kpi.target_value
+        return current_value < kpi.target_value
+
+    async def _to_response(self, workspace_id: int, kpi: FinancialKpi) -> KpiResponse:
+        category_uuid = group_uuid = account_uuid = None
+        if kpi.category_id:
+            category = await self.category_repo.get_by_id(workspace_id, kpi.category_id)
+            category_uuid = category.public_id if category else None
+        if kpi.category_group_id:
+            group = await self.group_repo.get_by_id(workspace_id, kpi.category_group_id)
+            group_uuid = group.public_id if group else None
+        if kpi.account_id:
+            account = await self.account_repo.get_by_id(workspace_id, kpi.account_id)
+            account_uuid = account.public_id if account else None
+
+        today = datetime.now(UTC).date()
+        from_dt, to_dt, window_start, window_end = self._window_bounds(kpi.evaluation_window, today)
+        current_value = await self._evaluate_value(workspace_id, kpi, from_dt, to_dt)
+
+        return KpiResponse(
+            public_id=kpi.public_id,
+            name=kpi.name,
+            metric_type=kpi.metric_type,
+            evaluation_window=kpi.evaluation_window,
+            category_id=category_uuid,
+            category_group_id=group_uuid,
+            account_id=account_uuid,
+            currency_code=kpi.currency_code,
+            target_value=kpi.target_value,
+            target_direction=kpi.target_direction,
+            display_format=kpi.display_format,
+            is_active=kpi.is_active,
+            current_value=current_value,
+            is_breached=self._is_breached(kpi, current_value),
+            window_start=window_start,
+            window_end=window_end,
+            created_at=kpi.created_at,
+            updated_at=kpi.updated_at,
+        )
+
+    async def list_kpis(
+        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+    ) -> tuple[list[KpiResponse], int]:
+        kpis, total = await self.kpi_repo.get_all(workspace_id, limit=limit, offset=offset)
+        return [await self._to_response(workspace_id, k) for k in kpis], total
+
+    async def create_kpi(self, workspace_id: int, kpi_in: KpiCreate) -> KpiResponse:
+        category_id, category_group_id, account_id = await self._resolve_filter_ids(
+            workspace_id, kpi_in.category_id, kpi_in.category_group_id, kpi_in.account_id
+        )
+        currency_code = await self._resolve_currency(workspace_id, account_id)
+
+        kpi = FinancialKpi(
+            workspace_id=workspace_id,
+            name=kpi_in.name,
+            metric_type=kpi_in.metric_type,
+            evaluation_window=kpi_in.evaluation_window,
+            category_id=category_id,
+            category_group_id=category_group_id,
+            account_id=account_id,
+            currency_code=currency_code,
+            target_value=kpi_in.target_value,
+            target_direction=kpi_in.target_direction,
+            display_format=kpi_in.display_format,
+        )
+        kpi = await self.kpi_repo.create(kpi)
+        return await self._to_response(workspace_id, kpi)
+
+    async def _resolve_kpi(self, workspace_id: int, kpi_id: uuid.UUID) -> FinancialKpi:
+        kpi = await self.kpi_repo.get_by_public_id(workspace_id, kpi_id)
+        if not kpi:
+            raise NotFoundError(detail=f"KPI with id {kpi_id} not found in this workspace")
+        return kpi
+
+    async def update_kpi(
+        self, workspace_id: int, kpi_id: uuid.UUID, kpi_in: KpiUpdate
+    ) -> KpiResponse:
+        kpi = await self._resolve_kpi(workspace_id, kpi_id)
+
+        filter_touched = (
+            kpi_in.category_id is not None
+            or kpi_in.category_group_id is not None
+            or kpi_in.account_id is not None
+        )
+        if filter_touched:
+            category_id, category_group_id, account_id = await self._resolve_filter_ids(
+                workspace_id, kpi_in.category_id, kpi_in.category_group_id, kpi_in.account_id
+            )
+            kpi.category_id = category_id
+            kpi.category_group_id = category_group_id
+            kpi.account_id = account_id
+            kpi.currency_code = await self._resolve_currency(workspace_id, account_id)
+
+        if kpi_in.name is not None:
+            kpi.name = kpi_in.name
+        if kpi_in.target_value is not None or kpi_in.target_direction is not None:
+            kpi.target_value = kpi_in.target_value
+            kpi.target_direction = kpi_in.target_direction
+        if kpi_in.is_active is not None:
+            kpi.is_active = kpi_in.is_active
+        kpi.updated_at = datetime.now(UTC)
+
+        kpi = await self.kpi_repo.save(kpi)
+        return await self._to_response(workspace_id, kpi)
+
+    async def delete_kpi(self, workspace_id: int, kpi_id: uuid.UUID) -> None:
+        kpi = await self._resolve_kpi(workspace_id, kpi_id)
+        await self.kpi_repo.delete(kpi)
+
+    async def evaluate_active_kpis(
+        self, workspace_id: int
+    ) -> list[tuple[FinancialKpi, Decimal, bool]]:
+        """Evaluate every active KPI, re-checking the single-currency
+        constraint. A KPI that now fails the constraint is skipped rather
+        than raising — used by the guardrails job, which must keep
+        evaluating the rest of the workspace's KPIs."""
+        results: list[tuple[FinancialKpi, Decimal, bool]] = []
+        for kpi in await self.kpi_repo.get_active(workspace_id):
+            try:
+                await self._resolve_currency(workspace_id, kpi.account_id)
+            except (ValidationError, NotFoundError):
+                continue
+            today = datetime.now(UTC).date()
+            from_dt, to_dt, _, _ = self._window_bounds(kpi.evaluation_window, today)
+            current_value = await self._evaluate_value(workspace_id, kpi, from_dt, to_dt)
+            results.append((kpi, current_value, self._is_breached(kpi, current_value)))
+        return results
