@@ -36,6 +36,12 @@ record, read-only).
 
 1. **Statement import module** in the spec-074 shared imports framework (template → validate →
    preview → commit): generic CSV mapping (date, description, debit/credit, balance) in v1.
+   **Date parsing is user-specified, not guessed** (owner decision 2026-07-12): the mapping step
+   includes a date-format identifier (picked from a small set of common formats, e.g.
+   `dd/MM/yyyy`, `dd-MM-yyyy`, `yyyy-MM-dd`, `dd MMM yyyy`) applied uniformly to the whole file;
+   rows that don't parse under the chosen format surface as per-row validation errors in the
+   preview for the user to fix. No bank-specific fixtures required for v1 — the user adapts their
+   CSV, the format identifier does the rest.
 2. **Match engine (deterministic, suggest-only):** exact amount + date-window (default ±3 days)
    proposes matches; user confirms/rejects in a review UI; confirmed matches persist as links.
    One statement line ↔ one ledger event. Transfers match on either leg by querying
@@ -69,13 +75,11 @@ record, read-only).
 - Wallet-account snapshots or any change to net-worth composition.
 - ML/fuzzy description matching (deterministic rules only; see cash-model proof discipline).
 
-## Open questions (owner input needed)
+## Resolved questions (owner, 2026-07-12)
 
-1. Match window default ±3 days — right for your banks' value-dating? Configurable per account?
-2. Should confirmed matches lock the transaction against edits that would break the match
-   (recommend: no lock, but breaking edit clears the match link + flags the period unreconciled)?
-3. Is the "reconciled through" marker purely informational, or should the UI warn when editing
-   transactions before that date? (Recommend informational v1.)
-4. Which of YOUR accounts' statement CSVs should be the golden fixtures? Two real formats are
-   needed before implementation to keep the column mapping honest (redact and commit as fixtures,
-   per the spec-044/046 broker-data precedent).
+1. Match window: **±3 days default** confirmed.
+2. No lock: **a breaking edit clears the match link and flags the period unreconciled**.
+3. "Reconciled through" marker: **informational only**.
+4. Statement format: **keep it simple, generic CSV with a user-selected date-format identifier**
+   applied across the document (see Solution 1); the user fixes their file to match, no
+   bank-specific fixtures needed for v1.

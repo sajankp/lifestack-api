@@ -54,13 +54,12 @@ calling — that phrase in the roadmap is explicitly narrowed here).
 - Removing the "experimental" label — that happens only when Stage A accuracy is published and
   reproduced (positioning rule), as its own docs change.
 
-## Open questions (owner input needed)
+## Resolved questions (owner, 2026-07-12)
 
-1. Stage A eval set: how many utterances is convincing to you — 50? 100? And who writes them
-   (propose: 60% from your real usage transcripts, 40% adversarial)?
-2. Is Stage C (multi-item) actually wanted for your usage, or is single-intent fine and Stage B
-   the real value? (This changes whether C is specced at all.)
-3. Accuracy bar to drop "experimental": propose ≥90% exact tool+args match on the eval set,
-   measured twice a week apart. Agree/adjust?
-4. Any appetite for Stage B partial-transcript UX (live captions during capture), or
-   out of scope?
+1. Eval set: **50 utterances** (60% from real usage transcripts, 40% adversarial).
+2. Stage C multi-item capture: **confirmed wanted** — stays in scope.
+3. Experimental-label bar: **≥90% exact tool+args match, measured twice a week apart** —
+   confirmed.
+4. Live captions: **only if free from the existing session stream** — in scope solely if the
+   current Gemini Live session already emits transcription at no additional API call/token cost;
+   any implementation that adds API spend is out of scope.

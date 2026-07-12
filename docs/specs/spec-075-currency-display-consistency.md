@@ -27,10 +27,12 @@ Sequence #2 of the 2026-07-12 owner-decided backlog. Two distinct gaps hide unde
    decimal-place preferences; `formatCurrency`/`formatNumber` read the profile instead of
    `undefined`; ESLint-guard (or review checklist) against raw `toLocaleString`/`Intl.*` outside
    the utils. Audit every page for stragglers.
-2. **As-of conversion + provenance** — for each API response that returns converted historical
-   values, convert using the rate effective on the row's date and include rate provenance
-   (`fx_rate`, `fx_rate_date`, `fx_source`) so the UI can disclose it (tooltip). Live "current
-   value" views keep using the latest rate — the split must be explicit per endpoint.
+2. **As-of conversion + provenance, one rate per day** — every calendar day has exactly ONE rate:
+   the previous day's closing rate (owner decision 2026-07-12 — no intraday/live refresh, which
+   also avoids provider rate limits). Historical rows convert at their own date's rate; "today's"
+   views convert at today's rate (= yesterday's close). This collapses the historical-vs-live
+   split into one rule. Every converted value carries provenance (`fx_rate`, `fx_rate_date`,
+   `fx_source`) so the UI can disclose it (tooltip).
 3. **Golden pin** — extend a golden scenario with an FX-rate-change day so conversion semantics
    are pinned by test, not convention.
 
@@ -48,14 +50,13 @@ Sequence #2 of the 2026-07-12 owner-decided backlog. Two distinct gaps hide unde
 - Any change to *stored* amounts — this is a display/read-path spec only; ledger and snapshot rows
   are untouched (non-retroactivity discipline).
 
-## Open questions (owner input needed)
+## Resolved questions (owner, 2026-07-12)
 
-1. Locale source: explicit setting (recommended — deterministic, testable) vs browser-derived
-   default with override?
-2. Indian grouping (lakh/crore) app-wide when locale is `en-IN`: numerals only, or also unit words
-   ("₹1.2L") in compact contexts (dashboard cards)?
-3. Which views are "historical" (as-of rate) vs "live" (latest rate)? Proposed: net-worth history,
-   transaction/order/dividend lists → as-of; current holdings value, today's net worth → latest.
-   Confirm the classification before implementation.
-4. Per-row as-of conversion cost on large lists — precompute at write, join at read, or convert at
-   read with a rate cache? (Recommend read-time with an in-request rate map; measure first.)
+1. Locale: **explicit setting** (deterministic, testable).
+2. Indian grouping: **gated on the locale setting** — active only when the explicit setting is
+   Indian locale; then Indian digit grouping applies app-wide.
+3. Rate model: **one rate per day = previous day's closing rate, for everything** — no live
+   refresh, no historical/live split (see Solution 2).
+4. Conversion cost: acceptance criterion — **at most ONE additional DB read per request**: batch
+   all (currency-pair, date) needs for the response into a single query, convert from the
+   in-memory map. Per-row rate queries are a rejected implementation.

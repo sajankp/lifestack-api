@@ -18,8 +18,9 @@ roadmap).
 A `financial_kpis` definition table + deterministic evaluation, **predefined metric types only in
 v1** (no expression language — see Fenced-off below):
 
-- **Definition:** name, `metric_type` enum (v1: `spend_total`, `income_total`, `net_cash_flow`,
-  `savings_rate`, `category_ratio`), filter (categories/groups/accounts), window (`calendar_month`,
+- **Definition:** name, `metric_type` enum (v1 — owner-confirmed 2026-07-12: `spend_total`,
+  `income_total`, `net_cash_flow`; `savings_rate` and `category_ratio` are future enum
+  extensions, not v1), filter (categories/groups/accounts), window (`calendar_month`,
   `calendar_week`, `rolling_30d`), optional target (value + direction ≤/≥), display format.
   **Single-currency constraint (v1):** every account in a KPI's filter must share one
   `default_currency_code`; the KPI evaluates and displays in that currency. Enforced as a hard
@@ -58,13 +59,13 @@ v1** (no expression language — see Fenced-off below):
   state; a series can derive later from the same read path).
 - Sharing/templates.
 
-## Open questions (owner input needed)
+## Resolved questions (owner, 2026-07-12)
 
-1. Which 3–5 metric types would YOU use immediately? (The v1 enum should be your real list, not a
-   guess — name them and the enum ships exactly that.)
-2. `savings_rate` denominator: income in window (recommended) or a fixed configured income?
-3. Are KPI breach notifications wanted at all in v1, or dashboard-only first? (Guardrails already
-   notify on budgets — double-notifying on overlapping definitions could be noisy.)
-4. Currency: KPIs evaluate in the workspace reporting currency via as-of rates (spec-075
-   dependency) or per-account native currency only? (Recommend native-currency v1, cross-currency
-   after spec-075 lands.)
+1. v1 enum: **`spend_total`, `income_total`, `net_cash_flow`** — exactly these three.
+2. `savings_rate` denominator (recorded for the future enum extension): **income in window**.
+3. Surfaces: **both** — dashboard cards AND breach notifications in v1.
+4. Currency: **native-currency v1 with the single-currency constraint** (see Definition above).
+   Plainly: a KPI may only aggregate accounts that all share one currency — the KPI's number is
+   in that currency. It may NOT sum a USD account and an INR account (₹100 + $100 = 200 of
+   nothing — the spec-050 bug class). Cross-currency KPIs (converted to reporting currency via
+   spec-075's daily rates) are a follow-up once 075 lands.

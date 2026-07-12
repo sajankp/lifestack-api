@@ -20,7 +20,8 @@ Sequence #3. Three limitations of the implemented weekly summary:
 
 ## Solution
 
-1. **Per-workspace cadence setting** (`weekly` default; day-of-week + hour; optional `monthly`) —
+1. **Per-workspace cadence setting** (`weekly` only in v1; day-of-week + hour; `monthly` deferred
+   per resolved Q3) —
    job scaffolding stays a single cron tick that selects workspaces due (same advisory-lock,
    one-connection pattern as api#119; see PATTERNS.md Scheduled Jobs before touching).
 2. **Regeneration** — `POST /v1/summaries/{public_id}/regenerate` recomputes the same period from
@@ -47,13 +48,11 @@ Sequence #3. Three limitations of the implemented weekly summary:
 - LLM-generated narrative text (deterministic composition stays the rule).
 - Backfilling summaries for weeks before the feature existed.
 
-## Open questions (owner input needed)
+## Resolved questions (owner, 2026-07-12)
 
-1. Retention: keep every superseded version forever (recommended — cheap, auditable) or cap at N?
-2. Should the Monday briefing pick up a regenerated summary, or only ever the original for its
-   week? (Recommend: briefing always reads latest-non-superseded at compose time; already-sent
-   briefings are never retroactively edited.)
-3. Monthly cadence in v1 or defer? (Recommend defer unless you'd use it now — day/hour
-   configurability alone covers the stated need.)
-4. Regenerate trigger: manual-only (recommended v1) vs auto-regenerate when an import touches a
-   summarized period (auto risks churn on every historical import).
+1. Retention: **keep every superseded version** (no cap).
+2. Briefing reads **latest-non-superseded at compose time**; already-sent briefings are never
+   retroactively edited.
+3. Monthly cadence: **deferred** — v1 ships day/hour configurability only (drop `monthly` from
+   the v1 cadence options in Solution 1).
+4. Regeneration: **manual-only** in v1.
