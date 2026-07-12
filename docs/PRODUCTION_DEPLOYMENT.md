@@ -17,6 +17,7 @@ Create a `.env.production` file on the deployment VM with the following keys:
 ### Core Settings
 * `ENV`: Set to `"production"`.
 * `SECRET_KEY`: A cryptographically secure random string (minimum 32 characters, e.g., generated with `openssl rand -hex 32`). **Using default values will prevent the application from starting.**
+* `METRICS_TOKEN`: A non-default secret bearer token for the metrics endpoint (e.g., generated with `openssl rand -hex 32`). **Using the `dev-`-prefixed default value will prevent the application from starting.**
 * `BACKEND_CORS_ORIGINS`: JSON array of allowed origins, e.g., `["https://app.lifestack.app"]`.
 * `CSRF_TRUSTED_ORIGINS`: JSON array of allowed origins for CSRF validation, e.g., `["https://app.lifestack.app"]`.
 * `COOKIE_SECURE`: Must be `True` (enforces HttpOnly, Secure session cookies).
@@ -64,15 +65,18 @@ Required backup environment variables:
 * `DB_BACKUP_ENCRYPTION_KEY`: Symmetric key to encrypt SQL dump files prior to egress.
 * `DB_BACKUP_S3_BUCKET`: E.g., `lifestack-db-backups`.
 * `DB_BACKUP_S3_ENDPOINT`: E.g., `https://<account_id>.r2.cloudflarestorage.com`.
-* `AWS_ACCESS_KEY_ID`: Cloudflare R2 / S3 access key.
-* `AWS_SECRET_ACCESS_KEY`: Cloudflare R2 / S3 secret key.
+* `DB_BACKUP_S3_ACCESS_KEY`: Cloudflare R2 / S3 access key.
+* `DB_BACKUP_S3_SECRET_KEY`: Cloudflare R2 / S3 secret key.
 
 ---
 
 ## 4. Launching the Stack
 
-Use the production Compose file to stand up the stack:
+`docker-compose.prod.yml` is an override file (it uses `!override`/`!reset` merge tags on the
+`migrate`/`api` services), so it cannot run standalone — it must be layered on top of the base
+`docker-compose.yml`, which also owns the `postgres`/`redis` services:
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+docker compose --profile local --env-file .env.production \
+  -f docker-compose.yml -f docker-compose.prod.yml up -d --build --force-recreate
 ```
