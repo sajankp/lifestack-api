@@ -286,3 +286,38 @@ async def test_kpi_rolling_30d_window_excludes_older_transactions(client: AsyncC
     )
     assert resp.status_code == 201, resp.text
     assert resp.json()["current_value"] == "25.00"
+
+
+@pytest.mark.asyncio
+async def test_kpi_update_can_explicitly_clear_target(client: AsyncClient):
+    """A client must be able to clear a previously-set target by sending it
+    as null — an `is not None` check on the update payload can't distinguish
+    "field omitted" from "field explicitly nulled" and would silently keep
+    the stale target (the bug this test guards against)."""
+    cookies = await _register_and_login(client, "kpicleartarget")
+    await _create_account(client, cookies, "Wallet")
+
+    create_resp = await client.post(
+        "/v1/spending/kpis",
+        json={
+            "name": "Has a target",
+            "metric_type": "spend_total",
+            "evaluation_window": "calendar_month",
+            "target_value": "100.00",
+            "target_direction": "lte",
+        },
+        cookies=cookies,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    kpi_id = create_resp.json()["public_id"]
+
+    update_resp = await client.patch(
+        f"/v1/spending/kpis/{kpi_id}",
+        json={"target_value": None, "target_direction": None},
+        cookies=cookies,
+    )
+    assert update_resp.status_code == 200, update_resp.text
+    body = update_resp.json()
+    assert body["target_value"] is None
+    assert body["target_direction"] is None
+    assert body["is_breached"] is False

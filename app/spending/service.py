@@ -2466,11 +2466,12 @@ class KpiService:
     ) -> KpiResponse:
         kpi = await self._resolve_kpi(workspace_id, kpi_id)
 
-        filter_touched = (
-            kpi_in.category_id is not None
-            or kpi_in.category_group_id is not None
-            or kpi_in.account_id is not None
-        )
+        # model_fields_set (not `is not None`) so a client can explicitly
+        # clear a filter or target by sending it as null — an `is not None`
+        # check can't distinguish "field omitted" from "field set to null"
+        # and would silently keep the old value in the latter case.
+        fields_set = kpi_in.model_fields_set
+        filter_touched = bool({"category_id", "category_group_id", "account_id"} & fields_set)
         if filter_touched:
             category_id, category_group_id, account_id = await self._resolve_filter_ids(
                 workspace_id, kpi_in.category_id, kpi_in.category_group_id, kpi_in.account_id
@@ -2480,12 +2481,12 @@ class KpiService:
             kpi.account_id = account_id
             kpi.currency_code = await self._resolve_currency(workspace_id, account_id)
 
-        if kpi_in.name is not None:
+        if "name" in fields_set and kpi_in.name is not None:
             kpi.name = kpi_in.name
-        if kpi_in.target_value is not None or kpi_in.target_direction is not None:
+        if {"target_value", "target_direction"} & fields_set:
             kpi.target_value = kpi_in.target_value
             kpi.target_direction = kpi_in.target_direction
-        if kpi_in.is_active is not None:
+        if "is_active" in fields_set and kpi_in.is_active is not None:
             kpi.is_active = kpi_in.is_active
         kpi.updated_at = datetime.now(UTC)
 

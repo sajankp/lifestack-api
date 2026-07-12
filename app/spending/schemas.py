@@ -513,7 +513,10 @@ class KpiCreate(BaseModel):
     category_id: uuid.UUID | None = None
     category_group_id: uuid.UUID | None = None
     account_id: uuid.UUID | None = None
-    target_value: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    # gte=0, not gt=0: a net_cash_flow target of exactly 0 ("don't spend more
+    # than you earn") is a valid v1 scenario (spend_total/income_total targets
+    # are naturally non-negative anyway).
+    target_value: Decimal | None = Field(default=None, ge=0, decimal_places=2)
     target_direction: KpiTargetDirection | None = None
     display_format: Literal["amount", "percent"] = "amount"
 
@@ -534,7 +537,10 @@ class KpiUpdate(BaseModel):
     category_id: uuid.UUID | None = None
     category_group_id: uuid.UUID | None = None
     account_id: uuid.UUID | None = None
-    target_value: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+    # gte=0, not gt=0: a net_cash_flow target of exactly 0 ("don't spend more
+    # than you earn") is a valid v1 scenario (spend_total/income_total targets
+    # are naturally non-negative anyway).
+    target_value: Decimal | None = Field(default=None, ge=0, decimal_places=2)
     target_direction: KpiTargetDirection | None = None
     is_active: bool | None = None
 
