@@ -1,7 +1,7 @@
 # Spec-077: Custom Financial KPIs
 
 **Created:** 2026-07-12
-**Status:** Approved (implementation) — open questions resolved by owner 2026-07-12
+**Status:** Implemented (api#156, web#114, merged 2026-07-12)
 **Depends on:** spec-064 (category-group budgets — the ceiling of what's configurable today), spec-058 (dashboard insights — notification precedent), budget guardrails job (evaluation-cadence precedent)
 **Scope:** multi-repo, user-facing — `lifestack-api` (KPI model/evaluation/endpoints) + `lifestack-web` (builder UI, dashboard cards).
 
