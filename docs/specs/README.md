@@ -118,11 +118,11 @@ Corporate actions, web push, CAS PDF ingestion (CAMS/NSDL/CDSL), NSE bhavcopy pr
 | [Spec 072: Historical Data Ingestion](./spec-072-historical-data-ingestion.md) | Implemented (api#150, web#110) | User-uploadable historical FX rates + net-worth backfill points (provenance-tagged); unblocks 071 aggregate and deep dashboards. |
 | [Spec 073: Dividend & Income Tracking](./spec-073-dividend-income-tracking.md) | Implemented (api#150, web#110) | First-class dividend/income events (no phantom transfer); reconciliation-complete; feeds 071 as income. |
 | Corporate Actions UI — web-repo spec: `lifestack-web/docs/specs/spec-008-corporate-actions-ui.md` | Implemented (web#110, web repo) | Web-only UI for spec-051's splits/bonus endpoints; no API changes, so the spec lives in the web repo's spec series. |
-| [Spec 075: Currency Display Consistency](./spec-075-currency-display-consistency.md) | Draft | Display profile (locale/grouping), as-of historical FX replay with rate provenance on converted values. |
-| [Spec 076: Weekly Summaries Enhancements](./spec-076-weekly-summaries-enhancements.md) | Draft | Per-workspace cadence, versioned regeneration (no re-notify), dividend/net-worth/return sections. |
-| [Spec 077: Custom Financial KPIs](./spec-077-custom-financial-kpis.md) | Draft | User-defined KPIs from predefined metric types; guardrails-cadence evaluation; expression language fenced off. |
-| [Spec 078: Wallet Ledger Reconciliation](./spec-078-wallet-ledger-reconciliation.md) | Draft | Bank-statement matching as metadata-only links (never mutates ledger rows); reconciliation view; transfer timeline. |
-| [Spec 079: Voice/Capture Production Hardening](./spec-079-voice-capture-production-hardening.md) | Draft | Measure-first eval gate, WS transport resilience (WebRTC deferred), multi-item capture; ADK still "no, not now". |
+| [Spec 075: Currency Display Consistency](./spec-075-currency-display-consistency.md) | Approved (implementation) | Display profile (locale/grouping), as-of historical FX replay with rate provenance on converted values. |
+| [Spec 076: Weekly Summaries Enhancements](./spec-076-weekly-summaries-enhancements.md) | Approved (implementation) | Per-workspace cadence, versioned regeneration (no re-notify), dividend/net-worth/return sections. |
+| [Spec 077: Custom Financial KPIs](./spec-077-custom-financial-kpis.md) | Approved (implementation) | User-defined KPIs from predefined metric types; guardrails-cadence evaluation; expression language fenced off. |
+| [Spec 078: Wallet Ledger Reconciliation](./spec-078-wallet-ledger-reconciliation.md) | Approved (implementation) | Bank-statement matching as metadata-only links (never mutates ledger rows); reconciliation view; transfer timeline. |
+| [Spec 079: Voice/Capture Production Hardening](./spec-079-voice-capture-production-hardening.md) | Approved (implementation) | Measure-first eval gate, WS transport resilience (WebRTC deferred), multi-item capture; ADK still "no, not now". |
 
 ## Roadmap Alignment
 

@@ -1,7 +1,7 @@
 # Spec-076: Weekly Summaries — Cadence, Regeneration, Expanded Insights
 
 **Created:** 2026-07-12
-**Status:** Draft
+**Status:** Approved (implementation) — open questions resolved by owner 2026-07-12
 **Depends on:** spec-013 (weekly summaries), spec-067 (morning briefing — consumes a "fresh" weekly summary Mondays), spec-058 (dashboard insights), spec-069 (health memory — `_health_summary` already exists in `WeeklySummaryService`)
 **Scope:** multi-repo, user-facing — `lifestack-api` (cadence config, regenerate endpoint, new sections) + `lifestack-web` (settings, regenerate affordance, new section rendering).
 

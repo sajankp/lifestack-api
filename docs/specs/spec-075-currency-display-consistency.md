@@ -1,7 +1,7 @@
 # Spec-075: Currency Display Consistency and Historical FX Replay
 
 **Created:** 2026-07-12
-**Status:** Draft
+**Status:** Approved (implementation) — open questions resolved by owner 2026-07-12
 **Depends on:** spec-047 (multi-currency net worth), spec-072 (historical FX ingestion — the rate store this spec replays from), spec-065 (net-worth history), finance display settings (e2e-covered)
 **Scope:** multi-repo, user-facing — `lifestack-web` (display profile, formatting audit) + `lifestack-api` (rate-provenance fields, as-of conversion). Two PRs, api first.
 

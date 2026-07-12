@@ -1,7 +1,7 @@
 # Spec-079: Voice/Capture Production Hardening
 
 **Created:** 2026-07-12
-**Status:** Draft
+**Status:** Approved (implementation) — open questions resolved by owner 2026-07-12
 **Depends on:** spec-021 (voice agent function calling, Phase 1), spec-039 (ADK evaluation — verdict "no, not now" stands), spec-059/061/066 (capture usability + consolidation)
 **Scope:** multi-repo, user-facing — `lifestack-api` (`app/capture/`) + `lifestack-web` (capture surface). Voice stays labeled **experimental** until the eval milestone below is met (positioning rule).
 
