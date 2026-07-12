@@ -99,6 +99,12 @@ class WorkspaceFinanceSetting(SQLModel, table=True):
         default=CurrencyDisplayPreference.symbol,
         sa_type=sa.String(length=24),
     )
+    # Explicit display locale (spec-075) -- deliberately NOT the browser's
+    # implicit locale, so grouping/decimals are deterministic and testable.
+    # Indian digit grouping (1,00,000) is gated on this being an Indian
+    # locale (e.g. "en-IN"); there is no separate grouping toggle.
+    locale: str = Field(default="en-US", sa_type=sa.String(length=16))
+    decimal_places: int = Field(default=2)
     lookthrough_min_weight_pct: Decimal = Field(default=Decimal("0.5"), sa_type=sa.Numeric(7, 4))
 
     # Fallback account for spending-transaction creates that don't specify one
@@ -135,6 +141,8 @@ class UserFinanceSetting(SQLModel, table=True):
         default=None,
         sa_type=sa.String(length=24),
     )
+    locale_override: str | None = Field(default=None, sa_type=sa.String(length=16))
+    decimal_places_override: int | None = Field(default=None)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

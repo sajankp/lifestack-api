@@ -519,6 +519,8 @@ class FinanceSettingRepository:
         currency_display_preference: CurrencyDisplayPreference | None,
         lookthrough_min_weight_pct: Decimal = Decimal("0.5"),
         default_spending_account_id: int | None = None,
+        locale: str = "en-US",
+        decimal_places: int = 2,
     ) -> WorkspaceFinanceSetting:
         existing = await self.get_by_workspace(workspace_id)
         now = datetime.now(UTC)
@@ -528,6 +530,8 @@ class FinanceSettingRepository:
                 existing.currency_display_preference = currency_display_preference
             existing.lookthrough_min_weight_pct = lookthrough_min_weight_pct
             existing.default_spending_account_id = default_spending_account_id
+            existing.locale = locale
+            existing.decimal_places = decimal_places
             existing.updated_at = now
             self.session.add(existing)
             await self.session.flush()
@@ -542,6 +546,8 @@ class FinanceSettingRepository:
             ),
             lookthrough_min_weight_pct=lookthrough_min_weight_pct,
             default_spending_account_id=default_spending_account_id,
+            locale=locale,
+            decimal_places=decimal_places,
         )
         self.session.add(row)
         await self.session.flush()
@@ -574,12 +580,16 @@ class FinanceSettingRepository:
         *,
         reporting_currency_override_code: str | None,
         currency_display_preference_override: CurrencyDisplayPreference | None,
+        locale_override: str | None = None,
+        decimal_places_override: int | None = None,
     ) -> UserFinanceSetting:
         existing = await self.get_user_setting(workspace_id, user_id)
         now = datetime.now(UTC)
         if existing:
             existing.reporting_currency_override_code = reporting_currency_override_code
             existing.currency_display_preference_override = currency_display_preference_override
+            existing.locale_override = locale_override
+            existing.decimal_places_override = decimal_places_override
             existing.updated_at = now
             self.session.add(existing)
             await self.session.flush()
@@ -591,6 +601,8 @@ class FinanceSettingRepository:
             user_id=user_id,
             reporting_currency_override_code=reporting_currency_override_code,
             currency_display_preference_override=currency_display_preference_override,
+            locale_override=locale_override,
+            decimal_places_override=decimal_places_override,
         )
         self.session.add(row)
         await self.session.flush()
