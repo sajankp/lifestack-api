@@ -1,13 +1,16 @@
 # Product Strategy and Roadmap
 
 Date: 2026-06-03
-Last updated: 2026-07-08
+Last updated: 2026-07-12
 
 Scope: current product positioning, implementation status, post-Gate 0 backlog, and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
 
 ## Changelog
 
-- **2026-07-08 — external product assessment folded in (owner-accepted).** An external product review (`PRODUCT-ASSESSMENT.md` + `UX-REVIEW.md`, dated 2026-07-08) proposed four rethinks; the owner accepted all four. Changes in this revision: Immediate Focus now includes demo-path UX hardening and capture consolidation at parity with CI gating, plus Morning Briefing as the next major product slice; Voice/capture promoted from Experimental to Secondary; Track 2 (Health Memory) re-sequenced ahead of Track 1 (Mobile Companion, now shrunk to camera upload + native health-app sync); finance correctness campaign (specs 040–065) declared V1-complete.
+- **2026-07-12 (same day, third pass) — sequence specced: 075–079 drafted, JWT item closed as already-done.** Sequence item 1 (JWT library migration) turned out to be roadmap drift: the `python-jose` → `pyjwt[crypto]` migration shipped back in commit `2c939ee` (audit §11.18) — verified against `pyproject.toml`/`uv.lock`/`app/core/auth.py` and marked done in §4, no spec needed. The five real items are now drafted awaiting owner approval: spec-075 (currency display + as-of FX replay), 076 (weekly-summary cadence/regeneration/sections), 077 (custom financial KPIs, enum-typed v1), 078 (wallet ledger reconciliation, metadata-only matching), 079 (voice/capture hardening, measure-first gates). Each spec carries explicit Out-of-scope and Open-questions sections for the approval pass.
+- **2026-07-12 (owner decision, later same day) — next sequence decided; specs pending.** Following the backlog catch-up below, the owner picked an explicit order for the six items in §4 "Immediate Focus": JWT library migration → currency display polish → weekly summaries enhancements → custom financial KPIs → wallet ledger reconciliation → voice/capture production hardening. Notifications (beyond push) is parked — its only remaining scope is email delivery, out of scope for now. None of these are specced yet; spec drafting (next number 075) is queued for another agent, not started in this pass.
+- **2026-07-12 — Immediate Focus backlog fully cleared; doc caught up to specs 066–074.** Every item in the 2026-07-08 "Immediate Focus" list is now done: e2e CI gating (lifestack-e2e, merged 2026-07-09), demo-path UX hardening P0/P1/P2 (web#90/#94/#95), capture consolidation (spec-066), and Morning Briefing (spec-067). Since then, specs 068–074 also shipped: todo subtasks/organization, **Health Memory V1** (Track 1's first slice — medications + weight, spec-069, ahead of its original long-term sequencing), export completeness/round-trip, dividend income tracking + historical FX/net-worth ingestion + investment return metrics, and consolidation of three bespoke bulk-paste flows into the shared imports framework. A companion full spec-vs-code audit (2026-07-12) also found and fixed 8 stale status headers across specs 033/048/070/073/074 (api) and 003/004/007 (web) — see those specs' own status lines; no roadmap-relevant surprises among them. **No item is currently queued as "next"** — see §4 for the candidate backlog and the owner-sequencing note.
+- **2026-07-08 — external product assessment folded in (owner-accepted).** An external product review (`PRODUCT-ASSESSMENT.md` + `UX-REVIEW.md`, dated 2026-07-08) proposed four rethinks; the owner accepted all four. Changes in this revision: Immediate Focus now includes demo-path UX hardening and capture consolidation at parity with CI gating, plus Morning Briefing as the next major product slice; Voice/capture promoted from Experimental to Secondary; Track 1 (Health Memory) re-sequenced ahead of Track 2 (Mobile Companion, now shrunk to camera upload + native health-app sync); finance correctness campaign (specs 040–065) declared V1-complete.
 
 ## 1) Product Thesis
 
@@ -73,6 +76,7 @@ This gives the current application a clear center of gravity while still leaving
 | Workspaces and RBAC | Trust boundary and demo credibility layer. | Supporting |
 | Master config | Admin/settings surface, not a main destination. | Supporting |
 | Voice/capture | Universal input layer; text-first with voice mode. | Secondary |
+| Health | Manual health tracking — medications (schedule, reminders, adherence) and weight (log, trend). V1 slice (spec-069); expands per Track 1 backlog in §6. | Secondary |
 
 ### Reviewer Demo Journey
 
@@ -104,21 +108,42 @@ This roadmap is the living home for product sequencing. Specs remain the source 
 | Deferred future data model | [`Spec 035`](../specs/spec-035-platform-market-data-curation.md) | Platform market-data curation is a deferred backlog item until the workspace-scoped investing flows, permission model, and provenance requirements are ready. |
 | Implemented 2026-06→07 wave | Specs 036–061 and [`063`](../specs/spec-063-cdsl-demat-cas-support.md) | Cash-correctness hardening (040–050), corporate actions/splits ([`051`](../specs/spec-051-corporate-actions-splits.md)), web push (052), CAS PDF imports ([`056`](../specs/spec-056-cams-cas-pdf-import.md) CAMS, [`060`](../specs/spec-060-demat-cas-holdings-verification.md) NSDL verification, 063 CDSL), NSE bhavcopy price feed ([`057`](../specs/spec-057-nse-bhavcopy-price-feed.md)), dashboard insights ([`058`](../specs/spec-058-dashboard-insights.md)), and voice usability (059, 061) are implemented and merged. |
 | Implemented 2026-07-08 wave | [`062`](../specs/spec-062-category-delete-and-merge.md), [`064`](../specs/spec-064-category-group-budgets.md), [`065`](../specs/spec-065-net-worth-over-time.md) | Category delete/merge and category-group recurring budgets (api#131, web#86), and net-worth-over-time daily snapshots + history graph (api#132, web#87) are implemented and merged. spec-065's snapshot job was fixed pre-merge to compute live via `InvestingSummaryService` instead of depending on the on-demand `portfolio_snapshots` table, and its APScheduler registration was added post-merge. |
+| Implemented 2026-07-08→11 wave | [`066`](../specs/spec-066-capture-consolidation.md), [`067`](../specs/spec-067-morning-briefing.md), [`068`](../specs/spec-068-todo-organization.md), [`069`](../specs/spec-069-health-memory-v1.md), [`070`](../specs/spec-070-export-completeness-and-roundtrip.md), [`071`](../specs/spec-071-investment-return-metrics.md), [`072`](../specs/spec-072-historical-data-ingestion.md), [`073`](../specs/spec-073-dividend-income-tracking.md), [`074`](../specs/spec-074-consolidate-bulk-paste-imports.md) | Capture consolidation (api#137/139, web#91); deterministic morning briefing (api#138/140, web#93); todo subtasks + Clear completed (api#144, web#102); **Health Memory V1** — medications + weight, Track 1's first slice (api#145, web#103); export completeness across finance/health/orders (api#148, web#107); investment return metrics + historical FX/net-worth ingestion + dividend income tracking (api#150, web#110); consolidation of the dividend/FX/net-worth bulk-paste flows into the shared imports framework (api#151, web#111). All implemented and merged; e2e suite gated in CI in the same window (lifestack-e2e, merged 2026-07-09) and demo-path UX hardening P0/P1/P2 landed (web#90, #94, #95). |
 ## 4) Near-Term Roadmap
 
 This is the Post-Gate 0 roadmap backlog, promoted near the top because it contains the next practical product slices. These items should deepen the current finance-led product before Lifestack expands into new life domains.
 
 ### Immediate Focus
 
+**2026-07-12 — this entire list is now cleared.** All seven items below are done. Replaced by an owner-decided sequence (below the list) — spec drafting for that sequence is pending, not yet assigned to an agent.
+
 1. ~~Merge api#130, then implement spec-065 net-worth-over-time~~ — done 2026-07-08 (api#132, web#87). Daily history now accumulates via the `net_worth_snapshot` scheduler job (07:00 UTC) plus an opportunistic upsert on every `GET /finance/net-worth` read.
 2. ~~Spending model wave: spec-062 category delete & merge, then spec-064 recurring date-ranged budgets + category groups~~ — done 2026-07-08 (api#131, web#86).
-3. Gate the e2e suite in CI — the suite exists and runs against the composed stack; the remaining work is CI wiring. Longest-standing open structural item, keeps losing to feature work.
-4. Demo-path UX hardening — the UX-REVIEW.md P0 (destructive-action safety, one feedback layer) and P1 (naming, dashboard launchpad, nav, notifications) batches, at parity with CI gating. The dashboard is currently the weakest screen despite being step 1 of the Reviewer Demo Journey (§2); this converts already-shipped backend depth (specs 058, 062, 064, 065) into something a reviewer can feel.
-5. Capture consolidation — promote capture into one model: text-first, voice as a mode, structured confirmation cards instead of raw JSON or tool-call narration, entry point in nav/header. Prerequisite for the briefing habit and for Track 1/2's mobile capture story.
-6. Morning Briefing — the next major product slice: a deterministic, source-linked composition of existing read models (dashboard insights spec-058, weekly summaries, budget guardrails, overdue todos, net-worth snapshots spec-065) with optional push delivery (spec-052). Zero LLM involvement in v1. This is the finance-and-tasks version of the Flagship Future Workflow (§1) — buildable now, and the dashboard's natural successor.
-7. Keep the standing deferrals: [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md) hybrid-catalog expansion after workspace-scoped investing flows settle, and platform-wide constituent/price-data curation until there is a clear admin persona, provenance model, and rollback workflow.
+3. ~~Gate the e2e suite in CI~~ — done 2026-07-09 (lifestack-e2e#20): smoke-tagged subset runs on every PR, full suite on push to main and nightly cron (03:00 UTC). Cross-repo dispatch from api/web merges remains an unwired, documented gap — the nightly cron is the backstop.
+4. ~~Demo-path UX hardening~~ — done: UX-REVIEW.md P0/P1 (web#90) and P2 (web#94, #95) batches all merged 2026-07-08/09.
+5. ~~Capture consolidation~~ — done 2026-07-08 (spec-066, api#137/139, web#91): one tool-response contract, structured confirmation cards, single entry point.
+6. ~~Morning Briefing~~ — done 2026-07-08 (spec-067, api#138/140, web#93): deterministic, source-linked composition of dashboard insights, weekly summaries, budget guardrails, overdue todos, and net-worth snapshots, zero LLM involvement in v1, dashboard card + push delivery.
+7. ~~Keep the standing deferrals on spec-033 and platform-wide market-data curation~~ — spec-033's deferral premise was already stale when this line was written: the hybrid instrument catalog had shipped 2026-06-24 (migration `0032_hybrid_instrument_catalog.py`), corrected 2026-07-12. [`Spec 035`](../specs/spec-035-platform-market-data-curation.md) platform-wide curation remains genuinely deferred — no admin persona/provenance/rollback model yet, still correctly out of scope.
+
+**Next sequence (owner-decided 2026-07-12; specs drafted same day, awaiting owner approval):**
+
+1. ~~**JWT library migration**~~ — **already done, no spec needed** (verified 2026-07-12): the
+   migration to `pyjwt[crypto]` shipped in commit `2c939ee` (audit item §11.18); `python-jose` is
+   absent from `pyproject.toml`/`uv.lock` and `app/core/auth.py` imports PyJWT. This item was
+   roadmap drift, not open work.
+2. **Currency display polish** — [spec-075](../specs/spec-075-currency-display-consistency.md) (Draft): display profile, as-of historical FX replay with rate provenance.
+3. **Weekly summaries enhancements** — [spec-076](../specs/spec-076-weekly-summaries-enhancements.md) (Draft): per-workspace cadence, versioned regeneration, dividend/net-worth/return sections.
+4. **Custom financial KPIs** — [spec-077](../specs/spec-077-custom-financial-kpis.md) (Draft): predefined metric types, guardrails-cadence evaluation; expression language fenced off.
+5. **Wallet ledger reconciliation** — [spec-078](../specs/spec-078-wallet-ledger-reconciliation.md) (Draft): statement matching as metadata-only (never mutates ledger rows), reconciliation view, transfer timeline. Cash-adjacent — non-retroactivity invariants stated in the spec.
+6. **Voice/capture production hardening** — [spec-079](../specs/spec-079-voice-capture-production-hardening.md) (Draft): measure-first eval gate, WS resilience (WebRTC explicitly deferred to its own spec), multi-item capture. ADK stays "no, not now" per spec-039.
+
+**Parked (2026-07-12):** Notifications beyond push — push delivery already ships (spec-052); the only meaningful remaining scope is email delivery, which is explicitly out of scope for now. Revisit only if a concrete need for an email channel surfaces; don't scope real-time transport/grouping/digest variants without one.
+
+**Separately unsequenced — §6 Long-Term Product Sequence:** Track 1 (Health Memory) shipped only its V1 slice — medications + weight (spec-069); sleep, workouts, vitals, labs, and symptoms are explicitly out of scope for v1 (spec-069 non-goals) and are the natural next slice within the same track before moving to Track 2 (Mobile Companion). Tracks 3–7 (Health Sync, Document Intelligence, Second Brain/RAG, Agent Access, Personal Coach) are unstarted. Not part of the sequence above.
 
 ### Core Product Depth
+
+**2026-07-12 — six of these are now the owner-decided next sequence** (JWT library maintenance, currency display, weekly summaries, custom financial KPIs, wallet ledger, voice/capture) **— see the numbered list above §4 "Immediate Focus" for order and spec-numbering status.** Notifications is parked, not sequenced.
 
 | Area | Roadmap Item | Why It Belongs Here |
 |---|---|---|
@@ -127,13 +152,13 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 | Wallet/account balance coupling (Implemented) | Derived spending balance for each account: `GET /finance/accounts/{id}/balance` computes income minus expenses from transaction history. Surfaced as a balance summary card on the Ledger tab. Deliberately independent from investing cash balances. | Implemented under feat/spending-analytics branch. |
 | Imports (Implemented) | Async/background import workers, `.xlsx` imports, smart column mapping, and large-file streaming. | Implemented under feat/spending-analytics branch. |
 | Daily-work surface polish (Implemented) | Overdue todo indicators, recurring status badges, and dashboard cues. | Implemented under feat/spending-analytics branch. |
-| Notifications | Email delivery, push delivery, real-time notification transport, grouping, and digest variants. | Delivery channels depend on mobile/email infrastructure and should be sequenced with notification strategy. |
-| Currency display | Remaining frontend-wide display polish, locale/date/number profiles, and historical FX replay for every view. | These are consistency and polish tracks after the implemented finance settings foundation. |
-| Voice/capture | WebRTC-grade production transport, broader capture domains, multi-item capture, AI-assisted routing, and ADK migration planning. | Capture is useful as an input layer; Google ADK evaluation and voice-first migration guide is documented in [spec-039-adk-evaluation-and-migration-guide.md](../specs/spec-039-adk-evaluation-and-migration-guide.md) for Phase 2. |
-| Weekly summaries | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
-| Custom financial KPIs | User-defined budget/spend KPIs beyond the implemented category and category-group budgets. | Parked for intentional design; not scoped by spec-064. |
-| Wallet ledger (reconciliation) | Statement matching, multi-account reconciliation view, and richer transfer timeline UX. | Deeper finance-product work building on the implemented ledger foundation. |
-| JWT library maintenance | Migrate from `python-jose` to `PyJWT` or `joserfc`. | python-jose is no longer actively maintained; planning migration mitigates dependency security risk. |
+| Notifications (Parked 2026-07-12) | Push delivery already ships (spec-052); the only meaningful remaining scope is email delivery, explicitly out of scope for now. | Deprioritized below the current sequence — don't scope real-time transport/grouping/digest variants without a concrete driver. |
+| Currency display (Sequence #2) | Remaining frontend-wide display polish, locale/date/number profiles, and historical FX replay for every view. | These are consistency and polish tracks after the implemented finance settings foundation. |
+| Voice/capture (Sequence #6) | WebRTC-grade production transport, broader capture domains, multi-item capture, AI-assisted routing, and ADK migration planning. | Capture is useful as an input layer; Google ADK evaluation and voice-first migration guide is documented in [spec-039-adk-evaluation-and-migration-guide.md](../specs/spec-039-adk-evaluation-and-migration-guide.md) for Phase 2. |
+| Weekly summaries (Sequence #3) | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | These are workflow-product improvements, not changes to the implemented weekly-summary contract. |
+| Custom financial KPIs (Sequence #4) | User-defined budget/spend KPIs beyond the implemented category and category-group budgets. | No longer parked as of 2026-07-12 — next in the owner-decided sequence; not scoped by spec-064. |
+| Wallet ledger reconciliation (Sequence #5) | Statement matching, multi-account reconciliation view, and richer transfer timeline UX. | Deeper finance-product work building on the implemented ledger foundation; cash/reconciliation-adjacent, read the cash-model domain doc first. |
+| JWT library maintenance (Done) | ~~Migrate from `python-jose` to `PyJWT` or `joserfc`.~~ Completed in commit `2c939ee` (audit §11.18) — `pyjwt[crypto]` in `pyproject.toml`, no `python-jose` anywhere. Marked done 2026-07-12 when the sequence was specced; the open item was roadmap drift. | — |
 
 ### Investing and Market Data
 
@@ -143,7 +168,7 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 |---|---|---|
 | Investing performance | Richer return math, deeper visualization, benchmark comparison, dividend/total-return views, and scheduled/background price-refresh cadence. | On-demand automated price refresh is implemented; deeper performance analytics and scheduled pricing should be scoped as explicit product slices. |
 | Investing summary valuation | Query latest price data from `HoldingPrice` table instead of using cost basis. | Resolves misleading investing overview totals when asset values fluctuate. |
-| Hybrid instrument catalog | [`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md): global public instruments/companies with workspace-scoped tenant overrides. | This reduces duplicate public securities and redundant provider calls, but should wait until the current workspace-scoped investing flows settle. |
+| Hybrid instrument catalog | **Implemented** ([`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md), migration `0032_hybrid_instrument_catalog.py`, 2026-06-24 — corrected 2026-07-12, doc previously mismarked deferred): global public instruments/companies with workspace-scoped tenant overrides. | Reduces duplicate public securities and redundant provider calls; global-first resolution is live in `app/investing/service.py`. |
 | Look-through analytics | UX alerts, quality scoring, company identity normalization, derivative look-through, and deeper constituent-provider coverage. | Look-through analytics and automated ETF/MF constituent ingestion are implemented; these are advanced accuracy, scale, and UX tracks after V1 correctness. |
 | Corporate actions (stock splits) | **Implemented ([`spec-051`](../specs/spec-051-corporate-actions-splits.md), api#102, merged 2026-07-04):** splits, reverse splits, and bonus issues are first-class replayed events, golden-tested. | Closes the un-applied-split risk (understated share counts, distorted FIFO cost basis, e.g. NVDA 10:1, GOOGL 20:1 in imported IND Money data); manual order edits are no longer the workaround. |
 | Brokerage in cost basis | **Deprioritized (owner decision, 2026-07-07): not a tracked roadmap item.** Historical fee backfill for imported orders and the related residual reconciliation drift on pre-spec-049/050 data are the owner's own historical-data quirk, not a systemic app defect — hand-correct via manual order edits if/when it matters, rather than building a backfill feature. | Fees are stored per order but excluded from cost basis, so invested is under-reported and unrealized gain over-reported by the fee total (~$44 across imported IND Money orders); imported GROWW orders carry $0 fees. Left as owner-editable rather than spec'd. |
@@ -220,6 +245,8 @@ Closed acceptance criteria:
 - READMEs separate current features from planned roadmap scope.
 
 ### Track 1: Health Memory
+
+**Status: V1 shipped 2026-07-09** ([`spec-069`](../specs/spec-069-health-memory-v1.md), api#145, web#103) — medications (recurrence-based dose schedules, push reminders, adherence log) and weight (quick log, trend chart, kg only) are live, with briefing/weekly-summary/export integration. **Explicitly out of scope for v1 (spec-069 non-goals), remaining open within this track:** sleep, workouts, vitals, labs, symptoms; any device/health-app sync or document extraction (Tracks 2–4); nested "course" medication schedules.
 
 Goal: support manual health tracking before depending on external sync. Web/PWA-first — no mobile dependency, since installable PWA (web spec-005) and web push (spec-052) already ship.
 
@@ -384,8 +411,7 @@ The README and other public-facing docs should stay aligned with this roadmap:
 - Describe the current product as a finance-led personal operations command center before introducing future health, document, and coach tracks.
 - Include a short reviewer/demo journey for the first five minutes of product evaluation.
 - Keep current implemented features separate from planned roadmap tracks.
-- Capture health metrics, sleep, weight, medication reminders, workouts, health-app sync, documents/RAG, second brain, and personal coach as planned future tracks.
-- Avoid claiming health/documents/memory are implemented today.
+- Weight tracking and medication reminders are implemented today (Health Memory V1, spec-069) and may be claimed as such; sleep, workouts, vitals, labs, health-app sync, documents/RAG, second brain, and personal coach remain planned future tracks — do not claim those as implemented.
 - Name the stabilization gate before new high-trust modules.
 - Describe AI as an interface over structured services, not the foundation.
 - Explain the trust model and coach boundaries at a high level.
