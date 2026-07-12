@@ -36,7 +36,20 @@ router = APIRouter(
 
 def _extra_lists(extra_json: dict | None) -> tuple[list, list]:
     extra = extra_json or {}
-    return extra.get("skipped", []), extra.get("corporate_action_suspected", [])
+    skipped = extra.get("skipped", [])
+    # Several commit adapters (finance-account-statement, finance-fx-rates,
+    # finance-net-worth-history, investing-dividends, cams/demat CAS) only
+    # track a duplicate-row *count* under this key, not the per-row detail
+    # list ImportValidateResponse.skipped/the ImportsPage "N rows skipped"
+    # panel expect -- coerce that count into placeholder entries so the
+    # response schema validates and the skip total still surfaces.
+    if isinstance(skipped, int) and not isinstance(skipped, bool):
+        # Cap at ImportService.MAX_VALIDATION_ROWS -- a count can never
+        # legitimately exceed the file's own row cap, so this only guards
+        # against building an absurdly large placeholder list.
+        safe_count = min(skipped, 10_000)
+        skipped = [{"reason": "duplicate row (already imported)"} for _ in range(safe_count)]
+    return skipped, extra.get("corporate_action_suspected", [])
 
 
 def _build_error_summary(

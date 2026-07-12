@@ -11,6 +11,7 @@ from app.application.workflows import (
     evaluate_workspace_budget_guardrails,
     process_workspace_recurring_transactions,
 )
+from app.core.currency import effective_display_as_of
 from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
@@ -123,12 +124,17 @@ async def seed_fx_rate(
     tested deterministically without hitting a real external API.
     """
     now = datetime.now(UTC)
+    # Display conversions only honor a rate dated on or before the *previous*
+    # calendar day's close (spec-075's effective_display_as_of) -- seeding
+    # as_of=now would never be picked up by any valuation lookup, so backdate
+    # it to satisfy that cutoff.
+    as_of = effective_display_as_of(now)
     await fx_rate_service.upsert(
         FxRateUpsert(
             base_currency_code=payload.base_currency_code,
             quote_currency_code=payload.quote_currency_code,
             rate=payload.rate,
-            as_of=now,
+            as_of=as_of,
             fetched_at=now,
             source="e2e_seed",
         )
