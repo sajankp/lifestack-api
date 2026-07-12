@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
+from structlog.testing import capture_logs
 
 from app.auth.models import User
 from app.capture.agent import (
@@ -12,12 +13,14 @@ from app.capture.agent import (
     _build_setup_message,
     _fetch_workspace_context,
     _handle_gemini_message,
+    _log_session_ended,
     execute_agent_tool,
 )
 from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account, AccountType, WorkspaceFinanceSetting
+from app.health.models import Medication
 from app.investing.models import CashBalance
 from app.platform.models import Workspace, WorkspaceMembership
 from app.spending.models import SpendingCategory, SpendingTransaction
@@ -420,6 +423,10 @@ def test_voice_agent_declares_timed_todos_and_spending_accounts():
     assert "place_stock_order" not in by_name
     assert "log_cash_balance" not in by_name
     assert "get_investing_summary" in by_name
+    # spec-079: log_weight/log_medication_event exist on AgentTools but were
+    # never declared to the model — voice couldn't reach them.
+    assert "log_weight" in by_name
+    assert "log_medication_event" in by_name
 
 
 def test_setup_message_carries_configured_thinking_budget():
@@ -1059,3 +1066,81 @@ async def test_execute_agent_tool_delete_todo(seed_agent_test_data):
     assert res["entity_type"] == "todo"
     assert res["entity_public_id"] == public_id
     assert res["summary"] == "Deleted todo 'Delete Target'"
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_tool_log_weight(seed_agent_test_data):
+    # spec-079: log_weight was defined on AgentTools but never reachable from
+    # voice (missing from execute_agent_tool's dispatch table).
+    res = await execute_agent_tool(
+        name="log_weight",
+        args={"weight_kg": "72.4", "note": "after run"},
+        user_id=10,
+        workspace_id=20,
+    )
+
+    assert res["status"] == "success"
+    assert res["entity_type"] == "weight_entry"
+    assert res["weight_kg"] == "72.40"
+    assert res["summary"] == "Logged weight 72.40 kg"
+
+
+@pytest.mark.asyncio
+async def test_execute_agent_tool_log_medication_event(seed_agent_test_data):
+    # spec-079: log_medication_event was defined on AgentTools but never
+    # reachable from voice (missing from execute_agent_tool's dispatch table).
+    async with postgres.async_session_maker() as session:
+        medication = Medication(
+            workspace_id=20,
+            user_id=10,
+            name="Vitamin D",
+            anchor_date=date(2026, 1, 1),
+            times=["09:00"],
+        )
+        session.add(medication)
+        await session.commit()
+
+    res = await execute_agent_tool(
+        name="log_medication_event",
+        args={"name": "Vitamin D", "status": "taken"},
+        user_id=10,
+        workspace_id=20,
+    )
+
+    assert res["status"] == "success"
+    assert res["entity_type"] == "medication_event"
+    assert res["medication_name"] == "Vitamin D"
+    assert res["status_logged"] == "taken"
+    assert res["summary"] == "Logged Vitamin D as taken"
+
+
+def test_log_session_ended_emits_reason_and_duration_only():
+    """spec-079 Stage A: instrument disconnect/resume-failure rates in
+    production logs, PII-redacted — counts only, no transcript/user content."""
+    with capture_logs() as logs:
+        _log_session_ended("client_disconnect", duration_seconds=12.34)
+
+    assert len(logs) == 1
+    event = logs[0]
+    assert event["event"] == "capture_session_ended"
+    assert event["reason"] == "client_disconnect"
+    assert event["duration_seconds"] == 12.3
+    # No free-text/user-content fields leak into the disconnect metric.
+    assert set(event.keys()) <= {"event", "reason", "duration_seconds", "log_level"}
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "client_disconnect",
+        "gemini_connect_failed",
+        "gemini_stream_error",
+        "session_duration_exceeded",
+        "policy_violation",
+        "normal",
+    ],
+)
+def test_log_session_ended_accepts_known_reasons(reason):
+    with capture_logs() as logs:
+        _log_session_ended(reason, duration_seconds=0.0)
+    assert logs[0]["reason"] == reason
