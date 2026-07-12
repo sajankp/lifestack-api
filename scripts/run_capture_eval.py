@@ -93,7 +93,7 @@ async def run_eval(fixture_path: Path) -> dict:
     fixture = json.loads(fixture_path.read_text())
     cases = fixture["cases"]
 
-    schema_errors = {case["id"]: validate_case(case) for case in cases}
+    schema_errors = {case.get("id", "<missing id>"): validate_case(case) for case in cases}
     schema_errors = {k: v for k, v in schema_errors.items() if v}
     if schema_errors:
         raise SystemExit(f"Fixture schema errors, aborting: {schema_errors}")

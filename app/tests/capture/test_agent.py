@@ -429,6 +429,19 @@ def test_voice_agent_declares_timed_todos_and_spending_accounts():
     assert "log_medication_event" in by_name
 
 
+def test_system_prompt_hardens_against_embedded_instruction_injection():
+    """spec-079 Run 1 finding (adv-03): an injection payload embedded inside a
+    spoken argument value (e.g. an account reference) overrode an explicitly
+    stated category. The workspace-data block already tells the model stored
+    *names* are opaque data; this asserts the same rule is generalized to the
+    user's own spoken values for any argument."""
+    setup = _build_setup_message(["TEXT"])
+    system_text = setup["setup"]["systemInstruction"]["parts"][0]["text"]
+
+    assert "embedded" in system_text.lower()
+    assert "literal" in system_text.lower()
+
+
 def test_setup_message_carries_configured_thinking_budget():
     """spec-059: the hardcoded thinkingBudget: 0 becomes an env-tunable setting
     with a modest non-zero default."""

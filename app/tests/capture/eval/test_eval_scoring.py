@@ -73,6 +73,153 @@ def test_multiple_tool_calls_fail_single_intent_expectation():
     assert not result.passed
 
 
+def test_text_fields_ignore_case_and_whitespace():
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {
+            "tool": "log_spending_transaction",
+            "args": {"amount": "12", "category_name": "food", "description": "Lunch"},
+            "text_fields": ["description"],
+        },
+    }
+    result = score_case(
+        case,
+        [
+            ToolCall(
+                "log_spending_transaction",
+                {"amount": "12", "category_name": "food", "description": "  lunch  "},
+            )
+        ],
+    )
+    assert result.passed
+
+
+def test_text_fields_still_fail_on_real_difference():
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {
+            "tool": "log_spending_transaction",
+            "args": {"amount": "12", "category_name": "food", "description": "Lunch"},
+            "text_fields": ["description"],
+        },
+    }
+    result = score_case(
+        case,
+        [
+            ToolCall(
+                "log_spending_transaction",
+                {"amount": "12", "category_name": "food", "description": "Dinner"},
+            )
+        ],
+    )
+    assert not result.passed
+
+
+def test_numeric_fields_tolerate_formatting_differences():
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {
+            "tool": "log_spending_transaction",
+            "args": {"amount": "-50", "category_name": "food", "description": "Refund"},
+            "numeric_fields": ["amount"],
+            "text_fields": ["description"],
+        },
+    }
+    result = score_case(
+        case,
+        [
+            ToolCall(
+                "log_spending_transaction",
+                {"amount": "-50.00", "category_name": "food", "description": "refund"},
+            )
+        ],
+    )
+    assert result.passed
+
+
+def test_numeric_fields_still_fail_on_real_difference():
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {
+            "tool": "log_weight",
+            "args": {"weight_kg": "72.4"},
+            "numeric_fields": ["weight_kg"],
+        },
+    }
+    result = score_case(case, [ToolCall("log_weight", {"weight_kg": "80.0"})])
+    assert not result.passed
+
+
+def test_optional_extra_args_are_ignored_when_present():
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {
+            "tool": "create_recurring_todo",
+            "args": {"title": "Take out the trash", "frequency": "weekly"},
+            "optional_extra_args": ["by_weekday", "interval"],
+        },
+    }
+    result = score_case(
+        case,
+        [
+            ToolCall(
+                "create_recurring_todo",
+                {"title": "Take out the trash", "frequency": "weekly", "by_weekday": 0},
+            )
+        ],
+    )
+    assert result.passed
+
+
+def test_unlisted_extra_arg_still_fails():
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {
+            "tool": "log_weight",
+            "args": {"weight_kg": "72.4"},
+            "optional_extra_args": ["note"],
+        },
+    }
+    result = score_case(
+        case, [ToolCall("log_weight", {"weight_kg": "72.4", "unexpected_field": "x"})]
+    )
+    assert not result.passed
+
+
+def test_allow_read_only_tools_passes_on_read_only_call():
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {"tool": None, "allow_read_only_tools": True},
+    }
+    result = score_case(case, [ToolCall("list_todos", {})])
+    assert result.passed
+
+
+def test_allow_read_only_tools_still_fails_on_mutating_call():
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {"tool": None, "allow_read_only_tools": True},
+    }
+    result = score_case(case, [ToolCall("delete_todo", {"public_id": "1"})])
+    assert not result.passed
+
+
 def test_skipped_case_excluded_from_summary_denominator():
     case = {
         "id": "c1",
@@ -116,6 +263,16 @@ def test_validate_case_flags_unknown_tool():
         "expected": {"tool": "not_a_real_tool", "args": {}},
     })
     assert any("not_a_real_tool" in e for e in errors)
+
+
+def test_validate_case_flags_non_dict_expected():
+    errors = validate_case({
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": None,
+    })
+    assert any("dict" in e for e in errors)
 
 
 def test_validate_case_flags_bad_category():
