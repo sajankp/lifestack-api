@@ -2,6 +2,7 @@ import asyncio
 import base64
 import inspect
 import json
+import time
 from contextlib import suppress
 
 import structlog
@@ -28,6 +29,19 @@ CAPTURE_PROVIDER_UNAVAILABLE_CLOSE_CODE = 4002
 CAPTURE_CLIENT_ERROR = "Voice capture is temporarily unavailable. Please try again."
 CAPTURE_PROVIDER_ERROR = "Voice provider returned an error. Please try again."
 CAPTURE_INVALID_MESSAGE_ERROR = "Voice capture received an invalid client message."
+
+
+def _log_session_ended(reason: str, duration_seconds: float) -> None:
+    """Structured, PII-redacted disconnect/resume-failure instrumentation
+    (spec-079 Stage A). Emits a count-only event — no transcript, audio, or
+    user-authored content — so production logs can be aggregated into a
+    disconnect-rate-by-reason metric ahead of Stage B transport work.
+    """
+    logger.info(
+        "capture_session_ended",
+        reason=reason,
+        duration_seconds=round(duration_seconds, 1),
+    )
 
 
 async def _send_capture_error(
@@ -68,6 +82,8 @@ async def execute_agent_tool(
                 "update_todo": tools.update_todo,
                 "delete_todo": tools.delete_todo,
                 "list_next_due_items": tools.list_next_due_items,
+                "log_weight": tools.log_weight,
+                "log_medication_event": tools.log_medication_event,
             }
 
             if name in dispatch:
@@ -297,6 +313,11 @@ async def run_agent_session(
 
     gemini_ws = None
     ws_context_manager = None
+    session_started_at = time.monotonic()
+    # spec-079 Stage A: mutable holder so nested closures can record why the
+    # session ended, for the disconnect/resume-failure instrumentation logged
+    # once in the outer `finally` below.
+    session_outcome = {"reason": "normal"}
 
     # Fetch the workspace's category/account vocabulary once, before the session
     # opens (spec-055). A failure here must not sink the whole session — fall
@@ -308,9 +329,13 @@ async def run_agent_session(
         workspace_context = ""
 
     try:
-        gemini_ws, ws_context_manager = await _connect_gemini(
-            gemini_url, user_timezone, workspace_context
-        )
+        try:
+            gemini_ws, ws_context_manager = await _connect_gemini(
+                gemini_url, user_timezone, workspace_context
+            )
+        except Exception:
+            session_outcome["reason"] = "gemini_connect_failed"
+            raise
         logger.info("gemini_session_active", model=settings.GEMINI_MODEL)
 
         # ── Background: stream decoded PCM → Gemini ───────────────────────────
@@ -413,6 +438,7 @@ async def run_agent_session(
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
+                session_outcome["reason"] = "session_duration_exceeded"
                 logger.warning(
                     "capture_session_duration_exceeded",
                     user_id=user_id,
@@ -428,15 +454,23 @@ async def run_agent_session(
                     continue
                 exc = task.exception()
                 if exc and isinstance(exc, WebSocketDisconnect):
+                    session_outcome["reason"] = "client_disconnect"
                     logger.info("client_websocket_disconnected")
                 elif exc:
+                    session_outcome["reason"] = "gemini_stream_error"
                     raise exc
+                elif task is client_task and session_outcome["reason"] == "normal":
+                    # client_to_gemini_loop only returns without raising when
+                    # the session limiter closed the connection.
+                    session_outcome["reason"] = "policy_violation"
         finally:
             for task in [pcm_task, gemini_task, client_task]:
                 task.cancel()
             await asyncio.gather(pcm_task, gemini_task, client_task, return_exceptions=True)
 
     except Exception as e:
+        if session_outcome["reason"] == "normal":
+            session_outcome["reason"] = "gemini_stream_error"
         logger.error("gemini_live_session_error", error=str(e))
         await _send_capture_error(client_ws, CAPTURE_CLIENT_ERROR)
     finally:
@@ -444,3 +478,4 @@ async def run_agent_session(
         if ws_context_manager is not None:
             with suppress(Exception):
                 await ws_context_manager.__aexit__(None, None, None)
+        _log_session_ended(session_outcome["reason"], time.monotonic() - session_started_at)

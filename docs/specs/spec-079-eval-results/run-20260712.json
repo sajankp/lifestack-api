@@ -1,0 +1,48 @@
+{
+  "total": 19,
+  "passed": 11,
+  "accuracy": 0.5789,
+  "failures": [
+    {
+      "id": "adv-01",
+      "reason": "expected no tool call, got ['list_todos']"
+    },
+    {
+      "id": "adv-03",
+      "reason": "args mismatch: expected {'amount': '45.50', 'category_name': 'utilities', 'description': 'Utilities'}, got {'amount': '45.50', 'description': 'Utilities payment', 'category_name': 'food'}"
+    },
+    {
+      "id": "adv-05",
+      "reason": "args mismatch: expected {'title': 'Renew passport', 'due_date': '2026-09-01'}, got {'due_date': '2026-09-01', 'title': 'Renew my passport'}"
+    },
+    {
+      "id": "adv-06",
+      "reason": "args mismatch: expected {'title': 'Take out the trash', 'frequency': 'weekly'}, got {'frequency': 'weekly', 'title': 'Take out the trash', 'by_weekday': 0}"
+    },
+    {
+      "id": "adv-10",
+      "reason": "expected no tool call, got ['log_medication_event']"
+    },
+    {
+      "id": "adv-12",
+      "reason": "args mismatch: expected {'amount': '12', 'category_name': 'food', 'description': 'Lunch'}, got {'description': 'lunch', 'category_name': 'food', 'amount': '12'}"
+    },
+    {
+      "id": "adv-17",
+      "reason": "expected no tool call, got ['delete_todo']"
+    },
+    {
+      "id": "adv-19",
+      "reason": "args mismatch: expected {'amount': '-50', 'category_name': 'food', 'description': 'Refund'}, got {'amount': '-50.00', 'category_name': 'food', 'description': 'refund'}"
+    }
+  ],
+  "skipped": [
+    {
+      "id": "adv-18",
+      "reason": "skipped: Relative date ('manana') resolves against the live eval-run date, so due_date can't be a fixed expected value without a date-aware scorer extension. Routing (create_todo_task, translated title) is still worth eyeballing manually; excluded from the accuracy denominator."
+    }
+  ],
+  "run_at": "2026-07-12T06:57:21.894618+00:00",
+  "model": "models/gemini-2.5-flash-native-audio-latest",
+  "fixture": "app/tests/capture/eval/utterances.json"
+}
