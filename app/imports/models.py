@@ -19,6 +19,7 @@ class ImportModule(StrEnum):
     investing_dividends = "investing-dividends"
     finance_fx_rates = "finance-fx-rates"
     finance_net_worth_history = "finance-net-worth-history"
+    finance_account_statement = "finance-account-statement"
 
 
 class ImportStatus(StrEnum):

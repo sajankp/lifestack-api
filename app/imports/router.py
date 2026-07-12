@@ -78,13 +78,16 @@ async def upload_and_validate(
     # persisted to ImportBatch or logged — forwarded in-memory only, as a
     # plain function argument, to whichever code path parses the PDF.
     file_password: str | None = Form(None),
+    # finance-account-statement only: user-selected date-format identifier
+    # (spec-078 owner decision) applied uniformly to the whole file.
+    date_format: str | None = Form(None),
     service: ImportService = Depends(get_import_service),
     workspace_id: int = Depends(get_current_workspace_id),
     user: dict = Depends(get_current_user),
     audit_logger: AuditLogger = Depends(get_audit_logger),
 ):
     batch, temp_path = await service.validate_upload(
-        workspace_id, user["id"], module, file, audit_logger, target_account_id
+        workspace_id, user["id"], module, file, audit_logger, target_account_id, date_format
     )
     if settings.RUN_BACKGROUND_TASKS_SYNCHRONOUSLY:
         try:

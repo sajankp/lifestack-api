@@ -14,6 +14,7 @@ from app.finance.models import (  # noqa: F401
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
 )
+from app.finance.statement_models import AccountStatement, StatementLine  # noqa: F401
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow  # noqa: F401
 from app.investing.models import (  # noqa: F401
     CashBalance,

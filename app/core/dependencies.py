@@ -35,6 +35,7 @@ from app.finance.service import (
     FxRateService,
     NetWorthService,
 )
+from app.finance.statement_service import StatementService
 from app.health.repository import (
     MedicationEventRepository,
     MedicationRepository,
@@ -561,6 +562,12 @@ async def get_finance_account_service(
     setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
 ) -> AccountService:
     return AccountService(account_repo, currency_repo, setting_repo)
+
+
+async def get_finance_statement_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> StatementService:
+    return StatementService(session)
 
 
 async def get_finance_setting_service(

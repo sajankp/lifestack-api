@@ -210,3 +210,36 @@ Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**
   a read/display-path rule only. The frontend display-profile (locale/grouping) and
   explicit per-value FX provenance fields from spec-075 are follow-up work, not yet
   implemented.
+- **2026-07-12 (spec-078, wallet ledger reconciliation):** Added a third store,
+  disjoint from ledger and snapshots: `account_statements`/`statement_lines`, the
+  user's bank statement as an external ground-truth for **ledger-managed** (wallet/
+  bank/card) accounts, which previously had nothing to reconcile against. Matching is
+  metadata, never mutation (INV-1) — confirming a match only sets
+  `statement_lines.matched_transaction_id`/`matched_transfer_id`
+  (+`matched_transfer_leg` for a transfer's from/to side); it never creates, edits, or
+  deletes a `spending_transactions`/`capital_transfers` row, and never writes an
+  `investing_cash_balances` row (INV-2 — wallet accounts get no snapshot semantics;
+  `account_statements.closing_balance` is a reference value only). The match engine is
+  deterministic and suggest-only: exact signed-amount equality within a ±3-day window
+  (`StatementService._candidate_transactions`/`_candidate_transfers`,
+  `app/finance/statement_service.py`); nothing is persisted until the user confirms via
+  `POST .../lines/{id}/match`. A breaking edit (amount/date/type change, or delete) to
+  a matched transaction or transfer clears the match link and nulls the statement's
+  `reconciled_through` marker (owner decision — informational only, not a lock); wired
+  into `SpendingTransactionService.update_transaction`/`delete_transaction`
+  (`app/spending/service.py`) and `CapitalTransferService.update_transfer`/
+  `delete_transfer` (`app/finance/service.py`), which must clear the reference *before*
+  deleting the row it points to (no `ON DELETE CASCADE` on `matched_transaction_id`/
+  `matched_transfer_id` — the reference is match-engine-owned metadata, not something
+  a ledger delete should cascade through implicitly). Statement import is a new
+  `finance-account-statement` module in the spec-074 imports framework: generic CSV
+  (date, description, debit, credit, balance), with a user-selected date-format
+  identifier applied uniformly to the file (no bank-specific fixtures in v1).
+  Idempotent re-import (INV-4): `external_ref` is a deterministic hash of (account,
+  date, amount, normalized description, within-file duplicate index), so re-uploading
+  an overlapping statement dedupes via a unique `(account_id, external_ref)`
+  constraint rather than a caught `IntegrityError` — a caught error would force a
+  session-wide rollback and discard every row already flushed earlier in the same
+  commit transaction (`commit_finance_account_statement_chunk` pre-checks instead).
+  Out of scope (per spec): auto-creating transactions from unmatched statement lines,
+  bank-specific parsers beyond generic CSV, wallet-account snapshots, fuzzy matching.

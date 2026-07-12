@@ -23,11 +23,18 @@ from app.finance.models import (
 )
 from app.finance.repository import AccountRepository, CurrencyRepository
 from app.finance.service import FxRateService, NetWorthService
+from app.finance.statement_models import AccountStatement
 from app.imports.cams_cas_import import validate_cams_cas_batch, validate_cams_cas_upload
 from app.imports.demat_cas_import import (
     finalize_demat_cas_commit,
     validate_demat_cas_batch,
     validate_demat_cas_upload,
+)
+from app.imports.finance_account_statement_import import (
+    commit_finance_account_statement_chunk,
+    prepare_finance_account_statement_commit,
+    validate_finance_account_statement_row,
+    validate_finance_account_statement_upload,
 )
 from app.imports.finance_fx_rates_import import (
     commit_finance_fx_rates_chunk,
@@ -224,6 +231,7 @@ class ImportService:
             "reporting_currency",
             "total_net_worth",
         },
+        ImportModule.finance_account_statement: {"date", "description"},
     }
 
     def _smart_match_headers(self, file_headers: list[str], module: ImportModule) -> dict[str, str]:
@@ -306,6 +314,8 @@ class ImportService:
             lines.extend(INVESTING_ORDERS_TEMPLATE_ROWS)
         elif module == ImportModule.finance_transfers:
             lines.append(FINANCE_TRANSFERS_TEMPLATE_ROW)
+        elif module == ImportModule.finance_account_statement:
+            lines.append("2026-01-05,Grocery store,45.20,,1200.00")
         return "\n".join(lines) + "\n"
 
     async def _hash_file(self, upload: UploadFile) -> tuple[str, int]:
@@ -491,6 +501,7 @@ class ImportService:
         upload: UploadFile,
         audit_logger: AuditLogger,
         target_account_id: uuid.UUID | None = None,
+        date_format: str | None = None,
     ) -> tuple[ImportBatch, str]:
         if module == ImportModule.investing_holdings:
             raise ValidationError(detail="investing-holdings imports are no longer supported")
@@ -509,6 +520,10 @@ class ImportService:
         elif module == ImportModule.spending_transactions:
             extra_json = await validate_spending_transactions_upload(
                 self.session, workspace_id, upload.filename, target_account_id
+            )
+        elif module == ImportModule.finance_account_statement:
+            extra_json = await validate_finance_account_statement_upload(
+                self.session, workspace_id, upload.filename, target_account_id, date_format
             )
         else:
             if target_account_id is not None:
@@ -582,6 +597,15 @@ class ImportService:
         by_name, by_public = await self._category_maps(workspace_id)
         account_map = await self._account_map(workspace_id)
         currency_set = await self._currency_set()
+
+        # finance-account-statement: date format was fixed at upload time
+        # (owner decision, spec-078); dup_counts disambiguates genuinely
+        # duplicate lines (same date/amount/description) for a deterministic
+        # external_ref (INV-4), accumulated across the whole file in order.
+        statement_date_format: str | None = None
+        statement_dup_counts: dict[str, int] = {}
+        if batch.module == ImportModule.finance_account_statement:
+            statement_date_format = (batch.extra_json or {}).get("date_format")
 
         # Fallback account for spending-transaction rows with no (matched)
         # account_name (spec-054): the import-level target account set at
@@ -809,6 +833,13 @@ class ImportService:
                         currency_set=currency_set,
                         earliest_live_nw_date=earliest_live_nw_date,
                     )
+                elif batch.module == ImportModule.finance_account_statement:
+                    payload, _weight_entry = validate_finance_account_statement_row(
+                        row,
+                        add_error,
+                        date_format=statement_date_format,
+                        dup_counts=statement_dup_counts,
+                    )
 
                 if row_errors:
                     errors.extend(row_errors)
@@ -925,10 +956,17 @@ class ImportService:
             ImportModule.finance_net_worth_history,
         }:
             extra_json = {"imported": 0, "updated": 0, "skipped": 0, "rejected": []}
+        elif batch.module == ImportModule.finance_account_statement:
+            extra_json = {"skipped": 0}
+        account_statement: AccountStatement | None = None
 
         try:
             if batch.module == ImportModule.investing_constituents:
                 company_cache = await prepare_constituents_commit(
+                    self.session, self.repository, workspace_id, batch
+                )
+            elif batch.module == ImportModule.finance_account_statement:
+                account_statement = await prepare_finance_account_statement_commit(
                     self.session, self.repository, workspace_id, batch
                 )
 
@@ -1020,6 +1058,19 @@ class ImportService:
                         extra_json["updated"] += extra_chunk.get("updated", 0)
                         extra_json["skipped"] += extra_chunk.get("skipped", 0)
                         extra_json["rejected"].extend(extra_chunk.get("rejected", []))
+                elif batch.module == ImportModule.finance_account_statement:
+                    if account_statement is None:
+                        raise ValidationError(detail="Account statement was not prepared")
+                    inserted_chunk, extra_chunk = await commit_finance_account_statement_chunk(
+                        self.session,
+                        workspace_id,
+                        account_statement.account_id,
+                        account_statement,
+                        rows,
+                    )
+                    inserted += inserted_chunk
+                    if extra_json is not None:
+                        extra_json["skipped"] += extra_chunk.get("skipped", 0)
                 else:  # ImportModule.investing_constituents
                     inserted += await commit_constituents_chunk(
                         self.session, workspace_id, rows, company_cache
@@ -1155,6 +1206,10 @@ class ImportService:
                 deleted_records = await HoldingVerificationRepository(
                     self.session
                 ).delete_for_import_batch(workspace_id, batch.id)
+            elif batch.module == ImportModule.finance_account_statement:
+                deleted_records = await self.repository.delete_account_statement_for_batch(
+                    workspace_id, batch.id
+                )
             else:
                 deleted_records = 0
             action = "import_rolled_back"

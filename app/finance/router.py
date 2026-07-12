@@ -15,6 +15,7 @@ from app.core.dependencies import (
     get_finance_fx_rate_service,
     get_finance_net_worth_service,
     get_finance_setting_service,
+    get_finance_statement_service,
     get_finance_transfer_service,
     require_min_role,
 )
@@ -49,6 +50,16 @@ from app.finance.service import (
     FxRateService,
     NetWorthService,
 )
+from app.finance.statement_schemas import (
+    AccountStatementResponse,
+    MatchCandidate,
+    MatchLineRequest,
+    ReconciliationView,
+    StatementLineResponse,
+    UnmatchedLedgerRow,
+    UnmatchedStatementLineView,
+)
+from app.finance.statement_service import StatementService
 
 router = APIRouter(prefix="/finance", tags=["finance"])
 
@@ -155,6 +166,106 @@ async def get_account_reconciliation(
     A null snapshot means no cash balance has been recorded yet for this account.
     """
     return await account_service.get_reconciliation_summary(workspace_id, account_id)
+
+
+# ---------------------------------------------------------------------------
+# Statement matching (spec-078 — wallet ledger reconciliation)
+# ---------------------------------------------------------------------------
+
+
+def _statement_response(statement, account_public_id: uuid.UUID) -> AccountStatementResponse:
+    return AccountStatementResponse(
+        public_id=statement.public_id,
+        account_public_id=account_public_id,
+        period_start=statement.period_start,
+        period_end=statement.period_end,
+        closing_balance=statement.closing_balance,
+        currency_code=statement.currency_code,
+        reconciled_through=statement.reconciled_through,
+        created_at=statement.created_at,
+    )
+
+
+@router.get("/accounts/{account_id}/statements", response_model=list[AccountStatementResponse])
+async def list_account_statements(
+    account_id: uuid.UUID,
+    statement_service: Annotated[StatementService, Depends(get_finance_statement_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    statements = await statement_service.list_statements(workspace_id, account_id)
+    return [_statement_response(s, account_id) for s in statements]
+
+
+@router.get(
+    "/accounts/{account_id}/statements/{statement_id}/reconciliation",
+    response_model=ReconciliationView,
+)
+async def get_statement_reconciliation(
+    account_id: uuid.UUID,
+    statement_id: uuid.UUID,
+    statement_service: Annotated[StatementService, Depends(get_finance_statement_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    """Statement closing balance vs ledger-derived balance for the period,
+    unmatched statement lines (with deterministic ±3-day/exact-amount
+    suggestions), and unmatched ledger rows in the period. Suggestions are
+    computed live, never persisted until confirmed via the match endpoint."""
+    view = await statement_service.get_reconciliation_view(workspace_id, account_id, statement_id)
+    return ReconciliationView(
+        statement=_statement_response(view["statement"], account_id),
+        matched_lines=[StatementLineResponse(**line) for line in view["matched_lines"]],
+        unmatched_lines=[
+            UnmatchedStatementLineView(
+                line=StatementLineResponse.model_validate(entry["line"]),
+                candidates=[MatchCandidate(**c) for c in entry["candidates"]],
+            )
+            for entry in view["unmatched_lines"]
+        ],
+        unmatched_ledger_rows=[UnmatchedLedgerRow(**row) for row in view["unmatched_ledger_rows"]],
+    )
+
+
+@router.post(
+    "/accounts/{account_id}/statements/{statement_id}/lines/{line_id}/match",
+    response_model=StatementLineResponse,
+)
+async def confirm_statement_line_match(
+    account_id: uuid.UUID,
+    statement_id: uuid.UUID,
+    line_id: uuid.UUID,
+    match_in: MatchLineRequest,
+    statement_service: Annotated[StatementService, Depends(get_finance_statement_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    line = await statement_service.confirm_match(
+        workspace_id,
+        account_id,
+        statement_id,
+        line_id,
+        transaction_id=match_in.transaction_id,
+        transfer_id=match_in.transfer_id,
+        leg=match_in.leg,
+    )
+    return StatementLineResponse(**(await statement_service.line_to_dict(line)))
+
+
+@router.post(
+    "/accounts/{account_id}/statements/{statement_id}/lines/{line_id}/unmatch",
+    response_model=StatementLineResponse,
+)
+async def unmatch_statement_line(
+    account_id: uuid.UUID,
+    statement_id: uuid.UUID,
+    line_id: uuid.UUID,
+    statement_service: Annotated[StatementService, Depends(get_finance_statement_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    line = await statement_service.unmatch_line(workspace_id, account_id, statement_id, line_id)
+    return StatementLineResponse(**(await statement_service.line_to_dict(line)))
 
 
 @router.get("/settings", response_model=WorkspaceFinanceSettingResponse)

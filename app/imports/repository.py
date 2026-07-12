@@ -5,6 +5,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.finance.models import CapitalTransfer
+from app.finance.statement_models import AccountStatement, StatementLine
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow, ImportStatus
 from app.investing.models import CashBalance, InvestingOrder
 from app.spending.models import SpendingBudget, SpendingTransaction
@@ -182,6 +183,36 @@ class ImportRepository:
             )
         )
         return result.rowcount or 0
+
+    async def delete_account_statement_for_batch(
+        self, workspace_id: int | None, import_batch_id: int | None
+    ) -> int:
+        """Delete the AccountStatement + its StatementLines created by this
+        import batch. Statement lines are pure metadata (INV-1) — clearing
+        them never touches spending_transactions or capital_transfers, only
+        the match *reference* on the (deleted) line disappears."""
+        if workspace_id is None or import_batch_id is None:
+            raise ValueError(
+                "workspace_id and import_batch_id are required for statement import rollback"
+            )
+        statement_id = (
+            await self.session.execute(
+                select(AccountStatement.id).where(
+                    AccountStatement.workspace_id == workspace_id,
+                    AccountStatement.import_batch_id == import_batch_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if statement_id is None:
+            return 0
+        result = await self.session.execute(
+            delete(StatementLine).where(StatementLine.statement_id == statement_id)
+        )
+        deleted = result.rowcount or 0
+        await self.session.execute(
+            delete(AccountStatement).where(AccountStatement.id == statement_id)
+        )
+        return deleted
 
     async def list_investing_orders_for_batch(
         self, workspace_id: int | None, import_batch_id: int | None
