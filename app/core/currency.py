@@ -31,7 +31,12 @@ def effective_display_as_of(reference: datetime | None = None) -> datetime:
     has no rate -- never forward to *reference*'s own day).
     """
     ref = reference or datetime.now(UTC)
-    previous_day = ref.date() - timedelta(days=1)
+    # ``.date()`` reads the calendar day in the datetime's own tzinfo, but
+    # FxRate.as_of is always UTC-anchored -- a tz-aware reference in a
+    # non-UTC offset must be normalized to UTC first, or the cutoff can land
+    # on the wrong calendar day.
+    ref_utc = ref.astimezone(UTC) if ref.tzinfo is not None else ref
+    previous_day = ref_utc.date() - timedelta(days=1)
     return datetime.combine(previous_day, datetime.max.time(), tzinfo=UTC)
 
 

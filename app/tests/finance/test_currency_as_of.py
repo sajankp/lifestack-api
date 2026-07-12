@@ -2,7 +2,7 @@
 calendar day, sourced from the *previous* day's close, applied uniformly to
 historical and "current" views alike (no live/intraday refresh)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 from app.core.currency import effective_display_as_of
 
@@ -27,3 +27,13 @@ def test_effective_display_as_of_none_uses_current_time():
     # The cutoff is always strictly in the past, on the previous calendar day.
     assert result < now
     assert result.date() < now.date()
+
+
+def test_effective_display_as_of_normalizes_non_utc_reference_to_utc_calendar_day():
+    # 2026-07-12 01:00 IST (UTC+5:30) is still 2026-07-11 in UTC. The cutoff
+    # must be computed from the UTC calendar day (matching FxRate.as_of,
+    # which is always UTC-anchored), not the reference's own offset.
+    ist = timezone(timedelta(hours=5, minutes=30))
+    reference = datetime(2026, 7, 12, 1, 0, tzinfo=ist)
+    result = effective_display_as_of(reference)
+    assert result == datetime(2026, 7, 10, 23, 59, 59, 999999, tzinfo=UTC)
