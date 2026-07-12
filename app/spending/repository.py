@@ -12,6 +12,7 @@ from app.core.repository import BaseRepository
 from app.finance.models import CapitalTransfer
 from app.spending.models import (
     CategoryGroup,
+    FinancialKpi,
     RecurringTransaction,
     SpendingBudget,
     SpendingCategory,
@@ -265,6 +266,7 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         to_date: datetime,
         category_id: int | None = None,
         account_id: int | None = None,
+        category_group_id: int | None = None,
     ) -> Decimal:
         query = select(func.sum(SpendingTransaction.amount)).where(
             SpendingTransaction.workspace_id == workspace_id,
@@ -276,6 +278,10 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
             query = query.where(SpendingTransaction.category_id == category_id)
         if account_id is not None:
             query = query.where(SpendingTransaction.account_id == account_id)
+        if category_group_id is not None:
+            query = query.join(
+                SpendingCategory, SpendingCategory.id == SpendingTransaction.category_id
+            ).where(SpendingCategory.category_group_id == category_group_id)
         result = await self.session.execute(query)
         val = result.scalar_one_or_none()
         return Decimal(val or 0)
@@ -752,3 +758,38 @@ class RecurringTransactionRepository(BaseRepository[RecurringTransaction]):
             .order_by(RecurringTransaction.next_due_date.asc())
         )
         return result.scalars().all()
+
+
+class KpiRepository(BaseRepository[FinancialKpi]):
+    async def get_all(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Sequence[FinancialKpi], int]:
+        base = select(FinancialKpi).where(FinancialKpi.workspace_id == workspace_id)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(FinancialKpi.created_at.desc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), total
+
+    async def get_active(self, workspace_id: int) -> Sequence[FinancialKpi]:
+        result = await self.session.execute(
+            select(FinancialKpi).where(
+                FinancialKpi.workspace_id == workspace_id,
+                FinancialKpi.is_active == True,  # noqa: E712
+            )
+        )
+        return result.scalars().all()
+
+    async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> FinancialKpi | None:
+        result = await self.session.execute(
+            select(FinancialKpi).where(
+                FinancialKpi.workspace_id == workspace_id,
+                FinancialKpi.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
