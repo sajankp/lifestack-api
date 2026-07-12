@@ -12,6 +12,9 @@ env/
 # Environment variables
 .env*
 
+# spec-079: bind-mounted host dir for the voice capture-turn log
+/logs/
+
 # IDE
 .vscode/
 .idea/

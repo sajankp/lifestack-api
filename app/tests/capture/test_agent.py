@@ -1,3 +1,5 @@
+import asyncio
+import json
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -13,6 +15,7 @@ from app.capture.agent import (
     _build_setup_message,
     _fetch_workspace_context,
     _handle_gemini_message,
+    _log_capture_turn,
     _log_session_ended,
     execute_agent_tool,
 )
@@ -1157,3 +1160,85 @@ def test_log_session_ended_accepts_known_reasons(reason):
     with capture_logs() as logs:
         _log_session_ended(reason, duration_seconds=0.0)
     assert logs[0]["reason"] == reason
+
+
+def test_log_capture_turn_noop_when_path_unset(monkeypatch):
+    """spec-079: feature-off by default — no writes unless CAPTURE_TURN_LOG_PATH
+    is explicitly configured (production points it at a bind-mounted host path)."""
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", None)
+    # Must not raise even with no path and no filesystem access implied.
+    _log_capture_turn("create_todo_task", {"title": "x"}, "success", user_id=1, workspace_id=2)
+
+
+def test_log_capture_turn_appends_jsonl(tmp_path, monkeypatch):
+    log_path = tmp_path / "capture" / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+
+    _log_capture_turn(
+        "log_spending_transaction",
+        {"amount": "12", "category_name": "food"},
+        "success",
+        user_id=10,
+        workspace_id=20,
+    )
+    _log_capture_turn(
+        "create_todo_task", {"title": "Buy milk"}, "success", user_id=10, workspace_id=20
+    )
+
+    lines = log_path.read_text().strip().splitlines()
+    assert len(lines) == 2
+
+    first = json.loads(lines[0])
+    assert first["tool"] == "log_spending_transaction"
+    assert first["args"] == {"amount": "12", "category_name": "food"}
+    assert first["status"] == "success"
+    assert first["user_id"] == 10
+    assert first["workspace_id"] == 20
+    assert "timestamp" in first
+    # No raw utterance/transcript text — that capability is a separate,
+    # not-yet-built item pending confirmation of Gemini transcription cost.
+    assert "utterance" not in first
+    assert "transcript" not in first
+
+
+def test_log_capture_turn_creates_missing_parent_directory(tmp_path, monkeypatch):
+    log_path = tmp_path / "nested" / "does" / "not" / "exist" / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+
+    _log_capture_turn("log_weight", {"weight_kg": "72.4"}, "success", user_id=1, workspace_id=1)
+
+    assert log_path.exists()
+
+
+def test_log_capture_turn_swallows_write_errors(monkeypatch):
+    """A bad/unwritable path must not sink the voice session — matches the
+    existing pattern in _fetch_workspace_context (agent.py)."""
+    monkeypatch.setattr(
+        settings, "CAPTURE_TURN_LOG_PATH", "/proc/nonexistent-write-target/turns.jsonl"
+    )
+    # Must not raise.
+    _log_capture_turn("log_weight", {"weight_kg": "72.4"}, "success", user_id=1, workspace_id=1)
+
+
+@pytest.mark.asyncio
+async def test_log_capture_turn_offloads_to_executor_inside_running_loop(tmp_path, monkeypatch):
+    """The write is blocking disk I/O; called from inside a running event loop
+    (as it is in the live agent session) it must not block that loop — it
+    should be offloaded via run_in_executor rather than writing inline."""
+    log_path = tmp_path / "capture" / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+
+    _log_capture_turn("log_weight", {"weight_kg": "72.4"}, "success", user_id=1, workspace_id=1)
+
+    # run_in_executor schedules on a worker thread — give it a beat to land
+    # rather than asserting the file is immediately (synchronously) present.
+    for _ in range(50):
+        if log_path.exists() and log_path.read_text().strip():
+            break
+        await asyncio.sleep(0.02)
+
+    lines = log_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["tool"] == "log_weight"
+    assert entry["args"] == {"weight_kg": "72.4"}

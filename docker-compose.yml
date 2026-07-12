@@ -14,6 +14,11 @@ x-app-base: &app-base
     - .:/app
     - /app/.venv
     - imports-temp:/app/imports_temp
+    # spec-079 Stage A: bind-mounted host dir for CAPTURE_TURN_LOG_PATH so the
+    # voice tool-call-turn log survives container recreation (unlike the
+    # stdout-only structured logs, which don't). Unused unless that setting
+    # points inside this path.
+    - ./logs/capture:/app/logs/capture
 
 services:
   # One-shot migration runner. Runs `alembic upgrade head` to completion with

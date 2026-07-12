@@ -195,6 +195,12 @@ class Settings(BaseSettings):
     CAPTURE_MAX_SESSION_BYTES: int = 15 * 1024 * 1024
     CAPTURE_MAX_SESSION_SECONDS: int = 5 * 60
     CAPTURE_MAX_TEXT_CHARS: int = 4000
+    # spec-079 Stage A: append-only JSONL log of each voice tool-call turn
+    # (tool name + args + status — no raw utterance text yet, see spec-079),
+    # for building the real-usage eval slice and debugging routing. Feature-off
+    # (no writes) unless set; production points this at a bind-mounted host
+    # path so it survives container recreation (docker-compose.yml/.prod.yml).
+    CAPTURE_TURN_LOG_PATH: str | None = None
     EXCHANGERATE_API_KEY: str | None = None
     LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT: Decimal = Decimal("0.5")
     IMPORT_S3_ENDPOINT: str | None = Field(
