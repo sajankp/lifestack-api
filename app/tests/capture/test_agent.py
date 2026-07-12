@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -1217,3 +1218,27 @@ def test_log_capture_turn_swallows_write_errors(monkeypatch):
     )
     # Must not raise.
     _log_capture_turn("log_weight", {"weight_kg": "72.4"}, "success", user_id=1, workspace_id=1)
+
+
+@pytest.mark.asyncio
+async def test_log_capture_turn_offloads_to_executor_inside_running_loop(tmp_path, monkeypatch):
+    """The write is blocking disk I/O; called from inside a running event loop
+    (as it is in the live agent session) it must not block that loop — it
+    should be offloaded via run_in_executor rather than writing inline."""
+    log_path = tmp_path / "capture" / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+
+    _log_capture_turn("log_weight", {"weight_kg": "72.4"}, "success", user_id=1, workspace_id=1)
+
+    # run_in_executor schedules on a worker thread — give it a beat to land
+    # rather than asserting the file is immediately (synchronously) present.
+    for _ in range(50):
+        if log_path.exists() and log_path.read_text().strip():
+            break
+        await asyncio.sleep(0.02)
+
+    lines = log_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["tool"] == "log_weight"
+    assert entry["args"] == {"weight_kg": "72.4"}

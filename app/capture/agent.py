@@ -43,7 +43,12 @@ def _log_capture_turn(
     `settings.CAPTURE_TURN_LOG_PATH` is set; production points it at a
     bind-mounted host path (see docker-compose.yml) so it survives container
     recreation, unlike the stdout-only structured logs. A write failure must
-    never sink the voice session, so all I/O errors are swallowed.
+    never sink the voice session, so all I/O errors are swallowed. The write
+    itself is blocking disk I/O (mkdir/open/write); run inline in the live
+    agent session it would block the event loop that's also driving the
+    audio pipeline, so it's offloaded to a worker thread via
+    `run_in_executor` whenever a loop is running, falling back to inline
+    execution for sync callers (e.g. unit tests with no running loop).
     """
     path = settings.CAPTURE_TURN_LOG_PATH
     if not path:
@@ -56,13 +61,22 @@ def _log_capture_turn(
         "user_id": user_id,
         "workspace_id": workspace_id,
     }
+
+    def _write() -> None:
+        try:
+            log_path = Path(path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except OSError as exc:
+            logger.warning("capture_turn_log_write_failed", error=str(exc))
+
     try:
-        log_path = Path(path)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-    except OSError as exc:
-        logger.warning("capture_turn_log_write_failed", error=str(exc))
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _write()
+    else:
+        loop.run_in_executor(None, _write)
 
 
 def _log_session_ended(reason: str, duration_seconds: float) -> None:
