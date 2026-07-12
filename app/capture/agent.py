@@ -4,6 +4,8 @@ import inspect
 import json
 import time
 from contextlib import suppress
+from datetime import UTC, datetime
+from pathlib import Path
 
 import structlog
 import websockets
@@ -29,6 +31,38 @@ CAPTURE_PROVIDER_UNAVAILABLE_CLOSE_CODE = 4002
 CAPTURE_CLIENT_ERROR = "Voice capture is temporarily unavailable. Please try again."
 CAPTURE_PROVIDER_ERROR = "Voice provider returned an error. Please try again."
 CAPTURE_INVALID_MESSAGE_ERROR = "Voice capture received an invalid client message."
+
+
+def _log_capture_turn(
+    tool_name: str, args: dict, status: str, *, user_id: int, workspace_id: int
+) -> None:
+    """Append-only JSONL record of one voice tool-call turn (spec-079 Stage A):
+    tool name, args, and outcome — no raw utterance/transcript text (that's a
+    separate, not-yet-built capability pending confirmation that Gemini's
+    input-transcription doesn't add API cost). Feature-off (no writes) unless
+    `settings.CAPTURE_TURN_LOG_PATH` is set; production points it at a
+    bind-mounted host path (see docker-compose.yml) so it survives container
+    recreation, unlike the stdout-only structured logs. A write failure must
+    never sink the voice session, so all I/O errors are swallowed.
+    """
+    path = settings.CAPTURE_TURN_LOG_PATH
+    if not path:
+        return
+    entry = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "tool": tool_name,
+        "args": args,
+        "status": status,
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+    }
+    try:
+        log_path = Path(path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError as exc:
+        logger.warning("capture_turn_log_write_failed", error=str(exc))
 
 
 def _log_session_ended(reason: str, duration_seconds: float) -> None:
@@ -265,6 +299,13 @@ async def _handle_gemini_message(
                 user_id,
                 workspace_id,
                 user_timezone,
+            )
+            _log_capture_turn(
+                name,
+                args,
+                result.get("status", "success"),
+                user_id=user_id,
+                workspace_id=workspace_id,
             )
 
             await client_ws.send_json({

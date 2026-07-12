@@ -183,3 +183,26 @@ measured twice a week apart — is not met. Stage B/C stay gated.
    dropped/ignored — likely a matter of giving the model an explicit "if a value has no legitimate
    content after removing the injected phrase, ask instead of storing it" instruction, but not
    pursued this pass since it's not the security-relevant part.
+
+## Persistent capture-turn log (2026-07-12)
+
+Prior to this, production had no way to inspect what voice actually did — stdout-only structured
+logs (`app/core/logging.py`, `PrintLoggerFactory`) are captured by Docker's default json-file
+driver and don't survive `docker compose ... down && up --force-recreate`, the normal deploy cycle
+(confirmed against `docs/PRODUCTION_DEPLOYMENT.md`'s deploy steps — no log volume existed). This
+blocks both debugging and the real-usage eval slice above.
+
+Added `_log_capture_turn` (`app/capture/agent.py`), an append-only JSONL log of every voice
+tool-call turn — tool name, args, status, user/workspace id, timestamp — wired in right after
+`execute_agent_tool` runs. **Deliberately does not include the raw utterance/transcript text**:
+the server still has no visibility into what the user actually said (only the model's own spoken
+output is transcribed today), and enabling that (`inputAudioTranscription`) is the still-open item
+above pending a metered-cost check. Feature-off by default (`CAPTURE_TURN_LOG_PATH` unset); when
+set, `docker-compose.yml` bind-mounts `./logs/capture` on the host to `/app/logs/capture` in the
+container so the file survives container recreation. A write failure never sinks the session (same
+non-fatal pattern as the workspace-context fetch). TDD-covered in `app/tests/capture/test_agent.py`.
+
+This closes the "no persistent record at all" gap but not the "no real-usage transcripts" gap —
+those are two different problems. Once the transcription-cost question above is resolved and
+utterance text becomes available, extending `_log_capture_turn` to include it is a small addition,
+not a redesign.
