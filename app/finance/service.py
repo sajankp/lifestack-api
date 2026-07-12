@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.audit import AuditLogger
+from app.core.currency import effective_display_as_of
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
 from app.finance.models import (
@@ -1315,7 +1316,9 @@ class NetWorthService:
                 pairs = [(c, reporting_currency) for c in foreign] + [
                     (reporting_currency, c) for c in foreign
                 ]
-                fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(pairs)
+                fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
+                    pairs, as_of=effective_display_as_of()
+                )
 
         # Assemble spending account list and total
         spending_accounts = []

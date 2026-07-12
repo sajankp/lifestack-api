@@ -22,6 +22,9 @@ from app.core.currency import (
     convert_amount as _convert_amount,
 )
 from app.core.currency import (
+    effective_display_as_of,
+)
+from app.core.currency import (
     fx_rates_used as _fx_rates_used,
 )
 from app.core.exceptions import NotFoundError, ValidationError
@@ -247,7 +250,9 @@ class PerformanceService:
             required_pairs = _build_required_pairs(used_currencies, reporting_currency)
             fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
                 list(required_pairs),
-                as_of=datetime.combine(snapshot_date, datetime.max.time(), UTC),
+                as_of=effective_display_as_of(
+                    datetime.combine(snapshot_date, datetime.max.time(), UTC)
+                ),
             )
 
         holding_ids = [h.id for h in holdings if h.id is not None]
@@ -429,7 +434,7 @@ async def _live_cash_total(
     required_pairs = _build_required_pairs(list(unique_currencies), reporting_currency)
     fx_lookup = await fx_rate_repo.get_latest_rates_for_pairs(
         list(required_pairs),
-        as_of=as_of or datetime.now(UTC),
+        as_of=effective_display_as_of(as_of),
     )
 
     converted_cash = Decimal("0")
@@ -594,7 +599,7 @@ class InvestingSummaryService:
                     fx_as_of=None,
                 )
 
-            valuation_as_of = datetime.now(UTC)
+            valuation_as_of = effective_display_as_of()
             required_pairs = _build_required_pairs(used_currencies, reporting_currency)
             fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
                 list(required_pairs), as_of=valuation_as_of
