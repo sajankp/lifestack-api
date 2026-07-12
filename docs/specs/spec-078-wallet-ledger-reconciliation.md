@@ -1,7 +1,10 @@
 # Spec-078: Wallet Ledger Reconciliation (Statement Matching)
 
 **Created:** 2026-07-12
-**Status:** Approved (implementation) — open questions resolved by owner 2026-07-12
+**Status:** Implemented (api `57051b5`, 2026-07-12) — statement import, match engine, reconciliation
+view, and the break-on-edit hook are live. The web-side "transfer detail both-legs timeline" (§Solution
+item 4) is deferred as a fast-follow; the reconciliation view itself (statement selector, matched/
+unmatched lines, one-click match/unmatch) is implemented in `lifestack-web`.
 **Depends on:** spending ledger (`GET /spending/accounts/{id}/ledger`), derived wallet balance (`GET /finance/accounts/{id}/balance`), spec-074 (shared imports framework — the statement-upload vehicle), `docs/domain/cash-model-ledger-snapshots-reconciliation.md` (READ FIRST — this spec is cash-adjacent)
 **Scope:** multi-repo, user-facing — `lifestack-api` (statement import module, match model, reconciliation view) + `lifestack-web` (reconciliation UI, transfer timeline).
 
