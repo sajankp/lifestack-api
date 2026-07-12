@@ -38,9 +38,11 @@ record, read-only).
    preview → commit): generic CSV mapping (date, description, debit/credit, balance) in v1.
 2. **Match engine (deterministic, suggest-only):** exact amount + date-window (default ±3 days)
    proposes matches; user confirms/rejects in a review UI; confirmed matches persist as links.
-   One statement line ↔ one transaction (transfers match on either leg via `trigger_ref`
-   scoping, using `get_by_trigger_ref_and_account` — the unscoped variant raises
-   `MultipleResultsFound`).
+   One statement line ↔ one ledger event. Transfers match on either leg by querying
+   `CapitalTransfer` where `from_account_id` or `to_account_id` equals the statement's account
+   (note: `CapitalTransfer` has no `trigger_ref` field — that mechanism belongs to snapshot rows,
+   which wallet accounts don't have; matching here is direct against the transfer record, with
+   the leg recorded on the match link so a from-leg match is distinguishable from a to-leg match).
 3. **Reconciliation view:** per wallet account — statement closing balance vs ledger-derived
    balance as of statement end date, unmatched statement lines (likely missing transactions),
    unmatched ledger rows in the period (possibly duplicates/errors), and a "reconciled through

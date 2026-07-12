@@ -21,6 +21,12 @@ v1** (no expression language — see Fenced-off below):
 - **Definition:** name, `metric_type` enum (v1: `spend_total`, `income_total`, `net_cash_flow`,
   `savings_rate`, `category_ratio`), filter (categories/groups/accounts), window (`calendar_month`,
   `calendar_week`, `rolling_30d`), optional target (value + direction ≤/≥), display format.
+  **Single-currency constraint (v1):** every account in a KPI's filter must share one
+  `default_currency_code`; the KPI evaluates and displays in that currency. Enforced as a hard
+  validation error at definition create/update AND re-checked at evaluation time (account sets
+  and filters can change after definition) — summing native amounts across mixed currencies is
+  the spec-050 bug class and is never permitted. An unfiltered (all-accounts) KPI in a
+  mixed-currency workspace is therefore invalid in v1 until spec-075's as-of conversion lands.
 - **Evaluation:** computed from `spending_transactions` via the existing summary aggregation
   paths — read-only over the ledger, no new stored aggregates (KPI values are derived state,
   recomputable from events; storing them would create a second source of truth to drift).
