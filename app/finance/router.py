@@ -171,6 +171,8 @@ async def get_workspace_finance_settings(
             currency_display_preference=CurrencyDisplayPreference.symbol,
             lookthrough_min_weight_pct=settings.LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT,
             default_spending_account_id=None,
+            locale="en-US",
+            decimal_places=2,
             updated_at=datetime.now(UTC),
         )
     default_account_public_id = await setting_service.resolve_default_account_public_id(
@@ -181,6 +183,8 @@ async def get_workspace_finance_settings(
         currency_display_preference=row.currency_display_preference,
         lookthrough_min_weight_pct=row.lookthrough_min_weight_pct,
         default_spending_account_id=default_account_public_id,
+        locale=row.locale,
+        decimal_places=row.decimal_places,
         updated_at=row.updated_at,
     )
 
@@ -205,6 +209,8 @@ async def update_workspace_finance_settings(
         currency_display_preference=row.currency_display_preference,
         lookthrough_min_weight_pct=row.lookthrough_min_weight_pct,
         default_spending_account_id=default_account_public_id,
+        locale=row.locale,
+        decimal_places=row.decimal_places,
         updated_at=row.updated_at,
     )
 

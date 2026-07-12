@@ -668,13 +668,16 @@ async def test_performance_summary_converts_multi_currency_snapshot(client: Asyn
     assert price_res.status_code == 201, price_res.text
 
     now = datetime.now(UTC)
+    # spec-075: display conversion always uses the *previous* day's close --
+    # a same-day rate is never picked up (no intraday/live refresh).
+    rate_as_of = now - timedelta(days=1)
     async with postgres.async_session_maker() as session:
         session.add_all([
             FxRate(
                 base_currency_code="GBP",
                 quote_currency_code="USD",
                 rate=Decimal("1.2500000000"),
-                as_of=now,
+                as_of=rate_as_of,
                 fetched_at=now,
                 source="test",
             ),
@@ -682,7 +685,7 @@ async def test_performance_summary_converts_multi_currency_snapshot(client: Asyn
                 base_currency_code="EUR",
                 quote_currency_code="USD",
                 rate=Decimal("1.0850000000"),
-                as_of=now,
+                as_of=rate_as_of,
                 fetched_at=now,
                 source="test",
             ),
@@ -1016,7 +1019,8 @@ async def test_investing_lookthrough_converts_holdings_to_reporting_currency(cli
                 base_currency_code="GBP",
                 quote_currency_code="USD",
                 rate=Decimal("1.25"),
-                as_of=datetime.now(UTC),
+                # spec-075: display conversion uses the previous day's close.
+                as_of=datetime.now(UTC) - timedelta(days=1),
                 fetched_at=datetime.now(UTC),
                 source="test",
             )
@@ -2205,7 +2209,8 @@ async def test_networth_multi_currency_does_not_double_count_cash(client: AsyncC
                 base_currency_code="USD",
                 quote_currency_code="INR",
                 rate=Decimal("80.0000000000"),
-                as_of=now,
+                # spec-075: display conversion uses the previous day's close.
+                as_of=now - timedelta(days=1),
                 fetched_at=now,
                 source="test",
             )
@@ -2224,6 +2229,69 @@ async def test_networth_multi_currency_does_not_double_count_cash(client: AsyncC
     assert Decimal(nw["investing_cash_total"]) == Decimal("80000")
     # holdings + cash, NOT holdings + 2 * cash (the double-count bug).
     assert Decimal(nw["investing_total"]) == Decimal("160000")
+
+
+@pytest.mark.asyncio
+async def test_networth_conversion_ignores_same_day_rate_uses_previous_close(
+    client: AsyncClient,
+):
+    """spec-075: display conversion always uses the *previous* calendar
+    day's close, never a same-day/live rate -- one rate per day, for
+    historical and "current" views alike. A rate stamped ``today`` must be
+    ignored even when it is the only USD->INR row in the table; only a rate
+    dated yesterday (or earlier) may be picked up."""
+    account_map = await _register_and_login(
+        client,
+        email="nw-fx-asof@example.com",
+        username="nw-fx-asof",
+        password="TestPass123!",
+    )
+    await _create_holding_via_order(
+        client, account_map["brokerage"], "AAPL", "10.00000000", "100.00"
+    )
+    setting_res = await client.patch(
+        "/v1/finance/settings", json={"reporting_currency_code": "INR"}
+    )
+    assert setting_res.status_code == 200, setting_res.text
+
+    now = datetime.now(UTC)
+    async with postgres.async_session_maker() as session:
+        session.add(
+            FxRate(
+                base_currency_code="USD",
+                quote_currency_code="INR",
+                rate=Decimal("90.0000000000"),
+                as_of=now,  # today -- must be ignored
+                fetched_at=now,
+                source="test",
+            )
+        )
+        await session.commit()
+
+    # No rate dated yesterday-or-earlier exists yet: conversion is unavailable.
+    nw = (await client.get("/v1/finance/net-worth")).json()
+    assert nw["valuation_status"] != "ok"
+    assert nw["total_net_worth"] is None
+
+    yesterday = now - timedelta(days=1)
+    async with postgres.async_session_maker() as session:
+        session.add(
+            FxRate(
+                base_currency_code="USD",
+                quote_currency_code="INR",
+                rate=Decimal("80.0000000000"),
+                as_of=yesterday,
+                fetched_at=now,
+                source="test",
+            )
+        )
+        await session.commit()
+
+    # Now that yesterday's close exists, conversion uses it (80), not
+    # today's 90 -- even though today's row is more recent.
+    nw = (await client.get("/v1/finance/net-worth")).json()
+    assert nw["valuation_status"] == "ok"
+    assert Decimal(nw["investing_cash_total"]) == Decimal("80000")
 
 
 # ---------------------------------------------------------------------------

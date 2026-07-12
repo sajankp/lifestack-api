@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.audit import AuditLogger
+from app.core.currency import effective_display_as_of
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
 from app.finance.models import (
@@ -340,6 +341,8 @@ class FinanceSettingService:
             else settings.LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT
         )
         default_spending_account_id = existing.default_spending_account_id if existing else None
+        locale = existing.locale if existing else "en-US"
+        decimal_places = existing.decimal_places if existing else 2
 
         if "reporting_currency_code" in updates:
             reporting_currency_code = updates["reporting_currency_code"]
@@ -356,6 +359,12 @@ class FinanceSettingService:
             )
         if updates.get("lookthrough_min_weight_pct") is not None:
             lookthrough_min_weight_pct = updates["lookthrough_min_weight_pct"]
+
+        if updates.get("locale") is not None:
+            locale = updates["locale"]
+
+        if updates.get("decimal_places") is not None:
+            decimal_places = updates["decimal_places"]
 
         if "default_spending_account_id" in updates:
             account_public_id = updates["default_spending_account_id"]
@@ -383,6 +392,8 @@ class FinanceSettingService:
             currency_display_preference=currency_display_preference,
             lookthrough_min_weight_pct=lookthrough_min_weight_pct,
             default_spending_account_id=default_spending_account_id,
+            locale=locale,
+            decimal_places=decimal_places,
         )
 
     async def get_user_settings(self, workspace_id: int, user_id: int) -> dict:
@@ -393,17 +404,27 @@ class FinanceSettingService:
         workspace_currency_display_preference = (
             workspace.currency_display_preference if workspace else CurrencyDisplayPreference.symbol
         )
+        workspace_locale = workspace.locale if workspace else "en-US"
+        workspace_decimal_places = workspace.decimal_places if workspace else 2
         reporting_currency_override_code = (
             user_setting.reporting_currency_override_code if user_setting else None
         )
         currency_display_preference_override = (
             user_setting.currency_display_preference_override if user_setting else None
         )
+        locale_override = user_setting.locale_override if user_setting else None
+        decimal_places_override = user_setting.decimal_places_override if user_setting else None
         effective_reporting_currency_code = (
             reporting_currency_override_code or workspace_reporting_currency_code
         )
         effective_currency_display_preference = (
             currency_display_preference_override or workspace_currency_display_preference
+        )
+        effective_locale = locale_override or workspace_locale
+        effective_decimal_places = (
+            decimal_places_override
+            if decimal_places_override is not None
+            else workspace_decimal_places
         )
 
         updated_at = (
@@ -421,6 +442,12 @@ class FinanceSettingService:
             "workspace_currency_display_preference": workspace_currency_display_preference,
             "effective_reporting_currency_code": effective_reporting_currency_code,
             "effective_currency_display_preference": effective_currency_display_preference,
+            "locale_override": locale_override,
+            "decimal_places_override": decimal_places_override,
+            "workspace_locale": workspace_locale,
+            "workspace_decimal_places": workspace_decimal_places,
+            "effective_locale": effective_locale,
+            "effective_decimal_places": effective_decimal_places,
             "updated_at": updated_at,
         }
 
@@ -432,6 +459,8 @@ class FinanceSettingService:
         currency_display_preference_override = (
             existing.currency_display_preference_override if existing else None
         )
+        locale_override = existing.locale_override if existing else None
+        decimal_places_override = existing.decimal_places_override if existing else None
 
         if "reporting_currency_override_code" in updates:
             reporting_currency_override_code = updates["reporting_currency_override_code"]
@@ -445,11 +474,19 @@ class FinanceSettingService:
         if "currency_display_preference_override" in updates:
             currency_display_preference_override = updates["currency_display_preference_override"]
 
+        if "locale_override" in updates:
+            locale_override = updates["locale_override"]
+
+        if "decimal_places_override" in updates:
+            decimal_places_override = updates["decimal_places_override"]
+
         await self.setting_repository.upsert_user_settings(
             workspace_id,
             user_id,
             reporting_currency_override_code=reporting_currency_override_code,
             currency_display_preference_override=currency_display_preference_override,
+            locale_override=locale_override,
+            decimal_places_override=decimal_places_override,
         )
         return await self.get_user_settings(workspace_id, user_id)
 
@@ -1315,7 +1352,9 @@ class NetWorthService:
                 pairs = [(c, reporting_currency) for c in foreign] + [
                     (reporting_currency, c) for c in foreign
                 ]
-                fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(pairs)
+                fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
+                    pairs, as_of=effective_display_as_of()
+                )
 
         # Assemble spending account list and total
         spending_accounts = []

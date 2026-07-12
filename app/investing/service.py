@@ -19,6 +19,9 @@ from app.core.currency import (
     convert_amount as _convert_amount,
 )
 from app.core.currency import (
+    effective_display_as_of,
+)
+from app.core.currency import (
     fx_rates_used as _fx_rates_used,
 )
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError, ValidationError
@@ -1556,7 +1559,7 @@ class ExposureAnalyticsService:
             required_pairs = _build_required_pairs(used_currencies, reporting_currency)
             fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
                 list(required_pairs),
-                datetime.combine(as_of, datetime.max.time(), tzinfo=UTC),
+                effective_display_as_of(datetime.combine(as_of, datetime.max.time(), tzinfo=UTC)),
             )
             if fx_lookup:
                 fx_as_of = max(rate.as_of for rate in fx_lookup.values())

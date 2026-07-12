@@ -12,11 +12,32 @@ import from a single authoritative location, and makes them available to the
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.finance.models import FxRate
+
+
+def effective_display_as_of(reference: datetime | None = None) -> datetime:
+    """FX as-of cutoff for display conversions (spec-075): every calendar
+    day converts at exactly ONE rate, the *previous* calendar day's close --
+    no intraday/live refresh, and no separate rule for historical vs.
+    "current" views. *reference* is the calendar day being displayed
+    (defaults to now); the returned cutoff is that day minus one, end of
+    day, so ``FxRate.as_of <= cutoff`` picks the most recent rate dated on
+    or before the previous day (degrading further back if that day itself
+    has no rate -- never forward to *reference*'s own day).
+    """
+    ref = reference or datetime.now(UTC)
+    # ``.date()`` reads the calendar day in the datetime's own tzinfo, but
+    # FxRate.as_of is always UTC-anchored -- a tz-aware reference in a
+    # non-UTC offset must be normalized to UTC first, or the cutoff can land
+    # on the wrong calendar day.
+    ref_utc = ref.astimezone(UTC) if ref.tzinfo is not None else ref
+    previous_day = ref_utc.date() - timedelta(days=1)
+    return datetime.combine(previous_day, datetime.max.time(), tzinfo=UTC)
 
 
 def build_required_pairs(

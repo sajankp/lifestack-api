@@ -55,11 +55,19 @@ class AccountResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# spec-075: explicit display locales supported in v1. Kept as an allow-list
+# (not free-form BCP-47) so the Indian-grouping gate and decimal formatting
+# stay deterministic and testable.
+SUPPORTED_DISPLAY_LOCALES = {"en-US", "en-IN", "en-GB"}
+
+
 class WorkspaceFinanceSettingUpdate(BaseModel):
     reporting_currency_code: str | None = Field(default=None, min_length=1, max_length=10)
     currency_display_preference: CurrencyDisplayPreference | None = None
     lookthrough_min_weight_pct: Decimal | None = Field(default=None, ge=0, le=100)
     default_spending_account_id: uuid.UUID | None = Field(default=None)
+    locale: str | None = Field(default=None)
+    decimal_places: int | None = Field(default=None, ge=0, le=6)
 
     @field_validator("reporting_currency_code")
     @classmethod
@@ -68,12 +76,23 @@ class WorkspaceFinanceSettingUpdate(BaseModel):
             return None
         return value.strip().upper()
 
+    @field_validator("locale")
+    @classmethod
+    def validate_locale(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value not in SUPPORTED_DISPLAY_LOCALES:
+            raise ValueError(f"Unsupported locale '{value}'")
+        return value
+
 
 class WorkspaceFinanceSettingResponse(BaseModel):
     reporting_currency_code: str | None
     currency_display_preference: CurrencyDisplayPreference
     lookthrough_min_weight_pct: Decimal
     default_spending_account_id: uuid.UUID | None = None
+    locale: str
+    decimal_places: int
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -82,6 +101,8 @@ class WorkspaceFinanceSettingResponse(BaseModel):
 class UserFinanceSettingUpdate(BaseModel):
     reporting_currency_override_code: str | None = Field(default=None, min_length=1, max_length=10)
     currency_display_preference_override: CurrencyDisplayPreference | None = None
+    locale_override: str | None = Field(default=None)
+    decimal_places_override: int | None = Field(default=None, ge=0, le=6)
 
     @field_validator("reporting_currency_override_code")
     @classmethod
@@ -89,6 +110,15 @@ class UserFinanceSettingUpdate(BaseModel):
         if value is None:
             return None
         return value.strip().upper()
+
+    @field_validator("locale_override")
+    @classmethod
+    def validate_locale_override(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value not in SUPPORTED_DISPLAY_LOCALES:
+            raise ValueError(f"Unsupported locale '{value}'")
+        return value
 
 
 class UserFinanceSettingResponse(BaseModel):
@@ -98,6 +128,12 @@ class UserFinanceSettingResponse(BaseModel):
     workspace_currency_display_preference: CurrencyDisplayPreference
     effective_reporting_currency_code: str | None
     effective_currency_display_preference: CurrencyDisplayPreference
+    locale_override: str | None = None
+    decimal_places_override: int | None = None
+    workspace_locale: str
+    workspace_decimal_places: int
+    effective_locale: str
+    effective_decimal_places: int
     updated_at: datetime
 
 

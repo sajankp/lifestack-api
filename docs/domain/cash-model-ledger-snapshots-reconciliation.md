@@ -198,3 +198,15 @@ Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**
   `corporate_action_id` FK (exactly one of the two set). Not retroactive: existing
   un-split holdings (e.g. imported NVDA/GOOGL rows with real-world un-applied splits)
   stay wrong until a user records the corporate action via the new endpoints.
+- **2026-07-12 (spec-075, backend as-of conversion):** Display-currency conversion
+  (net worth, investing summary/live-cash, snapshot valuation, lookthrough exposure)
+  now uses one FX rate per calendar day — the *previous* day's close — instead of
+  whatever row happened to be most recently ingested, collapsing the historical-vs-live
+  distinction into a single rule (`effective_display_as_of` in `app/core/currency.py`).
+  A same-day/intraday rate is never used, even if present; missing a rate for the
+  previous day degrades to the nearest earlier system/user row (existing
+  `get_latest_rate`/`get_historical_rate_with_source` semantics), never forward. No
+  change to what's written (ledger/snapshot rows, `fx_rate_used` on transfers) — this is
+  a read/display-path rule only. The frontend display-profile (locale/grouping) and
+  explicit per-value FX provenance fields from spec-075 are follow-up work, not yet
+  implemented.

@@ -246,3 +246,49 @@ async def test_finance_settings_contract_with_user_overrides(client: AsyncClient
     assert updated_user_settings_body["currency_display_preference_override"] == "symbol"
     assert updated_user_settings_body["effective_reporting_currency_code"] == "INR"
     assert updated_user_settings_body["effective_currency_display_preference"] == "symbol"
+
+
+@pytest.mark.asyncio
+async def test_finance_display_profile_locale_and_decimal_places(client: AsyncClient):
+    """spec-075: workspace locale/decimal-places, with per-user override,
+    default to en-US/2 and are validated against the supported-locale
+    allow-list."""
+    suffix = uuid4().hex[:8]
+    await _register_and_login(
+        client,
+        email=f"contract-display-profile-{suffix}@example.com",
+        username=f"contract_display_profile_{suffix}",
+        password="Password123!",
+    )
+
+    # Defaults before any settings row exists.
+    default_settings = await client.get("/v1/finance/settings")
+    assert default_settings.status_code == 200
+    assert default_settings.json()["locale"] == "en-US"
+    assert default_settings.json()["decimal_places"] == 2
+
+    rejected = await client.patch("/v1/finance/settings", json={"locale": "fr-FR"})
+    assert rejected.status_code == 422
+
+    updated = await client.patch(
+        "/v1/finance/settings", json={"locale": "en-IN", "decimal_places": 0}
+    )
+    assert updated.status_code == 200
+    assert updated.json()["locale"] == "en-IN"
+    assert updated.json()["decimal_places"] == 0
+
+    user_settings = await client.get("/v1/finance/settings/user")
+    assert user_settings.status_code == 200
+    user_body = user_settings.json()
+    assert user_body["workspace_locale"] == "en-IN"
+    assert user_body["workspace_decimal_places"] == 0
+    assert user_body["effective_locale"] == "en-IN"
+    assert user_body["effective_decimal_places"] == 0
+
+    override = await client.patch("/v1/finance/settings/user", json={"locale_override": "en-GB"})
+    assert override.status_code == 200
+    override_body = override.json()
+    assert override_body["locale_override"] == "en-GB"
+    assert override_body["effective_locale"] == "en-GB"
+    # Decimal-places override untouched -- still inherits the workspace value.
+    assert override_body["effective_decimal_places"] == 0
