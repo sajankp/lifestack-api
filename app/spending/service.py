@@ -1164,7 +1164,10 @@ class TransactionService:
                 transaction.account_id = account.id  # type: ignore[assignment]
 
         breaking_fields = {"amount", "occurred_at", "type"}
-        is_breaking_edit = breaking_fields.intersection(update_data)
+        is_breaking_edit = any(
+            field in update_data and getattr(transaction, field) != update_data[field]
+            for field in breaking_fields
+        )
 
         for key, value in update_data.items():
             setattr(transaction, key, value)

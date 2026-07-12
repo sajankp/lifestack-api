@@ -213,12 +213,34 @@ class StatementService:
             .all()
         )
 
-        already_matched_tx_ids = {
-            line.matched_transaction_id for line in lines if line.matched_transaction_id
-        }
-        already_matched_transfer_ids = {
-            line.matched_transfer_id for line in lines if line.matched_transfer_id
-        }
+        # Workspace-wide, not just this statement's lines: an event already
+        # matched on a different statement must not be suggested/counted as
+        # unmatched again here. A transfer is keyed by (id, leg) since each
+        # leg can legitimately match a different statement line.
+        already_matched_tx_ids = set(
+            (
+                await self.session.execute(
+                    select(StatementLine.matched_transaction_id).where(
+                        StatementLine.workspace_id == workspace_id,
+                        StatementLine.matched_transaction_id.is_not(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        already_matched_transfer_legs = set(
+            (
+                await self.session.execute(
+                    select(
+                        StatementLine.matched_transfer_id, StatementLine.matched_transfer_leg
+                    ).where(
+                        StatementLine.workspace_id == workspace_id,
+                        StatementLine.matched_transfer_id.is_not(None),
+                    )
+                )
+            ).all()
+        )
 
         matched_lines = [
             await self.line_to_dict(line)
@@ -238,7 +260,7 @@ class StatementService:
                 candidates.append({
                     "kind": "transaction",
                     "id": tx.public_id,
-                    "occurred_at": tx.occurred_at.date(),
+                    "occurred_at": tx.occurred_at.astimezone(UTC).date(),
                     "amount": _signed_transaction_amount(tx),
                     "description": tx.description or "",
                     "leg": None,
@@ -246,12 +268,12 @@ class StatementService:
             for transfer, leg in await self._candidate_transfers(
                 workspace_id, account.id, line.occurred_at, line.amount
             ):
-                if transfer.id in already_matched_transfer_ids:
+                if (transfer.id, leg) in already_matched_transfer_legs:
                     continue
                 candidates.append({
                     "kind": "transfer",
                     "id": transfer.public_id,
-                    "occurred_at": transfer.occurred_at.date(),
+                    "occurred_at": transfer.occurred_at.astimezone(UTC).date(),
                     "amount": _signed_transfer_amount(transfer, leg),
                     "description": transfer.notes or "",
                     "leg": leg,
@@ -282,7 +304,7 @@ class StatementService:
             {
                 "kind": "transaction",
                 "id": tx.public_id,
-                "occurred_at": tx.occurred_at.date(),
+                "occurred_at": tx.occurred_at.astimezone(UTC).date(),
                 "amount": _signed_transaction_amount(tx),
                 "description": tx.description or "",
                 "leg": None,
@@ -306,22 +328,27 @@ class StatementService:
             .all()
         )
         for transfer in transfer_rows:
-            if transfer.id in already_matched_transfer_ids:
-                continue
-            if transfer.from_account_id == account.id:
+            if (
+                transfer.from_account_id == account.id
+                and (transfer.id, StatementLineMatchLeg.from_leg)
+                not in already_matched_transfer_legs
+            ):
                 unmatched_ledger_rows.append({
                     "kind": "transfer",
                     "id": transfer.public_id,
-                    "occurred_at": transfer.occurred_at.date(),
+                    "occurred_at": transfer.occurred_at.astimezone(UTC).date(),
                     "amount": _signed_transfer_amount(transfer, StatementLineMatchLeg.from_leg),
                     "description": transfer.notes or "",
                     "leg": StatementLineMatchLeg.from_leg,
                 })
-            if transfer.to_account_id == account.id:
+            if (
+                transfer.to_account_id == account.id
+                and (transfer.id, StatementLineMatchLeg.to_leg) not in already_matched_transfer_legs
+            ):
                 unmatched_ledger_rows.append({
                     "kind": "transfer",
                     "id": transfer.public_id,
-                    "occurred_at": transfer.occurred_at.date(),
+                    "occurred_at": transfer.occurred_at.astimezone(UTC).date(),
                     "amount": _signed_transfer_amount(transfer, StatementLineMatchLeg.to_leg),
                     "description": transfer.notes or "",
                     "leg": StatementLineMatchLeg.to_leg,
@@ -382,6 +409,7 @@ class StatementService:
             ).scalar_one_or_none()
             if tx is None:
                 raise NotFoundError(detail=f"Transaction with id {transaction_id} not found")
+            await self._check_not_already_matched(matched_transaction_id=tx.id)
             line.matched_transaction_id = tx.id
         else:
             transfer = (
@@ -405,6 +433,9 @@ class StatementService:
                 raise ValidationError(
                     detail=f"Transfer does not have a {leg.value}-leg on this account"
                 )
+            await self._check_not_already_matched(
+                matched_transfer_id=transfer.id, matched_transfer_leg=leg
+            )
             line.matched_transfer_id = transfer.id
             line.matched_transfer_leg = leg
 
@@ -436,6 +467,44 @@ class StatementService:
         await self.session.refresh(line)
         return line
 
+    async def _check_not_already_matched(
+        self,
+        *,
+        matched_transaction_id: int | None = None,
+        matched_transfer_id: int | None = None,
+        matched_transfer_leg: StatementLineMatchLeg | None = None,
+    ) -> None:
+        """Workspace-wide, not statement-scoped: a transaction must match at
+        most one statement line, even across different statements. A
+        transfer may legitimately match twice — once per leg (from-side on
+        one account's statement, to-side on the other's) — so the transfer
+        check is scoped to the same leg only."""
+        if matched_transaction_id is not None:
+            existing = (
+                await self.session.execute(
+                    select(StatementLine.id).where(
+                        StatementLine.matched_transaction_id == matched_transaction_id
+                    )
+                )
+            ).first()
+            if existing is not None:
+                raise ValidationError(
+                    detail="Transaction is already matched to another statement line"
+                )
+        if matched_transfer_id is not None:
+            existing = (
+                await self.session.execute(
+                    select(StatementLine.id).where(
+                        StatementLine.matched_transfer_id == matched_transfer_id,
+                        StatementLine.matched_transfer_leg == matched_transfer_leg,
+                    )
+                )
+            ).first()
+            if existing is not None:
+                raise ValidationError(
+                    detail=f"Transfer's {matched_transfer_leg} leg is already matched to another statement line"
+                )
+
     async def _get_line(self, statement_id: int, line_public_id: uuid.UUID) -> StatementLine:
         line = (
             await self.session.execute(
@@ -463,6 +532,10 @@ class StatementService:
         `SpendingTransactionService` on update/delete of a matched
         transaction — never the reverse (INV-1: this module never writes to
         spending_transactions)."""
+        if transaction_id is None:
+            # `matched_transaction_id == None` would compile to `IS NULL` and
+            # match every unmatched line — fail fast instead of bulk-clearing.
+            raise ValueError("transaction_id cannot be None")
         lines = (
             (
                 await self.session.execute(
@@ -478,6 +551,8 @@ class StatementService:
         await self._break_lines(lines)
 
     async def break_matches_for_transfer(self, workspace_id: int, transfer_id: int) -> None:
+        if transfer_id is None:
+            raise ValueError("transfer_id cannot be None")
         lines = (
             (
                 await self.session.execute(
