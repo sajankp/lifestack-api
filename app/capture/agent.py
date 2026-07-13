@@ -360,7 +360,7 @@ async def _handle_gemini_message(
     resumption_update = msg.get("sessionResumptionUpdate")
     if resumption_update:
         new_handle = resumption_update.get("newHandle")
-        if new_handle and resumption_update.get("resumable", True):
+        if new_handle and resumption_update.get("resumable") is not False:
             await client_ws.send_json({"type": "session_resumption", "handle": new_handle})
         return
     # ── goAway (spec-079 Stage B) ────────────────────────────────────────────

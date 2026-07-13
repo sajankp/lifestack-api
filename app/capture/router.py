@@ -104,5 +104,5 @@ async def websocket_agent_endpoint(websocket: WebSocket):
         user_id,
         workspace_id,
         websocket.query_params.get("timezone", "UTC"),
-        websocket.query_params.get("resume") or None,
+        (websocket.query_params.get("resume") or "").strip() or None,
     )

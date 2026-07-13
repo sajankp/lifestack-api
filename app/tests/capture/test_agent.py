@@ -629,6 +629,23 @@ async def test_non_resumable_session_update_not_forwarded():
 
 
 @pytest.mark.asyncio
+async def test_resumption_update_with_null_resumable_field_treated_as_resumable():
+    """A missing/`null` `resumable` field (distinct from an explicit `false`) must
+    not be treated as falsy — only an explicit `False` withholds the handle."""
+    client_ws = FakeClientWebSocket()
+
+    await _handle_gemini_message(
+        {"sessionResumptionUpdate": {"newHandle": "handle-xyz", "resumable": None}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=1,
+        workspace_id=1,
+    )
+
+    assert {"type": "session_resumption", "handle": "handle-xyz"} in client_ws.sent_json
+
+
+@pytest.mark.asyncio
 async def test_go_away_forwarded_as_session_state():
     """Gemini's goAway warns of an imminent server-side disconnect; forward it so
     the client can reconnect proactively before the hard close (spec-079 Stage B)."""
