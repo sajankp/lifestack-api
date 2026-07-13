@@ -3,6 +3,7 @@ import base64
 import inspect
 import json
 import time
+import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,34 +34,23 @@ CAPTURE_PROVIDER_ERROR = "Voice provider returned an error. Please try again."
 CAPTURE_INVALID_MESSAGE_ERROR = "Voice capture received an invalid client message."
 
 
-def _log_capture_turn(
-    tool_name: str, args: dict, status: str, *, user_id: int, workspace_id: int
-) -> None:
-    """Append-only JSONL record of one voice tool-call turn (spec-079 Stage A):
-    tool name, args, and outcome — no raw utterance/transcript text (that's a
-    separate, not-yet-built capability pending confirmation that Gemini's
-    input-transcription doesn't add API cost). Feature-off (no writes) unless
-    `settings.CAPTURE_TURN_LOG_PATH` is set; production points it at a
-    bind-mounted host path (see docker-compose.yml) so it survives container
-    recreation, unlike the stdout-only structured logs. A write failure must
-    never sink the voice session, so all I/O errors are swallowed. The write
-    itself is blocking disk I/O (mkdir/open/write); run inline in the live
-    agent session it would block the event loop that's also driving the
-    audio pipeline, so it's offloaded to a worker thread via
+def _log_capture_event(entry: dict) -> None:
+    """Append one JSONL entry to the capture log (spec-079 Stage A/B).
+
+    Feature-off (no writes) unless `settings.CAPTURE_TURN_LOG_PATH` is set;
+    production points it at a bind-mounted host path (see docker-compose.yml) so
+    it survives container recreation, unlike the stdout-only structured logs. A
+    write failure must never sink the voice session, so all I/O errors are
+    swallowed. The write itself is blocking disk I/O (mkdir/open/write); run
+    inline in the live agent session it would block the event loop that's also
+    driving the audio pipeline, so it's offloaded to a worker thread via
     `run_in_executor` whenever a loop is running, falling back to inline
     execution for sync callers (e.g. unit tests with no running loop).
     """
     path = settings.CAPTURE_TURN_LOG_PATH
     if not path:
         return
-    entry = {
-        "timestamp": datetime.now(UTC).isoformat(),
-        "tool": tool_name,
-        "args": args,
-        "status": status,
-        "user_id": user_id,
-        "workspace_id": workspace_id,
-    }
+    entry = {"timestamp": datetime.now(UTC).isoformat(), **entry}
 
     def _write() -> None:
         try:
@@ -77,6 +67,57 @@ def _log_capture_turn(
         _write()
     else:
         loop.run_in_executor(None, _write)
+
+
+def _log_capture_turn(
+    tool_name: str,
+    args: dict,
+    status: str,
+    *,
+    user_id: int,
+    workspace_id: int,
+    session_id: str | None = None,
+) -> None:
+    """Record one voice tool-call turn (`kind='tool_call'`): tool name, args, and
+    outcome. Still carries no raw *user* utterance text — input transcription is
+    gated on a metered-cost check (spec-079 Q4). `session_id` groups a
+    conversation's turns; see `_log_capture_event` for the write semantics.
+    """
+    _log_capture_event({
+        "kind": "tool_call",
+        "session_id": session_id,
+        "tool": tool_name,
+        "args": args,
+        "status": status,
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+    })
+
+
+def _log_assistant_transcript(
+    text: str,
+    *,
+    user_id: int,
+    workspace_id: int,
+    session_id: str | None = None,
+    generation_ms: float | None = None,
+) -> None:
+    """Record the assistant's spoken reply for a turn (`kind='assistant_transcript'`),
+    captured from Gemini output transcription (spec-079 Stage B, metered free).
+    `generation_ms` is the turn's generation span (first response chunk →
+    turnComplete) — the metered latency driver is reply length, so a long span
+    flags a long-winded turn. No-op on empty text.
+    """
+    if not text.strip():
+        return
+    _log_capture_event({
+        "kind": "assistant_transcript",
+        "session_id": session_id,
+        "text": text,
+        "generation_ms": round(generation_ms, 1) if generation_ms is not None else None,
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+    })
 
 
 def _log_session_ended(reason: str, duration_seconds: float) -> None:
@@ -246,6 +287,38 @@ async def _connect_gemini(
     raise RuntimeError("Failed to establish Gemini WebSocket connection")
 
 
+def _accumulate_assistant_text(turn_state: dict | None, text: str) -> None:
+    """Buffer an assistant reply fragment for the current turn (spec-079 Stage B).
+    Records the first-fragment time so the turn's generation span can be logged.
+    No-op when there is no turn_state (callers that don't want turn logging)."""
+    if turn_state is None:
+        return
+    if turn_state.get("started_at") is None:
+        turn_state["started_at"] = time.monotonic()
+    turn_state.setdefault("assistant_text", []).append(text)
+
+
+def _flush_assistant_turn(
+    turn_state: dict, *, user_id: int, workspace_id: int, session_id: str | None
+) -> None:
+    """Write the accumulated assistant reply for a completed turn to the capture
+    log, then reset the buffer for the next turn (spec-079 Stage B)."""
+    fragments = turn_state.get("assistant_text") or []
+    started_at = turn_state.get("started_at")
+    turn_state["assistant_text"] = []
+    turn_state["started_at"] = None
+    if not fragments:
+        return
+    generation_ms = (time.monotonic() - started_at) * 1000 if started_at is not None else None
+    _log_assistant_transcript(
+        "".join(fragments),
+        user_id=user_id,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        generation_ms=generation_ms,
+    )
+
+
 async def _handle_gemini_message(
     msg: dict,
     client_ws: WebSocket,
@@ -253,6 +326,9 @@ async def _handle_gemini_message(
     user_id: int,
     workspace_id: int,
     user_timezone: str = "UTC",
+    *,
+    session_id: str | None = None,
+    turn_state: dict | None = None,
 ):
     """
     Parse a single message from Gemini and forward content to the client.
@@ -286,6 +362,7 @@ async def _handle_gemini_message(
                 # Transcript text (may arrive in same event as audio on 3.1)
                 text = part.get("text")
                 if text:
+                    _accumulate_assistant_text(turn_state, text)
                     await client_ws.send_json({"type": "transcript", "content": text})
 
                 # Audio blob — raw 24kHz 16-bit PCM, base64-encoded
@@ -295,6 +372,21 @@ async def _handle_gemini_message(
                     if audio_b64:
                         audio_bytes = base64.b64decode(audio_b64)
                         await client_ws.send_bytes(audio_bytes)
+
+        # Output transcription (spec-079 Stage B): native-audio models emit the
+        # assistant's spoken reply here as text, separate from modelTurn parts.
+        # Forward as the same caption channel and accumulate for the turn log.
+        output_transcription = server_content.get("outputTranscription")
+        if output_transcription and (ot_text := output_transcription.get("text")):
+            _accumulate_assistant_text(turn_state, ot_text)
+            await client_ws.send_json({"type": "transcript", "content": ot_text})
+
+        # Turn boundary: flush the accumulated assistant reply to the capture log
+        # with its generation span, then reset for the next turn.
+        if server_content.get("turnComplete") and turn_state is not None:
+            _flush_assistant_turn(
+                turn_state, user_id=user_id, workspace_id=workspace_id, session_id=session_id
+            )
 
     # ── toolCall ─────────────────────────────────────────────────────────────
     tool_call = msg.get("toolCall")
@@ -320,6 +412,7 @@ async def _handle_gemini_message(
                 result.get("status", "success"),
                 user_id=user_id,
                 workspace_id=workspace_id,
+                session_id=session_id,
             )
 
             await client_ws.send_json({
@@ -369,6 +462,11 @@ async def run_agent_session(
     gemini_ws = None
     ws_context_manager = None
     session_started_at = time.monotonic()
+    # spec-079 Stage B: one id per WS session groups the capture log's turns into
+    # a conversation; the mutable turn_state accumulates the assistant's reply
+    # across messages so a full turn can be logged at its turnComplete boundary.
+    session_id = uuid.uuid4().hex
+    turn_state: dict = {"assistant_text": [], "started_at": None}
     # spec-079 Stage A: mutable holder so nested closures can record why the
     # session ended, for the disconnect/resume-failure instrumentation logged
     # once in the outer `finally` below.
@@ -432,6 +530,8 @@ async def run_agent_session(
                         user_id,
                         workspace_id,
                         user_timezone,
+                        session_id=session_id,
+                        turn_state=turn_state,
                     )
             except asyncio.CancelledError:
                 pass
