@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -370,3 +371,47 @@ async def test_weekly_summary_computes_health_summary(client: AsyncClient):
     assert summary.health_summary["doses_taken"] == 1
     assert summary.health_summary["weight_entries_logged"] == 2
     assert summary.health_summary["weight_delta_kg"] == "-0.50"
+
+
+@pytest.mark.asyncio
+async def test_mark_weekly_summary_read(client: AsyncClient):
+    """spec-080: POST /read stamps read_at (idempotently), is workspace-scoped,
+    and the response carries read_at."""
+    creds = await _register_and_login(client, "sumread")
+    cookies = creds["cookies"]
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user.id))[0].id
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+        summary = await service.generate_for_workspace_week(workspace_id, user.id, week_start)
+        summary_id = str(summary.public_id)
+        await session.commit()
+
+    # Fresh summary starts unread.
+    detail = await client.get(f"/v1/summaries/weekly/{summary_id}", cookies=cookies)
+    assert detail.status_code == 200
+    assert detail.json()["read_at"] is None
+
+    # First read stamps read_at and returns it.
+    resp = await client.post(f"/v1/summaries/weekly/{summary_id}/read", cookies=cookies)
+    assert resp.status_code == 200, resp.text
+    first_read_at = resp.json()["read_at"]
+    assert first_read_at is not None
+
+    # Idempotent: a second read does not move the timestamp.
+    resp2 = await client.post(f"/v1/summaries/weekly/{summary_id}/read", cookies=cookies)
+    assert resp2.status_code == 200
+    assert resp2.json()["read_at"] == first_read_at
+
+    # Unknown id is a 404, not a silent success.
+    missing = await client.post(f"/v1/summaries/weekly/{uuid.uuid4()}/read", cookies=cookies)
+    assert missing.status_code == 404

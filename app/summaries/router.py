@@ -53,3 +53,15 @@ async def get_weekly_summary(
     _user: Annotated[dict, Depends(get_current_user)],
 ):
     return WeeklySummaryResponse.model_validate(await service.get(workspace_id, summary_id))
+
+
+@router.post("/{summary_id}/read", response_model=WeeklySummaryResponse)
+async def mark_weekly_summary_read(
+    summary_id: uuid.UUID,
+    service: Annotated[WeeklySummaryService, Depends(get_weekly_summary_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    """Mark a summary as read (spec-080) so the morning-briefing 'ready' line
+    clears. Idempotent; workspace-scoped 404 for unknown ids."""
+    return WeeklySummaryResponse.model_validate(await service.mark_read(workspace_id, summary_id))

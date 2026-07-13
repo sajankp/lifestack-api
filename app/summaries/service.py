@@ -61,6 +61,14 @@ class WeeklySummaryService:
             raise NotFoundError(detail=f"Weekly summary with id {public_id} not found")
         return item
 
+    async def mark_read(self, workspace_id: int, public_id: uuid.UUID):
+        """Record that the user has opened this summary (spec-080). Workspace-scoped
+        404 for unknown/other-workspace ids; idempotent on repeat reads."""
+        item = await self.repository.by_public_id(workspace_id, public_id)
+        if not item:
+            raise NotFoundError(detail=f"Weekly summary with id {public_id} not found")
+        return await self.repository.mark_read(item)
+
     async def generate_for_workspace_week(
         self, workspace_id: int, user_id: int, week_start: date
     ) -> WeeklySummary:

@@ -601,6 +601,10 @@ class MorningBriefingWorkflow:
         latest = await self.weekly_summary_repo.latest(workspace_id)
         if latest is None:
             return []
+        # Already opened it? Drop the line — reading is the natural dismissal
+        # (spec-080), instead of nagging for the full freshness window.
+        if latest.read_at is not None:
+            return []
         age = now - latest.generated_at
         if age > timedelta(hours=_BRIEFING_WEEKLY_SUMMARY_FRESH_HOURS):
             return []
