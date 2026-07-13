@@ -79,6 +79,7 @@ def _build_setup_message(
     response_modalities: list[str] | None = None,
     user_timezone: str = "UTC",
     workspace_context: str = "",
+    resumption_handle: str | None = None,
 ) -> dict:
     """
     Build the Gemini Live API setup payload for Gemini 2.5 Flash Native Audio.
@@ -89,9 +90,12 @@ def _build_setup_message(
       a server-side empty-output error on tool turns.
     - Function calling is sequential (model waits for tool response before continuing).
 
-    Note on Gemini 3.1 Flash Live Preview:
-    That model only supports ["AUDIO"] modality which is incompatible with function
-    calling (causes 1007 errors). Switch back to 3.1 once it supports TEXT+AUDIO.
+    Note on Gemini 3.1 Flash Live Preview (re-verified 2026-07-13, spec-079):
+    That model rejects TEXT (and TEXT+AUDIO) response modalities, so `_connect_gemini`'s
+    fallback lands it on ["AUDIO"]. Contrary to the earlier note here, function calling
+    DOES work in AUDIO-only mode on this model, and the assistant caption text still
+    arrives via `outputAudioTranscription` (spec-079 Stage B). It is therefore usable
+    today; see the spec's model-benchmark section for the TPM-cap tradeoff vs 2.5.
     """
     if response_modalities is None:
         response_modalities = ["TEXT", "AUDIO"]
@@ -431,4 +435,15 @@ def _build_setup_message(
     # the assistant side of the capture log). Metered free; off by default.
     if settings.CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION:
         setup_message["setup"]["outputAudioTranscription"] = {}
+    # spec-079 Stage B: transport resilience. An empty `sessionResumption` opts
+    # the session in to receiving resumption handles; a handle (round-tripped back
+    # from the client on reconnect) resumes the prior conversation context.
+    if settings.CAPTURE_ENABLE_SESSION_RESUMPTION:
+        setup_message["setup"]["sessionResumption"] = (
+            {"handle": resumption_handle} if resumption_handle else {}
+        )
+    # A sliding-window compression config lets long sessions continue past the
+    # model's context limit instead of being terminated.
+    if settings.CAPTURE_ENABLE_CONTEXT_COMPRESSION:
+        setup_message["setup"]["contextWindowCompression"] = {"slidingWindow": {}}
     return setup_message

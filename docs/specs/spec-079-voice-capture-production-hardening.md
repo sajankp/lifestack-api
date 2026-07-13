@@ -289,3 +289,73 @@ without the still-gated user-utterance capture.
 `--audio` cost test (resolved question 4). Until then the log shows what the assistant said and did,
 but not the verbatim user utterance; the log entries are structured so adding a `user_transcript`
 event later is additive, not a reshape.
+
+## Model benchmark — Gemini 3 Flash Live vs 2.5 Native Audio (2026-07-13)
+
+Owner asked to evaluate `gemini-3.1-flash-live-preview` against the current
+`gemini-2.5-flash-native-audio-latest` before any switch, with an explicit "no rate-limiting
+problems" bar. Ran the Stage A eval against both and probed live capability + quota.
+
+**Eval (19 scored cases, `run-20260712-recalibrated.json` baseline):**
+- 2.5 Native Audio: **16/19 (84.2%)** — one genuine miss (`adv-15`, zero tool calls).
+- 3.1 Flash Live: **15/19 (78.9%)** — zero genuine routing misses; all four "failures" are
+  scorer-strictness (`12` vs `12.00`, bare date vs full ISO datetime, `81.19` vs `81.2` rounding,
+  and an injection string echoed into `account_name` while correctly *not* obeying it). On real
+  routing quality the two are equivalent; neither clears the 90% bar (still a scorer-calibration
+  gap, not a model gap).
+
+**Stale-comment correction.** `gemini_setup.py` claimed 3.1 Flash Live "only supports [AUDIO],
+incompatible with function calling (1007 errors)". Verified false as of this date: **3.1 Flash Live
+does function calling correctly in AUDIO-only mode**, and with `outputAudioTranscription` (proven
+free above) the assistant caption text still arrives via `serverContent.outputTranscription`. So the
+model is usable today; the existing `_connect_gemini` modality fallback already lands it on `[AUDIO]`.
+
+**Rate limits (owner's live free-tier dashboard + a 15-session burst):**
+| Model | RPM | TPM | RPD |
+|---|---|---|---|
+| 2.5 Native Audio | Unlimited | **1M** | Unlimited |
+| 3.1 Flash Live | Unlimited | **65K** | Unlimited |
+
+A 15-session back-to-back burst on 3.1 succeeded 15/15 with no throttling (consistent with unlimited
+RPM/RPD). **The binding constraint is TPM: 3.1 Flash Live caps at 65K/min where 2.5 has 1M.** For a
+real-time audio stream (continuous audio-in + audio-out + resent context — ~3.2K tokens/turn measured
+on 2.5), 65K TPM is tight and a couple of concurrent or long sessions could throttle mid-turn. **This
+is the "rate-limiting problem" to weigh, and it is specific to the new model.**
+
+**Recommendation: do NOT switch the default yet.** 3.1 Flash Live's routing is fine and its
+RPM/RPD are unlimited, but its 65K TPM ceiling is a real mid-session-throttle risk for audio that 2.5
+does not have. The code now supports either model cleanly (below), so `GEMINI_MODEL` can A/B them
+without code changes once a token-per-minute measurement of a real audio session confirms headroom.
+
+## Stage B transport resilience — implemented (2026-07-13, `feat/capture-stage-b-transport-resilience`)
+
+**Gate note.** Stage B was formally gated behind the ≥90%-twice-a-week eval bar. Owner directed the
+transport work now (network-drop resilience is the felt pain), ahead of that bar — recorded here as a
+deliberate owner decision, not a silent gate bypass. The eval bar still governs removing the
+"experimental" label (positioning rule, unchanged). WebRTC stays out of scope and unbuilt: it needs
+UDP/TURN ingress that the production Cloudflare Tunnel ("no public inbound ports") cannot carry, and
+Gemini Live is WebSocket-only anyway — so WS resilience is the correct lever, exactly as this spec
+predicted ("resume-on-WS may close it for one user on known networks").
+
+**Changes (all behind flags defaulting to current behavior; `app/capture/` + `lifestack-web`, no
+schema):**
+- Two config flags: `CAPTURE_ENABLE_SESSION_RESUMPTION` and `CAPTURE_ENABLE_CONTEXT_COMPRESSION`
+  (both default `False`). When set, `_build_setup_message` adds `sessionResumption` (empty to opt in,
+  `{handle}` to resume) and `contextWindowCompression: {slidingWindow: {}}` to the Gemini setup.
+  Both fields verified accepted by 2.5 Native Audio and 3.1 Flash Live with the current key.
+- `_handle_gemini_message` now forwards `sessionResumptionUpdate` to the client as
+  `{type: session_resumption, handle}` (only when `resumable`), and `goAway` as
+  `{type: session_state, state: closing, time_left}`.
+- `_connect_gemini` / `run_agent_session` thread a `resumption_handle`; the WS route reads it from a
+  `?resume=<handle>` query param so a reconnecting client restores context.
+- Web `VoiceAgentWidget`: stores the latest handle, auto-reconnects on an unexpected drop with
+  exponential backoff (cap 5 attempts; skips clean `1000` and policy `4003` closes and
+  user-initiated teardowns), passes `?resume=<handle>`, and surfaces reconnect/"renewing" state in
+  the transcript. TDD-covered in both repos (`test_agent.py` Stage B block; `VoiceAgentWidget.test.tsx`
+  reconnect tests).
+
+**Not built (tracked):** server-side *transparent* Gemini-leg reconnection (swapping the upstream
+socket under a live client without the client noticing) — higher risk against the shared relay loop;
+the client-driven resume above covers the felt failure (user network blips) without touching the
+relay. Enabling the two flags in production is a follow-up once a real audio session's TPM is
+measured against whichever model is chosen.
