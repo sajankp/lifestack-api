@@ -206,3 +206,86 @@ This closes the "no persistent record at all" gap but not the "no real-usage tra
 those are two different problems. Once the transcription-cost question above is resolved and
 utterance text becomes available, extending `_log_capture_turn` to include it is a small addition,
 not a redesign.
+
+## Transcription-cost metering — question 4 resolved for OUTPUT (2026-07-13)
+
+The blocker on real-usage transcript capture was resolved question 4's "only if free" gate: we did
+not know whether enabling `inputAudioTranscription`/`outputAudioTranscription` adds billable
+tokens. Rather than trust the docs, added `scripts/measure_transcription_cost.py` — a reusable,
+read-only metering harness (also handy for vetting any *new* model via `--model`). It opens two
+Live sessions on identical input (baseline vs transcription-enabled), negotiates a modality set the
+model accepts (same fallback order as `_connect_gemini`), and compares the API's self-reported
+`usageMetadata.totalTokenCount`, treating a delta inside the baseline's own reply-length jitter as
+noise. Tool calls are answered with a synthetic success so the turn completes — `execute_agent_tool`
+is never called, nothing is written.
+
+**Result (model `gemini-2.5-flash-native-audio-latest`, text input, 3 trials each):** baseline avg
+3206.7 tokens/turn vs with-transcription 3215.3 — **delta +8.7, well inside the 102-token baseline
+jitter**. The modality breakdown showed only `TEXT` (prompt) and `AUDIO` (spoken reply) buckets —
+**no separate transcription token line**. Output transcription also *worked* (captured the model's
+own reply text, e.g. "I've retrieved…"). **Conclusion: OUTPUT (assistant-side) transcription is
+effectively free → question 4 is satisfied for that direction.** Persisting the assistant's reply
+text into the capture-turn log (and logging every turn, not just tool-call turns) is now unblocked
+and adds no API cost.
+
+**Still open — INPUT (user-speech) transcription cost.** The text-input path cannot exercise input
+transcription (there is no user audio). `measure_transcription_cost.py --audio <clip>` tests it, but
+needs a short recorded utterance the owner supplies (no local TTS available). Until that runs, the
+user-utterance side of the log stays gated by the same "only if free" rule; the assistant side does
+not.
+
+## Voice latency triage (2026-07-13) — the obvious lever is marginal
+
+Report: voice turns feel slow while typed chat is instant. First ruled out a regression: the
+spec-079 sync-disk-IO-on-the-event-loop bug in `_log_capture_turn` was already fixed
+(`ac2a5d0`, `run_in_executor`). Prod runs on code defaults (`.env.production` sets none of the
+voice knobs): `GEMINI_MODEL=gemini-2.5-flash-preview-native-audio-18-12`,
+`GEMINI_THINKING_BUDGET=256`, `CAPTURE_TURN_LOG_PATH` unset (so **no persistent capture log exists
+in prod today** — enable it before expecting any).
+
+Extended `measure_transcription_cost.py` with per-turn latency (input-sent → first content byte,
+and → turnComplete) and thinking-token accounting, plus a `--thinking-budget` override to A/B the
+suspected lever. Measured (2 trials each):
+
+| thinking budget | thinking tok/turn | first response | turn complete |
+|---|---|---|---|
+| 256 (prod default) | ~53 | ~1.5 s | ~5.8 s |
+| 0 | 0 | ~1.3 s | ~5.6 s |
+
+**Conclusion: lowering the thinking budget does NOT meaningfully cut latency** (~200 ms, inside the
+noise) — it only saves ~53 tokens/turn. The dominant cost is generating the spoken reply itself:
+turn time tracked reply length (an 83-token reply ≈ 4.1 s; a 226-token reply ≈ 9.9 s), and text
+chat feels instant only because it never synthesises audio. The genuinely useful levers, in order:
+1. **Shorter replies** — the system prompt should push terse spoken answers; turn time is
+   ~linear in reply tokens. Biggest perceived-latency win, no infra change.
+2. **First-audio latency is already ~1.3–1.5 s** and the client streams audio as it arrives
+   (`agent.py` `send_bytes` per chunk), so the user hears speech before the turn completes — verify
+   the web client isn't buffering to turn end.
+3. **Model choice** > thinking budget — use `--model` to benchmark newer native-audio models.
+
+Not doing a thinking-budget change as a "latency fix" — the measurement says it wouldn't deliver.
+
+## Stage B logging — session-keyed, content-bearing capture log (2026-07-13)
+
+With OUTPUT transcription proven free (above), the capture-turn log is extended from "tool calls
+only" to something you can actually evaluate the agent against — without adding API cost and
+without the still-gated user-utterance capture.
+
+**Changes (all in `app/capture/`, no schema):**
+- New flag `CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION: bool = False` (default = current behavior, per the
+  spec's "new limit defaults to current behavior" rule). When true, `_build_setup_message` adds
+  `outputAudioTranscription: {}`, so native-audio models emit the assistant's spoken reply as text
+  in `serverContent.outputTranscription`.
+- `_handle_gemini_message` handles `outputTranscription` (forward to the client as a `transcript`
+  caption, same channel the TEXT-modality path already used) and accumulates it per turn; on
+  `serverContent.turnComplete` it flushes one `assistant_transcript` log event with the full reply
+  text and the turn's first-response latency.
+- Every log entry now carries a `session_id` (one uuid per WS session) and a `kind`
+  (`tool_call` | `assistant_transcript`), so a conversation's turns can be reconstructed and slow
+  or silent (no-tool-call) turns are no longer invisible. `_log_capture_turn` is refactored onto a
+  shared `_log_capture_event` writer (same executor-offload + swallow-errors + path-gating).
+
+**Still NOT captured — the user's own words.** Input transcription remains gated on the owner-run
+`--audio` cost test (resolved question 4). Until then the log shows what the assistant said and did,
+but not the verbatim user utterance; the log entries are structured so adding a `user_transcript`
+event later is additive, not a reshape.

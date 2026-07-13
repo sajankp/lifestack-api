@@ -440,8 +440,14 @@ async def test_doses_due_today_line_is_info_when_none_missed(
     mock_finance_setting_repo,
     mock_health_service,
 ):
+    # An already-taken dose is resolved and must NOT count toward "due today":
+    # only the still-outstanding (pending/missed) slot does.
     mock_health_service.get_schedule.side_effect = [
-        [_make_dose_slot(status="pending"), _make_dose_slot(status="taken")],  # today
+        [
+            _make_dose_slot(status="pending"),
+            _make_dose_slot(status="taken"),
+            _make_dose_slot(status="missed"),
+        ],  # today
         [],  # yesterday
     ]
     wf = _workflow_with_health(
@@ -461,7 +467,45 @@ async def test_doses_due_today_line_is_info_when_none_missed(
     health_lines = [line for line in result.lines if line.source.route == "/health"]
     assert len(health_lines) == 1
     assert health_lines[0].severity == "info"
+    # pending + missed count as outstanding; the taken dose is excluded.
     assert "2 doses due today" in health_lines[0].text
+
+
+@pytest.mark.asyncio
+async def test_all_doses_taken_today_omits_health_line(
+    mock_todo_service,
+    mock_budget_service,
+    mock_investing_service,
+    mock_recurring_transaction_service,
+    mock_notification_service,
+    mock_import_repo,
+    mock_weekly_summary_repo,
+    mock_finance_setting_repo,
+    mock_health_service,
+):
+    # Every scheduled dose today is resolved (taken/skipped) and nothing was
+    # missed yesterday — the "due today" line must disappear entirely, not
+    # keep reporting resolved doses as still due.
+    mock_health_service.get_schedule.side_effect = [
+        [_make_dose_slot(status="taken"), _make_dose_slot(status="skipped")],  # today
+        [],  # yesterday
+    ]
+    wf = _workflow_with_health(
+        mock_todo_service,
+        mock_budget_service,
+        mock_investing_service,
+        mock_recurring_transaction_service,
+        mock_notification_service,
+        mock_import_repo,
+        mock_weekly_summary_repo,
+        mock_finance_setting_repo,
+        mock_health_service,
+    )
+
+    result = await wf.get_briefing(workspace_id=1, user_id=1)
+
+    health_lines = [line for line in result.lines if line.source.route == "/health"]
+    assert health_lines == []
 
 
 @pytest.mark.asyncio

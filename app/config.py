@@ -201,6 +201,12 @@ class Settings(BaseSettings):
     # (no writes) unless set; production points this at a bind-mounted host
     # path so it survives container recreation (docker-compose.yml/.prod.yml).
     CAPTURE_TURN_LOG_PATH: str | None = None
+    # spec-079 Stage B: enable Gemini output-audio transcription so the model's
+    # spoken reply is captured as text — for live captions and the assistant
+    # side of the capture log. Metered free (spec-079, 2026-07-13). Defaults to
+    # current behavior (off); enable in prod after confirming the deployed model
+    # accepts `outputAudioTranscription`.
+    CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION: bool = False
     EXCHANGERATE_API_KEY: str | None = None
     LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT: Decimal = Decimal("0.5")
     IMPORT_S3_ENDPOINT: str | None = Field(
