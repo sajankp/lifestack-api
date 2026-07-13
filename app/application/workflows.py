@@ -443,12 +443,18 @@ class MorningBriefingWorkflow:
         yesterday_slots = await self.health_service.get_schedule(workspace_id, yesterday)
         missed_yesterday = sum(1 for s in yesterday_slots if s.status == "missed")
 
+        # "Due today" means still outstanding — a dose already logged as taken or
+        # skipped is resolved and must drop off the briefing (a taken dose kept
+        # showing "due today" for the rest of the day). pending/missed remain, as
+        # a missed dose can still be logged late.
+        due_today = sum(1 for s in today_slots if s.status not in ("taken", "skipped"))
+
         lines: list[BriefingLine] = []
-        if today_slots or missed_yesterday:
+        if due_today or missed_yesterday:
             parts = []
-            if today_slots:
-                plural = "s" if len(today_slots) != 1 else ""
-                parts.append(f"{len(today_slots)} dose{plural} due today")
+            if due_today:
+                plural = "s" if due_today != 1 else ""
+                parts.append(f"{due_today} dose{plural} due today")
             if missed_yesterday:
                 plural = "s" if missed_yesterday != 1 else ""
                 parts.append(f"{missed_yesterday} missed yesterday")
