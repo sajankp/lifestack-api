@@ -175,6 +175,11 @@ async def _run_trial(*, with_transcription: bool, text: str, pcm: bytes | None) 
                         }
                     })
                 )
+                # Pace to match real-time streaming: each chunk is 64ms of
+                # audio (2048 bytes of 16 kHz 16-bit mono PCM). Sending the
+                # whole clip in a tight loop would arrive far faster than a
+                # live mic ever would, skewing latency/cost measurements.
+                await asyncio.sleep(_PCM_CHUNK_BYTES / (16000 * 2))
             await ws.send(json.dumps({"realtimeInput": {"audioStreamEnd": True}}))
         else:
             await ws.send(json.dumps({"realtimeInput": {"text": text}}))
