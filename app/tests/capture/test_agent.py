@@ -15,6 +15,7 @@ from app.capture.agent import (
     _build_setup_message,
     _fetch_workspace_context,
     _handle_gemini_message,
+    _log_assistant_transcript,
     _log_capture_turn,
     _log_session_ended,
     execute_agent_tool,
@@ -1242,3 +1243,119 @@ async def test_log_capture_turn_offloads_to_executor_inside_running_loop(tmp_pat
     entry = json.loads(lines[0])
     assert entry["tool"] == "log_weight"
     assert entry["args"] == {"weight_kg": "72.4"}
+
+
+# ── spec-079 Stage B: session-keyed, content-bearing capture log ─────────────
+
+
+def test_log_capture_turn_carries_session_id_and_kind(tmp_path, monkeypatch):
+    """Stage B: tool-call entries gain a kind and a session_id so a
+    conversation's turns can be grouped and distinguished from transcript rows."""
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+
+    _log_capture_turn(
+        "create_todo_task",
+        {"title": "x"},
+        "success",
+        user_id=1,
+        workspace_id=2,
+        session_id="sess-abc",
+    )
+
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["kind"] == "tool_call"
+    assert entry["session_id"] == "sess-abc"
+    assert entry["tool"] == "create_todo_task"
+
+
+def test_log_assistant_transcript_writes_entry(tmp_path, monkeypatch):
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+
+    _log_assistant_transcript(
+        "Your portfolio is up today.",
+        user_id=3,
+        workspace_id=4,
+        session_id="sess-xyz",
+        generation_ms=1234.5,
+    )
+
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["kind"] == "assistant_transcript"
+    assert entry["text"] == "Your portfolio is up today."
+    assert entry["session_id"] == "sess-xyz"
+    assert entry["generation_ms"] == 1234.5
+
+
+def test_log_assistant_transcript_noop_on_empty_text(tmp_path, monkeypatch):
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+
+    _log_assistant_transcript("   ", user_id=1, workspace_id=1, session_id="s")
+
+    assert not log_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_handle_gemini_message_logs_assistant_transcript_on_turn_complete(
+    tmp_path, monkeypatch
+):
+    """Output-transcription fragments accumulate across messages and flush as one
+    assistant_transcript entry at the turnComplete boundary."""
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+    client_ws = FakeClientWebSocket()
+    turn_state: dict = {"assistant_text": [], "started_at": None}
+
+    await _handle_gemini_message(
+        {"serverContent": {"outputTranscription": {"text": "Your portfolio "}}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-1",
+        turn_state=turn_state,
+    )
+    await _handle_gemini_message(
+        {"serverContent": {"outputTranscription": {"text": "is up."}}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-1",
+        turn_state=turn_state,
+    )
+    # No entry until the turn completes.
+    assert not log_path.exists()
+
+    await _handle_gemini_message(
+        {"serverContent": {"turnComplete": True}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-1",
+        turn_state=turn_state,
+    )
+    for _ in range(50):
+        if log_path.exists() and log_path.read_text().strip():
+            break
+        await asyncio.sleep(0.02)
+
+    # The caption reached the client on each fragment.
+    assert {"type": "transcript", "content": "Your portfolio "} in client_ws.sent_json
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["kind"] == "assistant_transcript"
+    assert entry["text"] == "Your portfolio is up."
+    assert entry["session_id"] == "sess-1"
+    # Buffer reset so the next turn starts clean.
+    assert turn_state["assistant_text"] == []
+
+
+def test_setup_message_includes_output_transcription_only_when_enabled(monkeypatch):
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION", False)
+    assert "outputAudioTranscription" not in _build_setup_message()["setup"]
+
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION", True)
+    assert _build_setup_message()["setup"]["outputAudioTranscription"] == {}

@@ -97,7 +97,7 @@ def _build_setup_message(
         response_modalities = ["TEXT", "AUDIO"]
     current_utc = datetime.now(UTC).isoformat()
 
-    return {
+    setup_message = {
         "setup": {
             "model": settings.GEMINI_MODEL,
             "generationConfig": {
@@ -427,3 +427,8 @@ def _build_setup_message(
             ],
         }
     }
+    # spec-079 Stage B: capture the assistant's spoken reply as text (captions +
+    # the assistant side of the capture log). Metered free; off by default.
+    if settings.CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION:
+        setup_message["setup"]["outputAudioTranscription"] = {}
+    return setup_message
