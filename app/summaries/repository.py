@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,3 +53,11 @@ class WeeklySummaryRepository:
                 )
             )
         ).scalar_one_or_none()
+
+    async def mark_read(self, summary: WeeklySummary) -> WeeklySummary:
+        """Stamp read_at on first read; idempotent — a second read does not move
+        the timestamp (spec-080)."""
+        if summary.read_at is None:
+            summary.read_at = datetime.now(UTC)
+            await self.session.flush()
+        return summary

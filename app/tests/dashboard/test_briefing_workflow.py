@@ -252,6 +252,7 @@ async def test_weekly_summary_within_freshness_window(workflow, mock_weekly_summ
         generated_at=datetime.now(UTC) - timedelta(hours=10),
         week_start=datetime(2026, 7, 6).date(),
         public_id=uuid.uuid4(),
+        read_at=None,
     )
 
     result = await workflow.get_briefing(workspace_id=1, user_id=1)
@@ -267,6 +268,22 @@ async def test_weekly_summary_outside_freshness_window_omitted(workflow, mock_we
         generated_at=datetime.now(UTC) - timedelta(hours=72),
         week_start=datetime(2026, 6, 29).date(),
         public_id=uuid.uuid4(),
+        read_at=None,
+    )
+
+    result = await workflow.get_briefing(workspace_id=1, user_id=1)
+
+    assert not any(line.source.route == "/summaries" for line in result.lines)
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_read_is_omitted(workflow, mock_weekly_summary_repo):
+    # Fresh, but already opened → the "summary is ready" line must not show (spec-080).
+    mock_weekly_summary_repo.latest.return_value = MagicMock(
+        generated_at=datetime.now(UTC) - timedelta(hours=10),
+        week_start=datetime(2026, 7, 6).date(),
+        public_id=uuid.uuid4(),
+        read_at=datetime.now(UTC) - timedelta(hours=1),
     )
 
     result = await workflow.get_briefing(workspace_id=1, user_id=1)

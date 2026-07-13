@@ -14,5 +14,6 @@ class WeeklySummaryResponse(BaseModel):
     investing_summary: dict
     health_summary: dict | None = None
     highlights: dict
+    read_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
