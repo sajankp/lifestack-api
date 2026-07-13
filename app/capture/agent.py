@@ -200,12 +200,18 @@ async def execute_agent_tool(
 # Caps keep the injected context small and bounded (≤70 short names once per
 # session) — see spec-055 §1.
 async def _connect_gemini(
-    gemini_url: str, user_timezone: str = "UTC", workspace_context: str = ""
+    gemini_url: str,
+    user_timezone: str = "UTC",
+    workspace_context: str = "",
+    resumption_handle: str | None = None,
 ) -> tuple:
     """
     Connect to the Gemini Live API using GEMINI_MODEL.
     Returns (websocket, context_manager) on success.
     Raises RuntimeError if connection or setup fails.
+
+    `resumption_handle` (spec-079 Stage B) resumes a prior session's conversation
+    context when session resumption is enabled; ignored when the flag is off.
     """
     logger.info("connecting_to_gemini", model=settings.GEMINI_MODEL)
 
@@ -225,6 +231,7 @@ async def _connect_gemini(
                 response_modalities=modalities,
                 user_timezone=user_timezone,
                 workspace_context=workspace_context,
+                resumption_handle=resumption_handle,
             )
             await ws.send(json.dumps(setup_message))
 
@@ -345,6 +352,30 @@ async def _handle_gemini_message(
         logger.error("gemini_api_error", error=error_msg)
         await _send_capture_error(client_ws, CAPTURE_PROVIDER_ERROR)
         return
+    # ── sessionResumptionUpdate (spec-079 Stage B) ───────────────────────────
+    # Gemini periodically emits a resumption handle for the live session. Forward
+    # the latest usable handle to the client so that, if its WebSocket drops, it
+    # can reconnect with `?resume=<handle>` and Gemini restores the conversation
+    # context. A `resumable: false` update carries no handle worth keeping.
+    resumption_update = msg.get("sessionResumptionUpdate")
+    if resumption_update:
+        new_handle = resumption_update.get("newHandle")
+        if new_handle and resumption_update.get("resumable", True):
+            await client_ws.send_json({"type": "session_resumption", "handle": new_handle})
+        return
+    # ── goAway (spec-079 Stage B) ────────────────────────────────────────────
+    # Gemini warns of an imminent server-side disconnect. Surface it as a session
+    # state so the client can reconnect proactively before the hard close.
+    go_away = msg.get("goAway")
+    if go_away:
+        time_left = go_away.get("timeLeft")
+        logger.info("gemini_go_away", time_left=str(time_left))
+        await client_ws.send_json({
+            "type": "session_state",
+            "state": "closing",
+            "time_left": time_left,
+        })
+        return
     # ── serverContent ────────────────────────────────────────────────────────
     server_content = msg.get("serverContent")
     if server_content:
@@ -443,6 +474,7 @@ async def run_agent_session(
     user_id: int,
     workspace_id: int,
     user_timezone: str = "UTC",
+    resumption_handle: str | None = None,
 ):
     api_key = settings.GEMINI_API_KEY
     if not api_key:
@@ -484,7 +516,7 @@ async def run_agent_session(
     try:
         try:
             gemini_ws, ws_context_manager = await _connect_gemini(
-                gemini_url, user_timezone, workspace_context
+                gemini_url, user_timezone, workspace_context, resumption_handle
             )
         except Exception:
             session_outcome["reason"] = "gemini_connect_failed"

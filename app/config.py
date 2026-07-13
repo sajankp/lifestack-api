@@ -207,6 +207,16 @@ class Settings(BaseSettings):
     # current behavior (off); enable in prod after confirming the deployed model
     # accepts `outputAudioTranscription`.
     CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION: bool = False
+    # spec-079 Stage B: WebSocket transport resilience. Both default to current
+    # behavior (off) per the spec's "new limit defaults to current behavior" rule.
+    # Session resumption opts the Gemini Live session in to periodic resumption
+    # handles; the handle is round-tripped through the client so an interrupted
+    # session can reconnect with its conversation context intact (see
+    # `app/capture/agent.py`). Context-window compression enables a sliding window
+    # so long sessions are not terminated at the model's context limit. Enable in
+    # prod only after confirming the deployed model accepts these setup fields.
+    CAPTURE_ENABLE_SESSION_RESUMPTION: bool = False
+    CAPTURE_ENABLE_CONTEXT_COMPRESSION: bool = False
     EXCHANGERATE_API_KEY: str | None = None
     LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT: Decimal = Decimal("0.5")
     IMPORT_S3_ENDPOINT: str | None = Field(

@@ -548,6 +548,104 @@ async def test_gemini_provider_errors_are_sanitized_for_client():
 
 
 # ---------------------------------------------------------------------------
+# spec-079 Stage B — transport resilience (session resumption + compression)
+# ---------------------------------------------------------------------------
+
+
+def test_setup_message_omits_resilience_fields_by_default(monkeypatch):
+    """Default behavior is unchanged: neither resilience field is emitted unless
+    its flag is set (spec-079 'new limit defaults to current behavior')."""
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_SESSION_RESUMPTION", False)
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_CONTEXT_COMPRESSION", False)
+
+    setup = _build_setup_message(["TEXT"])["setup"]
+
+    assert "sessionResumption" not in setup
+    assert "contextWindowCompression" not in setup
+
+
+def test_setup_message_enables_session_resumption_when_flag_set(monkeypatch):
+    """With the flag on and no prior handle, an empty `sessionResumption` opts the
+    session in to receiving resumption handles from Gemini."""
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_SESSION_RESUMPTION", True)
+
+    setup = _build_setup_message(["TEXT"])["setup"]
+
+    assert setup["sessionResumption"] == {}
+
+
+def test_setup_message_resumes_from_handle_when_provided(monkeypatch):
+    """A handle round-tripped back from the client is passed to Gemini so the
+    reconnected session restores the prior conversation context."""
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_SESSION_RESUMPTION", True)
+
+    setup = _build_setup_message(["TEXT"], resumption_handle="handle-abc")["setup"]
+
+    assert setup["sessionResumption"] == {"handle": "handle-abc"}
+
+
+def test_setup_message_enables_context_compression_when_flag_set(monkeypatch):
+    """Context-window compression keeps long sessions from being terminated at the
+    model's context limit."""
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_CONTEXT_COMPRESSION", True)
+
+    setup = _build_setup_message(["TEXT"])["setup"]
+
+    assert setup["contextWindowCompression"] == {"slidingWindow": {}}
+
+
+@pytest.mark.asyncio
+async def test_session_resumption_update_forwarded_to_client():
+    """Gemini's periodic resumption handle must reach the client so it can resume
+    the conversation on its own reconnect (spec-079 Stage B)."""
+    client_ws = FakeClientWebSocket()
+
+    await _handle_gemini_message(
+        {"sessionResumptionUpdate": {"newHandle": "handle-xyz", "resumable": True}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=1,
+        workspace_id=1,
+    )
+
+    assert {"type": "session_resumption", "handle": "handle-xyz"} in client_ws.sent_json
+
+
+@pytest.mark.asyncio
+async def test_non_resumable_session_update_not_forwarded():
+    """A `resumable: false` update carries no usable handle — don't hand the client
+    a handle that would be rejected on reconnect."""
+    client_ws = FakeClientWebSocket()
+
+    await _handle_gemini_message(
+        {"sessionResumptionUpdate": {"newHandle": "handle-xyz", "resumable": False}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=1,
+        workspace_id=1,
+    )
+
+    assert client_ws.sent_json == []
+
+
+@pytest.mark.asyncio
+async def test_go_away_forwarded_as_session_state():
+    """Gemini's goAway warns of an imminent server-side disconnect; forward it so
+    the client can reconnect proactively before the hard close (spec-079 Stage B)."""
+    client_ws = FakeClientWebSocket()
+
+    await _handle_gemini_message(
+        {"goAway": {"timeLeft": "5s"}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=1,
+        workspace_id=1,
+    )
+
+    assert {"type": "session_state", "state": "closing", "time_left": "5s"} in client_ws.sent_json
+
+
+# ---------------------------------------------------------------------------
 # spec-055 golden scenarios
 # ---------------------------------------------------------------------------
 
