@@ -42,7 +42,7 @@ ingress via Cloudflare Tunnel · encrypted nightly DB backups to S3/R2
 - **Operability** — append-only PII-redacted audit logging, structlog + OpenTelemetry + Prometheus, scheduled jobs guarded by Postgres advisory locks.
 - **Lot-accurate cost basis** — FIFO lot engine with corporate-action handling (splits, reverse splits, bonus issues), golden-tested against broker-statement numbers; Indian market ingestion via CAMS CAS PDF import and the NSE bhavcopy price feed.
 - **Quality gates** — 80% backend / 70% frontend coverage thresholds, 19 Playwright E2E specs, and `pip-audit` + Bandit + TruffleHog in CI.
-- **Spec-driven** — 79 specs under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
+- **Spec-driven** — 82 specs under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
 
 ---
 
