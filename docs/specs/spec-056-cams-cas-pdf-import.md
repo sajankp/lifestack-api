@@ -63,7 +63,7 @@ CAMS statements have no notion of a Lifestack account (they're per-folio, not pe
 5. For buy/sell rows, emit a dict matching `InvestingOrderCreate`'s shape exactly:
    ```python
    {
-       "symbol": isin,                      # see "Symbol choice" below
+       "symbol": isin,  # see "Symbol choice" below
        "order_type": "buy" | "sell",
        "instrument_type": "mutual_fund",
        "instrument_name": scheme_name,

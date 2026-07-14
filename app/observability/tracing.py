@@ -40,6 +40,20 @@ def _parse_otlp_headers(raw: str | None) -> dict[str, str]:
 
 def _is_denylisted(key: str) -> bool:
     lowered = key.lower()
+    # Allow-list common non-PII metadata suffixes that would otherwise match
+    # the "name" denylist term (e.g. job_name, logger_name, method_name).
+    safe_suffixes = (
+        "job_name",
+        "logger_name",
+        "method_name",
+        "class_name",
+        "db_name",
+        "funcname",
+        "filename",
+        "pathname",
+    )
+    if any(lowered.endswith(s) or lowered == s for s in safe_suffixes):
+        return False
     return any(term in lowered for term in _DENYLIST_KEYS)
 
 

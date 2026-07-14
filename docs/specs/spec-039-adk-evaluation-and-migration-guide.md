@@ -293,12 +293,14 @@ Currently, tool declarations are embedded in `_build_setup_message()` as a 210-l
 from dataclasses import dataclass
 from typing import Callable, Any
 
+
 @dataclass
 class ToolDefinition:
     name: str
     description: str
     parameters: dict
     handler: Callable[..., Any]
+
 
 def get_tool_registry() -> list[ToolDefinition]:
     """Standalone tool registry — reusable by raw WS, ADK, and MCP."""
@@ -384,6 +386,7 @@ uv run pip-audit
 from google.adk import Agent, FunctionTool
 from app.capture.tool_registry import get_tool_registry
 
+
 def create_lifestack_agent(user_timezone: str = "UTC") -> Agent:
     """Create an ADK Agent with Lifestack tools."""
     tools = []
@@ -406,6 +409,7 @@ def create_lifestack_agent(user_timezone: str = "UTC") -> Agent:
 from google.adk import Runner, InMemorySessionService, LiveRequestQueue
 from app.capture.adk_agent import create_lifestack_agent
 from app.capture.limits import CaptureSessionLimiter
+
 
 async def run_adk_agent_session(
     client_ws: WebSocket,
@@ -448,10 +452,10 @@ async def run_adk_agent_session(
                 live_request_queue=live_queue,
             ):
                 # ADK yields typed events — forward to client
-                if hasattr(event, 'server_content'):
+                if hasattr(event, "server_content"):
                     # Audio and transcript
                     ...
-                elif hasattr(event, 'tool_call'):
+                elif hasattr(event, "tool_call"):
                     await client_ws.send_json({
                         "type": "tool_call",
                         "name": event.tool_call.name,
@@ -468,6 +472,7 @@ async def run_adk_agent_session(
 ```python
 # app/capture/router.py
 
+
 @router.websocket("/agent/ws")
 async def websocket_agent_endpoint(websocket: WebSocket):
     user_id, workspace_id = await authenticate_ws(websocket)
@@ -475,6 +480,7 @@ async def websocket_agent_endpoint(websocket: WebSocket):
 
     if settings.CAPTURE_USE_ADK:
         from app.capture.adk_session import run_adk_agent_session
+
         await run_adk_agent_session(websocket, user_id, workspace_id, ...)
     else:
         await run_agent_session(websocket, user_id, workspace_id, ...)
