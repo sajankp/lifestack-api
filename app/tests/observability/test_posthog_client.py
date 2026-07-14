@@ -26,9 +26,12 @@ def test_capture_exception_forwards_to_sdk_when_configured():
             posthog_client._initialized = True
             exc = ValueError("boom")
             posthog_client.capture_exception(exc, route="/v1/x")
-            mock_client.capture_exception.assert_called_once()
-            _, kwargs = mock_client.capture_exception.call_args
-            assert kwargs["properties"] == {"route": "/v1/x"}
+            mock_client.capture.assert_called_once()
+            _, kwargs = mock_client.capture.call_args
+            assert kwargs["event"] == "$exception"
+            assert kwargs["properties"]["$exception_type"] == "ValueError"
+            assert kwargs["properties"]["$exception_message"] == "boom"
+            assert kwargs["properties"]["route"] == "/v1/x"
     finally:
         settings.POSTHOG_API_KEY = original
         posthog_client.reset_for_tests()
@@ -37,7 +40,7 @@ def test_capture_exception_forwards_to_sdk_when_configured():
 def test_capture_exception_never_raises_when_sdk_call_fails():
     posthog_client.reset_for_tests()
     mock_client = MagicMock()
-    mock_client.capture_exception.side_effect = RuntimeError("sdk broke")
+    mock_client.capture.side_effect = RuntimeError("sdk broke")
     posthog_client._client = mock_client
     posthog_client._initialized = True
     try:

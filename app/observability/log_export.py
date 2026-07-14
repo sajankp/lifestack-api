@@ -95,7 +95,10 @@ def otel_log_processor(logger, method_name, event_dict):
                 if k != "event" and k not in _RESERVED_LOG_RECORD_ATTRS
             })
             level = _LEVELNO.get(method_name, logging.INFO)
-            _bridge_logger.log(level, event_dict.get("event", ""), extra=attributes)
+            kwargs: dict = {"extra": attributes}
+            if "exc_info" in event_dict:
+                kwargs["exc_info"] = event_dict["exc_info"]
+            _bridge_logger.log(level, event_dict.get("event", ""), **kwargs)
         except Exception:
             pass
     return event_dict

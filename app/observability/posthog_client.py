@@ -7,6 +7,8 @@ caller's request/job path — a broken PostHog SDK must never turn into a
 second outage on top of the one it's trying to report.
 """
 
+import traceback
+
 import posthog as posthog_sdk
 import structlog
 
@@ -43,11 +45,30 @@ def capture_exception(exc: BaseException, **properties: object) -> None:
     ``properties`` must never carry request bodies, financial values, or PII
     (spec-081 privacy rule) — callers pass route/job names and status codes
     only.
+
+    Uses the standard PostHog ``$exception`` event format because the Python
+    SDK does not expose a ``capture_exception`` helper.
     """
     if _client is None:
         return
     try:
-        _client.capture_exception(exc, distinct_id=_SERVER_DISTINCT_ID, properties=properties)
+        tb_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        _client.capture(
+            distinct_id=_SERVER_DISTINCT_ID,
+            event="$exception",
+            properties={
+                "$exception_type": type(exc).__name__,
+                "$exception_message": str(exc),
+                "$exception_list": [
+                    {
+                        "type": type(exc).__name__,
+                        "value": str(exc),
+                        "stacktrace": {"frames": tb_str},
+                    }
+                ],
+                **properties,
+            },
+        )
     except Exception:
         _logger.warning("posthog_capture_exception_failed", exc_info=True)
 

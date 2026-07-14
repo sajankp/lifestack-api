@@ -1641,38 +1641,41 @@ async def deliver_pending_email_notifications(session: AsyncSession, limit: int 
     failed_count = 0
     skipped_count = 0
 
-    for delivery, notification in pending:
-        try:
-            user = await user_repo.get_by_id(notification.user_id)
-            if not user:
-                await notification_repo.mark_delivery(delivery, "failed", "user not found")
+    if not pending:
+        return {"sent": sent_count, "failed": failed_count, "skipped": skipped_count}
+
+    async with httpx.AsyncClient() as client:
+        for delivery, notification in pending:
+            try:
+                user = await user_repo.get_by_id(notification.user_id)
+                if not user:
+                    await notification_repo.mark_delivery(delivery, "failed", "user not found")
+                    failed_count += 1
+                    continue
+
+                html = f"<p><strong>{notification.title}</strong></p>"
+                if notification.body:
+                    html += f"<p>{notification.body}</p>"
+
+                result = await send_email(user.email, notification.title, html, client=client)
+                if result.skipped:
+                    await notification_repo.mark_delivery(delivery, "skipped")
+                    skipped_count += 1
+                elif result.success:
+                    await notification_repo.mark_delivery(delivery, "sent")
+                    sent_count += 1
+                else:
+                    await notification_repo.mark_delivery(delivery, "failed", result.error_detail)
+                    failed_count += 1
+            except Exception:
+                logger.error(
+                    "email_delivery_row_failed",
+                    notification_id=notification.id,
+                    delivery_id=delivery.id,
+                    exc_info=True,
+                )
+                await notification_repo.mark_delivery(delivery, "failed", "internal error")
                 failed_count += 1
-                continue
 
-            html = f"<p><strong>{notification.title}</strong></p>"
-            if notification.body:
-                html += f"<p>{notification.body}</p>"
-
-            result = await asyncio.to_thread(send_email, user.email, notification.title, html)
-            if result.skipped:
-                await notification_repo.mark_delivery(delivery, "skipped")
-                skipped_count += 1
-            elif result.success:
-                await notification_repo.mark_delivery(delivery, "sent")
-                sent_count += 1
-            else:
-                await notification_repo.mark_delivery(delivery, "failed", result.error_detail)
-                failed_count += 1
-        except Exception:
-            logger.error(
-                "email_delivery_row_failed",
-                notification_id=notification.id,
-                delivery_id=delivery.id,
-                exc_info=True,
-            )
-            await notification_repo.mark_delivery(delivery, "failed", "internal error")
-            failed_count += 1
-
-    if pending:
-        await session.flush()
+    await session.flush()
     return {"sent": sent_count, "failed": failed_count, "skipped": skipped_count}

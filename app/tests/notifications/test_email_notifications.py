@@ -1,5 +1,5 @@
 import uuid
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -36,29 +36,36 @@ async def _workspace_and_user_id(creds: dict) -> tuple[int, int]:
         return workspaces[0].id, user.id
 
 
-def test_send_email_skipped_when_disabled():
+@pytest.mark.asyncio
+async def test_send_email_skipped_when_disabled():
     settings.EMAIL_ENABLED = False
-    result = send_email("user@example.com", "Subject", "<p>Body</p>")
+    result = await send_email("user@example.com", "Subject", "<p>Body</p>")
     assert result == EmailResult(success=False, skipped=True)
 
 
-def test_send_email_posts_to_resend():
-    with patch("app.notifications.email.httpx.post") as mock_post:
-        mock_post.return_value.raise_for_status.return_value = None
-        result = send_email("user@example.com", "Subject", "<p>Body</p>")
+@pytest.mark.asyncio
+async def test_send_email_posts_to_resend():
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    result = await send_email("user@example.com", "Subject", "<p>Body</p>", client=mock_client)
 
     assert result.success is True
-    assert mock_post.call_args.kwargs["json"]["to"] == ["user@example.com"]
-    assert mock_post.call_args.kwargs["json"]["from"] == settings.EMAIL_FROM_ADDRESS
-    assert (
-        mock_post.call_args.kwargs["headers"]["Authorization"]
-        == f"Bearer {settings.RESEND_API_KEY}"
-    )
+    mock_client.post.assert_awaited_once()
+    call_kwargs = mock_client.post.call_args.kwargs
+    assert call_kwargs["json"]["to"] == ["user@example.com"]
+    assert call_kwargs["json"]["from"] == settings.EMAIL_FROM_ADDRESS
+    assert call_kwargs["headers"]["Authorization"] == f"Bearer {settings.RESEND_API_KEY}"
 
 
-def test_send_email_failure_never_raises():
-    with patch("app.notifications.email.httpx.post", side_effect=httpx.ConnectError("boom")):
-        result = send_email("user@example.com", "Subject", "<p>Body</p>")
+@pytest.mark.asyncio
+async def test_send_email_failure_never_raises():
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(side_effect=httpx.ConnectError("boom"))
+
+    result = await send_email("user@example.com", "Subject", "<p>Body</p>", client=mock_client)
 
     assert result.success is False
     assert result.skipped is False
@@ -141,10 +148,10 @@ async def test_email_delivery_job_drains_pending_and_is_idempotent(client: Async
 
     with patch(
         "app.application.workflows.send_email",
-        return_value=EmailResult(success=True),
+        new=AsyncMock(return_value=EmailResult(success=True)),
     ) as mock_send:
         await email_delivery_job()
-    mock_send.assert_called_once()
+    mock_send.assert_awaited_once()
 
     async with postgres.async_session_maker() as session:
         deliveries = (
@@ -160,10 +167,10 @@ async def test_email_delivery_job_drains_pending_and_is_idempotent(client: Async
 
     with patch(
         "app.application.workflows.send_email",
-        return_value=EmailResult(success=True),
+        new=AsyncMock(return_value=EmailResult(success=True)),
     ) as mock_send_again:
         await email_delivery_job()
-    mock_send_again.assert_not_called()
+    mock_send_again.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -190,9 +197,9 @@ async def test_email_delivery_job_inert_when_email_disabled(client: AsyncClient)
         )
         await session.commit()
 
-    with patch("app.application.workflows.send_email") as mock_send:
+    with patch("app.application.workflows.send_email", new=AsyncMock()) as mock_send:
         await email_delivery_job()
-    mock_send.assert_not_called()
+    mock_send.assert_not_awaited()
 
     async with postgres.async_session_maker() as session:
         deliveries = (
