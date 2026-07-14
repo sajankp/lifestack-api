@@ -359,3 +359,31 @@ socket under a live client without the client noticing) — higher risk against 
 the client-driven resume above covers the felt failure (user network blips) without touching the
 relay. Enabling the two flags in production is a follow-up once a real audio session's TPM is
 measured against whichever model is chosen.
+
+## Production incident — `realtimeInput.mediaChunks` deprecated, broke audio on 3.1 (2026-07-14)
+
+Owner switched `GEMINI_MODEL` to `gemini-3.1-flash-live-preview` in production per the benchmark
+above ("test in prod, watch for TPM throttling") and every voice turn immediately 1007-closed:
+`realtime_input.media_chunks is deprecated. Use audio, video, or text instead.` — the mic-audio path
+never worked on 3.1 at all; it wasn't a TPM issue.
+
+**Root cause:** `pcm_to_gemini_loop` in `app/capture/agent.py` sent PCM chunks as
+`realtimeInput.mediaChunks: [{mimeType, data}]` (a list) — a schema `gemini-3.1-flash-live-preview`
+hard-rejects. This path is never exercised by the eval harness or any of the earlier model probes in
+this spec: `scripts/run_capture_eval.py` and the modality/rate-limit probes all drive turns via
+`realtimeInput.text`, not real audio — the one part of the pipeline those checks don't cover.
+
+**Fix:** switched to `realtimeInput.audio: {mimeType, data}` (a single object, not a list) — verified
+live to be accepted by **both** `gemini-2.5-flash-native-audio-latest` and
+`gemini-3.1-flash-live-preview` (probed directly against the Gemini Live API with real chunked PCM
+streaming, matching `pcm_to_gemini_loop`'s exact 2048-byte/~64ms pacing), so one schema now serves
+both models — no per-model branching needed. Re-ran the full capture unit suite (86 passed) and
+confirmed no test had pinned the old schema.
+
+**Process note:** the model-benchmark section above validated setup negotiation, function calling,
+transcription, and rate limits — but never streamed synthetic PCM through the exact code path the
+app uses, so this schema break wasn't caught pre-switch. Not added as an automated test — exercising
+it requires a live, billable Gemini Live connection, which the project deliberately keeps to owner-run
+scripts (`scripts/run_capture_eval.py`, `scripts/measure_transcription_cost.py`) rather than the
+offline pytest suite. Anyone benchmarking a new Gemini Live model going forward should stream real
+audio through the actual `pcm_to_gemini_loop`-shaped payload, not just text turns.

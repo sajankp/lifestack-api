@@ -163,15 +163,16 @@ async def _run_trial(*, with_transcription: bool, text: str, pcm: bytes | None) 
         if pcm is not None:
             for i in range(0, len(pcm), _PCM_CHUNK_BYTES):
                 chunk = pcm[i : i + _PCM_CHUNK_BYTES]
+                # realtimeInput.mediaChunks is deprecated and gemini-3.1-flash-live-preview
+                # hard-rejects it (1007 close) — realtimeInput.audio (a single object, not a
+                # list) is accepted by both that model and 2.5 Native Audio (spec-079).
                 await ws.send(
                     json.dumps({
                         "realtimeInput": {
-                            "mediaChunks": [
-                                {
-                                    "mimeType": "audio/pcm;rate=16000",
-                                    "data": base64.b64encode(chunk).decode("utf-8"),
-                                }
-                            ]
+                            "audio": {
+                                "mimeType": "audio/pcm;rate=16000",
+                                "data": base64.b64encode(chunk).decode("utf-8"),
+                            }
                         }
                     })
                 )

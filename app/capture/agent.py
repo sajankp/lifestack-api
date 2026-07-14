@@ -533,12 +533,14 @@ async def run_agent_session(
                         break
 
                     b64_data = base64.b64encode(chunk).decode("utf-8")
+                    # `realtimeInput.mediaChunks` is deprecated and gemini-3.1-flash-live-preview
+                    # hard-rejects it (1007 close); `realtimeInput.audio` (singular object, not a
+                    # list) is accepted by both that model and gemini-2.5-flash-native-audio
+                    # (verified live, spec-079) — use the one schema for both.
                     await gemini_ws.send(
                         json.dumps({
                             "realtimeInput": {
-                                "mediaChunks": [
-                                    {"mimeType": "audio/pcm;rate=16000", "data": b64_data}
-                                ]
+                                "audio": {"mimeType": "audio/pcm;rate=16000", "data": b64_data}
                             }
                         })
                     )
