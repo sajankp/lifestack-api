@@ -6,6 +6,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
@@ -14,6 +16,7 @@ from app.application.jobs import (
     bhavcopy_price_feed_job,
     budget_guardrails_job,
     dashboard_insights_job,
+    email_delivery_job,
     export_cleanup_job,
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
@@ -62,6 +65,9 @@ from app.health.router import router as health_module_router
 from app.imports.router import router as imports_router
 from app.investing.router import router as investing_router
 from app.notifications.router import router as notifications_router
+from app.observability.log_export import setup_log_export
+from app.observability.posthog_client import init_posthog
+from app.observability.tracing import setup_tracing
 from app.platform.router import router as platform_router
 from app.spending.router import router as spending_router
 from app.summaries.router import router as summaries_router
@@ -167,6 +173,12 @@ async def lifespan(_app: FastAPI):
             idempotent=True,
         )
         register_interval_job(
+            email_delivery_job,
+            job_id="email_delivery",
+            minutes=settings.EMAIL_DELIVERY_INTERVAL_MINUTES,
+            idempotent=True,
+        )
+        register_interval_job(
             todo_reminder_job,
             job_id="todo_reminder",
             minutes=settings.TODO_REMINDER_INTERVAL_MINUTES,
@@ -253,9 +265,17 @@ def create_app() -> FastAPI:
     _app.add_exception_handler(Exception, unhandled_exception_handler)
     _app.add_exception_handler(RateLimitExceeded, rate_limit_exception_handler)
 
-    # OpenTelemetry will be initialized after the app starts if configured
+    # PostHog error tracking (spec-081) — inert without POSTHOG_API_KEY.
+    init_posthog()
+
+    # OpenTelemetry traces/logs to PostHog OTLP (spec-082) — inert without
+    # OTEL_EXPORTER_OTLP_ENDPOINT; installs a no-op provider otherwise.
     if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
+        setup_tracing()
+        setup_log_export()
         FastAPIInstrumentor.instrument_app(_app)
+        SQLAlchemyInstrumentor().instrument(engine=postgres.engine.sync_engine)
+        HTTPXClientInstrumentor().instrument()
 
     # Authentication and user injection are now handled via FastAPI Depends()
     # Security headers are handled by SecurityHeadersMiddleware

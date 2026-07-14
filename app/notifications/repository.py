@@ -252,6 +252,28 @@ class NotificationRepository:
         )
         return [(delivery, notification) for delivery, notification in result.all()]
 
+    async def create_pending_email_delivery(self, notification_id: int) -> NotificationDelivery:
+        delivery = NotificationDelivery(
+            notification_id=notification_id, channel="email", status="pending"
+        )
+        self.session.add(delivery)
+        await self.session.flush()
+        return delivery
+
+    async def list_pending_email_deliveries(
+        self, limit: int
+    ) -> list[tuple[NotificationDelivery, Notification]]:
+        result = await self.session.execute(
+            select(NotificationDelivery, Notification)
+            .join(Notification, Notification.id == NotificationDelivery.notification_id)
+            .where(
+                NotificationDelivery.channel == "email", NotificationDelivery.status == "pending"
+            )
+            .order_by(NotificationDelivery.created_at.asc())
+            .limit(limit)
+        )
+        return [(delivery, notification) for delivery, notification in result.all()]
+
     async def mark_delivery(
         self, delivery: NotificationDelivery, status: str, error_detail: str | None = None
     ) -> NotificationDelivery:

@@ -1,7 +1,7 @@
 # Spec-081: PostHog Observability and Resend Email Channel
 
 **Created:** 2026-07-14
-**Status:** Approved (owner, 2026-07-14) — implementation not started
+**Status:** Implemented (2026-07-14) — inert without `POSTHOG_API_KEY` / `VITE_POSTHOG_KEY` / `RESEND_API_KEY`+`EMAIL_ENABLED` env keys; owner still owns vendor-dashboard setup
 **Depends on:** spec-052 (notification preferences: `channel_email` already exists, default False), spec-067 (briefing push default)
 
 ## Problem

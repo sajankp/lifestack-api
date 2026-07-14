@@ -45,6 +45,22 @@ Create a `.env.production` file on the deployment VM with the following keys:
 * `PUSH_DELIVERY_INTERVAL_MINUTES`: How often the push-delivery queue drains. Default `1`.
 * `TODO_REMINDER_INTERVAL_MINUTES`: How often due todos are scanned for reminders. Default `5`.
 
+### PostHog Error Tracking (spec-081)
+* `POSTHOG_API_KEY`: PostHog project API key. **Unset ⇒ the SDK is never initialized** — no network calls, no dependency on PostHog being reachable. Backend scope is exception capture only (unhandled API 500s + scheduled-job failures); product analytics live in the frontend, gated on the build-time `VITE_POSTHOG_KEY` (and optional `VITE_POSTHOG_HOST`) set wherever `lifestack-web` is built for production — unset there too ⇒ `posthog-js` is never initialized.
+* `POSTHOG_HOST`: PostHog ingestion host. Default `https://us.i.posthog.com` — set to `https://eu.i.posthog.com` if the project was created on EU cloud.
+
+### Resend Email Notifications (spec-081)
+* `RESEND_API_KEY`: Resend API key. Unset ⇒ every email delivery is marked `skipped`, never sent.
+* `EMAIL_FROM_ADDRESS`: Verified sender address, e.g. `notifications@lifestack.app` (requires DNS domain verification in the Resend dashboard).
+* `EMAIL_ENABLED`: Explicit master switch, default `False` — **must be set to `True`** in addition to `RESEND_API_KEY` being present, so a copied `.env` can never accidentally start sending.
+* `EMAIL_DELIVERY_BATCH_CAP`: Defensive cap on emails sent per drain-job run. Default `50` (Resend free tier is 100/day; a single-user deployment sends a handful/day).
+* `EMAIL_DELIVERY_INTERVAL_MINUTES`: How often the email-delivery queue drains. Default `1`.
+
+### OpenTelemetry Traces/Logs to PostHog (spec-082)
+* `OTEL_EXPORTER_OTLP_ENDPOINT`: PostHog's OTLP endpoint, e.g. `https://us.i.posthog.com/otlp`. **Unset ⇒ no `TracerProvider`/exporter is installed** — FastAPI/SQLAlchemy/httpx instrumentation stays off and structlog output is not mirrored to OTel logs. Implement only after spec-081's PostHog project exists.
+* `OTEL_EXPORTER_OTLP_HEADERS`: Standard OTel comma-separated `key=value` auth header, e.g. `Authorization=Bearer <posthog-project-key>`.
+* Traces and logs pass through a redaction processor before export (query strings, request/response bodies, amount/balance/email/token/name/note/body-shaped attribute keys) — see `app/observability/tracing.py`. Switching away from PostHog later is an endpoint-URL change, not a code change.
+
 ---
 
 ## 2. Ingress & Cloudflare Tunnel

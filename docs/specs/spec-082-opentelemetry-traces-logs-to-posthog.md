@@ -1,7 +1,7 @@
 # Spec-082: OpenTelemetry Traces and Logs to PostHog
 
 **Created:** 2026-07-14
-**Status:** Approved (owner, 2026-07-14) — implement only after spec-081 ships
+**Status:** Implemented (2026-07-14) — inert without `OTEL_EXPORTER_OTLP_ENDPOINT`; lands alongside spec-081 in the same PR since spec-081's PostHog project setup is a prerequisite for pointing the endpoint at it, not for the code to exist
 **Depends on:** spec-081 (PostHog project, key handling, privacy rules — must ship first)
 
 ## Problem

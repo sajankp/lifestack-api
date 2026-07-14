@@ -70,6 +70,12 @@ class NotificationService:
             if has_push_subscription:
                 await self.repository.create_pending_push_delivery(notification.id)
 
+        # Email is opt-in like push (spec-052 channel_email defaults False,
+        # spec-081 wires delivery). No briefing-category default here — that
+        # default is push-specific (see should_push above).
+        if pref and pref.channel_email:
+            await self.repository.create_pending_email_delivery(notification.id)
+
         return notification
 
     async def list_notifications(
