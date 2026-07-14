@@ -120,8 +120,9 @@ def _build_setup_message(
                             "`update_todo`, `delete_todo`, and `list_next_due_items`, plus "
                             "`log_spending_transaction` for expenses, `log_weight` for body-weight "
                             "measurements, `log_medication_event` for marking a medication dose taken "
-                            "or skipped, and the read-only `get_investing_summary` for portfolio "
-                            "questions. You cannot create or modify "
+                            "or skipped, the read-only `get_investing_summary` for portfolio "
+                            "questions, and the read-only `get_account_balances` for spending "
+                            "account balances (wallet, bank, card, gift card). You cannot create or modify "
                             "investing data (orders, cash balances) — if asked, say so and offer the summary "
                             "instead. When a user asks to manage todos, prefer "
                             "the todo functions and return concise, factual results. Always call the matching "
@@ -328,6 +329,11 @@ def _build_setup_message(
                         {
                             "name": "get_investing_summary",
                             "description": "Read-only summary of the investing portfolio: total value, holdings count, cash total, daily change, and reporting currency. Use for questions like 'how is my portfolio doing'. Investing data cannot be created or changed by voice.",
+                            "parameters": {"type": "OBJECT", "properties": {}},
+                        },
+                        {
+                            "name": "get_account_balances",
+                            "description": "Read-only balances for the workspace's spending accounts (wallet, bank, card, gift card — not brokerage). Use for questions like 'how much is in my wallet' or 'what's my account balance'. For brokerage/investing cash, use `get_investing_summary` instead.",
                             "parameters": {"type": "OBJECT", "properties": {}},
                         },
                         {

@@ -671,6 +671,32 @@ class AgentTools:
             "valuation_status": summary.valuation_status,
         }
 
+    async def get_account_balances(self) -> dict:
+        """Read-only balances for spending accounts (spec-059 scope: wallet/bank/
+        card, not brokerage — investing cash is covered separately by
+        `get_investing_summary`). Mirrors the net-worth dashboard's per-account
+        projected balance (income - expenses + transfer_in - transfer_out)."""
+        accounts, _ = await self.account_repo.list_workspace_accounts(
+            self.workspace_id, limit=1000, offset=0
+        )
+        active_accounts = [
+            a for a in accounts if a.is_active and a.account_type in _SPENDING_ACCOUNT_TYPES
+        ]
+        account_ids = [a.id for a in active_accounts if a.id is not None]
+        bulk = await self.account_repo.get_spending_balances_bulk(self.workspace_id, account_ids)
+
+        balances = [
+            {
+                "account_name": a.name,
+                "account_type": a.account_type,
+                "currency_code": a.default_currency_code,
+                "balance": str(bulk[a.id][0]),
+            }
+            for a in active_accounts
+            if a.id is not None and a.id in bulk
+        ]
+        return {"status": "success", "accounts": balances}
+
     async def log_weight(self, weight_kg: str, note: str | None = None) -> dict:
         """Log a body weight measurement (spec-069). Kilograms only in v1.
 

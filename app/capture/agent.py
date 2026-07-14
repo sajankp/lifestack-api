@@ -166,6 +166,7 @@ async def execute_agent_tool(
                 "create_recurring_todo": tools.create_recurring_todo,
                 "log_spending_transaction": tools.log_spending_transaction,
                 "get_investing_summary": tools.get_investing_summary,
+                "get_account_balances": tools.get_account_balances,
                 "list_todos": tools.list_todos,
                 "get_todo": tools.get_todo,
                 "update_todo": tools.update_todo,
