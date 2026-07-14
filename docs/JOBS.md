@@ -87,6 +87,14 @@ Additionally, non-idempotent scheduler jobs are blocked from registering unless 
 - **Purpose**: Drains pending `NotificationDelivery` rows with `channel="push"`, sending each notification's title/body to every active `PushSubscription` of the target user via `pywebpush`. Global, not per-workspace — a delivery queue has no natural workspace-iteration shape. One delivery row fans out to all of a user's active subscriptions (phone + tablet + desktop); the row's status folds all per-subscription outcomes together (`sent` if any endpoint accepted, `failed` with detail if all failed). A 404/410 from a push service means that subscription no longer exists — it is deactivated (`is_active=False`) and the run continues. No-ops cleanly (returns immediately) when `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY` are unset.
 - **Idempotency**: Only `pending` delivery rows are ever picked up; a re-run after a successful drain finds nothing to do.
 
+## 11a. Email Delivery Job
+- **Job ID**: `email_delivery`
+- **Interval**: Every `EMAIL_DELIVERY_INTERVAL_MINUTES` minutes (default: 1)
+- **Job Function**: `email_delivery_job`
+- **Workflow Function**: `deliver_pending_email_notifications` (`app/application/workflows.py`)
+- **Purpose**: Drains pending `NotificationDelivery` rows with `channel="email"` (spec-081), mirroring the Push Delivery Job's shape one channel over — one delivery row per notification, sent to the user's registered account email via Resend (`app/notifications/email.py`). No-ops cleanly when `EMAIL_ENABLED` is `False` or `RESEND_API_KEY` is unset (pending rows simply accumulate until both are configured). Each run is capped at `EMAIL_DELIVERY_BATCH_CAP` (default 50) to protect the Resend free-tier daily quota.
+- **Idempotency**: Only `pending` delivery rows are ever picked up; a re-run after a successful drain finds nothing to do.
+
 ## 12. Todo Reminder Job
 - **Job ID**: `todo_reminder`
 - **Interval**: Every `TODO_REMINDER_INTERVAL_MINUTES` minutes (default: 5)

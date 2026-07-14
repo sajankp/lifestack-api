@@ -41,7 +41,10 @@ async def _fetch_nse_bhavcopy(
 ### Job (`app/application/jobs.py`, copies `investment_closing_prices_job`'s per-workspace-isolated-session pattern)
 
 ```python
-BHAVCOPY_PRICE_FEED_LOCK_KEY = ADVISORY_LOCK_BHAVCOPY_PRICE_FEED  # new constant, app/core/constants.py
+BHAVCOPY_PRICE_FEED_LOCK_KEY = (
+    ADVISORY_LOCK_BHAVCOPY_PRICE_FEED  # new constant, app/core/constants.py
+)
+
 
 async def bhavcopy_price_feed_job() -> None:
     """Pre-fill HoldingPrice from NSE's official bhavcopy before the Yahoo-backed

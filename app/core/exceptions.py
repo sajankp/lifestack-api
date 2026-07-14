@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 
 from app.config import settings
+from app.observability.posthog_client import capture_exception
 
 logger = structlog.get_logger()
 
@@ -262,6 +263,7 @@ async def request_validation_exception_handler(
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("unhandled_exception", error=str(exc), url=str(request.url))
+    capture_exception(exc, route=request.url.path, method=request.method)
     return _add_cors_headers(
         request,
         JSONResponse(

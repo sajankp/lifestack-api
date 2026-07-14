@@ -26,6 +26,7 @@ from app.application.workflows import (
     cleanup_expired_exports,
     cleanup_expired_sessions,
     cleanup_import_previews,
+    deliver_pending_email_notifications,
     deliver_pending_push_notifications,
     evaluate_workspace_budget_guardrails,
     evaluate_workspace_kpi_breaches,
@@ -40,6 +41,7 @@ from app.core.constants import (
     ADVISORY_LOCK_BHAVCOPY_PRICE_FEED,
     ADVISORY_LOCK_BUDGET_GUARDRAILS,
     ADVISORY_LOCK_DASHBOARD_INSIGHTS,
+    ADVISORY_LOCK_EMAIL_DELIVERY,
     ADVISORY_LOCK_EXPORT_CLEANUP,
     ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
@@ -75,6 +77,7 @@ from app.investing.repository import (
 )
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
+from app.observability.posthog_client import capture_exception
 from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.spending.repository import (
     BudgetRepository,
@@ -192,7 +195,7 @@ async def run_workspace_job(
                         duration_ms=duration_ms,
                         status="timeout",
                     )
-                except Exception:
+                except Exception as exc:
                     duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
                     logger.error(
                         f"{job_name}_workspace_failed",
@@ -202,6 +205,7 @@ async def run_workspace_job(
                         status="failed",
                         exc_info=True,
                     )
+                    capture_exception(exc, job_name=job_name)
 
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.info(
@@ -473,7 +477,7 @@ async def recurring_transactions_job(workspace_id: int | None = None) -> None:
                         duration_ms=duration_ms,
                         status="timeout",
                     )
-                except Exception:
+                except Exception as exc:
                     duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
                     logger.error(
                         "recurring_transactions_workspace_failed",
@@ -483,6 +487,7 @@ async def recurring_transactions_job(workspace_id: int | None = None) -> None:
                         status="failed",
                         exc_info=True,
                     )
+                    capture_exception(exc, job_name="recurring_transactions_job")
 
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.info(
@@ -623,7 +628,7 @@ async def weekly_summary_job(
                         duration_ms=duration_ms,
                         status="timeout",
                     )
-                except Exception:
+                except Exception as exc:
                     duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
                     logger.error(
                         "weekly_summary_workspace_failed",
@@ -633,6 +638,7 @@ async def weekly_summary_job(
                         status="failed",
                         exc_info=True,
                     )
+                    capture_exception(exc, job_name="weekly_summary_job")
 
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.info(
@@ -726,7 +732,7 @@ async def export_cleanup_job() -> None:
                 duration_ms=total_ms,
                 cleaned_count=cleaned_count,
             )
-        except Exception:
+        except Exception as exc:
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.error(
                 "export_cleanup_job_failed",
@@ -735,6 +741,7 @@ async def export_cleanup_job() -> None:
                 status="failed",
                 exc_info=True,
             )
+            capture_exception(exc, job_name="export_cleanup_job")
             raise
 
 
@@ -771,7 +778,7 @@ async def session_cleanup_job() -> None:
                 duration_ms=total_ms,
                 cleaned_count=cleaned_count,
             )
-        except Exception:
+        except Exception as exc:
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.error(
                 "session_cleanup_job_failed",
@@ -780,6 +787,7 @@ async def session_cleanup_job() -> None:
                 status="failed",
                 exc_info=True,
             )
+            capture_exception(exc, job_name="session_cleanup_job")
             raise
 
 
@@ -812,7 +820,7 @@ async def import_preview_cleanup_job() -> None:
                 duration_ms=total_ms,
                 cleaned_count=cleaned_count,
             )
-        except Exception:
+        except Exception as exc:
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.error(
                 "import_preview_cleanup_job_failed",
@@ -821,6 +829,7 @@ async def import_preview_cleanup_job() -> None:
                 status="failed",
                 exc_info=True,
             )
+            capture_exception(exc, job_name="import_preview_cleanup_job")
             raise
 
 
@@ -862,7 +871,7 @@ async def push_delivery_job() -> None:
                 duration_ms=total_ms,
                 **counts,
             )
-        except Exception:
+        except Exception as exc:
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.error(
                 "push_delivery_job_failed",
@@ -871,6 +880,56 @@ async def push_delivery_job() -> None:
                 status="failed",
                 exc_info=True,
             )
+            capture_exception(exc, job_name="push_delivery_job")
+            raise
+
+
+# Advisory lock key — see app.core.constants for the full registry
+EMAIL_DELIVERY_LOCK_KEY = ADVISORY_LOCK_EMAIL_DELIVERY
+
+
+async def email_delivery_job() -> None:
+    """Cron-triggered job that drains pending email-channel NotificationDelivery
+    rows (spec-081), mirroring push_delivery_job. Gated on both
+    ``EMAIL_ENABLED`` (explicit master switch) and ``RESEND_API_KEY`` —
+    while inert, pending rows simply accumulate until both are configured."""
+    if not settings.EMAIL_ENABLED or not settings.RESEND_API_KEY:
+        return
+
+    start_time = datetime.now(UTC)
+    logger.info("email_delivery_job_start", job_name="email_delivery_job")
+
+    async with postgres.async_session_maker() as session, session.begin():
+        lock_res = await session.execute(
+            select(func.pg_try_advisory_xact_lock(EMAIL_DELIVERY_LOCK_KEY))
+        )
+        has_lock = lock_res.scalar()
+        if not has_lock:
+            logger.info("email_delivery_job_skipped_lock_held", job_name="email_delivery_job")
+            return
+
+        try:
+            counts = await deliver_pending_email_notifications(
+                session, limit=settings.EMAIL_DELIVERY_BATCH_CAP
+            )
+
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info(
+                "email_delivery_job_completed",
+                job_name="email_delivery_job",
+                duration_ms=total_ms,
+                **counts,
+            )
+        except Exception as exc:
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.error(
+                "email_delivery_job_failed",
+                job_name="email_delivery_job",
+                duration_ms=total_ms,
+                status="failed",
+                exc_info=True,
+            )
+            capture_exception(exc, job_name="email_delivery_job")
             raise
 
 

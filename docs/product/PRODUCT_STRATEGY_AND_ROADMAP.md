@@ -146,13 +146,16 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 5. ~~**Wallet ledger reconciliation**~~ — **done 2026-07-12** (spec-078, api#159/web#115): [spec-078](../specs/spec-078-wallet-ledger-reconciliation.md). Statement matching as metadata-only (never mutates ledger rows), deterministic ±3-day suggest-only match engine, reconciliation view. Cash-adjacent — non-retroactivity invariants stated in the spec. **Known gap:** the transfer-detail both-legs timeline named in the spec is deferred, not yet its own follow-up spec.
 6. **Voice/capture production hardening** — [spec-079](../specs/spec-079-voice-capture-production-hardening.md) (Stage A in progress, api#158): measure-first eval gate, WS resilience (WebRTC explicitly deferred to its own spec), multi-item capture. ADK stays "no, not now" per spec-039. Stage A (tool-wiring fix, disconnect instrumentation, eval harness) merged; recalibrated accuracy 84.2%, below the 90% bar — Stages B/C stay gated until two runs a week apart both clear it.
 
-**Parked (2026-07-12):** Notifications beyond push — push delivery already ships (spec-052); the only meaningful remaining scope is email delivery, which is explicitly out of scope for now. Revisit only if a concrete need for an email channel surfaces; don't scope real-time transport/grouping/digest variants without one.
+7. **PostHog observability + Resend email channel** — [spec-081](../specs/spec-081-posthog-analytics-and-resend-email.md) (Implemented 2026-07-14): frontend analytics (explicit events only) + frontend/backend exception capture via PostHog free tier; email delivery for the dormant `channel_email` preference (spec-052) via Resend free tier. Fully inert without env keys; zero recurring cost.
+8. **OpenTelemetry traces/logs → PostHog** — [spec-082](../specs/spec-082-opentelemetry-traces-logs-to-posthog.md) (Implemented 2026-07-14): vendor-neutral OTel instrumentation exporting to PostHog's OTLP endpoint, replacing the earlier self-hosted Grafana plan; the redaction processor is the core design problem; metrics explicitly out of scope.
+
+**Un-parked (2026-07-14):** Notifications beyond push — parked 2026-07-12 pending a concrete need for an email channel; spec-081 (item 7) now scopes email delivery. Real-time transport, grouping, and digest variants remain unscoped.
 
 **Separately unsequenced — §6 Long-Term Product Sequence:** Track 1 (Health Memory) shipped only its V1 slice — medications + weight (spec-069); sleep, workouts, vitals, labs, and symptoms are explicitly out of scope for v1 (spec-069 non-goals) and are the natural next slice within the same track before moving to Track 2 (Mobile Companion). Tracks 3–7 (Health Sync, Document Intelligence, Second Brain/RAG, Agent Access, Personal Coach) are unstarted. Not part of the sequence above.
 
 ### Core Product Depth
 
-**2026-07-12 — six of these are now the owner-decided next sequence** (JWT library maintenance, currency display, weekly summaries, custom financial KPIs, wallet ledger, voice/capture) **— see the numbered list above §4 "Immediate Focus" for order and spec-numbering status.** Notifications is parked, not sequenced.
+**2026-07-12 — six of these are now the owner-decided next sequence** (JWT library maintenance, currency display, weekly summaries, custom financial KPIs, wallet ledger, voice/capture) **— see the numbered list above §4 "Immediate Focus" for order and spec-numbering status.** Notifications email delivery was un-parked 2026-07-14 and sequenced as item 7 (spec-081).
 
 | Area | Roadmap Item | Why It Belongs Here |
 |---|---|---|

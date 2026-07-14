@@ -118,9 +118,10 @@ A thin `ConstituentProvider` protocol is introduced in `app/application/constitu
 ```python
 class ConstituentProviderResult:
     symbol: str
-    constituents: list[ConstituentEntry]   # (name, ticker, raw_weight)
+    constituents: list[ConstituentEntry]  # (name, ticker, raw_weight)
     fetched_at: datetime
     provider_key: str
+
 
 class ConstituentProvider(Protocol):
     async def fetch(self, symbol: str) -> ConstituentProviderResult | None: ...
@@ -197,9 +198,11 @@ ADVISORY_LOCK_CONSTITUENT_INGESTION: int = 1008
 
 ```python
 # Constituent ingestion (Spec 032)
-CONSTITUENT_INGESTION_ENABLED: bool = True        # opt-out kill-switch per-instance
-CONSTITUENT_INGESTION_HOUR_UTC: int = 6           # daily run hour (after FX at 02:00, prices implied via 031)
-CONSTITUENT_INGESTION_STALENESS_DAYS: int = 7     # skip re-fetch if snapshot is fresher than this
+CONSTITUENT_INGESTION_ENABLED: bool = True  # opt-out kill-switch per-instance
+CONSTITUENT_INGESTION_HOUR_UTC: int = (
+    6  # daily run hour (after FX at 02:00, prices implied via 031)
+)
+CONSTITUENT_INGESTION_STALENESS_DAYS: int = 7  # skip re-fetch if snapshot is fresher than this
 ```
 
 The `CONSTITUENT_INGESTION_STALENESS_DAYS` knob is intentionally separate from the analytics-layer
@@ -262,7 +265,9 @@ async def constituent_ingestion_job() -> None:
 
         try:
             provider = YahooFinanceConstituentProvider()
-            result = await ingest_constituents(session, provider, settings.CONSTITUENT_INGESTION_STALENESS_DAYS)
+            result = await ingest_constituents(
+                session, provider, settings.CONSTITUENT_INGESTION_STALENESS_DAYS
+            )
             logger.info("constituent_ingestion_job_completed", ..., result_summary=result)
         except Exception as e:
             logger.error("constituent_ingestion_job_failed", ..., error=str(e), exc_info=True)

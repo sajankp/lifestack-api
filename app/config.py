@@ -96,7 +96,26 @@ class Settings(BaseSettings):
 
     # Observability
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
+    # Standard OTel env var carrying auth for the OTLP exporter, e.g.
+    # "Authorization=Bearer <posthog-project-key>" (spec-082). Unset alongside
+    # OTEL_EXPORTER_OTLP_ENDPOINT unset ⇒ no exporter installed.
+    OTEL_EXPORTER_OTLP_HEADERS: str | None = None
     METRICS_TOKEN: str = Field(default_factory=lambda: "dev-metrics-" + secrets.token_urlsafe(16))
+
+    # PostHog error tracking (spec-081) — exception capture only, no behavior
+    # analytics. Unset ⇒ SDK never initialized (dev/test/e2e/CI default).
+    POSTHOG_API_KEY: str | None = None
+    POSTHOG_HOST: str = "https://us.i.posthog.com"
+
+    # Resend email notification channel (spec-052 channel_email, spec-081).
+    # EMAIL_ENABLED is the explicit master switch so a copied .env can't
+    # accidentally start sending; RESEND_API_KEY unset ⇒ deliveries marked
+    # skipped regardless of EMAIL_ENABLED.
+    RESEND_API_KEY: str | None = None
+    EMAIL_FROM_ADDRESS: str | None = None
+    EMAIL_ENABLED: bool = False
+    EMAIL_DELIVERY_BATCH_CAP: int = 50
+    EMAIL_DELIVERY_INTERVAL_MINUTES: int = 1
 
     # Scheduler
     SCHEDULER_ENABLED: bool = False

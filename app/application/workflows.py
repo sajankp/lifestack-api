@@ -1,5 +1,6 @@
 import asyncio
 import calendar
+import html as html_lib
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -10,6 +11,7 @@ import structlog
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.models import User
 from app.auth.repository import AuthSessionRepository
 from app.auth.schemas import UserCreate
 from app.auth.service import AuthService
@@ -43,6 +45,7 @@ from app.health.service import HealthService
 from app.imports.models import ImportBatch, ImportPreviewRow
 from app.imports.repository import ImportRepository
 from app.investing.performance_service import PerformanceService
+from app.notifications.email import send_email
 from app.notifications.models import Notification
 from app.notifications.push import send_web_push
 from app.notifications.repository import NotificationRepository, PushSubscriptionRepository
@@ -1625,3 +1628,66 @@ async def deliver_pending_push_notifications(session: AsyncSession, limit: int =
     if pending:
         await session.flush()
     return {"sent": sent_count, "failed": failed_count}
+
+
+async def deliver_pending_email_notifications(session: AsyncSession, limit: int = 100) -> dict:
+    """Drain the pending email-delivery queue (spec-081), mirroring
+    ``deliver_pending_push_notifications``. ``limit`` doubles as the
+    defensive per-run cap on Resend free-tier volume (100/day) — the caller
+    passes ``settings.EMAIL_DELIVERY_BATCH_CAP``, not the push default."""
+    notification_repo = NotificationRepository(session)
+
+    pending = await notification_repo.list_pending_email_deliveries(limit)
+    sent_count = 0
+    failed_count = 0
+    skipped_count = 0
+
+    if not pending:
+        return {"sent": sent_count, "failed": failed_count, "skipped": skipped_count}
+
+    # Batch-fetch all users in one IN query to avoid an N+1 per row.
+    user_ids = {notification.user_id for _, notification in pending}
+    users_res = await session.execute(select(User).where(User.id.in_(user_ids)))
+    users_map = {u.id: u for u in users_res.scalars().all()}
+
+    async with httpx.AsyncClient() as client:
+        for delivery, notification in pending:
+            try:
+                user = users_map.get(notification.user_id)
+                if not user:
+                    await notification_repo.mark_delivery(delivery, "failed", "user not found")
+                    await session.flush()  # persist per-row to avoid double-send on crash
+                    failed_count += 1
+                    continue
+
+                escaped_title = html_lib.escape(notification.title)
+                html_content = f"<p><strong>{escaped_title}</strong></p>"
+                if notification.body:
+                    escaped_body = html_lib.escape(notification.body)
+                    html_content += f"<p>{escaped_body}</p>"
+
+                result = await send_email(
+                    user.email, notification.title, html_content, client=client
+                )
+                if result.skipped:
+                    await notification_repo.mark_delivery(delivery, "skipped")
+                    skipped_count += 1
+                elif result.success:
+                    await notification_repo.mark_delivery(delivery, "sent")
+                    sent_count += 1
+                else:
+                    await notification_repo.mark_delivery(delivery, "failed", result.error_detail)
+                    failed_count += 1
+                await session.flush()  # persist per-row to avoid double-send on crash
+            except Exception:
+                logger.error(
+                    "email_delivery_row_failed",
+                    notification_id=notification.id,
+                    delivery_id=delivery.id,
+                    exc_info=True,
+                )
+                await notification_repo.mark_delivery(delivery, "failed", "internal error")
+                await session.flush()  # persist per-row to avoid double-send on crash
+                failed_count += 1
+
+    return {"sent": sent_count, "failed": failed_count, "skipped": skipped_count}

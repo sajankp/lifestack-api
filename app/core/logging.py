@@ -4,6 +4,7 @@ import sys
 import structlog
 
 from app.config import settings
+from app.observability.log_export import otel_log_processor
 
 
 class HealthAccessFilter(logging.Filter):
@@ -39,6 +40,10 @@ def setup_logging():
         structlog.processors.StackInfoRenderer(),
         structlog.dev.set_exc_info,
         structlog.processors.TimeStamper(fmt="iso"),
+        # spec-082: mirrors each event to OTel logs (no-op until
+        # setup_log_export() runs); does not alter the event dict, so stdout
+        # rendering below is unaffected.
+        otel_log_processor,
     ]
 
     if settings.LOG_LEVEL == "DEBUG":
