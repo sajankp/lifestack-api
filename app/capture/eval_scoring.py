@@ -21,6 +21,7 @@ READ_ONLY_TOOLS = frozenset({
     "get_todo",
     "list_next_due_items",
     "get_investing_summary",
+    "get_account_balances",
 })
 
 # The tool set as wired into app/capture/gemini_setup.py — kept here as an
@@ -32,6 +33,7 @@ KNOWN_TOOLS = frozenset({
     "create_recurring_todo",
     "log_spending_transaction",
     "get_investing_summary",
+    "get_account_balances",
     "list_todos",
     "get_todo",
     "update_todo",

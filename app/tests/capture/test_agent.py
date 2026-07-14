@@ -256,6 +256,30 @@ async def test_get_investing_summary_tool(seed_agent_test_data):
 
 
 @pytest.mark.asyncio
+async def test_get_account_balances_tool(seed_agent_test_data):
+    """Spending accounts (wallet/bank/card) get their balances back; the
+    brokerage account is excluded (investing cash is `get_investing_summary`'s
+    domain)."""
+    await execute_agent_tool(
+        name="log_spending_transaction",
+        args={"amount": "15.50", "category_name": "food", "description": "Lunch"},
+        user_id=10,
+        workspace_id=20,
+    )
+
+    res = await execute_agent_tool(
+        name="get_account_balances", args={}, user_id=10, workspace_id=20
+    )
+
+    assert res["status"] == "success"
+    by_name = {a["account_name"]: a for a in res["accounts"]}
+    assert "Chase Brokerage" not in by_name
+    assert by_name["Everyday Wallet"]["account_type"] == "wallet"
+    assert by_name["Everyday Wallet"]["currency_code"] == "USD"
+    assert by_name["Everyday Wallet"]["balance"] == "-15.50"
+
+
+@pytest.mark.asyncio
 async def test_fuzzy_account_containment_and_type_match(seed_agent_test_data):
     """spec-059: partial names and account-type words resolve to the unique
     spending-eligible account."""
@@ -427,6 +451,7 @@ def test_voice_agent_declares_timed_todos_and_spending_accounts():
     assert "place_stock_order" not in by_name
     assert "log_cash_balance" not in by_name
     assert "get_investing_summary" in by_name
+    assert "get_account_balances" in by_name
     # spec-079: log_weight/log_medication_event exist on AgentTools but were
     # never declared to the model — voice couldn't reach them.
     assert "log_weight" in by_name
