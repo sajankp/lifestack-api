@@ -20,6 +20,7 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.company_identity_merge import merge_company_identities
 from app.application.insights import generate_workspace_insights
 from app.application.workflows import (
     MorningBriefingWorkflow,
@@ -1146,3 +1147,21 @@ async def morning_briefing_job(workspace_id: int | None = None) -> None:
         process_workspace=_process_workspace,
         workspace_id=workspace_id,
     )
+
+
+async def merge_company_identities_job(workspace_id: int, dry_run: bool = False) -> None:
+    """CLI-only backfill (spec-083 §9): merge duplicate `Company` rows within
+    ONE workspace, created by the pre-spec-083 name-string identity bug.
+
+    Deliberately not scheduler-run and not under `run_workspace_job` — this
+    mutates/deletes historical identity rows and must only ever run against
+    an operator-chosen `--workspace-id`, never automatically across all
+    workspaces.
+    """
+    async with postgres.async_session_maker() as session:
+        summary = await merge_company_identities(session, workspace_id, dry_run=dry_run)
+        logger.info(
+            "merge_company_identities_completed",
+            **summary.as_dict(),
+        )
+        print(summary.as_dict())
