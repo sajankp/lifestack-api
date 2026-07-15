@@ -54,13 +54,17 @@ Landed on `feat/spec-083-security-identity-reference-data` in `lifestack-api`:
   `#`-comment block stating the per-type identifier rule plus 3 filled example rows (US ticker,
   India-MF ISIN, London-suffixed ETF); the CSV upload parser now skips leading `#` lines so
   re-uploading the template unedited still parses.
+- **`identifier_status` in the CSV import preview response (§5.5, 2026-07-16 follow-up):**
+  each constituent preview row is now classified `resolved`/`unresolved`/`ambiguous` against
+  `reference_securities` and included in `payload_json.identifier_status`. `ReferenceLookup`
+  (`imports/investing_constituents_import.py`) indexes all `reference_securities` rows by
+  isin/ticker once per import (`app/imports/service.py`, mirroring the existing
+  `instruments_map` pre-load) — no per-row query, keeping the preview loop synchronous and
+  DB-session-free as before. Same classification rule as `ReferenceResolveService.resolve`:
+  isin match wins; else ticker match, disambiguated by exchange when given, `ambiguous` when
+  the same ticker matches multiple exchanges with none given. Covered by
+  `test_import_investing_constituents_preview_reports_identifier_status`.
 - **Not yet done (tracked as remaining work, not silently dropped):**
-  - `identifier_status` (resolved/unresolved/ambiguous) is *not* yet computed per-row and
-    surfaced in the CSV import preview response (§5.5) — only the hard "no identifier at all"
-    mandate gate runs there today. The classification logic exists (`ReferenceResolveService`)
-    and is reachable via the standalone resolve endpoint; wiring it into the CSV preview loop
-    (which is a synchronous, DB-session-free pass today) is follow-up work, ideally alongside
-    the frontend import-preview UI that would display it.
   - All of §8/§8a.2/§8b's UI surfaces (Holdings Edit modal as primary identity-correction
     surface, Analytics Edit Instrument modal, Seed Constituents `company_name = ticker` fix,
     import-preview `identifier_status` column, inline resolve-on-blur) — separate

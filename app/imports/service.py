@@ -58,6 +58,7 @@ from app.imports.investing_constituents_import import (
     TEMPLATE_HEADER_COMMENT as INVESTING_CONSTITUENTS_TEMPLATE_HEADER_COMMENT,
 )
 from app.imports.investing_constituents_import import (
+    ReferenceLookup,
     check_weight_group_totals,
     commit_constituents_chunk,
     prepare_constituents_commit,
@@ -98,6 +99,7 @@ from app.investing.models import (
     Company,
     Instrument,
     InstrumentType,
+    ReferenceSecurity,
 )
 from app.investing.order_service import InvestingOrderService
 from app.investing.repository import (
@@ -628,6 +630,7 @@ class ImportService:
             ImportModule.investing_dividends,
         }:
             order_account_pub_map = await self._account_public_id_map(workspace_id)
+        reference_lookup: ReferenceLookup | None = None
         if batch.module == ImportModule.investing_constituents:
             inst_rows = (
                 (
@@ -639,6 +642,8 @@ class ImportService:
                 .all()
             )
             instruments_map = {inst.symbol.upper(): inst for inst in inst_rows}
+            reference_rows = (await self.session.execute(select(ReferenceSecurity))).scalars().all()
+            reference_lookup = ReferenceLookup.build(list(reference_rows))
 
         account_obj_map = {}
         if batch.module == ImportModule.investing_dividends:
@@ -826,7 +831,7 @@ class ImportService:
                     )
                 elif batch.module == ImportModule.investing_constituents:
                     payload, weight_entry = validate_investing_constituent_row(
-                        row, add_error, instruments_map
+                        row, add_error, instruments_map, reference_lookup
                     )
                     if weight_entry is not None:
                         key, weight = weight_entry

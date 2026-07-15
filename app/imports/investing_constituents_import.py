@@ -10,6 +10,7 @@ chunked commit loop, not per chunk.
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from typing import Literal
 
 from sqlalchemy import delete, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,8 +19,58 @@ from app.core.exceptions import ValidationError
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow
 from app.imports.repository import ImportRepository
 from app.imports.shared import AddErrorFn, WeightEntry, norm
-from app.investing.models import Company, Instrument, InstrumentConstituent, InstrumentType
+from app.investing.models import (
+    Company,
+    Instrument,
+    InstrumentConstituent,
+    InstrumentType,
+    ReferenceSecurity,
+)
 from app.investing.repository import normalize_company_name
+
+IdentifierStatus = Literal["resolved", "unresolved", "ambiguous"]
+
+
+@dataclass
+class ReferenceLookup:
+    """In-memory `reference_securities` index for classifying each CSV row's
+    `identifier_status` (spec-083 §5.5) during preview validation — loaded
+    once per import, not queried per row.
+    """
+
+    by_isin: dict[str, ReferenceSecurity] = field(default_factory=dict)
+    by_ticker: dict[str, list[ReferenceSecurity]] = field(default_factory=dict)
+
+    @classmethod
+    def build(cls, rows: list[ReferenceSecurity]) -> "ReferenceLookup":
+        lookup = cls()
+        for row in rows:
+            if row.isin:
+                lookup.by_isin[row.isin.strip().upper()] = row
+            if row.ticker:
+                lookup.by_ticker.setdefault(row.ticker.strip().upper(), []).append(row)
+        return lookup
+
+    def classify(
+        self, *, isin: str | None, ticker: str | None, exchange: str | None
+    ) -> IdentifierStatus:
+        if isin:
+            return "resolved" if isin.strip().upper() in self.by_isin else "unresolved"
+        if ticker:
+            candidates = self.by_ticker.get(ticker.strip().upper(), [])
+            if exchange:
+                return (
+                    "resolved" if any(c.exchange == exchange for c in candidates) else "unresolved"
+                )
+            if len(candidates) == 1:
+                return "resolved"
+            if len(candidates) > 1:
+                # Same ticker string, multiple markets, row doesn't say which
+                # (spec-083 §6.1) — don't guess.
+                return "ambiguous"
+            return "unresolved"
+        return "unresolved"
+
 
 TEMPLATE_ROW = "UMMA,Apple Inc,,AAPL,,0.082,2026-06-14"
 
@@ -80,6 +131,7 @@ def validate_investing_constituent_row(
     row: dict,
     add_error: AddErrorFn,
     instruments_map: dict[str, Instrument],
+    reference_lookup: ReferenceLookup | None = None,
 ) -> tuple[dict, WeightEntry | None]:
     instrument_symbol_raw = norm(row.get("instrument_symbol"))
     company_name_raw = norm(row.get("company_name"))
@@ -156,6 +208,16 @@ def validate_investing_constituent_row(
         )
         as_of_date = None
 
+    identifier_status = (
+        reference_lookup.classify(
+            isin=company_isin_raw.upper() if company_isin_raw else None,
+            ticker=company_ticker_raw or None,
+            exchange=company_exchange_raw.upper() if company_exchange_raw else None,
+        )
+        if reference_lookup is not None
+        else None
+    )
+
     payload = {
         "instrument_symbol": instrument_symbol_raw.upper() if instrument_symbol_raw else None,
         "instrument_id": inst.id if inst else None,
@@ -163,6 +225,7 @@ def validate_investing_constituent_row(
         "company_ticker": company_ticker_raw or None,
         "company_isin": company_isin_raw.upper() if company_isin_raw else None,
         "company_exchange": company_exchange_raw.upper() if company_exchange_raw else None,
+        "identifier_status": identifier_status,
         "weight": str(weight) if weight is not None else None,
         "as_of_date": as_of_date.isoformat() if as_of_date else None,
         "source": "csv_import",

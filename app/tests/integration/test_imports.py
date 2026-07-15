@@ -13,7 +13,7 @@ from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.imports.models import ImportBatch
-from app.investing.models import Company, Instrument, InstrumentConstituent
+from app.investing.models import Company, Instrument, InstrumentConstituent, ReferenceSecurity
 from app.platform.models import WorkspaceMembership
 from app.spending.models import SpendingTransaction
 
@@ -648,6 +648,94 @@ async def test_import_investing_constituents_rejects_name_only_rows(client: Asyn
     assert body["import_batch"]["status"] == "failed_validation"
     assert body["error_summary"]["by_code"]["identifier_required"] == 1
     assert any("company_ticker or company_isin" in err["message"] for err in body["errors"])
+
+
+@pytest.mark.asyncio
+async def test_import_investing_constituents_preview_reports_identifier_status(
+    client: AsyncClient,
+):
+    """spec-083 §5.5: each constituent preview row is classified against
+    `reference_securities` — resolved / unresolved / ambiguous — so the
+    import-preview UI can flag rows before commit, not just reject the
+    completely-blank-identifier case.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    creds = await _register_and_login(client, suffix)
+
+    async with postgres.async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.username == f"import_{suffix}"))
+        ).scalar_one()
+        membership = (
+            await session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+            )
+        ).scalar_one()
+        workspace_id = membership.workspace_id
+        session.add(
+            Instrument(
+                workspace_id=workspace_id,
+                symbol="UMMA",
+                name="Wahed Shariah ETF",
+                instrument_type="etf",
+                is_active=True,
+            )
+        )
+        session.add(
+            ReferenceSecurity(
+                isin="US0378331005",
+                ticker="AAPL",
+                exchange="XNAS",
+                security_type="stock",
+                name="Apple Inc",
+                source="test",
+                fetched_at=datetime.now(UTC),
+            )
+        )
+        session.add(
+            ReferenceSecurity(
+                ticker="TATASTEEL",
+                exchange="XNSE",
+                security_type="stock",
+                name="Tata Steel Ltd (India)",
+                source="test",
+                fetched_at=datetime.now(UTC),
+            )
+        )
+        session.add(
+            ReferenceSecurity(
+                ticker="TATASTEEL",
+                exchange="XLON",
+                security_type="stock",
+                name="Tata Steel Ltd (London)",
+                source="test",
+                fetched_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    csv_rows = (
+        "instrument_symbol,company_name,company_isin,company_ticker,company_exchange,weight,as_of_date\n"
+        "UMMA,Apple Inc,,AAPL,,0.40,2026-06-14\n"
+        "UMMA,Unknown Co,,UNKNOWNCO,,0.30,2026-06-14\n"
+        "UMMA,Tata Steel,,TATASTEEL,,0.30,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_rows.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    statuses = {
+        row["payload_json"]["company_ticker"]: row["payload_json"]["identifier_status"]
+        for row in body["preview_rows"]
+    }
+    assert statuses["AAPL"] == "resolved"
+    assert statuses["UNKNOWNCO"] == "unresolved"
+    assert statuses["TATASTEEL"] == "ambiguous"
 
 
 @pytest.mark.asyncio
