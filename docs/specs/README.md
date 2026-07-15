@@ -123,7 +123,7 @@ Corporate actions, web push, CAS PDF ingestion (CAMS/NSDL/CDSL), NSE bhavcopy pr
 | [Spec 077: Custom Financial KPIs](./spec-077-custom-financial-kpis.md) | Approved (implementation) | User-defined KPIs from predefined metric types; guardrails-cadence evaluation; expression language fenced off. |
 | [Spec 078: Wallet Ledger Reconciliation](./spec-078-wallet-ledger-reconciliation.md) | Approved (implementation) | Bank-statement matching as metadata-only links (never mutates ledger rows); reconciliation view; transfer timeline. |
 | [Spec 079: Voice/Capture Production Hardening](./spec-079-voice-capture-production-hardening.md) | Approved (implementation) | Measure-first eval gate, WS transport resilience (WebRTC deferred), multi-item capture; ADK still "no, not now". |
-| [Spec 083: Security Identity & Reference Data](./spec-083-security-identity-and-reference-data.md) | Approved (implementation) | Company identity by ISIN→ticker→normalized-name (fixes look-through fragmentation); editable instrument identifiers; type/market-specific mandate; bundled reference data + API-fallback cache; self-documenting template/forms; Holdings tab is the primary identity-correction surface. |
+| [Spec 083: Security Identity & Reference Data](./spec-083-security-identity-and-reference-data.md) | Implemented (API side); frontend pending | Company identity by ISIN→ticker→normalized-name (fixes look-through fragmentation); editable instrument identifiers; identifier mandate on constituents; bundled reference data (AMFI+NSE+Nasdaq Trader) + API-fallback cache; self-documenting CSV template; merge_company_identities backfill CLI. Holdings tab as the primary identity-correction surface is lifestack-web work, not yet started. |
 
 ## Roadmap Alignment
 
