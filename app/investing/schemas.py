@@ -301,6 +301,22 @@ class InstrumentConstituentCreate(BaseModel):
     def normalize_company_identifiers(cls, value: str | None) -> str | None:
         return _normalize_identifier(value)
 
+    @model_validator(mode="after")
+    def require_an_identifier(self) -> "InstrumentConstituentCreate":
+        """spec-083 §6 mandate: a name-only constituent row (no isin, no
+        ticker) is exactly how "Apple Inc" / "Apple Inc." / "AAPL" fragmented
+        into separate Company rows pre-spec-083 — reject it outright rather
+        than accept it and let identity resolution guess. A row that *does*
+        carry an identifier but doesn't resolve against reference data still
+        passes here (that's `identifier_status=unresolved`, not a 422).
+        """
+        if not (self.company_isin or self.company_ticker):
+            raise ValueError(
+                f"company '{self.company_name}' needs a company_isin or company_ticker "
+                "identifier — name alone is not enough (spec-083 identifier mandate)"
+            )
+        return self
+
 
 class InstrumentConstituentUpsert(BaseModel):
     as_of_date: date

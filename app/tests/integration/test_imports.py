@@ -546,6 +546,55 @@ async def test_import_workspace_isolation(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_import_investing_constituents_rejects_name_only_rows(client: AsyncClient):
+    """spec-083 §6 mandate: a constituent row with a company_name but no
+    company_ticker/company_isin must fail validation — this is exactly the
+    name-only path that fragmented "Apple Inc" / "Apple Inc." pre-spec-083.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    creds = await _register_and_login(client, suffix)
+
+    async with postgres.async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.username == f"import_{suffix}"))
+        ).scalar_one()
+        membership = (
+            await session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+            )
+        ).scalar_one()
+        workspace_id = membership.workspace_id
+        session.add(
+            Instrument(
+                workspace_id=workspace_id,
+                symbol="UMMA",
+                name="Wahed Shariah ETF",
+                instrument_type="etf",
+                is_active=True,
+            )
+        )
+        await session.commit()
+
+    csv_name_only = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "UMMA,Apple Inc,,0.50,2026-06-14\n"
+        "UMMA,Microsoft Corp,MSFT,0.50,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_name_only.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_code"]["identifier_required"] == 1
+    assert any("company_ticker or company_isin" in err["message"] for err in body["errors"])
+
+
+@pytest.mark.asyncio
 async def test_import_investing_constituents_lifecycle(client: AsyncClient):
     suffix = uuid.uuid4().hex[:8]
     creds = await _register_and_login(client, suffix)

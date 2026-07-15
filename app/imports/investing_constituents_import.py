@@ -99,6 +99,18 @@ def validate_investing_constituent_row(
             "company_name is required",
             company_name_raw,
         )
+    elif not (company_ticker_raw or company_isin_raw):
+        # spec-083 §6 mandate: name-only rows are exactly how "Apple Inc" /
+        # "Apple Inc." / "AAPL" fragmented into separate companies. A row
+        # that carries an identifier but doesn't resolve against reference
+        # data still passes (identifier_status=unresolved), only a
+        # completely blank identifier is rejected here.
+        add_error(
+            "company_ticker",
+            "identifier_required",
+            "company_ticker or company_isin is required (name alone is not enough)",
+            company_name_raw,
+        )
 
     try:
         weight = Decimal(weight_raw)
