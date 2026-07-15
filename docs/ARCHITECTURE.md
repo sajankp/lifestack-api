@@ -859,6 +859,7 @@ This balances developer velocity (fast push feedback) with release confidence (f
 | Voice agent backdated spending transactions (Spec 061) | ✅ Done |
 | Category delete/merge + category groups + recurring date-ranged budgets (Spec 062, 064) | ✅ Done |
 | Net worth history — daily snapshot job + stacked-area history chart (Spec 065) | ✅ Done |
+| Security identity resolution & reference data (Spec 083 / web Spec 010) | ✅ Done |
 
 ### Phase 2 - AI and Integrations
 - design AI adapter architecture (provider-agnostic)
