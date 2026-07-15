@@ -106,6 +106,7 @@ the API fallback.
 | `amfi_code` | str(20), nullable, indexed | Indian MF scheme code |
 | `security_type` | enum(`stock`,`etf`,`mutual_fund`) | |
 | `name` | str(255) | canonical display name |
+| `aliases` | `sa.ARRAY(sa.String)`, default `[]` | name variants from `securities.json` (§7.1); resolver matches `normalized(name)` against `name` **and** every entry here without loading the JSON at query time |
 | `country_code` | str(10), nullable | |
 | `source` | str(64) | `bundled:<origin>` (from `securities.json`) or `api:<provider>` (cached) |
 | `fetched_at` | datetime(tz) | for API-sourced/cache-staleness |
@@ -138,6 +139,15 @@ Add optional `isin: str|20`, `exchange: str|50` (ticker already present). Valida
 ### 5.2 `InstrumentUpdate` — extend (the key correction gap)
 Currently only `name` + `instrument_type`. Add optional `ticker`, `isin`, `exchange`. This is what
 makes existing instruments correctable from the UI.
+
+**Must not mutate the linked `Company` in place.** `Instrument.company_id` points at a `Company`
+row that may be shared by other instruments (or referenced by constituent snapshots elsewhere); if
+`update_instrument` wrote the new `ticker`/`isin` directly onto that row, it would corrupt identity
+for every other instrument sharing it and bypass resolution entirely. Instead, when `ticker` or
+`isin` changes, the service must **re-resolve**: call `resolve_or_create_company` (§4.2) with the
+new identifiers and repoint `Instrument.company_id` to whatever it returns (existing match or newly
+created row). The old `Company` row is left untouched — it stays correct for whichever other
+instruments still reference it.
 
 ### 5.3 `InstrumentConstituentCreate` / CSV schema — mandate + identifiers
 - CSV template headers become:
@@ -376,18 +386,34 @@ the template-generation copy lives with whichever repo owns template generation.
 to avoid cross-workspace contamination while it deletes/repoints company rows. Invocation:
 `python -m app.cli.run merge_company_identities --workspace-id <id>`.
 
+**CLI wiring:** `app/cli/run.py` currently restricts `--workspace-id` to a hardcoded allow-list of
+job names. `merge_company_identities` must be added to both the `JOBS` mapping and that
+workspace-scoped allow-list, or the CLI rejects the command outright — this is an explicit
+implementation step, not assumed wiring.
+
 Steps (idempotent, re-runnable, transactional per workspace):
 1. Load `reference_securities` from the master `securities.json` (separate loader, §7.1).
 2. For each `Company` **in the target workspace**, enrich `isin`/`ticker` by matching normalized
    name (and existing ticker) against `reference_securities`.
 3. **Merge duplicate companies** that resolve to the same `isin`/`(ticker,exchange)`: pick a
-   survivor, repoint `InstrumentConstituent.constituent_company_id` and `Instrument.company_id`,
-   delete the losers. Scoped strictly to the target workspace.
+   survivor, then **before repointing**, check for collisions against
+   `uq_investing_constituent_snapshot` (`instrument_id, constituent_company_id, as_of_date, source`):
+   if both the survivor and a loser already have a constituent row for the same
+   `(instrument_id, as_of_date, source)`, a naive FK repoint on the loser's row violates that unique
+   constraint. Detect these pairs first; for each, keep the survivor's existing row (or sum the
+   weights if that's the more correct merge — implementation choice, but pick one and document it in
+   code) and delete the loser's now-duplicate row instead of repointing it. Only rows without a
+   collision get their `constituent_company_id` repointed directly. Then repoint
+   `Instrument.company_id` (no analogous collision risk — `company_id` is a plain FK, not part of a
+   composite unique constraint) and delete the loser `Company` rows. Scoped strictly to the target
+   workspace.
 4. Because holdings/exposure are derived (analytics computed on read), no snapshot rewrite is
    needed — the next exposure/overlap read reflects merged identity automatically.
 
 Backfill is reversible in the sense that it only consolidates identity; original snapshots'
-weights/dates are untouched.
+weights/dates are untouched. Merge of colliding constituent rows (step 3) is the one place data is
+dropped rather than repointed — call this out in the CLI's dry-run/summary output so it's visible
+per run, not silent.
 
 ---
 
@@ -410,7 +436,16 @@ weights/dates are untouched.
   sharing a ticker on different exchanges.
 - **Backfill/merge integration test:** seed duplicate companies, run backfill, assert single
   survivor + repointed constituents + corrected overlap numbers (golden-style: overlap of a
-  known-duplicated company goes from split to combined).
+  known-duplicated company goes from split to combined). **Must include a colliding-constituent
+  case**: survivor and loser both have a row for the same `(instrument_id, as_of_date, source)` —
+  assert the merge does not raise `UniqueViolation` and resolves per the documented collision policy
+  (§9 step 3), not a crash.
+- **`InstrumentUpdate` re-resolution test:** changing `ticker`/`isin` on an instrument whose
+  `Company` is shared by a second instrument must repoint only the edited instrument's `company_id`
+  and leave the shared `Company` row (and the second instrument's identity) unchanged — proves no
+  in-place mutation (§5.2).
+- **CLI wiring test:** `merge_company_identities --workspace-id <id>` is accepted (not rejected) by
+  `app/cli/run.py`'s workspace-scoped allow-list (§9).
 - **Mandate tests:** US stock without ticker rejected/flagged; India MF with ISIN accepted without
   ticker; London ETF `HIEU.L` accepted; ISIN accepted universally; unresolved-but-well-formed row
   flagged `unresolved` not blocked.
