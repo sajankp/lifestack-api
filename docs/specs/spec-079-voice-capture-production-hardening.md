@@ -424,3 +424,18 @@ forward: (a) revert `GEMINI_MODEL` to 2.5 Native Audio to chase the bar on the h
 (trading away the 1M vs 65K TPM headroom difference), or (b) keep 3.1 Flash Live for its TPM/latency
 profile and invest in closing the free-text scorer-strictness gap (widen `text_fields`-style
 tolerances further) before the next twice-a-week run. Not decided here — owner call.
+
+## Thinking Budget Latency-Accuracy Tradeoff — 2026-07-15
+
+To understand how the thinking budget configurations affect performance and latency in production, we benchmarked `models/gemini-3.1-flash-live-preview` across different budget settings (1024, 512, 256, and 0).
+
+| Thinking Budget | Routing Accuracy | First Response Latency | Turn Complete Latency | Avg Thinking Tokens / Turn | Key Failures / Behaviors |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1024** | **78.95%** (15/19) | ~5.49s | ~8.67s | ~986.5 | Failed: `adv-03`, `adv-08`, `adv-12`, `adv-19` |
+| **512** | **78.95%** (15/19) | ~4.58s | ~7.25s | ~755.2 | Same failures as 1024. Ideal sweet spot (saves ~1s response time over 1024). |
+| **256** *(Default)* | **73.68%** (14/19) | ~2.74s | ~5.26s | ~331.8 | Failures above, plus `adv-15` (description formatting mismatch). |
+| **0** *(Disabled)* | **68.42%** (13/19) | **~0.97s** (Instant) | ~6.24s | 0.0 | Fails on simple translations (`adv-05`, `adv-06`) and passes invalid arguments (`adv-11`). |
+
+### Key Tradeoff Insights
+1. **Sweet Spot (512):** Setting the thinking budget to `512` yields the exact same accuracy (**78.95%**) as a larger budget of `1024`, while reducing the first response latency by ~1 second.
+2. **Sub-second Latency (0):** Disabling thinking entirely (`GEMINI_THINKING_BUDGET=0`) drops the response delay to **~0.97s**, but leads to severe accuracy degradation (**68.42%**) and syntax mistakes, such as generating invalid API query arguments.
