@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.company_identity_merge import merge_company_identities
 from app.application.insights import generate_workspace_insights
+from app.application.reference_data_loader import load_reference_securities
 from app.application.workflows import (
     MorningBriefingWorkflow,
     cleanup_expired_exports,
@@ -1147,6 +1148,17 @@ async def morning_briefing_job(workspace_id: int | None = None) -> None:
         process_workspace=_process_workspace,
         workspace_id=workspace_id,
     )
+
+
+async def load_reference_securities_job() -> None:
+    """CLI-only loader (spec-083 §7.1): idempotent-upsert the bundled
+    `securities.json` master data into `reference_securities`. Global
+    (no workspace scope) — re-run any time the JSON changes.
+    """
+    async with postgres.async_session_maker() as session:
+        summary = await load_reference_securities(session)
+        logger.info("load_reference_securities_completed", **summary.as_dict())
+        print(summary.as_dict())
 
 
 async def merge_company_identities_job(workspace_id: int, dry_run: bool = False) -> None:

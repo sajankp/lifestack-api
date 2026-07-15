@@ -10,6 +10,7 @@ from app.application.jobs import (
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
     kpi_guardrails_job,
+    load_reference_securities_job,
     medication_reminder_job,
     merge_company_identities_job,
     morning_briefing_job,
@@ -32,6 +33,7 @@ JOBS = {
     "medication_reminder": medication_reminder_job,
     "morning_briefing": morning_briefing_job,
     "merge_company_identities": merge_company_identities_job,
+    "load_reference_securities": load_reference_securities_job,
 }
 
 # Jobs that accept --workspace-id (optional for these; mandatory below for
