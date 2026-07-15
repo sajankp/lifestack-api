@@ -94,6 +94,17 @@ CURATED_LONDON_ETFS = [
     },
 ]
 
+# NSE-listed REITs/InvITs (spec-083 §7.1/§7.3): these trade on a separate
+# NSE segment not covered by EQUITY_L.csv/eq_etfseclist.csv, and no public
+# bulk-download URL for that segment was found — hand-curated (ticker/name
+# only; isin omitted rather than guessed) until one turns up. Ticker+exchange
+# already satisfies the India-stock mandate (§6) without an isin.
+CURATED_INDIA_REITS = [
+    {"ticker": "EMBASSY", "name": "Embassy Office Parks REIT"},
+    {"ticker": "MINDSPACE", "name": "Mindspace Business Parks REIT"},
+    {"ticker": "BIRET", "name": "Brookfield India Real Estate Trust"},
+]
+
 
 def _read_maybe_gzipped(path: Path) -> str:
     raw = path.read_bytes()
@@ -271,6 +282,18 @@ def build_curated_etf_entries() -> list[dict]:
             "name": etf["name"],
             "aliases": [],
             "country_code": "GB",
+            "source": "bundled:manual",
+        })
+    for reit in CURATED_INDIA_REITS:
+        entries.append({
+            "isin": reit.get("isin"),
+            "ticker": reit["ticker"],
+            "exchange": "XNSE",
+            "amfi_code": None,
+            "security_type": "stock",
+            "name": reit["name"],
+            "aliases": [],
+            "country_code": "IN",
             "source": "bundled:manual",
         })
     return entries
