@@ -169,11 +169,9 @@ class HoldingService:
 
         company: Company | None = None
         if self.company_repo is not None and instrument_type == InstrumentType.stock:
-            company = await self.company_repo.get_by_name(target_workspace_id, symbol)
-            if company is None:
-                company = await self.company_repo.create(
-                    Company(workspace_id=target_workspace_id, name=symbol, ticker=symbol)
-                )
+            company = await self.company_repo.resolve_or_create_company(
+                target_workspace_id, name=symbol, ticker=symbol
+            )
 
         instrument = await self.instrument_repo.create(
             Instrument(
@@ -1292,15 +1290,12 @@ class InstrumentService:
 
         company_id: int | None = None
         if payload.instrument_type == InstrumentType.stock:
-            company = await self.company_repo.get_by_name(target_workspace_id, payload.name)
-            if company is None:
-                company = await self.company_repo.create(
-                    Company(
-                        workspace_id=target_workspace_id,
-                        name=payload.name,
-                        ticker=payload.ticker or payload.symbol,
-                    )
-                )
+            company = await self.company_repo.resolve_or_create_company(
+                target_workspace_id,
+                name=payload.name,
+                ticker=payload.ticker or payload.symbol,
+                isin=payload.isin,
+            )
             company_id = company.id
 
         return await self.instrument_repo.create(
@@ -1309,6 +1304,8 @@ class InstrumentService:
                 symbol=payload.symbol,
                 name=payload.name,
                 instrument_type=payload.instrument_type.value,
+                isin=payload.isin,
+                exchange=payload.exchange,
                 company_id=company_id,
             )
         )
@@ -1342,11 +1339,9 @@ class InstrumentService:
 
         company: Company | None = None
         if instrument_type == InstrumentType.stock:
-            company = await self.company_repo.get_by_name(target_workspace_id, display_name)
-            if company is None:
-                company = await self.company_repo.create(
-                    Company(workspace_id=target_workspace_id, name=display_name, ticker=symbol)
-                )
+            company = await self.company_repo.resolve_or_create_company(
+                target_workspace_id, name=display_name, ticker=symbol
+            )
 
         return await self.instrument_repo.create(
             Instrument(
@@ -1374,21 +1369,30 @@ class InstrumentService:
 
         if payload.name is not None:
             instrument.name = payload.name
+        if payload.exchange is not None:
+            instrument.exchange = payload.exchange
+        if payload.isin is not None:
+            instrument.isin = payload.isin
+
+        gains_company = payload.instrument_type is not None and instrument.company_id is None
         if payload.instrument_type is not None:
             instrument.instrument_type = payload.instrument_type.value
-            if payload.instrument_type == InstrumentType.stock and instrument.company_id is None:
-                company = await self.company_repo.get_by_name(workspace_id, instrument.name)
-                if company is None:
-                    company = await self.company_repo.create(
-                        Company(
-                            workspace_id=workspace_id,
-                            name=instrument.name,
-                            ticker=instrument.symbol,
-                        )
-                    )
-                instrument.company_id = company.id
-            if payload.instrument_type != InstrumentType.stock:
-                instrument.company_id = None
+
+        if instrument.instrument_type != InstrumentType.stock.value:
+            # Not a stock (anymore) — no company identity to track.
+            instrument.company_id = None
+        elif payload.ticker is not None or payload.isin is not None or gains_company:
+            # Ticker/ISIN changed (or this instrument just became a stock):
+            # re-resolve identity rather than mutating the currently-linked
+            # Company row in place — that row may be shared by other
+            # instruments (spec-083 §5.2).
+            company = await self.company_repo.resolve_or_create_company(
+                workspace_id,
+                name=instrument.name,
+                ticker=payload.ticker or instrument.symbol,
+                isin=instrument.isin,
+            )
+            instrument.company_id = company.id
         instrument.updated_at = datetime.now(UTC)
         return await self.instrument_repo.save(instrument)
 
@@ -1434,19 +1438,13 @@ class ConstituentService:
             instrument.id, payload.as_of_date, payload.source
         )  # type: ignore[arg-type]
         rows: list[InstrumentConstituent] = []
-        requested_names = [item.company_name for item in constituents]
-        companies_by_name = await self.company_repo.get_by_names(workspace_id, requested_names)
         for item in constituents:
-            company = companies_by_name.get(item.company_name)
-            if company is None:
-                company = await self.company_repo.create(
-                    Company(
-                        workspace_id=workspace_id,
-                        name=item.company_name,
-                        ticker=item.company_ticker,
-                    )
-                )
-                companies_by_name[item.company_name] = company
+            company = await self.company_repo.resolve_or_create_company(
+                workspace_id,
+                name=item.company_name,
+                ticker=item.company_ticker,
+                isin=item.company_isin,
+            )
             rows.append(
                 InstrumentConstituent(
                     instrument_id=instrument.id,  # type: ignore[arg-type]

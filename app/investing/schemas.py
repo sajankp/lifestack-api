@@ -234,28 +234,43 @@ class InvestingSummaryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 
 
+def _normalize_identifier(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip().upper()
+    return value or None
+
+
 class InstrumentCreate(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
     name: str = Field(..., min_length=1, max_length=255)
     instrument_type: InstrumentType = InstrumentType.stock
     ticker: str | None = Field(default=None, min_length=1, max_length=20)
+    isin: str | None = Field(default=None, min_length=1, max_length=20)
+    exchange: str | None = Field(default=None, min_length=1, max_length=50)
 
     @field_validator("symbol")
     @classmethod
     def normalize_symbol(cls, value: str) -> str:
         return value.strip().upper()
 
-    @field_validator("ticker")
+    @field_validator("ticker", "isin", "exchange")
     @classmethod
     def normalize_ticker(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return value.strip().upper()
+        return _normalize_identifier(value)
 
 
 class InstrumentUpdate(BaseModel):
     instrument_type: InstrumentType | None = None
     name: str | None = Field(default=None, min_length=1, max_length=255)
+    ticker: str | None = Field(default=None, min_length=1, max_length=20)
+    isin: str | None = Field(default=None, min_length=1, max_length=20)
+    exchange: str | None = Field(default=None, min_length=1, max_length=50)
+
+    @field_validator("ticker", "isin", "exchange")
+    @classmethod
+    def normalize_identifiers(cls, value: str | None) -> str | None:
+        return _normalize_identifier(value)
 
 
 class InstrumentResponse(BaseModel):
@@ -264,6 +279,9 @@ class InstrumentResponse(BaseModel):
     name: str
     instrument_type: InstrumentType
     company_id: uuid.UUID | None = None
+    ticker: str | None = None
+    isin: str | None = None
+    exchange: str | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -274,14 +292,14 @@ class InstrumentResponse(BaseModel):
 class InstrumentConstituentCreate(BaseModel):
     company_name: str = Field(..., min_length=1, max_length=255)
     company_ticker: str | None = Field(default=None, min_length=1, max_length=20)
+    company_isin: str | None = Field(default=None, min_length=1, max_length=20)
+    company_exchange: str | None = Field(default=None, min_length=1, max_length=50)
     weight: Decimal = Field(..., gt=0, le=1, decimal_places=8)
 
-    @field_validator("company_ticker")
+    @field_validator("company_ticker", "company_isin", "company_exchange")
     @classmethod
-    def normalize_company_ticker(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return value.strip().upper()
+    def normalize_company_identifiers(cls, value: str | None) -> str | None:
+        return _normalize_identifier(value)
 
 
 class InstrumentConstituentUpsert(BaseModel):

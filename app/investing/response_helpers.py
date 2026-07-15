@@ -33,6 +33,8 @@ async def instrument_response(
             if company_cache is not None
             else await instrument_service.company_repo.get_by_id(instrument.company_id)
         )
+        if company is not None:
+            data["ticker"] = company.ticker
         if company is not None and company.workspace_id == workspace_id:
             data["company_id"] = company.public_id
         else:

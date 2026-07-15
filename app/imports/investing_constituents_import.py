@@ -7,6 +7,7 @@ pairs in this batch, and warm a company-name cache) that runs once before the
 chunked commit loop, not per chunk.
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
@@ -18,8 +19,41 @@ from app.imports.models import ImportBatch, ImportError, ImportPreviewRow
 from app.imports.repository import ImportRepository
 from app.imports.shared import AddErrorFn, WeightEntry, norm
 from app.investing.models import Company, Instrument, InstrumentConstituent, InstrumentType
+from app.investing.repository import normalize_company_name
 
-TEMPLATE_ROW = "UMMA,Apple Inc,AAPL,0.082,2026-06-14"
+TEMPLATE_ROW = "UMMA,Apple Inc,,AAPL,,0.082,2026-06-14"
+
+
+@dataclass
+class CompanyIdentityCache:
+    """In-memory index over a workspace's companies for the CSV commit loop.
+
+    Mirrors `CompanyRepository.resolve_or_create_company`'s precedence
+    (ISIN -> ticker -> normalized name, spec-083 §4.2) without a query per
+    row — the whole workspace company set is loaded once up front.
+    """
+
+    by_isin: dict[str, Company] = field(default_factory=dict)
+    by_ticker: dict[str, Company] = field(default_factory=dict)
+    by_name: dict[str, Company] = field(default_factory=dict)
+
+    def resolve(self, *, name: str, ticker: str | None, isin: str | None) -> Company | None:
+        if isin:
+            company = self.by_isin.get(isin.strip().upper())
+            if company is not None:
+                return company
+        if ticker:
+            company = self.by_ticker.get(ticker.strip().upper())
+            if company is not None:
+                return company
+        return self.by_name.get(normalize_company_name(name))
+
+    def register(self, company: Company) -> None:
+        if company.isin:
+            self.by_isin.setdefault(company.isin.strip().upper(), company)
+        if company.ticker:
+            self.by_ticker.setdefault(company.ticker.strip().upper(), company)
+        self.by_name.setdefault(normalize_company_name(company.name), company)
 
 
 def validate_investing_constituent_row(
@@ -30,6 +64,8 @@ def validate_investing_constituent_row(
     instrument_symbol_raw = norm(row.get("instrument_symbol"))
     company_name_raw = norm(row.get("company_name"))
     company_ticker_raw = norm(row.get("company_ticker"))
+    company_isin_raw = norm(row.get("company_isin"))
+    company_exchange_raw = norm(row.get("company_exchange"))
     weight_raw = norm(row.get("weight"))
     as_of_date_raw = norm(row.get("as_of_date"))
 
@@ -93,6 +129,8 @@ def validate_investing_constituent_row(
         "instrument_id": inst.id if inst else None,
         "company_name": company_name_raw,
         "company_ticker": company_ticker_raw or None,
+        "company_isin": company_isin_raw.upper() if company_isin_raw else None,
+        "company_exchange": company_exchange_raw.upper() if company_exchange_raw else None,
         "weight": str(weight) if weight is not None else None,
         "as_of_date": as_of_date.isoformat() if as_of_date else None,
         "source": "csv_import",
@@ -138,7 +176,7 @@ async def prepare_constituents_commit(
     repository: ImportRepository,
     workspace_id: int,
     batch: ImportBatch,
-) -> dict[str, Company]:
+) -> CompanyIdentityCache:
     """Pre-step run once before the chunked commit loop: delete existing
     `csv_import`-sourced snapshots for the (instrument, as_of_date) pairs in
     this batch, and warm a company-name cache for the chunk loop.
@@ -173,18 +211,27 @@ async def prepare_constituents_commit(
         )
 
     company_rows = (
-        (await session.execute(select(Company).where(Company.workspace_id == workspace_id)))
+        (
+            await session.execute(
+                select(Company).where(
+                    (Company.workspace_id == workspace_id) | (Company.workspace_id.is_(None))
+                )
+            )
+        )
         .scalars()
         .all()
     )
-    return {c.name.strip().lower(): c for c in company_rows}
+    cache = CompanyIdentityCache()
+    for company in company_rows:
+        cache.register(company)
+    return cache
 
 
 async def commit_constituents_chunk(
     session: AsyncSession,
     workspace_id: int,
     rows: list[ImportPreviewRow],
-    company_cache: dict[str, Company],
+    company_cache: CompanyIdentityCache,
 ) -> int:
     """Insert/update one chunk of preview rows, mutating `company_cache` and
     the session in place. Returns the number of rows committed in this chunk.
@@ -194,8 +241,15 @@ async def commit_constituents_chunk(
     for row in rows:
         p = row.payload_json
         company_name_raw = p.get("company_name")
-        company_name_norm = company_name_raw.strip().lower() if company_name_raw else ""
-        company = company_cache.get(company_name_norm)
+        company = (
+            company_cache.resolve(
+                name=company_name_raw,
+                ticker=p.get("company_ticker"),
+                isin=p.get("company_isin"),
+            )
+            if company_name_raw
+            else None
+        )
         if company is not None and p.get("instrument_id") is not None:
             try:
                 dt = datetime.strptime(p["as_of_date"], "%Y-%m-%d").date()
@@ -228,35 +282,45 @@ async def commit_constituents_chunk(
     # Pre-create all missing companies in a single batch and flush once to
     # populate their DB-assigned IDs. This avoids N+1 flushes (one per new
     # company) when a large ETF constituent list contains many unseen companies.
-    new_companies: dict[str, Company] = {}
+    new_companies: list[Company] = []
     for row in rows:
         p = row.payload_json
         company_name_raw = p.get("company_name")
-        company_name_norm = company_name_raw.strip().lower() if company_name_raw else ""
-        if (
-            company_name_norm
-            and company_name_norm not in company_cache
-            and company_name_norm not in new_companies
+        if not company_name_raw:
+            continue
+        if company_cache.resolve(
+            name=company_name_raw,
+            ticker=p.get("company_ticker"),
+            isin=p.get("company_isin"),
         ):
-            company = Company(
-                workspace_id=workspace_id,
-                name=company_name_raw,
-                ticker=p.get("company_ticker") or None,
-            )
-            session.add(company)
-            new_companies[company_name_norm] = company
+            continue
+        company = Company(
+            workspace_id=workspace_id,
+            name=company_name_raw,
+            ticker=p.get("company_ticker") or None,
+            isin=p.get("company_isin") or None,
+        )
+        session.add(company)
+        company_cache.register(company)
+        new_companies.append(company)
 
     if new_companies:
         await session.flush()
-        company_cache.update(new_companies)
 
     inserted = 0
     for row in rows:
         p = row.payload_json
         company_name_raw = p.get("company_name")
-        company_name_norm = company_name_raw.strip().lower() if company_name_raw else ""
 
-        company = company_cache.get(company_name_norm)
+        company = (
+            company_cache.resolve(
+                name=company_name_raw,
+                ticker=p.get("company_ticker"),
+                isin=p.get("company_isin"),
+            )
+            if company_name_raw
+            else None
+        )
 
         instrument_id = p.get("instrument_id")
         if instrument_id is None:
