@@ -54,25 +54,18 @@ For PRs implementing features (not Dependabot/minor fixes), confirm:
 
 Retrieve the list of open pull requests in the repository to identify which ones need review or processing. Use the GitHub MCP tool (e.g., `mcp_github-mcp-server_list_pull_requests`) if available, otherwise fall back to the `gh` CLI (e.g., `gh pr list --state open`).
 
-## Step 2: Wait for AI Review
+## Step 2: Check for AI Review
 
-> [!CAUTION]
-> **Gemini Code Assist on GitHub was sunset — all code review activity ceased 2026-07-17.**
-> PRs opened after that date will never receive a `gemini-code-assist` review, no matter how
-> long you wait. **Do not gate on it.** Check once for a review from `gemini-code-assist` (or
-> any other AI reviewer actually configured for the repo — confirm via
-> `gh pr view <n> --json reviews` before assuming none exists). If none is present, treat that
-> as the expected default post-2026-07-17 and proceed straight to Step 3 (Check Status) —
-> CI green + no unresolved conversations is the real gate now, not the presence of an AI
-> review. If a PR predates 2026-07-17 and genuinely has no review yet, the old wait-and-recheck
-> behavior below still applies.
+> [!NOTE]
+> Gemini Code Assist on GitHub was sunset 2026-07-17 — all code review activity has ceased.
+> Do not wait for a `gemini-code-assist` review; none will arrive. Check once
+> (`gh pr view <n> --json reviews`) for a review from Gemini or any other AI reviewer actually
+> configured for the repo.
 
-> [!IMPORTANT]
-> Ensure `gemini-code-assist` (or other required AI reviewers) has reviewed the PR before proceeding — pre-2026-07-17 PRs only.
-
-Check for formal reviews, inline code comments, or general conversation comments from the AI reviewer.
-- If no feedback or review exists: **WAIT**.
-- If there is feedback or a review: Proceed to Step 2.1.
+Check for formal reviews, inline code comments, or general conversation comments from an AI reviewer.
+- If one exists: proceed to Step 2.1 to triage it.
+- If none exists — the expected default now — skip straight to Step 3 (Check Status). CI green
+  + zero unresolved conversations is the real merge gate, not the presence of an AI review.
 
 ### Step 2.1: Fetch Feedback Details
 
@@ -225,27 +218,16 @@ bash .agent/scripts/resolve-specific-threads.sh --thread <thread_id> --dry-run
 ```
 
 
-### Step 2.6: Request Re-Review (After Addressing Feedback)
+### Step 2.6: Request Re-Review (Applies Only If An AI Reviewer Actually Commented)
 
-> [!CAUTION]
-> `/gemini review`, `/gemini summary`, and `@gemini-code-assist` below are **inert on any PR
-> opened after 2026-07-17** — the bot stopped acting on repo commands when its GitHub
-> integration was sunset. Only applicable to threads/reviews that predate that cutoff.
+> [!NOTE]
+> `/gemini review`, `/gemini summary`, and `@gemini-code-assist` are inert — Gemini Code
+> Assist's GitHub integration was sunset 2026-07-17 and no longer acts on repo commands. This
+> step only applies if some other configured AI reviewer left comments in Step 2. Otherwise
+> skip straight to Step 3.
 
-After fixing issues identified by the AI reviewer, explicitly request a fresh review to ensure your changes are validated (pre-2026-07-17 PRs only — for anything after, skip straight to Step 3).
-
-You can do this by:
-- Re-requesting a review from the reviewer directly (e.g. via UI).
-- Adding a comment such as `/gemini review` if the bot supports slash commands.
-
-> [!TIP]
-> Option A (UI) is cleanest. The `/gemini review` command also works and explicitly requests a new review.
-
-**Other useful commands:**
-- `/gemini summary` - Get updated PR summary
-- `@gemini-code-assist <question>` - Ask specific questions
-
-Wait for the new review before proceeding to merge.
+After fixing issues identified by a reviewer, explicitly request a fresh review from that
+reviewer to ensure your changes are validated, then wait for it before proceeding to merge.
 
 ### Step 2.6.1: Post Re-Review Comments with Proper Newlines
 
