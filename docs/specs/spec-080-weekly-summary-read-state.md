@@ -1,7 +1,7 @@
 # Spec-080: Weekly-Summary Read State (dismiss the "summary is ready" briefing line)
 
 **Created:** 2026-07-13
-**Status:** Approved (owner, 2026-07-13) — api implemented; web dismiss UI pending
+**Status:** Implemented — api landed 2026-07-13; web dismiss UI shipped 2026-07-13 (web#117)
 **Depends on:** spec-067 (Morning Briefing), spec-076 (Weekly Summaries enhancements)
 **Scope:** multi-repo, user-facing — `lifestack-api` (`app/summaries/`, `app/application/workflows.py`, one Alembic migration) + `lifestack-web` (`WeeklySummariesPage`, `summaries` service, briefing refetch).
 

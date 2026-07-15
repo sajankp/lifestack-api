@@ -1,7 +1,15 @@
 # Spec-079: Voice/Capture Production Hardening
 
 **Created:** 2026-07-12
-**Status:** Approved (implementation) — open questions resolved by owner 2026-07-12
+**Status:** Approved (implementation) — Stage A shipped (api#158, 2026-07-12); Stage B shipped
+2026-07-13 (api#167/web#118, transport resilience) by deliberate owner override ahead of the eval
+gate (see "Gate note" below); two follow-on voice fixes landed 2026-07-14 (api#168 prod outage fix,
+api#169 account-balances tool). Stage C and dropping the "experimental" label stay gated on the
+≥90%-twice-a-week eval bar — never met on any run. **Currently configured model
+(`gemini-3.1-flash-live-preview`) last measured 73.68% (2026-07-15, `run-20260715.json`)**; the
+84.2% figure from 2026-07-12 was run on a different model (`gemini-2.5-flash-native-audio-latest`)
+than what's actually deployed now — see the 2026-07-15 eval-run section below for the model mismatch
+this created in prior status text.
 **Depends on:** spec-021 (voice agent function calling, Phase 1), spec-039 (ADK evaluation — verdict "no, not now" stands), spec-059/061/066 (capture usability + consolidation)
 **Scope:** multi-repo, user-facing — `lifestack-api` (`app/capture/`) + `lifestack-web` (capture surface). Voice stays labeled **experimental** until the eval milestone below is met (positioning rule).
 
@@ -387,3 +395,32 @@ it requires a live, billable Gemini Live connection, which the project deliberat
 scripts (`scripts/run_capture_eval.py`, `scripts/measure_transcription_cost.py`) rather than the
 offline pytest suite. Anyone benchmarking a new Gemini Live model going forward should stream real
 audio through the actual `pcm_to_gemini_loop`-shaped payload, not just text turns.
+
+## Eval run — 2026-07-15, `run-20260715.json`
+
+Ran the same 19-scored-case set (`adv-18` still excluded, date-aware scorer gap unresolved) against
+whatever `GEMINI_MODEL` is currently configured — **`gemini-3.1-flash-live-preview`**, per `.env`
+(the production-outage fix above kept this model rather than reverting to 2.5 Native Audio).
+
+**Result: 14/19 = 73.68%**, down from the 84.2% figure this doc previously cited as "last
+measured" — that 84.2% number was run on `gemini-2.5-flash-native-audio-latest`, a different model
+than what's actually configured now. This run is **consistent with, not worse than, the
+already-recorded 3.1-vs-2.5 benchmark** two sections up (3.1 Flash Live: 78.9% same-day; 2.5 Native
+Audio: 84.2%) — 3.1 Flash Live has never cleared the 90% bar in any run to date. Failures:
+
+- `adv-03` — same cosmetic injection-extraction gap as the 07-12 runs (security-relevant part still
+  correct: `category_name` stays `utilities`, not overridden).
+- `adv-08` — `weight_kg` rounding: expected `81.19`, got `81.2` (scorer-strictness, not a routing bug).
+- `adv-12`, `adv-15`, `adv-19` — free-text `description` mismatches (e.g. `"Lunch"` vs `"lunch food"`,
+  `"Refund"` vs `"Refund for food"`) — the same class of scorer-strictness gap already documented for
+  Run 1, just landing on different cases this time; live-model free text isn't deterministic
+  run-to-run.
+
+**Implication for the eval bar:** the ≥90%-twice-a-week bar has still never been met by any model on
+any run. Prior runs mixed two different models (2.5 Native Audio and 3.1 Flash Live) under the same
+"last measured" heading, which overstated where the *currently deployed* model actually stands — 3.1
+Flash Live's own track record is 78.9% / 73.68% across its two runs, not 84.2%. Two live options going
+forward: (a) revert `GEMINI_MODEL` to 2.5 Native Audio to chase the bar on the higher-scoring model
+(trading away the 1M vs 65K TPM headroom difference), or (b) keep 3.1 Flash Live for its TPM/latency
+profile and invest in closing the free-text scorer-strictness gap (widen `text_fields`-style
+tolerances further) before the next twice-a-week run. Not decided here — owner call.
