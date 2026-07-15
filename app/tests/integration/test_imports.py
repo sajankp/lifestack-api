@@ -151,6 +151,62 @@ async def test_import_template_download_as_attachment(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_investing_constituents_template_is_self_documenting_and_roundtrips(
+    client: AsyncClient,
+):
+    """spec-083 §8a.1: the downloaded constituent CSV template carries a
+    per-type identifier-rule header comment plus filled example rows, and
+    re-uploading it unedited must still parse (the '#' comment lines must
+    not be mistaken for the header row).
+    """
+    suffix = uuid.uuid4().hex[:8]
+    creds = await _register_and_login(client, suffix)
+
+    template = await client.get(
+        "/v1/imports/templates/investing-constituents", cookies=creds["cookies"]
+    )
+    assert template.status_code == 200
+    assert template.text.startswith("# Required identifier by security type/market:")
+    assert "company_isin,company_ticker,company_exchange" in template.text
+    assert "HIEU.L" in template.text  # London-suffixed ETF example
+    assert "INF209K01165" in template.text  # India-MF ISIN example
+
+    async with postgres.async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.username == f"import_{suffix}"))
+        ).scalar_one()
+        membership = (
+            await session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+            )
+        ).scalar_one()
+        session.add(
+            Instrument(
+                workspace_id=membership.workspace_id,
+                symbol="UMMA",
+                name="Wahed Shariah ETF",
+                instrument_type="etf",
+                is_active=True,
+            )
+        )
+        await session.commit()
+
+    files = {"file": ("constituents.csv", io.BytesIO(template.text.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    # The comment lines were correctly skipped (not treated as the header
+    # row / a data row) — only the 3 example rows became preview rows.
+    assert body["import_batch"]["total_rows"] == 3
+    assert not any(err["field_name"] == "company_ticker" for err in body["errors"])
+
+
+@pytest.mark.asyncio
 async def test_import_accepts_utf8_bom_csv(client: AsyncClient):
     creds = await _register_and_login(client, uuid.uuid4().hex[:8])
 

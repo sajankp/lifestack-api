@@ -22,7 +22,9 @@ TEMPLATE_HEADERS: dict[ImportModule, list[str]] = {
     ImportModule.investing_constituents: [
         "instrument_symbol",
         "company_name",
+        "company_isin",
         "company_ticker",
+        "company_exchange",
         "weight",
         "as_of_date",
     ],

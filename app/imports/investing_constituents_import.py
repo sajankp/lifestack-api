@@ -23,6 +23,26 @@ from app.investing.repository import normalize_company_name
 
 TEMPLATE_ROW = "UMMA,Apple Inc,,AAPL,,0.082,2026-06-14"
 
+# spec-083 §8a.1: the downloaded template is self-documenting — a header
+# comment block stating the per-type identifier rule (leading '#' lines the
+# import parser skips, see ImportService._iter_preview_rows_chunk) plus 2-3
+# filled example rows spanning a US ticker, an India-MF ISIN, and a
+# London-suffixed ETF, so the expected shape of each identifier is visible
+# without reading the spec.
+TEMPLATE_HEADER_COMMENT = """\
+# Required identifier by security type/market:
+#   US stock/ETF        -> company_ticker (e.g. AAPL)
+#   India stock         -> company_ticker + company_exchange (NSE/BSE, e.g. RELIANCE, XNSE)
+#   India mutual fund   -> company_isin (or AMFI code); no ticker exists
+#   UK/other ETF        -> exchange-suffixed ticker (e.g. HIEU.L) OR company_isin
+#   Any                 -> company_isin is always accepted and preferred when known"""
+
+TEMPLATE_EXAMPLE_ROWS = (
+    "UMMA,Apple Inc,,AAPL,,0.15,2026-06-14",
+    "UMMA,Aditya Birla Sun Life Large & Mid Cap Fund,INF209K01165,,,0.10,2026-06-14",
+    "UMMA,HSBC MSCI Europe UCITS ETF,IE00B5BD5K76,HIEU.L,XLON,0.05,2026-06-14",
+)
+
 
 @dataclass
 class CompanyIdentityCache:
