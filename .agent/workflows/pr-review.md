@@ -56,8 +56,19 @@ Retrieve the list of open pull requests in the repository to identify which ones
 
 ## Step 2: Wait for AI Review
 
+> [!CAUTION]
+> **Gemini Code Assist on GitHub was sunset — all code review activity ceased 2026-07-17.**
+> PRs opened after that date will never receive a `gemini-code-assist` review, no matter how
+> long you wait. **Do not gate on it.** Check once for a review from `gemini-code-assist` (or
+> any other AI reviewer actually configured for the repo — confirm via
+> `gh pr view <n> --json reviews` before assuming none exists). If none is present, treat that
+> as the expected default post-2026-07-17 and proceed straight to Step 3 (Check Status) —
+> CI green + no unresolved conversations is the real gate now, not the presence of an AI
+> review. If a PR predates 2026-07-17 and genuinely has no review yet, the old wait-and-recheck
+> behavior below still applies.
+
 > [!IMPORTANT]
-> Ensure `gemini-code-assist` (or other required AI reviewers) has reviewed the PR before proceeding.
+> Ensure `gemini-code-assist` (or other required AI reviewers) has reviewed the PR before proceeding — pre-2026-07-17 PRs only.
 
 Check for formal reviews, inline code comments, or general conversation comments from the AI reviewer.
 - If no feedback or review exists: **WAIT**.
@@ -216,7 +227,12 @@ bash .agent/scripts/resolve-specific-threads.sh --thread <thread_id> --dry-run
 
 ### Step 2.6: Request Re-Review (After Addressing Feedback)
 
-After fixing issues identified by the AI reviewer, explicitly request a fresh review to ensure your changes are validated.
+> [!CAUTION]
+> `/gemini review`, `/gemini summary`, and `@gemini-code-assist` below are **inert on any PR
+> opened after 2026-07-17** — the bot stopped acting on repo commands when its GitHub
+> integration was sunset. Only applicable to threads/reviews that predate that cutoff.
+
+After fixing issues identified by the AI reviewer, explicitly request a fresh review to ensure your changes are validated (pre-2026-07-17 PRs only — for anything after, skip straight to Step 3).
 
 You can do this by:
 - Re-requesting a review from the reviewer directly (e.g. via UI).
