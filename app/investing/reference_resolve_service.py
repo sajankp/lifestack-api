@@ -39,15 +39,18 @@ class ReferenceResolveService:
                 return match, "resolved"
 
         if ticker:
-            match = await self.reference_repo.get_by_ticker_exchange(ticker, exchange)
-            if match is not None:
-                return match, "resolved"
-            if exchange is None:
+            if exchange:
+                match = await self.reference_repo.get_by_ticker_exchange(ticker, exchange)
+                if match is not None:
+                    return match, "resolved"
+            else:
                 candidates = await self.reference_repo.list_by_ticker(ticker)
                 if len(candidates) > 1:
                     # Same ticker string, multiple markets, and the caller
                     # didn't say which — don't guess (spec-083 §6.1).
                     return None, "ambiguous"
+                elif len(candidates) == 1:
+                    return candidates[0], "resolved"
 
         if settings.REFERENCE_DATA_API_ENABLED and ticker:
             fetched = await self._fetch_and_cache(ticker, security_type)

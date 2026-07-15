@@ -121,6 +121,21 @@ except Exception:  # pragma: no cover
     boto3 = None
 
 
+class CommentStrippedStream:
+    """Wraps a text stream/file, stripping lines starting with '#' and tracking the skipped count."""
+
+    def __init__(self, file_obj):
+        self.file_obj = file_obj
+        self.skipped_count = 0
+
+    def __iter__(self):
+        for line in self.file_obj:
+            if line.startswith("#"):
+                self.skipped_count += 1
+            else:
+                yield line
+
+
 class ImportService:
     MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
     MAX_VALIDATION_ROWS = 10_000
@@ -702,21 +717,12 @@ class ImportService:
             # constituent template ships a header comment block documenting
             # the per-type identifier rule) so re-uploading that template
             # unedited doesn't mistake a comment line for the header row.
-            skipped_comment_lines = 0
-            resume_pos = f.tell()
-            while True:
-                line = f.readline()
-                if line.startswith("#"):
-                    skipped_comment_lines += 1
-                    resume_pos = f.tell()
-                    continue
-                f.seek(resume_pos)
-                break
-            csv_reader = csv.DictReader(f)
+            stream = CommentStrippedStream(f)
+            csv_reader = csv.DictReader(stream)
             headers = csv_reader.fieldnames or []
 
             def csv_row_reader():
-                yield from enumerate(csv_reader, start=2 + skipped_comment_lines)
+                yield from enumerate(csv_reader, start=2 + stream.skipped_count)
 
             reader = csv_row_reader()
 

@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.investing.models import Company, Instrument, InstrumentConstituent
-from app.investing.repository import ReferenceSecurityRepository, normalize_company_name
+from app.investing.models import Company, Instrument, InstrumentConstituent, ReferenceSecurity
+from app.investing.repository import normalize_company_name
 
 
 @dataclass
@@ -93,15 +93,27 @@ async def _enrich_from_reference_data(
     Safe to skip entirely (no-op) when `reference_securities` is empty —
     duplicates already sharing an isin/ticker still merge without it.
     """
-    ref_repo = ReferenceSecurityRepository(session)
+    # Pre-fetch all reference securities to avoid N+1 queries loading 15k+ rows per company
+    result = await session.execute(select(ReferenceSecurity))
+    ref_securities = result.scalars().all()
+
+    # Build in-memory lookup maps for O(1) lookups
+    ref_by_ticker = {r.ticker.upper(): r for r in ref_securities if r.ticker}
+    ref_by_norm_name = {}
+    for r in ref_securities:
+        norm_name = normalize_company_name(r.name)
+        ref_by_norm_name.setdefault(norm_name, r)
+        for alias in r.aliases or []:
+            ref_by_norm_name.setdefault(normalize_company_name(alias), r)
+
     for company in companies:
         if company.isin:
             continue
         match = None
         if company.ticker:
-            match = await ref_repo.get_by_ticker_exchange(company.ticker, None)
+            match = ref_by_ticker.get(company.ticker.upper())
         if match is None:
-            match = await ref_repo.find_by_normalized_name(company.name)
+            match = ref_by_norm_name.get(normalize_company_name(company.name))
         if match is None:
             continue
         changed = bool((match.isin and not company.isin) or (match.ticker and not company.ticker))
