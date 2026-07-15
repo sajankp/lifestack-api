@@ -46,6 +46,7 @@ from app.imports.repository import ImportRepository
 from app.imports.service import ImportService
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService, PerformanceService
+from app.investing.reference_resolve_service import ReferenceResolveService
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
@@ -59,6 +60,7 @@ from app.investing.repository import (
     InvestingOrderRepository,
     LotRepository,
     PortfolioSnapshotRepository,
+    ReferenceSecurityRepository,
 )
 from app.investing.return_metrics_service import ReturnMetricsService
 from app.investing.service import (
@@ -325,6 +327,18 @@ async def get_investing_company_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> CompanyRepository:
     return CompanyRepository(session)
+
+
+async def get_reference_security_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> ReferenceSecurityRepository:
+    return ReferenceSecurityRepository(session)
+
+
+async def get_reference_resolve_service(
+    reference_repo: ReferenceSecurityRepository = Depends(get_reference_security_repo),
+) -> ReferenceResolveService:
+    return ReferenceResolveService(reference_repo)
 
 
 async def get_investing_constituent_repo(

@@ -548,6 +548,12 @@ class ReferenceSecurityRepository(BaseRepository[ReferenceSecurity]):
         rows = result.scalars().all()
         return rows[0] if rows else None
 
+    async def list_by_ticker(self, ticker: str) -> Sequence[ReferenceSecurity]:
+        result = await self.session.execute(
+            select(ReferenceSecurity).where(ReferenceSecurity.ticker == ticker.strip().upper())
+        )
+        return result.scalars().all()
+
     async def get_by_amfi_code(self, amfi_code: str) -> ReferenceSecurity | None:
         result = await self.session.execute(
             select(ReferenceSecurity).where(ReferenceSecurity.amfi_code == amfi_code.strip())

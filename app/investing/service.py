@@ -1146,6 +1146,45 @@ async def _fetch_stock_price(
     return None
 
 
+async def fetch_yahoo_identity(client: httpx.AsyncClient, symbol: str) -> dict | None:
+    """Symbol -> name/exchange/currency/type quote lookup (spec-083 §7.2).
+
+    Reuses the same Yahoo chart endpoint as `_fetch_stock_price` (its `meta`
+    block already carries identity fields alongside price history) instead
+    of a second provider integration. This is quote-level identity only —
+    NOT the retired `topHoldings` constituent provider (spec-032), which
+    stays retired.
+    """
+    sym = symbol.upper().strip()
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
+    try:
+        resp = await client.get(url, headers=headers, params={"interval": "1d", "range": "1d"})
+        resp.raise_for_status()
+        data = resp.json()
+        result = (data.get("chart", {}).get("result") or [None])[0]
+        if not result:
+            return None
+        meta = result.get("meta") or {}
+        ticker = meta.get("symbol")
+        name = meta.get("longName") or meta.get("shortName")
+        if not ticker or not name:
+            return None
+        yahoo_type = (meta.get("instrumentType") or "").upper()
+        security_type = {"ETF": "etf", "MUTUALFUND": "mutual_fund"}.get(yahoo_type, "stock")
+        return {
+            "ticker": ticker,
+            "name": name,
+            "exchange": meta.get("fullExchangeName") or meta.get("exchangeName"),
+            "country_code": "IN" if ticker.endswith((".NS", ".BO")) else None,
+            "security_type": security_type,
+        }
+    except Exception:
+        return None
+
+
 async def _fetch_all_amfi_navs(
     client: httpx.AsyncClient,
 ) -> dict[str, tuple[date, Decimal]]:

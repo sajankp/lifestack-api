@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -335,6 +336,25 @@ class InstrumentConstituentResponse(BaseModel):
     source: str
 
     model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class ReferenceSecurityResponse(BaseModel):
+    public_id: uuid.UUID
+    isin: str | None
+    ticker: str | None
+    exchange: str | None
+    amfi_code: str | None
+    security_type: InstrumentType
+    name: str
+    country_code: str | None
+    source: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReferenceResolveResponse(BaseModel):
+    identifier_status: Literal["resolved", "unresolved", "ambiguous"]
+    match: ReferenceSecurityResponse | None = None
 
 
 class ExposureCompanyRow(BaseModel):
