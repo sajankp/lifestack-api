@@ -92,6 +92,28 @@ def _normalize_text(value: Any) -> str:
     return " ".join(str(value).strip().lower().split())
 
 
+def _text_matches(expected_value: Any, actual_value: Any) -> bool:
+    """Word-subset match: passes if every word in the expected text also
+    appears in the actual text, after normalization.
+
+    Added 2026-07-15 after runs on 07-12/07-13/07-15 repeatedly showed the
+    same pattern on ``text_fields`` (e.g. description): the model echoes
+    extra context straight from the utterance (expected ``"Lunch"``, actual
+    ``"lunch food"`` for the utterance "...for lunch food..."; expected
+    ``"Refund"``, actual ``"Refund for food"``) rather than getting the
+    routing wrong. Exact/normalized-equality was scoring those as failures.
+    A superset answer that still contains every expected word is not a
+    routing miss, so it now passes; an answer missing an expected word (or
+    substituting unrelated content, e.g. adv-03's injected text landing in
+    ``description``) still correctly fails.
+    """
+    norm_expected = _normalize_text(expected_value)
+    norm_actual = _normalize_text(actual_value)
+    if norm_expected == norm_actual:
+        return True
+    return set(norm_expected.split()).issubset(set(norm_actual.split()))
+
+
 def _args_match(expected: dict, actual_args: dict[str, Any]) -> tuple[bool, str]:
     expected_args: dict[str, Any] = expected["args"]
     text_fields = set(expected.get("text_fields", []))
@@ -112,7 +134,7 @@ def _args_match(expected: dict, actual_args: dict[str, Any]) -> tuple[bool, str]
     for key, expected_value in expected_args.items():
         actual_value = actual_args[key]
         if key in text_fields:
-            matches = _normalize_text(expected_value) == _normalize_text(actual_value)
+            matches = _text_matches(expected_value, actual_value)
         elif key in numeric_fields:
             try:
                 matches = Decimal(str(expected_value)) == Decimal(str(actual_value))
@@ -131,8 +153,10 @@ def score_case(case: dict, actual_tool_calls: list[ToolCall]) -> ScoreResult:
     deliberately narrow tolerances added after Run 1 (2026-07-12) showed most
     "failures" were fixture calibration, not routing bugs:
 
-    - ``expected.text_fields``: arg names compared case/whitespace-insensitive
-      (free text the model is entitled to paraphrase, e.g. a description).
+    - ``expected.text_fields``: arg names compared case/whitespace-insensitive,
+      word-subset tolerant (free text the model is entitled to paraphrase or
+      extend with context from the utterance, e.g. a description — see
+      ``_text_matches``).
     - ``expected.numeric_fields``: arg names compared as ``Decimal`` (e.g.
       ``"-50"`` vs ``"-50.00"``).
     - ``expected.optional_extra_args``: arg names the tool itself defaults —

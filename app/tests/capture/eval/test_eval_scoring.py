@@ -119,6 +119,52 @@ def test_text_fields_still_fail_on_real_difference():
     assert not result.passed
 
 
+def test_text_fields_tolerate_actual_being_a_superset_of_expected():
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {
+            "tool": "log_spending_transaction",
+            "args": {"amount": "12", "category_name": "food", "description": "Lunch"},
+            "text_fields": ["description"],
+        },
+    }
+    result = score_case(
+        case,
+        [
+            ToolCall(
+                "log_spending_transaction",
+                {"amount": "12", "category_name": "food", "description": "lunch food"},
+            )
+        ],
+    )
+    assert result.passed
+
+
+def test_text_fields_still_fail_when_expected_word_is_missing():
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {
+            "tool": "log_spending_transaction",
+            "args": {"amount": "12", "category_name": "food", "description": "Lunch"},
+            "text_fields": ["description"],
+        },
+    }
+    result = score_case(
+        case,
+        [
+            ToolCall(
+                "log_spending_transaction",
+                {"amount": "12", "category_name": "food", "description": "food"},
+            )
+        ],
+    )
+    assert not result.passed
+
+
 def test_numeric_fields_tolerate_formatting_differences():
     case = {
         "id": "c1",
