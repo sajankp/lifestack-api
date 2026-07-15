@@ -10,7 +10,9 @@ from app.application.jobs import (
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
     kpi_guardrails_job,
+    load_reference_securities_job,
     medication_reminder_job,
+    merge_company_identities_job,
     morning_briefing_job,
     net_worth_snapshot_job,
     recurring_transactions_job,
@@ -30,6 +32,20 @@ JOBS = {
     "net_worth_snapshot": net_worth_snapshot_job,
     "medication_reminder": medication_reminder_job,
     "morning_briefing": morning_briefing_job,
+    "merge_company_identities": merge_company_identities_job,
+    "load_reference_securities": load_reference_securities_job,
+}
+
+# Jobs that accept --workspace-id (optional for these; mandatory below for
+# merge_company_identities specifically, per spec-083 §9).
+WORKSPACE_SCOPED_JOBS = {
+    "budget_guardrails",
+    "recurring_transactions",
+    "weekly_summary",
+    "net_worth_snapshot",
+    "medication_reminder",
+    "morning_briefing",
+    "merge_company_identities",
 }
 
 
@@ -54,8 +70,28 @@ async def main() -> None:
         default=None,
         help="Optional. Specific to weekly_summary (Format: YYYY-MM-DD).",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Optional. Specific to merge_company_identities: report what would "
+        "change without writing anything.",
+    )
 
     args = parser.parse_args()
+
+    if args.dry_run and args.job != "merge_company_identities":
+        print(
+            "Error: --dry-run is only applicable for the 'merge_company_identities' job.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.job == "merge_company_identities" and args.workspace_id is None:
+        print(
+            "Error: --workspace-id is required for the 'merge_company_identities' job.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Validations
     week_start_date = None
@@ -75,14 +111,7 @@ async def main() -> None:
             print("Error: --week-start must be a Monday.", file=sys.stderr)
             sys.exit(1)
 
-    if args.workspace_id is not None and args.job not in {
-        "budget_guardrails",
-        "recurring_transactions",
-        "weekly_summary",
-        "net_worth_snapshot",
-        "medication_reminder",
-        "morning_briefing",
-    }:
+    if args.workspace_id is not None and args.job not in WORKSPACE_SCOPED_JOBS:
         print(
             f"Error: --workspace-id is not supported for job '{args.job}'.",
             file=sys.stderr,
@@ -94,17 +123,12 @@ async def main() -> None:
 
     # Pass workspace_id/week_start if supported
     kwargs = {}
-    if args.job in {
-        "budget_guardrails",
-        "recurring_transactions",
-        "weekly_summary",
-        "net_worth_snapshot",
-        "medication_reminder",
-        "morning_briefing",
-    }:
+    if args.job in WORKSPACE_SCOPED_JOBS:
         kwargs["workspace_id"] = args.workspace_id
     if args.job == "weekly_summary":
         kwargs["week_start"] = week_start_date
+    if args.job == "merge_company_identities":
+        kwargs["dry_run"] = args.dry_run
 
     try:
         await job_func(**kwargs)

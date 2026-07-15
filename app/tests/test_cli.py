@@ -108,6 +108,63 @@ async def test_cli_runner_workspace_id_not_supported_on_global_jobs():
 
 
 @pytest.mark.asyncio
+async def test_cli_runner_merge_company_identities_accepted_with_workspace_id():
+    """spec-083 §9: merge_company_identities must be wired into the
+    workspace-scoped allow-list, not rejected by the --workspace-id guard.
+    """
+    mock_job = AsyncMock()
+    with (
+        patch("app.cli.run.JOBS", {"merge_company_identities": mock_job}),
+        patch.object(sys, "argv", ["run.py", "merge_company_identities", "--workspace-id", "123"]),
+    ):
+        await main()
+        mock_job.assert_called_once_with(workspace_id=123, dry_run=False)
+
+
+@pytest.mark.asyncio
+async def test_cli_runner_merge_company_identities_requires_workspace_id():
+    mock_job = AsyncMock()
+    with (
+        patch("app.cli.run.JOBS", {"merge_company_identities": mock_job}),
+        patch.object(sys, "argv", ["run.py", "merge_company_identities"]),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            await main()
+        assert exc_info.value.code == 1
+        mock_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cli_runner_merge_company_identities_dry_run_flag():
+    mock_job = AsyncMock()
+    with (
+        patch("app.cli.run.JOBS", {"merge_company_identities": mock_job}),
+        patch.object(
+            sys,
+            "argv",
+            ["run.py", "merge_company_identities", "--workspace-id", "123", "--dry-run"],
+        ),
+    ):
+        await main()
+        mock_job.assert_called_once_with(workspace_id=123, dry_run=True)
+
+
+@pytest.mark.asyncio
+async def test_cli_runner_dry_run_not_supported_on_other_jobs():
+    mock_job = AsyncMock()
+    with (
+        patch("app.cli.run.JOBS", {"budget_guardrails": mock_job}),
+        patch.object(
+            sys, "argv", ["run.py", "budget_guardrails", "--workspace-id", "123", "--dry-run"]
+        ),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            await main()
+        assert exc_info.value.code == 1
+        mock_job.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_cli_runner_non_monday_week_start():
     mock_job = AsyncMock()
     with (

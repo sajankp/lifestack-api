@@ -19,6 +19,7 @@ from app.investing.models import (
     Instrument,
     OrderLot,
     PortfolioSnapshot,
+    ReferenceSecurity,
 )
 from app.investing.repository import CompanyRepository, InstrumentRepository
 from app.investing.schemas import InstrumentType
@@ -1170,6 +1171,49 @@ async def test_investing_lookthrough_closed_position_currency_does_not_block_rep
     body = response.json()
     assert body["analysis_status"] == "complete"
     assert body["currency"] == "USD"
+
+
+@pytest.mark.asyncio
+async def test_reference_resolve_endpoint(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="reference-resolve@example.com",
+        username="reference_resolve",
+        password="Password123!",
+    )
+
+    async with postgres.async_session_maker() as session:
+        session.add(
+            ReferenceSecurity(
+                isin="US0378331005",
+                ticker="AAPL",
+                exchange="XNAS",
+                security_type="stock",
+                name="Apple Inc",
+                aliases=["Apple Inc.", "Apple"],
+                country_code="US",
+                source="bundled:manual",
+                fetched_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    resolved = await client.get(
+        "/v1/investing/reference/resolve", params={"ticker": "AAPL", "exchange": "XNAS"}
+    )
+    assert resolved.status_code == 200
+    body = resolved.json()
+    assert body["identifier_status"] == "resolved"
+    assert body["match"]["name"] == "Apple Inc"
+    assert body["match"]["isin"] == "US0378331005"
+
+    unresolved = await client.get(
+        "/v1/investing/reference/resolve", params={"ticker": "NOPE_NO_MATCH"}
+    )
+    assert unresolved.status_code == 200
+    body = unresolved.json()
+    assert body["identifier_status"] == "unresolved"
+    assert body["match"] is None
 
 
 @pytest.mark.asyncio

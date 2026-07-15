@@ -1,9 +1,78 @@
 # Feature Spec 083: Security Identity Resolution & Reference Data
 
-**Status:** Approved (implementation)
+**Status:** Implemented (API side); frontend (§8/§8a/§8b UI, lifestack-web) pending
 **Spec ID:** 083
 **Depends on:** spec-012 (look-through analytics), spec-034 (constituent CSV import)
 **Supersedes/closes:** spec-012 §8 "Identifier mapping drift"; spec-032 Open Question 4 (name-variant company duplication)
+
+## Implementation Notes (2026-07-15, API side)
+
+Landed on `feat/spec-083-security-identity-reference-data` in `lifestack-api`:
+
+- **Company identity resolution (§4.2):** `CompanyRepository.resolve_or_create_company`
+  (ISIN → ticker(+market) → normalized-name precedence) replaces raw-name matching in both
+  ingestion paths — the CSV constituent import (`CompanyIdentityCache`, batched, no N+1) and
+  `ConstituentService.upsert_constituents`/`InstrumentService`.
+- **`InstrumentUpdate` gains `ticker`/`isin`/`exchange` (§5.2):** changing an instrument's
+  identifiers re-resolves its `Company` link via the resolver rather than mutating the
+  currently-linked row in place (which may be shared by another instrument).
+- **Identifier mandate (§6/§8b), API side only:** `InstrumentConstituentCreate` (Pydantic
+  `model_validator`) and the CSV row validator both reject a constituent row with a
+  `company_name` but no `company_isin`/`company_ticker` — 422 / `identifier_required`
+  respectively. A row that carries an identifier but doesn't resolve against reference data
+  still passes (that's `identifier_status=unresolved`, not a rejection). **Scope note:** the
+  mandate was *not* added to `InstrumentCreate`/`InstrumentUpdate` — `symbol` is already
+  mandatory there and already guarantees an identifier, so a redundant check was judged
+  unnecessary; the real fragmentation vector this spec targets is Company identity via
+  constituents, which is covered.
+- **Reference data (§7), real sources, not placeholders:** `securities.json.gz` bundles the
+  full AMFI mutual-fund scheme master (15.9k funds), NSE's equity + ETF lists (2.7k India
+  stocks/ETFs), Nasdaq Trader's full NASDAQ-listed + NYSE/AMEX/other-listed directories (13k
+  US stocks/ETFs — supersedes the spec's originally-envisioned S&P-500-only list, a strict
+  subset), and a small hand-curated set (3 London UCITS ETFs, 3 NSE-listed REITs/InvITs not
+  covered by NSE's bulk equity/ETF lists). Verified against the owner's real look-through data
+  (`seed_data/output/all_orders_combined.csv`, `hlal_constituents.csv`): all 15 real MF codes
+  and 56 real stock symbols resolve; the REIT gap was found and fixed this way.
+  **Deviation from §7.1: gzip-compressed, not plain `.json`.** The full dataset is ~4.3MB as
+  compact JSON, over the repo's 1000KB pre-commit large-file limit; gzip brings it to ~510KB
+  with zero data loss. Still a single checked-in file, still produced/maintained by the build
+  script (`seed_data/scripts/build_securities_json.py`); hand-edits go through
+  decompress/edit/recompress rather than a text editor directly on the shipped file.
+- **`load_reference_securities` (§7.1)** idempotently upserts the bundled data via
+  `importlib.resources`; wired into `app/cli/run.py` as a global (no `--workspace-id`) job.
+- **`GET /v1/investing/reference/resolve` (§5.4/§7.2):** bundled-first, then — only when
+  `REFERENCE_DATA_API_ENABLED=true` (default `false`) — the Yahoo quote/identity fallback
+  (`fetch_yahoo_identity`, reusing the existing chart-endpoint fetch path's `meta` block, not a
+  new provider), caching into `reference_securities` so it's never re-fetched.
+  `identifier_status` is always `resolved`/`unresolved`/`ambiguous`, never a 4xx.
+- **`merge_company_identities` backfill CLI (§9):** `python -m app.cli.run
+  merge_company_identities --workspace-id <id> [--dry-run]`. Groups a workspace's companies by
+  the same precedence used at write time, repoints instruments/constituent snapshots, and
+  handles the `uq_investing_constituent_snapshot` collision case explicitly (keep survivor's
+  row, drop loser's duplicate — documented and tested).
+- **Self-documenting CSV template (§8a.1):** the downloaded constituent template leads with a
+  `#`-comment block stating the per-type identifier rule plus 3 filled example rows (US ticker,
+  India-MF ISIN, London-suffixed ETF); the CSV upload parser now skips leading `#` lines so
+  re-uploading the template unedited still parses.
+- **`identifier_status` in the CSV import preview response (§5.5, 2026-07-16 follow-up):**
+  each constituent preview row is now classified `resolved`/`unresolved`/`ambiguous` against
+  `reference_securities` and included in `payload_json.identifier_status`. `ReferenceLookup`
+  (`imports/investing_constituents_import.py`) indexes all `reference_securities` rows by
+  isin/ticker once per import (`app/imports/service.py`, mirroring the existing
+  `instruments_map` pre-load) — no per-row query, keeping the preview loop synchronous and
+  DB-session-free as before. Same classification rule as `ReferenceResolveService.resolve`:
+  isin match wins; else ticker match, disambiguated by exchange when given, `ambiguous` when
+  the same ticker matches multiple exchanges with none given. Covered by
+  `test_import_investing_constituents_preview_reports_identifier_status`.
+- **Not yet done (tracked as remaining work, not silently dropped):**
+  - All of §8/§8a.2/§8b's UI surfaces (Holdings Edit modal as primary identity-correction
+    surface, Analytics Edit Instrument modal, Seed Constituents `company_name = ticker` fix,
+    import-preview `identifier_status` column, inline resolve-on-blur) — separate
+    `lifestack-web` work, not started as of this note.
+
+Every acceptance-criteria item this spec touches on the backend has dedicated test coverage
+(unit + integration); see `app/tests/investing/`, `app/tests/application/`,
+`app/tests/integration/test_investing.py`, `app/tests/integration/test_imports.py`.
 
 ---
 

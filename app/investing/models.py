@@ -618,3 +618,60 @@ class HoldingVerification(SQLModel, table=True):
             name="fk_investing_holding_verifications_account_workspace",
         ),
     )
+
+
+class SecurityType(StrEnum):
+    stock = "stock"
+    etf = "etf"
+    mutual_fund = "mutual_fund"
+
+
+class ReferenceSecurity(SQLModel, table=True):
+    """Global (workspace_id-less) security-master reference data (spec-083).
+
+    Populated by the bundled `securities.json` loader and enriched on-demand
+    by the Yahoo quote/identity API-fallback path. Never workspace-scoped —
+    follows the FX-rate precedent for global system reference data.
+    """
+
+    __tablename__ = "reference_securities"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    isin: str | None = Field(default=None, max_length=20, index=True)
+    ticker: str | None = Field(default=None, max_length=20, index=True)
+    exchange: str | None = Field(default=None, max_length=50)
+    amfi_code: str | None = Field(default=None, max_length=20, index=True)
+    security_type: str = Field(
+        sa_column=sa.Column(
+            sa.Enum("stock", "etf", "mutual_fund", name="reference_security_type"),
+            nullable=False,
+        )
+    )
+    name: str = Field(max_length=255)
+    aliases: list[str] = Field(default_factory=list, sa_type=sa.ARRAY(sa.String))
+    country_code: str | None = Field(default=None, max_length=10)
+    source: str = Field(max_length=64)
+    fetched_at: datetime = Field(sa_type=sa.DateTime(timezone=True))
+
+    __table_args__ = (
+        sa.Index(
+            "uq_reference_securities_isin",
+            "isin",
+            unique=True,
+            postgresql_where=sa.text("isin IS NOT NULL"),
+        ),
+        sa.Index(
+            "uq_reference_securities_ticker_exchange",
+            "ticker",
+            "exchange",
+            unique=True,
+            postgresql_where=sa.text("ticker IS NOT NULL"),
+        ),
+        sa.Index(
+            "uq_reference_securities_amfi_code",
+            "amfi_code",
+            unique=True,
+            postgresql_where=sa.text("amfi_code IS NOT NULL"),
+        ),
+    )

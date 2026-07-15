@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -234,28 +235,43 @@ class InvestingSummaryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 
 
+def _normalize_identifier(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip().upper()
+    return value or None
+
+
 class InstrumentCreate(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
     name: str = Field(..., min_length=1, max_length=255)
     instrument_type: InstrumentType = InstrumentType.stock
     ticker: str | None = Field(default=None, min_length=1, max_length=20)
+    isin: str | None = Field(default=None, min_length=1, max_length=20)
+    exchange: str | None = Field(default=None, min_length=1, max_length=50)
 
     @field_validator("symbol")
     @classmethod
     def normalize_symbol(cls, value: str) -> str:
         return value.strip().upper()
 
-    @field_validator("ticker")
+    @field_validator("ticker", "isin", "exchange")
     @classmethod
     def normalize_ticker(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return value.strip().upper()
+        return _normalize_identifier(value)
 
 
 class InstrumentUpdate(BaseModel):
     instrument_type: InstrumentType | None = None
     name: str | None = Field(default=None, min_length=1, max_length=255)
+    ticker: str | None = Field(default=None, min_length=1, max_length=20)
+    isin: str | None = Field(default=None, min_length=1, max_length=20)
+    exchange: str | None = Field(default=None, min_length=1, max_length=50)
+
+    @field_validator("ticker", "isin", "exchange")
+    @classmethod
+    def normalize_identifiers(cls, value: str | None) -> str | None:
+        return _normalize_identifier(value)
 
 
 class InstrumentResponse(BaseModel):
@@ -264,6 +280,9 @@ class InstrumentResponse(BaseModel):
     name: str
     instrument_type: InstrumentType
     company_id: uuid.UUID | None = None
+    ticker: str | None = None
+    isin: str | None = None
+    exchange: str | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -274,14 +293,30 @@ class InstrumentResponse(BaseModel):
 class InstrumentConstituentCreate(BaseModel):
     company_name: str = Field(..., min_length=1, max_length=255)
     company_ticker: str | None = Field(default=None, min_length=1, max_length=20)
+    company_isin: str | None = Field(default=None, min_length=1, max_length=20)
+    company_exchange: str | None = Field(default=None, min_length=1, max_length=50)
     weight: Decimal = Field(..., gt=0, le=1, decimal_places=8)
 
-    @field_validator("company_ticker")
+    @field_validator("company_ticker", "company_isin", "company_exchange")
     @classmethod
-    def normalize_company_ticker(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return value.strip().upper()
+    def normalize_company_identifiers(cls, value: str | None) -> str | None:
+        return _normalize_identifier(value)
+
+    @model_validator(mode="after")
+    def require_an_identifier(self) -> "InstrumentConstituentCreate":
+        """spec-083 §6 mandate: a name-only constituent row (no isin, no
+        ticker) is exactly how "Apple Inc" / "Apple Inc." / "AAPL" fragmented
+        into separate Company rows pre-spec-083 — reject it outright rather
+        than accept it and let identity resolution guess. A row that *does*
+        carry an identifier but doesn't resolve against reference data still
+        passes here (that's `identifier_status=unresolved`, not a 422).
+        """
+        if not (self.company_isin or self.company_ticker):
+            raise ValueError(
+                f"company '{self.company_name}' needs a company_isin or company_ticker "
+                "identifier — name alone is not enough (spec-083 identifier mandate)"
+            )
+        return self
 
 
 class InstrumentConstituentUpsert(BaseModel):
@@ -301,6 +336,25 @@ class InstrumentConstituentResponse(BaseModel):
     source: str
 
     model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class ReferenceSecurityResponse(BaseModel):
+    public_id: uuid.UUID
+    isin: str | None
+    ticker: str | None
+    exchange: str | None
+    amfi_code: str | None
+    security_type: InstrumentType
+    name: str
+    country_code: str | None
+    source: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReferenceResolveResponse(BaseModel):
+    identifier_status: Literal["resolved", "unresolved", "ambiguous"]
+    match: ReferenceSecurityResponse | None = None
 
 
 class ExposureCompanyRow(BaseModel):

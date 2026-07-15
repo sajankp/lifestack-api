@@ -159,6 +159,11 @@ class Settings(BaseSettings):
     ENABLE_DEMO_RESET: bool = False
     ENABLE_E2E_TEST_HOOKS: bool = False
 
+    # Security reference data (Spec 083): bundled data works fully offline by
+    # default; the Yahoo quote/identity API fallback is opt-in.
+    REFERENCE_DATA_API_ENABLED: bool = False
+    REFERENCE_DATA_CACHE_STALENESS_DAYS: int = 30
+
     # Export storage hardening (Spec 006)
     EXPORT_STORAGE_BACKEND: str = "db"  # db|local|s3
     EXPORT_LOCAL_PATH: str = "/var/lib/lifestack/exports"

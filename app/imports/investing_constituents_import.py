@@ -7,8 +7,10 @@ pairs in this batch, and warm a company-name cache) that runs once before the
 chunked commit loop, not per chunk.
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from typing import Literal
 
 from sqlalchemy import delete, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,19 +19,125 @@ from app.core.exceptions import ValidationError
 from app.imports.models import ImportBatch, ImportError, ImportPreviewRow
 from app.imports.repository import ImportRepository
 from app.imports.shared import AddErrorFn, WeightEntry, norm
-from app.investing.models import Company, Instrument, InstrumentConstituent, InstrumentType
+from app.investing.models import (
+    Company,
+    Instrument,
+    InstrumentConstituent,
+    InstrumentType,
+    ReferenceSecurity,
+)
+from app.investing.repository import normalize_company_name
 
-TEMPLATE_ROW = "UMMA,Apple Inc,AAPL,0.082,2026-06-14"
+IdentifierStatus = Literal["resolved", "unresolved", "ambiguous"]
+
+
+@dataclass
+class ReferenceLookup:
+    """In-memory `reference_securities` index for classifying each CSV row's
+    `identifier_status` (spec-083 §5.5) during preview validation — loaded
+    once per import, not queried per row.
+    """
+
+    by_isin: dict[str, ReferenceSecurity] = field(default_factory=dict)
+    by_ticker: dict[str, list[ReferenceSecurity]] = field(default_factory=dict)
+
+    @classmethod
+    def build(cls, rows: list[ReferenceSecurity]) -> "ReferenceLookup":
+        lookup = cls()
+        for row in rows:
+            if row.isin:
+                lookup.by_isin[row.isin.strip().upper()] = row
+            if row.ticker:
+                lookup.by_ticker.setdefault(row.ticker.strip().upper(), []).append(row)
+        return lookup
+
+    def classify(
+        self, *, isin: str | None, ticker: str | None, exchange: str | None
+    ) -> IdentifierStatus:
+        if isin:
+            return "resolved" if isin.strip().upper() in self.by_isin else "unresolved"
+        if ticker:
+            candidates = self.by_ticker.get(ticker.strip().upper(), [])
+            if exchange:
+                return (
+                    "resolved" if any(c.exchange == exchange for c in candidates) else "unresolved"
+                )
+            if len(candidates) == 1:
+                return "resolved"
+            if len(candidates) > 1:
+                # Same ticker string, multiple markets, row doesn't say which
+                # (spec-083 §6.1) — don't guess.
+                return "ambiguous"
+            return "unresolved"
+        return "unresolved"
+
+
+TEMPLATE_ROW = "UMMA,Apple Inc,,AAPL,,0.082,2026-06-14"
+
+# spec-083 §8a.1: the downloaded template is self-documenting — a header
+# comment block stating the per-type identifier rule (leading '#' lines the
+# import parser skips, see ImportService._iter_preview_rows_chunk) plus 2-3
+# filled example rows spanning a US ticker, an India-MF ISIN, and a
+# London-suffixed ETF, so the expected shape of each identifier is visible
+# without reading the spec.
+TEMPLATE_HEADER_COMMENT = """\
+# Required identifier by security type/market:
+#   US stock/ETF        -> company_ticker (e.g. AAPL)
+#   India stock         -> company_ticker + company_exchange (NSE/BSE, e.g. RELIANCE, XNSE)
+#   India mutual fund   -> company_isin (or AMFI code); no ticker exists
+#   UK/other ETF        -> exchange-suffixed ticker (e.g. HIEU.L) OR company_isin
+#   Any                 -> company_isin is always accepted and preferred when known"""
+
+TEMPLATE_EXAMPLE_ROWS = (
+    "UMMA,Apple Inc,,AAPL,,0.15,2026-06-14",
+    "UMMA,Aditya Birla Sun Life Large & Mid Cap Fund,INF209K01165,,,0.10,2026-06-14",
+    "UMMA,HSBC MSCI Europe UCITS ETF,IE00B5BD5K76,HIEU.L,XLON,0.05,2026-06-14",
+)
+
+
+@dataclass
+class CompanyIdentityCache:
+    """In-memory index over a workspace's companies for the CSV commit loop.
+
+    Mirrors `CompanyRepository.resolve_or_create_company`'s precedence
+    (ISIN -> ticker -> normalized name, spec-083 §4.2) without a query per
+    row — the whole workspace company set is loaded once up front.
+    """
+
+    by_isin: dict[str, Company] = field(default_factory=dict)
+    by_ticker: dict[str, Company] = field(default_factory=dict)
+    by_name: dict[str, Company] = field(default_factory=dict)
+
+    def resolve(self, *, name: str, ticker: str | None, isin: str | None) -> Company | None:
+        if isin:
+            company = self.by_isin.get(isin.strip().upper())
+            if company is not None:
+                return company
+        if ticker:
+            company = self.by_ticker.get(ticker.strip().upper())
+            if company is not None:
+                return company
+        return self.by_name.get(normalize_company_name(name))
+
+    def register(self, company: Company) -> None:
+        if company.isin:
+            self.by_isin.setdefault(company.isin.strip().upper(), company)
+        if company.ticker:
+            self.by_ticker.setdefault(company.ticker.strip().upper(), company)
+        self.by_name.setdefault(normalize_company_name(company.name), company)
 
 
 def validate_investing_constituent_row(
     row: dict,
     add_error: AddErrorFn,
     instruments_map: dict[str, Instrument],
+    reference_lookup: ReferenceLookup | None = None,
 ) -> tuple[dict, WeightEntry | None]:
     instrument_symbol_raw = norm(row.get("instrument_symbol"))
     company_name_raw = norm(row.get("company_name"))
     company_ticker_raw = norm(row.get("company_ticker"))
+    company_isin_raw = norm(row.get("company_isin"))
+    company_exchange_raw = norm(row.get("company_exchange"))
     weight_raw = norm(row.get("weight"))
     as_of_date_raw = norm(row.get("as_of_date"))
 
@@ -63,6 +171,18 @@ def validate_investing_constituent_row(
             "company_name is required",
             company_name_raw,
         )
+    elif not (company_ticker_raw or company_isin_raw):
+        # spec-083 §6 mandate: name-only rows are exactly how "Apple Inc" /
+        # "Apple Inc." / "AAPL" fragmented into separate companies. A row
+        # that carries an identifier but doesn't resolve against reference
+        # data still passes (identifier_status=unresolved), only a
+        # completely blank identifier is rejected here.
+        add_error(
+            "company_ticker",
+            "identifier_required",
+            "company_ticker or company_isin is required (name alone is not enough)",
+            company_name_raw,
+        )
 
     try:
         weight = Decimal(weight_raw)
@@ -88,11 +208,24 @@ def validate_investing_constituent_row(
         )
         as_of_date = None
 
+    identifier_status = (
+        reference_lookup.classify(
+            isin=company_isin_raw.upper() if company_isin_raw else None,
+            ticker=company_ticker_raw or None,
+            exchange=company_exchange_raw.upper() if company_exchange_raw else None,
+        )
+        if reference_lookup is not None
+        else None
+    )
+
     payload = {
         "instrument_symbol": instrument_symbol_raw.upper() if instrument_symbol_raw else None,
         "instrument_id": inst.id if inst else None,
         "company_name": company_name_raw,
         "company_ticker": company_ticker_raw or None,
+        "company_isin": company_isin_raw.upper() if company_isin_raw else None,
+        "company_exchange": company_exchange_raw.upper() if company_exchange_raw else None,
+        "identifier_status": identifier_status,
         "weight": str(weight) if weight is not None else None,
         "as_of_date": as_of_date.isoformat() if as_of_date else None,
         "source": "csv_import",
@@ -138,7 +271,7 @@ async def prepare_constituents_commit(
     repository: ImportRepository,
     workspace_id: int,
     batch: ImportBatch,
-) -> dict[str, Company]:
+) -> CompanyIdentityCache:
     """Pre-step run once before the chunked commit loop: delete existing
     `csv_import`-sourced snapshots for the (instrument, as_of_date) pairs in
     this batch, and warm a company-name cache for the chunk loop.
@@ -173,18 +306,27 @@ async def prepare_constituents_commit(
         )
 
     company_rows = (
-        (await session.execute(select(Company).where(Company.workspace_id == workspace_id)))
+        (
+            await session.execute(
+                select(Company).where(
+                    (Company.workspace_id == workspace_id) | (Company.workspace_id.is_(None))
+                )
+            )
+        )
         .scalars()
         .all()
     )
-    return {c.name.strip().lower(): c for c in company_rows}
+    cache = CompanyIdentityCache()
+    for company in company_rows:
+        cache.register(company)
+    return cache
 
 
 async def commit_constituents_chunk(
     session: AsyncSession,
     workspace_id: int,
     rows: list[ImportPreviewRow],
-    company_cache: dict[str, Company],
+    company_cache: CompanyIdentityCache,
 ) -> int:
     """Insert/update one chunk of preview rows, mutating `company_cache` and
     the session in place. Returns the number of rows committed in this chunk.
@@ -194,8 +336,15 @@ async def commit_constituents_chunk(
     for row in rows:
         p = row.payload_json
         company_name_raw = p.get("company_name")
-        company_name_norm = company_name_raw.strip().lower() if company_name_raw else ""
-        company = company_cache.get(company_name_norm)
+        company = (
+            company_cache.resolve(
+                name=company_name_raw,
+                ticker=p.get("company_ticker"),
+                isin=p.get("company_isin"),
+            )
+            if company_name_raw
+            else None
+        )
         if company is not None and p.get("instrument_id") is not None:
             try:
                 dt = datetime.strptime(p["as_of_date"], "%Y-%m-%d").date()
@@ -228,35 +377,45 @@ async def commit_constituents_chunk(
     # Pre-create all missing companies in a single batch and flush once to
     # populate their DB-assigned IDs. This avoids N+1 flushes (one per new
     # company) when a large ETF constituent list contains many unseen companies.
-    new_companies: dict[str, Company] = {}
+    new_companies: list[Company] = []
     for row in rows:
         p = row.payload_json
         company_name_raw = p.get("company_name")
-        company_name_norm = company_name_raw.strip().lower() if company_name_raw else ""
-        if (
-            company_name_norm
-            and company_name_norm not in company_cache
-            and company_name_norm not in new_companies
+        if not company_name_raw:
+            continue
+        if company_cache.resolve(
+            name=company_name_raw,
+            ticker=p.get("company_ticker"),
+            isin=p.get("company_isin"),
         ):
-            company = Company(
-                workspace_id=workspace_id,
-                name=company_name_raw,
-                ticker=p.get("company_ticker") or None,
-            )
-            session.add(company)
-            new_companies[company_name_norm] = company
+            continue
+        company = Company(
+            workspace_id=workspace_id,
+            name=company_name_raw,
+            ticker=p.get("company_ticker") or None,
+            isin=p.get("company_isin") or None,
+        )
+        session.add(company)
+        company_cache.register(company)
+        new_companies.append(company)
 
     if new_companies:
         await session.flush()
-        company_cache.update(new_companies)
 
     inserted = 0
     for row in rows:
         p = row.payload_json
         company_name_raw = p.get("company_name")
-        company_name_norm = company_name_raw.strip().lower() if company_name_raw else ""
 
-        company = company_cache.get(company_name_norm)
+        company = (
+            company_cache.resolve(
+                name=company_name_raw,
+                ticker=p.get("company_ticker"),
+                isin=p.get("company_isin"),
+            )
+            if company_name_raw
+            else None
+        )
 
         instrument_id = p.get("instrument_id")
         if instrument_id is None:

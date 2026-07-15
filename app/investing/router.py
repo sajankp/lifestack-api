@@ -22,12 +22,14 @@ from app.core.dependencies import (
     get_investing_return_metrics_service,
     get_investing_snapshot_repo,
     get_investing_summary_service,
+    get_reference_resolve_service,
     require_min_role,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.finance.service import AccountService
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService, PerformanceService
+from app.investing.reference_resolve_service import ReferenceResolveService
 from app.investing.repository import HoldingVerificationRepository, PortfolioSnapshotRepository
 from app.investing.return_metrics_service import ReturnMetricsService
 from app.investing.schemas import (
@@ -56,6 +58,8 @@ from app.investing.schemas import (
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
     PerformanceSummaryResponse,
+    ReferenceResolveResponse,
+    ReferenceSecurityResponse,
     ReturnMetricsResponse,
 )
 from app.investing.service import (
@@ -266,6 +270,28 @@ async def update_instrument(
 ):
     return await instrument_service.update_instrument_with_details(
         workspace_id, instrument_id, payload
+    )
+
+
+@router.get("/reference/resolve", response_model=ReferenceResolveResponse)
+async def resolve_reference_security(
+    resolve_service: Annotated[ReferenceResolveService, Depends(get_reference_resolve_service)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    isin: str | None = None,
+    ticker: str | None = None,
+    exchange: str | None = None,
+    type: str | None = Query(default=None, alias="type"),  # noqa: A002 - matches spec's ?type= param
+):
+    """Bundled-first, then (opt-in) Yahoo-API-fallback identifier lookup
+    (spec-083 §5.4). Used by import validation and inline UI confirmation —
+    an "unresolved" result is informational, never a 4xx.
+    """
+    match, identifier_status = await resolve_service.resolve(
+        isin=isin, ticker=ticker, exchange=exchange, security_type=type
+    )
+    return ReferenceResolveResponse(
+        identifier_status=identifier_status,
+        match=ReferenceSecurityResponse.model_validate(match) if match else None,
     )
 
 
