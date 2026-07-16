@@ -36,6 +36,7 @@ from app.core.scheduler import register_interval_job, scheduler
 from app.investing.performance_service import PerformanceService
 from app.platform.models import Workspace, WorkspaceMembership
 from app.spending.models import SpendingBudget, SpendingCategory, SpendingTransaction
+from app.summaries.repository import WorkspaceSummarySettingRepository
 from app.summaries.service import WeeklySummaryService
 from app.todo.models import Todo
 
@@ -699,6 +700,44 @@ async def test_weekly_summary_job_holds_single_connection(override_database_url)
     assert state["engine_connects"] == 0, (
         "weekly_summary_job must not hold a dedicated lock connection alongside its work session"
     )
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_job_respects_cadence_when_flagged(override_database_url):
+    """spec-076: with respect_cadence=True, only workspaces whose configured
+    (or default) cadence matches the current UTC day/hour are processed.
+    Workspace 501 (seeded by the autouse fixture) has no
+    workspace_summary_settings row, so it defaults to Monday/hour 1 — this
+    test configures a second workspace (502) to be due right now instead, so
+    exactly one of the two is expected to run regardless of which one that
+    is at any given moment."""
+    now = datetime.now(UTC)
+
+    async with postgres.async_session_maker() as session:
+        await _seed_workspace(
+            session,
+            workspace_id=502,
+            user_id=2,
+            workspace_name="Cadence Workspace",
+            email="cadence_actor@example.com",
+            username="cadence_actor",
+        )
+        cadence_repo = WorkspaceSummarySettingRepository(session)
+        # 502 is due right now; 501 (default Mon/hour 1, no row) is due only
+        # if "now" happens to also be Monday hour 1 -- astronomically
+        # unlikely to collide with 502's exact tick in test runtime, and
+        # irrelevant to what this test is proving either way.
+        await cadence_repo.upsert(502, cadence_day_of_week=now.weekday(), cadence_hour_utc=now.hour)
+        await session.commit()
+
+    with patch.object(
+        WeeklySummaryService, "generate_for_workspace_week", new=AsyncMock()
+    ) as mock_generate:
+        await weekly_summary_job(respect_cadence=True)
+
+    processed_workspace_ids = {call.args[0] for call in mock_generate.await_args_list}
+    assert 502 in processed_workspace_ids
+    assert 501 not in processed_workspace_ids or (now.weekday() == 0 and now.hour == 1)
 
 
 @pytest.mark.asyncio

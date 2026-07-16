@@ -193,12 +193,11 @@ async def lifespan(_app: FastAPI):
         scheduler.add_job(
             weekly_summary_job,
             "cron",
-            day_of_week="mon",
-            hour=1,
             minute=30,
             id="weekly_summary",
             replace_existing=True,
             timezone="UTC",
+            kwargs={"respect_cadence": True},
         )
         register_daily_job(
             morning_briefing_job,

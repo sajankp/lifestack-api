@@ -4,14 +4,15 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.application.jobs import weekly_summary_job
 from app.auth.repository import UserRepository
 from app.core.database import postgres
-from app.finance.models import Account, AccountType
+from app.finance.models import Account, AccountType, NetWorthSnapshot
 from app.health.models import Medication, MedicationEvent, WeightEntry
-from app.investing.models import PortfolioSnapshot
+from app.investing.models import Dividend, PortfolioSnapshot
+from app.notifications.models import Notification
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.platform.repository import WorkspaceRepository
@@ -415,3 +416,299 @@ async def test_mark_weekly_summary_read(client: AsyncClient):
     # Unknown id is a 404, not a silent success.
     missing = await client.post(f"/v1/summaries/weekly/{uuid.uuid4()}/read", cookies=cookies)
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_computes_dividend_summary(client: AsyncClient):
+    """spec-076: dividend/interest income received in the period."""
+    creds = await _register_and_login(client, "sumdividend")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        account = Account(
+            workspace_id=workspace_id,
+            name="Broker",
+            account_type=AccountType.brokerage,
+            default_currency_code="USD",
+        )
+        session.add(account)
+        await session.flush()
+
+        session.add_all([
+            Dividend(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                account_id=account.id,
+                symbol="NVDA",
+                income_type="dividend",
+                gross_amount=Decimal("100.00"),
+                tax_withheld=Decimal("10.00"),
+                net_amount=Decimal("90.00"),
+                currency="USD",
+                pay_date=week_start + timedelta(days=1),
+            ),
+            Dividend(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                account_id=account.id,
+                symbol=None,
+                income_type="interest",
+                gross_amount=Decimal("20.00"),
+                tax_withheld=Decimal("0"),
+                net_amount=Decimal("20.00"),
+                currency="USD",
+                pay_date=week_start + timedelta(days=2),
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.dividend_summary["status"] == "complete"
+    assert summary.dividend_summary["count"] == 2
+    assert summary.dividend_summary["total_net"] == "110.00"
+    assert summary.dividend_summary["currency"] == "USD"
+    by_symbol = {row["symbol"]: row["net_amount"] for row in summary.dividend_summary["by_symbol"]}
+    assert by_symbol == {"NVDA": "90.00", "Interest": "20.00"}
+    assert any(f["type"] == "dividend_income" for f in summary.highlights["flags"])
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_computes_net_worth_summary(client: AsyncClient):
+    """spec-076: net-worth change with as-of provenance (spec-065 snapshots)."""
+    creds = await _register_and_login(client, "sumnetworth")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1000.00"),
+                source="user_provided",
+            ),
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=6),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1100.00"),
+                source="user_provided",
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.net_worth_summary == {
+        "status": "complete",
+        "net_worth_start": "1000.00",
+        "net_worth_end": "1100.00",
+        "week_change": "100.00",
+        "week_change_pct": "10.00",
+        "currency": "USD",
+        "start_snapshot_date": (week_start - timedelta(days=1)).isoformat(),
+        "end_snapshot_date": (week_start + timedelta(days=6)).isoformat(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_net_worth_unavailable_without_baseline(client: AsyncClient):
+    creds = await _register_and_login(client, "sumnetworthnone")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.net_worth_summary["status"] == "unavailable"
+    assert summary.net_worth_summary["net_worth_start"] is None
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_return_metrics_unavailable_without_investing_data(
+    client: AsyncClient,
+):
+    """No orders/holdings at all -> return_metrics_summary reports unavailable,
+    not a crash (ReturnMetricsService.valuation_status stays 'current' with
+    xirr=None for an empty portfolio, which the composer treats the same as
+    genuinely unavailable — there is nothing to report)."""
+    creds = await _register_and_login(client, "sumreturnmetrics")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.return_metrics_summary["status"] == "unavailable"
+    assert summary.return_metrics_summary["notable"] is False
+
+
+@pytest.mark.asyncio
+async def test_regenerate_weekly_summary_supersedes_without_notification(client: AsyncClient):
+    """spec-076: regenerate recomputes from current data, retains the old row
+    marked superseded (never deletes it), does NOT send a notification, and
+    list/latest return only the new non-superseded row."""
+    creds = await _register_and_login(client, "sumregen")
+    cookies = creds["cookies"]
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        original_public_id = str(summary.public_id)
+        await session.commit()
+
+        notif_count_before = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Notification)
+                    .where(Notification.workspace_id == workspace_id)
+                )
+            ).scalar_one()
+        )
+
+    regen_resp = await client.post(
+        f"/v1/summaries/weekly/{original_public_id}/regenerate",
+        json={"reason": "late import corrected this week's spending"},
+        cookies=cookies,
+    )
+    assert regen_resp.status_code == 200, regen_resp.text
+    regenerated = regen_resp.json()
+    assert regenerated["public_id"] != original_public_id
+    assert regenerated["regeneration_reason"] == "late import corrected this week's spending"
+    assert regenerated["regenerated_at"] is not None
+    assert regenerated["is_superseded"] is False
+
+    # The old row is retained (never deleted), reachable by its own id, and
+    # now marked superseded.
+    old_resp = await client.get(f"/v1/summaries/weekly/{original_public_id}", cookies=cookies)
+    assert old_resp.status_code == 200
+    assert old_resp.json()["is_superseded"] is True
+
+    # list/latest only surface the new, non-superseded row.
+    list_resp = await client.get("/v1/summaries/weekly", cookies=cookies)
+    items = list_resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["public_id"] == regenerated["public_id"]
+
+    latest_resp = await client.get("/v1/summaries/weekly/latest", cookies=cookies)
+    assert latest_resp.json()["public_id"] == regenerated["public_id"]
+
+    # No new notification was sent for the regeneration.
+    async with async_session_maker() as session:
+        notif_count_after = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Notification)
+                    .where(Notification.workspace_id == workspace_id)
+                )
+            ).scalar_one()
+        )
+    assert notif_count_after == notif_count_before
+
+
+@pytest.mark.asyncio
+async def test_regenerate_weekly_summary_404s(client: AsyncClient):
+    creds = await _register_and_login(client, "sumregen404")
+    cookies = creds["cookies"]
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        public_id = str(summary.public_id)
+        await session.commit()
+
+    # Unknown id.
+    missing = await client.post(
+        f"/v1/summaries/weekly/{uuid.uuid4()}/regenerate", json={}, cookies=cookies
+    )
+    assert missing.status_code == 404
+
+    # Regenerate once — succeeds.
+    first = await client.post(
+        f"/v1/summaries/weekly/{public_id}/regenerate", json={}, cookies=cookies
+    )
+    assert first.status_code == 200, first.text
+
+    # Regenerating the now-superseded original again is a 404 — regenerate
+    # the latest version instead.
+    second = await client.post(
+        f"/v1/summaries/weekly/{public_id}/regenerate", json={}, cookies=cookies
+    )
+    assert second.status_code == 404
