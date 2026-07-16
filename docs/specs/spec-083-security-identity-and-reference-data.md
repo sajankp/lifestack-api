@@ -588,7 +588,7 @@ per run, not silent.
 ## 14. Web Implementation Notes (2026-07-16, web PR #123)
 
 Landed on `feat/spec-010-security-identity-correction-ux` in `lifestack-web`; implemented by
-[Spec-010](../../lifestack-web/docs/specs/spec-010-security-identity-correction-ux.md) (the
+[Spec-010](../../../lifestack-web/docs/specs/spec-010-security-identity-correction-ux.md) (the
 dedicated UX spec for §8/§8a/§8b). Key delivered surfaces:
 
 - **Holdings tab Edit modal (§8a):** `ticker`, `isin`, `exchange` fields added. On-blur

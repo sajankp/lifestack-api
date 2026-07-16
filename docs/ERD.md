@@ -829,7 +829,7 @@ erDiagram
         string amfi_code UK
         enum security_type
         string name
-        string-array aliases
+        string[] aliases
         string country_code
         string source
         datetime fetched_at
