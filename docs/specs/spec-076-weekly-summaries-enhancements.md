@@ -1,7 +1,7 @@
 # Spec-076: Weekly Summaries — Cadence, Regeneration, Expanded Insights
 
 **Created:** 2026-07-12
-**Status:** Implemented (API + Web, 2026-07-16) — cadence (per-workspace day/hour, scheduler ticks hourly and gates on it), manual regeneration (supersede-and-retain, no re-notification), and the three new sections (dividend income, net-worth change, return-metric snapshot) all shipped together.
+**Status:** Implemented (api PR #177, web PR #126, 2026-07-16) — cadence (per-workspace day/hour, scheduler ticks hourly and gates on it), manual regeneration (supersede-and-retain, no re-notification), and the three new sections (dividend income, net-worth change, return-metric snapshot) all shipped together.
 **Depends on:** spec-013 (weekly summaries), spec-067 (morning briefing — consumes a "fresh" weekly summary Mondays), spec-058 (dashboard insights), spec-069 (health memory — `_health_summary` already exists in `WeeklySummaryService`)
 **Scope:** multi-repo, user-facing — `lifestack-api` (cadence config, regenerate endpoint, new sections) + `lifestack-web` (settings, regenerate affordance, new section rendering).
 
