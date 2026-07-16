@@ -8,14 +8,29 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
-from app.finance.models import Account
+from app.finance.models import Account, NetWorthSnapshot
+from app.finance.repository import (
+    AccountRepository,
+    CurrencyRepository,
+    FinanceSettingRepository,
+    FxRateRepository,
+    NetWorthSnapshotRepository,
+)
+from app.finance.service import FxRateService
 from app.health.repository import (
     MedicationEventRepository,
     MedicationRepository,
     WeightEntryRepository,
 )
 from app.health.schedule import get_dose_slots_for_date
-from app.investing.models import PortfolioSnapshot
+from app.investing.models import Dividend, PortfolioSnapshot
+from app.investing.repository import (
+    DividendRepository,
+    HoldingPriceRepository,
+    HoldingRepository,
+    InvestingOrderRepository,
+)
+from app.investing.return_metrics_service import ReturnMetricsService
 from app.notifications.service import NotificationService
 from app.spending.models import (
     SpendingBudget,
@@ -23,8 +38,8 @@ from app.spending.models import (
     SpendingTransaction,
     TransactionType,
 )
-from app.summaries.models import WeeklySummary
-from app.summaries.repository import WeeklySummaryRepository
+from app.summaries.models import WeeklySummary, WorkspaceSummarySetting
+from app.summaries.repository import WeeklySummaryRepository, WorkspaceSummarySettingRepository
 from app.todo.models import Todo
 
 
@@ -72,6 +87,77 @@ class WeeklySummaryService:
     async def generate_for_workspace_week(
         self, workspace_id: int, user_id: int, week_start: date
     ) -> WeeklySummary:
+        week_end, sections = await self._compose(workspace_id, week_start)
+
+        existing = (
+            await self.session.execute(
+                select(WeeklySummary).where(
+                    WeeklySummary.workspace_id == workspace_id,
+                    WeeklySummary.week_start == week_start,
+                    # A superseded row keeps its week_start (retained, not
+                    # deleted) -- only the current version should be matched
+                    # for the upsert-by-week path; the partial unique index
+                    # (uq_weekly_summary_workspace_week_current) guarantees
+                    # at most one such row exists.
+                    WeeklySummary.superseded_by_id.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.week_end = week_end
+            for field, value in sections.items():
+                setattr(existing, field, value)
+            existing.generated_at = datetime.now(UTC)
+            summary = existing
+        else:
+            summary = WeeklySummary(
+                workspace_id=workspace_id,
+                week_start=week_start,
+                week_end=week_end,
+                **sections,
+            )
+            self.session.add(summary)
+        await self.session.flush()
+        await self.notification_service.notify(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            category="system",
+            severity="info",
+            title=f"Weekly summary ready: {week_start.isoformat()}",
+            module="application",
+        )
+        return summary
+
+    async def regenerate(
+        self, workspace_id: int, public_id: uuid.UUID, reason: str | None
+    ) -> WeeklySummary:
+        """spec-076 manual regeneration: recomputes the same period from
+        current data. Versioned, not destructive — the old row is retained
+        (never deleted, no cap) and marked superseded; the new row carries
+        the regeneration trail. Deliberately does NOT call
+        notification_service (a regenerate is a bookkeeping correction, not
+        a new event the user needs to be notified about)."""
+        old = await self.repository.by_public_id(workspace_id, public_id)
+        if not old:
+            raise NotFoundError(detail=f"Weekly summary with id {public_id} not found")
+        if old.superseded_by_id is not None:
+            raise NotFoundError(
+                detail=f"Weekly summary with id {public_id} has already been superseded"
+            )
+
+        week_end, sections = await self._compose(workspace_id, old.week_start)
+        new = WeeklySummary(
+            workspace_id=workspace_id,
+            week_start=old.week_start,
+            week_end=week_end,
+            **sections,
+        )
+        return await self.repository.supersede(old, new, reason)
+
+    async def _compose(self, workspace_id: int, week_start: date) -> tuple[date, dict]:
+        """Computes every section + highlights for one workspace/week from
+        current data. Shared by generate_for_workspace_week (upsert path) and
+        regenerate (supersede path) so both recompute the same fields."""
         week_end = week_start + timedelta(days=6)
         start_dt = datetime.combine(week_start, datetime.min.time(), tzinfo=UTC)
         end_dt = datetime.combine(week_end + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
@@ -194,6 +280,9 @@ class WeeklySummaryService:
         health_summary = await self._health_summary(
             workspace_id, week_start, week_end, start_dt, end_dt
         )
+        dividend_summary = await self._dividend_summary(workspace_id, week_start, week_end)
+        net_worth_summary = await self._net_worth_summary(workspace_id, week_start, week_end)
+        return_metrics_summary = await self._return_metrics_summary(workspace_id)
         flags: list[dict[str, str]] = []
         if completion_rate is not None and completion_rate >= Decimal("90"):
             flags.append({
@@ -211,46 +300,27 @@ class WeeklySummaryService:
                     "type": "budget_breach",
                     "message": f"{category['name']} exceeded its configured budget.",
                 })
+        if dividend_summary["status"] == "complete" and dividend_summary["count"] > 0:
+            flags.append({
+                "type": "dividend_income",
+                "message": f"Received {dividend_summary['count']} dividend/income payment(s) this week.",
+            })
+        if return_metrics_summary["status"] == "complete" and return_metrics_summary["notable"]:
+            flags.append({
+                "type": "drawdown_notable",
+                "message": "Portfolio drawdown from peak is notable — check the return metrics section.",
+            })
 
-        existing = (
-            await self.session.execute(
-                select(WeeklySummary).where(
-                    WeeklySummary.workspace_id == workspace_id,
-                    WeeklySummary.week_start == week_start,
-                )
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            existing.week_end = week_end
-            existing.todo_summary = todo_summary
-            existing.spending_summary = spending_summary
-            existing.investing_summary = investing_summary
-            existing.health_summary = health_summary
-            existing.highlights = {"flags": flags}
-            existing.generated_at = datetime.now(UTC)
-            summary = existing
-        else:
-            summary = WeeklySummary(
-                workspace_id=workspace_id,
-                week_start=week_start,
-                week_end=week_end,
-                todo_summary=todo_summary,
-                spending_summary=spending_summary,
-                investing_summary=investing_summary,
-                health_summary=health_summary,
-                highlights={"flags": flags},
-            )
-            self.session.add(summary)
-        await self.session.flush()
-        await self.notification_service.notify(
-            workspace_id=workspace_id,
-            user_id=user_id,
-            category="system",
-            severity="info",
-            title=f"Weekly summary ready: {week_start.isoformat()}",
-            module="application",
-        )
-        return summary
+        return week_end, {
+            "todo_summary": todo_summary,
+            "spending_summary": spending_summary,
+            "investing_summary": investing_summary,
+            "health_summary": health_summary,
+            "dividend_summary": dividend_summary,
+            "net_worth_summary": net_worth_summary,
+            "return_metrics_summary": return_metrics_summary,
+            "highlights": {"flags": flags},
+        }
 
     async def _spending_summary(
         self,
@@ -510,3 +580,187 @@ class WeeklySummaryService:
             "weight_entries_logged": len(weight_entries),
             "weight_delta_kg": weight_delta_kg,
         }
+
+    async def _dividend_summary(self, workspace_id: int, week_start: date, week_end: date) -> dict:
+        """Dividend/interest income received in the period (spec-073 events).
+        Zero-activity weeks are "complete" with zero totals, matching the
+        spending/investing convention — "unavailable" is reserved for a
+        genuine data-quality problem (here: mixed currencies)."""
+        rows = list(
+            (
+                await self.session.execute(
+                    select(Dividend).where(
+                        Dividend.workspace_id == workspace_id,
+                        Dividend.pay_date >= week_start,
+                        Dividend.pay_date <= week_end,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        currencies = sorted({row.currency for row in rows})
+        if len(currencies) > 1:
+            return {
+                "status": "unavailable",
+                "total_net": None,
+                "currency": None,
+                "count": len(rows),
+                "by_symbol": [],
+                "has_multiple_currencies": True,
+            }
+
+        money = Decimal("0.01")
+        currency = currencies[0] if currencies else None
+        total_net = sum((row.net_amount for row in rows), Decimal("0"))
+        by_symbol: dict[str, Decimal] = {}
+        for row in rows:
+            key = row.symbol or "Interest"
+            by_symbol[key] = by_symbol.get(key, Decimal("0")) + row.net_amount
+        return {
+            "status": "complete",
+            "total_net": str(total_net.quantize(money)),
+            "currency": currency,
+            "count": len(rows),
+            "by_symbol": [
+                {"symbol": symbol, "net_amount": str(amount.quantize(money))}
+                for symbol, amount in sorted(
+                    by_symbol.items(), key=lambda item: item[1], reverse=True
+                )[:5]
+            ],
+            "has_multiple_currencies": False,
+        }
+
+    async def _net_worth_summary(self, workspace_id: int, week_start: date, week_end: date) -> dict:
+        """Net-worth change with as-of provenance (spec-065 snapshots) —
+        mirrors _investing_summary's start/end-snapshot-diff shape exactly,
+        including the same "unavailable" fallback when a baseline is
+        missing or the reporting currency changed mid-comparison."""
+        start_snapshot = (
+            await self.session.execute(
+                select(NetWorthSnapshot)
+                .where(
+                    NetWorthSnapshot.workspace_id == workspace_id,
+                    NetWorthSnapshot.snapshot_date < week_start,
+                )
+                .order_by(NetWorthSnapshot.snapshot_date.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        end_snapshot = (
+            await self.session.execute(
+                select(NetWorthSnapshot)
+                .where(
+                    NetWorthSnapshot.workspace_id == workspace_id,
+                    NetWorthSnapshot.snapshot_date <= week_end,
+                )
+                .order_by(NetWorthSnapshot.snapshot_date.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        if (
+            start_snapshot is None
+            or end_snapshot is None
+            or end_snapshot.snapshot_date < week_start
+            or start_snapshot.reporting_currency != end_snapshot.reporting_currency
+        ):
+            return {
+                "status": "unavailable",
+                "net_worth_start": None,
+                "net_worth_end": None,
+                "week_change": None,
+                "week_change_pct": None,
+                "currency": None,
+                "start_snapshot_date": (
+                    start_snapshot.snapshot_date.isoformat() if start_snapshot else None
+                ),
+                "end_snapshot_date": (
+                    end_snapshot.snapshot_date.isoformat() if end_snapshot else None
+                ),
+            }
+
+        week_change = end_snapshot.total_net_worth - start_snapshot.total_net_worth
+        week_change_pct = (
+            (week_change / start_snapshot.total_net_worth) * Decimal("100")
+            if start_snapshot.total_net_worth != 0
+            else None
+        )
+        money = Decimal("0.01")
+        return {
+            "status": "complete",
+            "net_worth_start": str(start_snapshot.total_net_worth.quantize(money)),
+            "net_worth_end": str(end_snapshot.total_net_worth.quantize(money)),
+            "week_change": str(week_change.quantize(money)),
+            "week_change_pct": (
+                str(week_change_pct.quantize(money)) if week_change_pct is not None else None
+            ),
+            "currency": end_snapshot.reporting_currency,
+            "start_snapshot_date": start_snapshot.snapshot_date.isoformat(),
+            "end_snapshot_date": end_snapshot.snapshot_date.isoformat(),
+        }
+
+    async def _return_metrics_summary(self, workspace_id: int) -> dict:
+        """Notable return-metric moves (spec-071). There is no historical
+        return-metrics snapshot store, so unlike the sections above this is
+        NOT a week-over-week delta — it is the current XIRR/annualized-return/
+        max-drawdown state as of generation time, with "notable" flagging a
+        drawdown-from-peak past a fixed threshold."""
+        return_metrics_service = ReturnMetricsService(
+            InvestingOrderRepository(self.session),
+            HoldingRepository(self.session),
+            HoldingPriceRepository(self.session),
+            DividendRepository(self.session),
+            AccountRepository(self.session),
+            NetWorthSnapshotRepository(self.session),
+            FxRateService(FxRateRepository(self.session), CurrencyRepository(self.session)),
+            FinanceSettingRepository(self.session),
+        )
+        metrics = await return_metrics_service.get_return_metrics(workspace_id)
+        overall = metrics.overall
+        if metrics.valuation_status != "current" or overall.xirr is None:
+            return {
+                "status": "unavailable",
+                "xirr": None,
+                "annualized_return_pct": None,
+                "max_drawdown_pct": None,
+                "notable": False,
+            }
+
+        money = Decimal("0.01")
+        drawdown_pct = overall.max_drawdown.pct if overall.max_drawdown else None
+        notable = drawdown_pct is not None and drawdown_pct >= Decimal("10")
+        return {
+            "status": "complete",
+            "xirr": str(overall.xirr.quantize(money)),
+            "annualized_return_pct": (
+                str(overall.annualized_return_pct.quantize(money))
+                if overall.annualized_return_pct is not None
+                else None
+            ),
+            "max_drawdown_pct": (
+                str(drawdown_pct.quantize(money)) if drawdown_pct is not None else None
+            ),
+            "notable": notable,
+        }
+
+
+class SummarySettingsService:
+    """Per-workspace weekly-summary cadence (spec-076). Deliberately separate
+    from WeeklySummaryService — settings CRUD has nothing to do with summary
+    composition, and keeping it apart avoids growing that constructor."""
+
+    def __init__(self, repository: WorkspaceSummarySettingRepository):
+        self.repository = repository
+
+    async def get(self, workspace_id: int) -> WorkspaceSummarySetting | None:
+        return await self.repository.get_by_workspace(workspace_id)
+
+    async def update(
+        self, workspace_id: int, cadence_day_of_week: int, cadence_hour_utc: int
+    ) -> WorkspaceSummarySetting:
+        return await self.repository.upsert(
+            workspace_id,
+            cadence_day_of_week=cadence_day_of_week,
+            cadence_hour_utc=cadence_hour_utc,
+        )

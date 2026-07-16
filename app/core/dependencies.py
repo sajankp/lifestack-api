@@ -91,8 +91,8 @@ from app.spending.service import (
     RecurringTransactionService,
     TransactionService,
 )
-from app.summaries.repository import WeeklySummaryRepository
-from app.summaries.service import WeeklySummaryService
+from app.summaries.repository import WeeklySummaryRepository, WorkspaceSummarySettingRepository
+from app.summaries.service import SummarySettingsService, WeeklySummaryService
 from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
 
@@ -727,6 +727,18 @@ async def get_weekly_summary_service(
     notification_service: NotificationService = Depends(get_notification_service),
 ) -> WeeklySummaryService:
     return WeeklySummaryService(repo, session, notification_service)
+
+
+async def get_summary_settings_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> WorkspaceSummarySettingRepository:
+    return WorkspaceSummarySettingRepository(session)
+
+
+async def get_summary_settings_service(
+    repo: WorkspaceSummarySettingRepository = Depends(get_summary_settings_repo),
+) -> SummarySettingsService:
+    return SummarySettingsService(repo)
 
 
 async def get_current_workspace_id(

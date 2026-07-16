@@ -67,9 +67,11 @@ Additionally, non-idempotent scheduler jobs are blocked from registering unless 
 
 ## 9. Weekly Summary Job
 - **Job ID**: `weekly_summary`
-- **Schedule**: Weekly on Mondays at 01:30 UTC
+- **Schedule**: Ticks **hourly** at minute 30, scheduler-registered with `respect_cadence=True`. Per-workspace cadence (spec-076): with `respect_cadence` on, each tick only generates for workspaces whose `workspace_summary_settings` row (`cadence_day_of_week` 0=Mon..6=Sun, `cadence_hour_utc`) matches the current UTC day/hour; a workspace with no row defaults to Monday hour 1 — i.e. the pre-spec-076 global Monday 01:30 UTC schedule, unchanged for anyone who hasn't configured a cadence. `respect_cadence` defaults to **False** — CLI (`python -m app.cli.run weekly_summary`) and any other direct call always processes every targeted workspace regardless of the clock, matching pre-spec-076 behavior; only the registered scheduler tick opts into cadence gating.
 - **Job Function**: `weekly_summary_job`
-- **Workflow Function**: Generates a weekly productivity and financial summary report for active workspace memberships, combining completed todo counts and categories spend metrics.
+- **Workflow Function**: Generates a weekly productivity and financial summary report for active workspace memberships, combining todo/spending/investing/health metrics plus (spec-076) dividend income, net-worth change, and return-metric moves for the period.
+- **Regeneration** (spec-076): `POST /v1/summaries/weekly/{summary_id}/regenerate` recomputes the same week from current data, manual-only in v1. Not run by this job — the superseded row is retained forever (no cap) via `superseded_by_id`; regeneration does NOT trigger a notification (a bookkeeping correction, not a new event).
+- **Known limitation**: `morning_briefing` still runs at a single global daily hour (see #14) — a workspace whose weekly-summary cadence fires outside that briefing hour won't see the "summary is ready" briefing line until the following day's briefing run. Not addressed by spec-076 (out of scope); flagged here so it isn't mistaken for a bug later.
 
 ## 10. Dashboard Insights Job
 - **Job ID**: `dashboard_insights`
@@ -113,7 +115,7 @@ Additionally, non-idempotent scheduler jobs are blocked from registering unless 
 
 ## 14. Morning Briefing Job
 - **Job ID**: `morning_briefing`
-- **Schedule**: Daily at the hour/minute defined by `BRIEFING_JOB_HOUR_UTC`/`BRIEFING_JOB_MINUTE_UTC` (default 02:30 UTC, ≈08:00 IST) — deliberately after Monday's 01:30 UTC `weekly_summary` cron, so a freshly generated weekly summary lands in that same Monday's briefing.
+- **Schedule**: Daily at the hour/minute defined by `BRIEFING_JOB_HOUR_UTC`/`BRIEFING_JOB_MINUTE_UTC` (default 02:30 UTC, ≈08:00 IST) — deliberately after the default Monday 01:30 UTC `weekly_summary` tick, so a freshly generated weekly summary lands in that same Monday's briefing for any workspace still on the default cadence. Since spec-076, a workspace with a custom cadence hour after 02:30 UTC won't see its "ready" line until the next day's briefing (see `weekly_summary`'s known-limitation note, #9).
 - **Job Function**: `morning_briefing_job`
 - **Workflow Function**: `MorningBriefingWorkflow.get_briefing` (`app/application/workflows.py`)
 - **Purpose**: Composes each workspace's deterministic morning briefing (spec-067) — the same rules-only composition served live by `GET /v1/dashboard/briefing` — over eight existing read models (overdue/due-today todos, budget guardrail breaches, recurring transactions/todos due soon, net-worth daily change, imports pending review, a fresh weekly summary, and unread spec-058 insights), ordered by severity then a fixed domain tiebreak, capped at 10 lines. If the briefing is not `all_clear`, writes exactly ONE `Notification` (`category="briefing"`, severity = the briefing's most severe line, body = its top 3 line texts). All-clear workspaces get nothing written — calm by default.

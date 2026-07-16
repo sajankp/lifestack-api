@@ -89,7 +89,7 @@ from app.spending.repository import (
     TransactionRepository,
 )
 from app.spending.service import BudgetService, RecurringTransactionService
-from app.summaries.repository import WeeklySummaryRepository
+from app.summaries.repository import WeeklySummaryRepository, WorkspaceSummarySettingRepository
 from app.summaries.service import WeeklySummaryService
 from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
@@ -517,11 +517,22 @@ WEEKLY_SUMMARY_ROLE_ORDER = {
 
 
 async def weekly_summary_job(
-    workspace_id: int | None = None, week_start: date | None = None
+    workspace_id: int | None = None,
+    week_start: date | None = None,
+    respect_cadence: bool = False,
 ) -> None:
     """
-    Cron-triggered job that generates weekly summaries across all active workspaces.
-    Runs every Monday at 01:30 UTC.
+    Generates weekly summaries for active workspaces. The real scheduler
+    ticks this hourly with `respect_cadence=True`, so each tick only
+    generates for workspaces whose `workspace_summary_settings` row
+    (spec-076 — per-workspace day-of-week + hour) matches the current UTC
+    day/hour; a workspace with no row defaults to Monday hour 1, preserving
+    the pre-spec-076 global Monday 01:30 UTC schedule.
+
+    `respect_cadence` defaults to False so CLI/manual/test invocations keep
+    the pre-spec-076 behavior of always processing every targeted workspace
+    regardless of the clock — cadence gating is a scheduler-tick concern,
+    not something an explicit "run this now" call should silently skip.
     """
     start_time = datetime.now(UTC)
     logger.info("weekly_summary_job_start", job_name="weekly_summary_job")
@@ -554,6 +565,11 @@ async def weekly_summary_job(
                 logger.warning(
                     "weekly_summary_job_workspace_not_found_or_inactive",
                     workspace_id=workspace_id,
+                )
+            if respect_cadence and workspace_id is None and workspace_ids:
+                cadence_repo = WorkspaceSummarySettingRepository(session)
+                workspace_ids = await cadence_repo.list_due(
+                    workspace_ids, start_time.weekday(), start_time.hour
                 )
             # user ids per workspace, sorted owner → admin → member → viewer
             user_ids_by_workspace: dict[int, list[int]] = {}
