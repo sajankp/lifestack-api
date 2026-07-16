@@ -1,13 +1,14 @@
 # Feature Spec 083: Security Identity Resolution & Reference Data
 
-**Status:** Implemented (API side); frontend (§8/§8a/§8b UI, lifestack-web) pending
+**Status:** Implemented (API + Web — api PR #175, web PR #123)
 **Spec ID:** 083
 **Depends on:** spec-012 (look-through analytics), spec-034 (constituent CSV import)
 **Supersedes/closes:** spec-012 §8 "Identifier mapping drift"; spec-032 Open Question 4 (name-variant company duplication)
 
-## Implementation Notes (2026-07-15, API side)
+## Implementation Notes (2026-07-15, API side) / (2026-07-16, Web side)
 
-Landed on `feat/spec-083-security-identity-reference-data` in `lifestack-api`:
+Landed on `feat/spec-083-security-identity-reference-data` in `lifestack-api` (api PR #175)
+and `feat/spec-010-security-identity-correction-ux` in `lifestack-web` (web PR #123):
 
 - **Company identity resolution (§4.2):** `CompanyRepository.resolve_or_create_company`
   (ISIN → ticker(+market) → normalized-name precedence) replaces raw-name matching in both
@@ -581,3 +582,33 @@ per run, not silent.
    so dual-listings collapse to one company (full rules + accepted holes in §6.1).
 4. **Backfill:** a **dedicated CLI script taking `--workspace-id`**, run per-workspace, never an
    automatic deploy-time migration — to avoid cross-workspace contamination (§9).
+
+---
+
+## 14. Web Implementation Notes (2026-07-16, web PR #123)
+
+Landed on `feat/spec-010-security-identity-correction-ux` in `lifestack-web`; implemented by
+[Spec-010](../../../lifestack-web/docs/specs/spec-010-security-identity-correction-ux.md) (the
+dedicated UX spec for §8/§8a/§8b). Key delivered surfaces:
+
+- **Holdings tab Edit modal (§8a):** `ticker`, `isin`, `exchange` fields added. On-blur
+  `GET /v1/investing/reference/resolve` check shows inline `resolved`/`ambiguous`/`unresolved`
+  status badge. Save is sequenced: holding PATCH first, then instrument PATCH; partial failures
+  keep the modal open with retry.
+- **Analytics tab Edit Instrument modal:** dedicated modal (replaces inline table-cell editing)
+  for correcting pooled instruments that have no corresponding Holding row.
+- **Seed Constituents form (§8b):** separated into distinct Company name / Ticker / ISIN / Weight
+  fields — eliminates the `company_name = ticker` pre-spec bug. CSV paste still supported with
+  clean four-field parsing.
+- **Import preview Identifier column:** `identifier_status` badge (`resolved`/`unresolved`/
+  `ambiguous`) rendered in the constituents preview table with descriptive tooltips.
+- **`useIdentifierHint` hook:** centralizes per `instrument_type` + ticker-suffix hint copy
+  (US stock/ETF → ticker; India stock → ticker+exchange; India MF → ISIN/AMFI; ISIN universal).
+- **`IdentifierFields` component:** reusable identifier field group used across Holdings and
+  Analytics edit modals.
+
+Review comments resolved (PR #175 api + PR #123 web, both fully clean before merge):
+- Ambiguity-check bypass when `exchange=None` fixed in `ReferenceResolveService.resolve`.
+- N+1 enrichment query eliminated in `company_identity_merge._enrich_from_reference_data`.
+- CSV comment-stripping refactored to module-level `CommentStrippedStream` class in
+  `app/imports/service.py`.
