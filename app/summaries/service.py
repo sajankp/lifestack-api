@@ -479,6 +479,11 @@ class WeeklySummaryService:
             or end_snapshot is None
             or end_snapshot.snapshot_date < week_start
             or start_snapshot.currency_code != end_snapshot.currency_code
+            # A zero-value boundary is a placeholder recorded before any real
+            # investing data existed, not a genuine baseline — diffing against
+            # it produces a nonsense "entire portfolio value" or "-100%" swing.
+            or start_snapshot.holdings_value == 0
+            or end_snapshot.holdings_value == 0
         ):
             return {
                 "status": "unavailable",
@@ -664,6 +669,11 @@ class WeeklySummaryService:
             or end_snapshot is None
             or end_snapshot.snapshot_date < week_start
             or start_snapshot.reporting_currency != end_snapshot.reporting_currency
+            # A zero-value boundary is a placeholder recorded before any real
+            # net-worth data existed, not a genuine baseline — diffing against
+            # it produces a nonsense "entire net worth" or "-100%" swing.
+            or start_snapshot.total_net_worth == 0
+            or end_snapshot.total_net_worth == 0
         ):
             return {
                 "status": "unavailable",
