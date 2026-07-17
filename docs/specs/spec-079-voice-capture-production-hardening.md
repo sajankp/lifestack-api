@@ -449,12 +449,9 @@ To understand how the thinking budget configurations affect performance and late
 
 ## Input-transcription cost metering — Q4 fully resolved (2026-07-17)
 
-The last open half of resolved question 4 — whether **input** (user-speech) transcription adds
-billable tokens — was blocked on "a short recorded utterance the owner supplies". It turned out no
-owner recording was needed: this machine's ffmpeg build carries the `flite` TTS filter, so a
-synthetic spoken utterance ("Add a todo to buy milk tomorrow evening", 2.7 s, 16 kHz mono WAV) was
-generated locally and fed through the existing harness. The WAV is not committed — it regenerates
-from one command (any utterance text works; the harness ffmpeg-decodes whatever it's given):
+The open half of resolved question 4 — whether **input** (user-speech) transcription adds billable
+tokens — needed no owner recording after all: a synthetic utterance (ffmpeg's `flite` TTS filter)
+exercised it through the existing harness. Reproduce with any utterance text:
 
 ```
 ffmpeg -f lavfi -i "flite=text='Add a todo to buy milk tomorrow evening':voice=slt" \
@@ -462,37 +459,19 @@ ffmpeg -f lavfi -i "flite=text='Add a todo to buy milk tomorrow evening':voice=s
 uv run python scripts/measure_transcription_cost.py --audio utterance.wav --trials 3
 ```
 
-**Result (model `gemini-3.1-flash-live-preview`, thinking budget 256):** baseline avg 6918.3
-tokens/turn vs with-transcription 6821.5 — **delta −96.8, well inside the 353-token baseline
-reply-length jitter**. The harness's own verdict: no measurable token cost. The input transcript
-came back accurate even from the synthetic voice (`"Add to-do to buy milk tomorrow evening"`), and
-output transcription arrived alongside as before. One with-transcription trial hit a transient
-opening-handshake timeout and was excluded from the averages by the harness.
+**Result (`gemini-3.1-flash-live-preview`, thinking budget 256):** baseline avg 6918.3 tokens/turn
+vs with-transcription 6821.5 — delta −96.8, well inside the 353-token baseline reply-length jitter.
+**No measurable token cost; input transcription is free.** The transcript was accurate even from
+the synthetic voice.
 
-**Notable side-finding:** the *baseline* sessions — which do NOT request transcription in the setup
-message — also received `inputTranscription` messages. 3.1 Flash Live appears to emit user-speech
-transcription unconditionally, so the text already exists on every voice turn today; the app was
-simply dropping it. This makes the cost question doubly moot for the current model, but the flag
-below still defaults off per the "new behavior defaults off" rule.
+**Side-finding:** the baseline sessions — which do NOT request transcription — also received
+`inputTranscription` messages: 3.1 Flash Live emits user-speech transcription unconditionally, so
+the text already exists on every voice turn and was simply being dropped.
 
-**Implementation (same pass, TDD red→green in `app/tests/capture/test_agent.py`):**
-- New flag `CAPTURE_ENABLE_INPUT_TRANSCRIPTION: bool = False`; when set,
-  `_build_setup_message` adds `inputAudioTranscription: {}`.
-- `_handle_gemini_message` accumulates `serverContent.inputTranscription` fragments per turn and,
-  at the `turnComplete` boundary, flushes one `kind='user_transcript'` capture-log event **before**
-  the turn's `assistant_transcript` event (conversational order). The user's words are log-only —
-  never echoed to the client on the assistant caption channel.
-- The capture-log executor is now a dedicated single-worker `ThreadPoolExecutor`: with the default
-  multi-threaded executor, two back-to-back offloaded writes could append out of order, which the
-  new ordering test caught as a real race, not a test artifact.
-
-**Effect on the eval path:** the "no source for the 30 real-usage cases" blocker is gone. Enabling
-`CAPTURE_TURN_LOG_PATH` + both transcription flags in production yields a complete
-utterance→tool-call→reply record per turn, which is exactly the harvest format
-`app/tests/capture/eval/utterances.json` needs. Next steps (supersedes the earlier list's item 2):
-1. Set the three capture-log env vars in production (see `docs/PRODUCTION_DEPLOYMENT.md`).
-2. Accumulate real usage; distill the 30 real-usage eval cases from `user_transcript` +
-   `tool_call` pairs (PII scrub before committing fixtures).
-3. Expand the fixture to the full 50 and start the ≥90%-twice-a-week clock — model/scorer choice
-   (2.5 Native Audio vs 3.1 Flash Live + tolerance work, see the 2026-07-15 run) is still an open
-   owner call, currently staged in the draft scorer-tolerance PR (api#174).
+With the gate cleared, input transcription is now captured behind
+`CAPTURE_ENABLE_INPUT_TRANSCRIPTION` (default off) as `kind='user_transcript'` capture-log events —
+log-only, never echoed to the client. The "no source for the 30 real-usage cases" blocker is gone:
+enable the capture-log env vars in production (`docs/PRODUCTION_DEPLOYMENT.md`), accumulate real
+usage, distill the 30 cases (PII scrub before committing fixtures), then start the
+≥90%-twice-a-week clock. The model/scorer choice from the 2026-07-15 run remains the open owner
+call.
