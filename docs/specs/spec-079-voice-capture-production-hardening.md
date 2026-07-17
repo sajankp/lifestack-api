@@ -453,10 +453,13 @@ The last open half of resolved question 4 — whether **input** (user-speech) tr
 billable tokens — was blocked on "a short recorded utterance the owner supplies". It turned out no
 owner recording was needed: this machine's ffmpeg build carries the `flite` TTS filter, so a
 synthetic spoken utterance ("Add a todo to buy milk tomorrow evening", 2.7 s, 16 kHz mono WAV) was
-generated locally and fed through the existing harness:
+generated locally and fed through the existing harness. The WAV is not committed — it regenerates
+from one command (any utterance text works; the harness ffmpeg-decodes whatever it's given):
 
 ```
-uv run python scripts/measure_transcription_cost.py --audio <synth.wav> --trials 3
+ffmpeg -f lavfi -i "flite=text='Add a todo to buy milk tomorrow evening':voice=slt" \
+  -ar 16000 -ac 1 utterance.wav
+uv run python scripts/measure_transcription_cost.py --audio utterance.wav --trials 3
 ```
 
 **Result (model `gemini-3.1-flash-live-preview`, thinking budget 256):** baseline avg 6918.3
