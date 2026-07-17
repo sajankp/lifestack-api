@@ -9,10 +9,9 @@ api#169 account-balances tool). Stage C and dropping the "experimental" label st
 (`gemini-3.1-flash-live-preview`) last measured 73.68% (2026-07-15, `run-20260715.json`)**; the
 84.2% figure from 2026-07-12 was run on a different model (`gemini-2.5-flash-native-audio-latest`)
 than what's actually deployed now — see the 2026-07-15 eval-run section below for the model mismatch
-this created in prior status text. **Q4 fully resolved 2026-07-17**: input transcription metered
-free with a synthesized utterance; `CAPTURE_ENABLE_INPUT_TRANSCRIPTION` + `user_transcript`
-capture-log events implemented — the real-usage eval slice now has a source once enabled in
-production (see the 2026-07-17 section at the end).
+this created in prior status text. **Q4 fully resolved 2026-07-17** — input transcription metered
+free; user utterances now logged behind `CAPTURE_ENABLE_INPUT_TRANSCRIPTION`, unblocking the
+real-usage eval slice (see the 2026-07-17 section at the end).
 **Depends on:** spec-021 (voice agent function calling, Phase 1), spec-039 (ADK evaluation — verdict "no, not now" stands), spec-059/061/066 (capture usability + consolidation)
 **Scope:** multi-repo, user-facing — `lifestack-api` (`app/capture/`) + `lifestack-web` (capture surface). Voice stays labeled **experimental** until the eval milestone below is met (positioning rule).
 
@@ -298,12 +297,11 @@ without the still-gated user-utterance capture.
   or silent (no-tool-call) turns are no longer invisible. `_log_capture_turn` is refactored onto a
   shared `_log_capture_event` writer (same executor-offload + swallow-errors + path-gating).
 
-**Still NOT captured — the user's own words.** *(Resolved 2026-07-17 — the `--audio` cost test ran
-with a synthesized utterance, input transcription proved free, and the `user_transcript` event now
-exists; see "Input-transcription cost metering" below.)* Input transcription remains gated on the
-owner-run `--audio` cost test (resolved question 4). Until then the log shows what the assistant
-said and did, but not the verbatim user utterance; the log entries are structured so adding a
-`user_transcript` event later is additive, not a reshape.
+**Still NOT captured — the user's own words.** *(Resolved 2026-07-17 — free; see the metering
+section below.)* Input transcription remains gated on the owner-run `--audio` cost test (resolved
+question 4). Until then the log shows what the assistant said and did, but not the verbatim user
+utterance; the log entries are structured so adding a `user_transcript` event later is additive,
+not a reshape.
 
 ## Model benchmark — Gemini 3 Flash Live vs 2.5 Native Audio (2026-07-13)
 
@@ -449,9 +447,9 @@ To understand how the thinking budget configurations affect performance and late
 
 ## Input-transcription cost metering — Q4 fully resolved (2026-07-17)
 
-The open half of resolved question 4 — whether **input** (user-speech) transcription adds billable
-tokens — needed no owner recording after all: a synthetic utterance (ffmpeg's `flite` TTS filter)
-exercised it through the existing harness. Reproduce with any utterance text:
+**Input (user-speech) transcription adds no measurable token cost — the "only if free" gate is
+satisfied in both directions.** Metered with a synthetic utterance (ffmpeg `flite` TTS) through the
+existing harness; reproduce with any utterance text:
 
 ```
 ffmpeg -f lavfi -i "flite=text='Add a todo to buy milk tomorrow evening':voice=slt" \
@@ -459,19 +457,17 @@ ffmpeg -f lavfi -i "flite=text='Add a todo to buy milk tomorrow evening':voice=s
 uv run python scripts/measure_transcription_cost.py --audio utterance.wav --trials 3
 ```
 
-**Result (`gemini-3.1-flash-live-preview`, thinking budget 256):** baseline avg 6918.3 tokens/turn
-vs with-transcription 6821.5 — delta −96.8, well inside the 353-token baseline reply-length jitter.
-**No measurable token cost; input transcription is free.** The transcript was accurate even from
-the synthetic voice.
+Findings (`gemini-3.1-flash-live-preview`, thinking budget 256):
 
-**Side-finding:** the baseline sessions — which do NOT request transcription — also received
-`inputTranscription` messages: 3.1 Flash Live emits user-speech transcription unconditionally, so
-the text already exists on every voice turn and was simply being dropped.
+- Baseline avg 6918.3 tokens/turn vs 6821.5 with transcription — delta −96.8, inside the
+  353-token baseline reply-length jitter. Free.
+- The transcript was accurate even on the synthetic voice.
+- Baseline sessions (transcription not requested) also received `inputTranscription` — 3.1 Flash
+  Live emits it unconditionally; the app had been dropping text that already exists on every turn.
 
-With the gate cleared, input transcription is now captured behind
-`CAPTURE_ENABLE_INPUT_TRANSCRIPTION` (default off) as `kind='user_transcript'` capture-log events —
-log-only, never echoed to the client. The "no source for the 30 real-usage cases" blocker is gone:
-enable the capture-log env vars in production (`docs/PRODUCTION_DEPLOYMENT.md`), accumulate real
-usage, distill the 30 cases (PII scrub before committing fixtures), then start the
-≥90%-twice-a-week clock. The model/scorer choice from the 2026-07-15 run remains the open owner
-call.
+User utterances are now captured behind `CAPTURE_ENABLE_INPUT_TRANSCRIPTION` (default off) as
+`kind='user_transcript'` capture-log events — log-only, never echoed to the client. This unblocks
+the 30 real-usage eval cases: enable the capture-log env vars in production
+(`docs/PRODUCTION_DEPLOYMENT.md`), accumulate usage, distill the cases (PII-scrubbed), then start
+the ≥90%-twice-a-week clock. The model/scorer choice from the 2026-07-15 run remains the open
+owner call.
