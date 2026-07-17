@@ -73,7 +73,12 @@ def _log_capture_event(entry: dict) -> None:
     except RuntimeError:
         _write()
     else:
-        loop.run_in_executor(_capture_log_executor, _write)
+        try:
+            loop.run_in_executor(_capture_log_executor, _write)
+        except RuntimeError:
+            # e.g. the loop is closing (app shutdown) — a write failure must
+            # never sink the caller; fall back to a synchronous write.
+            _write()
 
 
 def _log_capture_turn(

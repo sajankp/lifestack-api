@@ -1386,6 +1386,33 @@ async def test_log_capture_turn_offloads_to_executor_inside_running_loop(tmp_pat
     assert entry["args"] == {"weight_kg": "72.4"}
 
 
+@pytest.mark.asyncio
+async def test_log_capture_turn_falls_back_to_sync_write_when_executor_submit_fails(
+    tmp_path, monkeypatch
+):
+    """`run_in_executor` can itself raise RuntimeError (e.g. the event loop is
+    closing during shutdown) even though a loop is currently running — that must
+    fall back to a synchronous write, not propagate and sink the session."""
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+
+    loop = asyncio.get_running_loop()
+    original_run_in_executor = loop.run_in_executor
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("loop is closing")
+
+    monkeypatch.setattr(loop, "run_in_executor", _raise)
+
+    # Must not raise, and must still write (synchronously, inline).
+    _log_capture_turn("log_weight", {"weight_kg": "72.4"}, "success", user_id=1, workspace_id=1)
+
+    monkeypatch.setattr(loop, "run_in_executor", original_run_in_executor)
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["tool"] == "log_weight"
+    assert entry["args"] == {"weight_kg": "72.4"}
+
+
 # ── spec-079 Stage B: session-keyed, content-bearing capture log ─────────────
 
 
