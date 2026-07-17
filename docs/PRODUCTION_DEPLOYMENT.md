@@ -35,8 +35,9 @@ Create a `.env.production` file on the deployment VM with the following keys:
 ### AI Integration
 * `GEMINI_API_KEY`: API key for Google Gemini voice capture transcripts.
 * `GEMINI_THINKING_BUDGET` (default `256`): thinking-token budget for voice tool-call reasoning; set `0` if the configured `GEMINI_MODEL` rejects a non-zero budget (spec-059).
-* `CAPTURE_TURN_LOG_PATH` (spec-079 Stage A, feature-off unless set): append-only JSONL log of each voice tool-call turn (tool name + args + status — no raw utterance/transcript text yet). Point it at `/app/logs/capture/turns.jsonl`, which `docker-compose.yml` bind-mounts to `./logs/capture` on the host so it survives container recreation — unlike the stdout-only structured logs, which don't.
+* `CAPTURE_TURN_LOG_PATH` (spec-079 Stage A, feature-off unless set): append-only JSONL log of voice turns — tool calls, plus user/assistant transcripts when the two transcription flags below are on. Point it at `/app/logs/capture/turns.jsonl`, which `docker-compose.yml` bind-mounts to `./logs/capture` on the host so it survives container recreation — unlike the stdout-only structured logs, which don't.
 * `CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION` (spec-079 Stage B, default `false`): capture the assistant's spoken reply as text (live captions + assistant side of the turn log). Metered free (2026-07-13).
+* `CAPTURE_ENABLE_INPUT_TRANSCRIPTION` (spec-079 Q4, default `false`): capture the user's own utterance as text into the turn log (`kind=user_transcript`) — the source for spec-079's real-usage eval slice. Metered free (2026-07-17). Set all three of these together to get a complete conversation record.
 * `CAPTURE_ENABLE_SESSION_RESUMPTION` / `CAPTURE_ENABLE_CONTEXT_COMPRESSION` (spec-079 Stage B, both default `false`): WebSocket transport resilience — resumption handles let a reconnecting client restore conversation context after a dropped socket (`?resume=<handle>`); context compression keeps long sessions alive past the model's context limit. Enable only after confirming the deployed `GEMINI_MODEL` accepts the `sessionResumption`/`contextWindowCompression` setup fields.
 
 ### Web Push Notifications (spec-052)
