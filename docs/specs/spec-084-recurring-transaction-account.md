@@ -1,9 +1,7 @@
 # Spec-084: Account Resolution on Recurring Transactions
 
 **Created:** 2026-07-17
-**Status:** Approved — account required at creation (explicit or workspace default, 422
-otherwise, matching spec-054); generation-time fallback for a deactivated linked account
-goes to the workspace default spending account.
+**Status:** Implemented (api#179, web#128; merged 2026-07-17)
 **Depends on:** spec-054 (mandatory account on spending transactions — this spec extends the
 same invariant and reuses its resolver), spec-053 (calendar recurrence modes, unrelated but
 same table)
