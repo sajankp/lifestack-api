@@ -25,7 +25,7 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.core.pagination import DEFAULT_LIMIT
-from app.core.recurrence import advance_due_date, validate_recurrence_fields
+from app.core.recurrence import advance_due_date, first_due_date, validate_recurrence_fields
 from app.finance.repository import AccountRepository, FinanceSettingRepository
 from app.finance.statement_service import StatementService
 from app.spending.models import (
@@ -2211,7 +2211,15 @@ class RecurringTransactionService:
             frequency=payload.frequency,
             interval=payload.interval,
             anchor_date=payload.anchor_date,
-            next_due_date=payload.anchor_date,
+            next_due_date=first_due_date(
+                payload.anchor_date,
+                datetime.now(UTC).date(),
+                payload.frequency,
+                payload.interval,
+                monthly_mode=payload.monthly_mode,
+                by_weekday=payload.by_weekday,
+                by_ordinal=payload.by_ordinal,
+            ),
             end_date=payload.end_date,
             monthly_mode=payload.monthly_mode,
             by_weekday=payload.by_weekday,

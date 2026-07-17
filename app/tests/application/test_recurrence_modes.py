@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -238,3 +238,74 @@ async def test_end_to_end_generation_last_day_transaction_and_nth_weekday_todo(
             await session.execute(select(Todo).where(Todo.workspace_id == workspace_id))
         ).scalar_one()
         assert todo_row.title == "Weekly review"
+
+
+@pytest.mark.asyncio
+async def test_recurring_transaction_created_mid_cycle_is_not_immediately_overdue(
+    client: AsyncClient,
+):
+    """A monthly rule anchored to a past-in-the-cycle date shouldn't be born overdue.
+
+    Regression for a rule created mid-month with anchor_date = month start: the raw
+    anchor is already in the past relative to "today", so next_due_date must advance
+    past the elapsed cycle instead of landing on a stale, already-past date.
+    """
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+    cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
+    category_id = cats[0]["public_id"]
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
+    today = datetime.now(UTC).date()
+    past_anchor = today - timedelta(days=40)
+
+    res = await client.post(
+        "/v1/spending/recurring",
+        json={
+            "category_id": category_id,
+            "account_id": account_id,
+            "amount": "10.00",
+            "type": "expense",
+            "frequency": "monthly",
+            "interval": 1,
+            "anchor_date": past_anchor.isoformat(),
+        },
+        cookies=creds["cookies"],
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["anchor_date"] == past_anchor.isoformat()
+    next_due = date.fromisoformat(body["next_due_date"])
+    assert next_due >= today
+    assert next_due != past_anchor
+
+
+@pytest.mark.asyncio
+async def test_recurring_todo_rule_created_mid_cycle_is_not_immediately_overdue(
+    client: AsyncClient,
+):
+    await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    today = datetime.now(UTC).date()
+    past_anchor = today - timedelta(days=40)
+
+    res = await client.post(
+        "/v1/todo/recurring/",
+        json={
+            "title": "Pay rent",
+            "frequency": "monthly",
+            "interval": 1,
+            "anchor_date": past_anchor.isoformat(),
+        },
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["anchor_date"] == past_anchor.isoformat()
+    next_due = date.fromisoformat(body["next_due_date"])
+    assert next_due >= today
+    assert next_due != past_anchor
