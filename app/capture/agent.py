@@ -4,6 +4,7 @@ import inspect
 import json
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +33,12 @@ CAPTURE_PROVIDER_UNAVAILABLE_CLOSE_CODE = 4002
 CAPTURE_CLIENT_ERROR = "Voice capture is temporarily unavailable. Please try again."
 CAPTURE_PROVIDER_ERROR = "Voice provider returned an error. Please try again."
 CAPTURE_INVALID_MESSAGE_ERROR = "Voice capture received an invalid client message."
+
+
+# Single-worker executor so offloaded log writes append in submission order —
+# with the default (multi-threaded) executor, a turn's user_transcript and
+# assistant_transcript rows could land in the file out of order.
+_capture_log_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="capture-log")
 
 
 def _log_capture_event(entry: dict) -> None:
@@ -66,7 +73,7 @@ def _log_capture_event(entry: dict) -> None:
     except RuntimeError:
         _write()
     else:
-        loop.run_in_executor(None, _write)
+        loop.run_in_executor(_capture_log_executor, _write)
 
 
 def _log_capture_turn(
@@ -79,9 +86,10 @@ def _log_capture_turn(
     session_id: str | None = None,
 ) -> None:
     """Record one voice tool-call turn (`kind='tool_call'`): tool name, args, and
-    outcome. Still carries no raw *user* utterance text — input transcription is
-    gated on a metered-cost check (spec-079 Q4). `session_id` groups a
-    conversation's turns; see `_log_capture_event` for the write semantics.
+    outcome. The user's utterance is not on this row — with input transcription
+    enabled it lands as a separate `kind='user_transcript'` event (spec-079 Q4,
+    metered free). `session_id` groups a conversation's turns; see
+    `_log_capture_event` for the write semantics.
     """
     _log_capture_event({
         "kind": "tool_call",
@@ -115,6 +123,29 @@ def _log_assistant_transcript(
         "session_id": session_id,
         "text": text,
         "generation_ms": round(generation_ms, 1) if generation_ms is not None else None,
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+    })
+
+
+def _log_user_transcript(
+    text: str,
+    *,
+    user_id: int,
+    workspace_id: int,
+    session_id: str | None = None,
+) -> None:
+    """Record the user's spoken utterance for a turn (`kind='user_transcript'`),
+    captured from Gemini input transcription (spec-079 Q4, metered free). This is
+    the real-usage utterance source for the eval set's 60% slice. No-op on empty
+    text.
+    """
+    if not text.strip():
+        return
+    _log_capture_event({
+        "kind": "user_transcript",
+        "session_id": session_id,
+        "text": text,
         "user_id": user_id,
         "workspace_id": workspace_id,
     })
@@ -306,6 +337,31 @@ def _accumulate_assistant_text(turn_state: dict | None, text: str) -> None:
     turn_state.setdefault("assistant_text", []).append(text)
 
 
+def _accumulate_user_text(turn_state: dict | None, text: str) -> None:
+    """Buffer a user-utterance fragment from input transcription for the current
+    turn (spec-079 Q4). No-op when there is no turn_state."""
+    if turn_state is None:
+        return
+    turn_state.setdefault("user_text", []).append(text)
+
+
+def _flush_user_turn(
+    turn_state: dict, *, user_id: int, workspace_id: int, session_id: str | None
+) -> None:
+    """Write the accumulated user utterance for a completed turn to the capture
+    log, then reset the buffer for the next turn (spec-079 Q4)."""
+    fragments = turn_state.get("user_text") or []
+    turn_state["user_text"] = []
+    if not fragments:
+        return
+    _log_user_transcript(
+        "".join(fragments),
+        user_id=user_id,
+        workspace_id=workspace_id,
+        session_id=session_id,
+    )
+
+
 def _flush_assistant_turn(
     turn_state: dict, *, user_id: int, workspace_id: int, session_id: str | None
 ) -> None:
@@ -413,9 +469,18 @@ async def _handle_gemini_message(
             _accumulate_assistant_text(turn_state, ot_text)
             await client_ws.send_json({"type": "transcript", "content": ot_text})
 
-        # Turn boundary: flush the accumulated assistant reply to the capture log
-        # with its generation span, then reset for the next turn.
+        # Input transcription (spec-079 Q4): the user's own words as heard by the
+        # model. Log-only — never echoed back on the assistant caption channel.
+        input_transcription = server_content.get("inputTranscription")
+        if input_transcription and (it_text := input_transcription.get("text")):
+            _accumulate_user_text(turn_state, it_text)
+
+        # Turn boundary: flush the accumulated user utterance then the assistant
+        # reply (conversational order) to the capture log, resetting both buffers.
         if server_content.get("turnComplete") and turn_state is not None:
+            _flush_user_turn(
+                turn_state, user_id=user_id, workspace_id=workspace_id, session_id=session_id
+            )
             _flush_assistant_turn(
                 turn_state, user_id=user_id, workspace_id=workspace_id, session_id=session_id
             )
