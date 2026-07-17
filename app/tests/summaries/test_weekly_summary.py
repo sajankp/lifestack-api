@@ -564,12 +564,14 @@ async def test_weekly_summary_net_worth_unavailable_without_baseline(client: Asy
 
 
 @pytest.mark.asyncio
-async def test_weekly_summary_net_worth_zero_baseline_marked_unavailable(client: AsyncClient):
-    """A zero-value boundary snapshot (recorded before any real net-worth data
-    existed) must not be treated as a genuine baseline for a week-over-week
-    diff — regression for a "Weekly movement" that read as the entire
-    portfolio value at (0.00%) one week and its inverse at (-100.00%) the
-    next, both driven by a snapshot whose total was a zero placeholder."""
+async def test_weekly_summary_net_worth_zero_baseline_stays_a_real_complete_summary(
+    client: AsyncClient,
+):
+    """A zero-value boundary is a legitimate data point — a user's first
+    tracked net worth, or a genuine drop to zero — not necessarily a
+    placeholder. Treating it as "unavailable" would hide a real "first
+    investment" or "wiped out" week. Only week_change_pct is undefined
+    (division by zero); status and week_change must still be real."""
     creds = await _register_and_login(client, "sumnetworthzero")
 
     async_session_maker = postgres.get_session_maker(postgres.engine)
@@ -607,14 +609,20 @@ async def test_weekly_summary_net_worth_zero_baseline_marked_unavailable(client:
         summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
         await session.commit()
 
-    assert summary.net_worth_summary["status"] == "unavailable"
-    assert summary.net_worth_summary["week_change"] is None
+    assert summary.net_worth_summary["status"] == "complete"
+    assert summary.net_worth_summary["net_worth_start"] == "0.00"
+    assert summary.net_worth_summary["net_worth_end"] == "1100.00"
+    assert summary.net_worth_summary["week_change"] == "1100.00"
     assert summary.net_worth_summary["week_change_pct"] is None
 
 
 @pytest.mark.asyncio
-async def test_weekly_summary_investing_zero_baseline_marked_unavailable(client: AsyncClient):
-    """Same zero-baseline guard as net worth, for the investing snapshot diff."""
+async def test_weekly_summary_investing_zero_baseline_stays_a_real_complete_summary(
+    client: AsyncClient,
+):
+    """Same as the net-worth case above: a zero holdings_value boundary can be
+    a genuine first-investment or full-liquidation week and must not be
+    suppressed as "unavailable"."""
     creds = await _register_and_login(client, "suminvestingzero")
 
     async_session_maker = postgres.get_session_maker(postgres.engine)
@@ -656,8 +664,10 @@ async def test_weekly_summary_investing_zero_baseline_marked_unavailable(client:
         summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
         await session.commit()
 
-    assert summary.investing_summary["status"] == "unavailable"
-    assert summary.investing_summary["week_change"] is None
+    assert summary.investing_summary["status"] == "complete"
+    assert summary.investing_summary["portfolio_value_start"] == "0.00"
+    assert summary.investing_summary["portfolio_value_end"] == "1200.00"
+    assert summary.investing_summary["week_change"] == "1200.00"
     assert summary.investing_summary["week_change_pct"] is None
 
 
