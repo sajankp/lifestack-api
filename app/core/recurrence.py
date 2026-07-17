@@ -132,6 +132,8 @@ def first_due_date(
     Advance past any cycles that have already elapsed; a date on or after ``today`` is
     returned unchanged.
     """
+    if interval <= 0:
+        raise ValueError("interval must be greater than 0")
     due = anchor_date
     while due < today:
         due = advance_due_date(

@@ -466,14 +466,14 @@ class TodoService:
         audit_logger: AuditLogger | None = None,
     ) -> RecurringTodoRule:
         try:
-            ZoneInfo(rule_in.timezone)
+            rule_tz = ZoneInfo(rule_in.timezone)
         except ZoneInfoNotFoundError as exc:
             raise ValidationError(detail=f"Unknown timezone: {rule_in.timezone}") from exc
         if rule_in.end_date and rule_in.anchor_date > rule_in.end_date:
             raise ValidationError(detail="anchor_date cannot be after end_date")
         next_due = first_due_date(
             rule_in.anchor_date,
-            datetime.now(UTC).date(),
+            datetime.now(rule_tz).date(),
             rule_in.frequency,
             rule_in.interval,
             monthly_mode=rule_in.monthly_mode,
