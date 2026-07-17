@@ -1546,6 +1546,7 @@ async def test_handle_gemini_message_logs_user_transcript_on_turn_complete(tmp_p
     source spec-079's eval expansion needs."""
     log_path = tmp_path / "turns.jsonl"
     monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_INPUT_TRANSCRIPTION", True)
     client_ws = FakeClientWebSocket()
     turn_state: dict = {"assistant_text": [], "started_at": None}
 
@@ -1595,11 +1596,46 @@ async def test_handle_gemini_message_logs_user_transcript_on_turn_complete(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_user_transcript_not_logged_when_flag_disabled(tmp_path, monkeypatch):
+    """3.1 Flash Live emits inputTranscription even when not requested in setup;
+    the flag must still gate persistence — off means utterance text is never
+    written, exactly the pre-flag behavior."""
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_INPUT_TRANSCRIPTION", False)
+    client_ws = FakeClientWebSocket()
+    turn_state: dict = {"assistant_text": [], "started_at": None}
+
+    await _handle_gemini_message(
+        {"serverContent": {"inputTranscription": {"text": "Add a todo to buy milk."}}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-3",
+        turn_state=turn_state,
+    )
+    await _handle_gemini_message(
+        {"serverContent": {"turnComplete": True}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-3",
+        turn_state=turn_state,
+    )
+    await asyncio.sleep(0.1)
+
+    assert not log_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_turn_complete_flushes_user_transcript_before_assistant(tmp_path, monkeypatch):
     """A turn carrying both sides logs the user's utterance first, then the
     assistant's reply — conversational order in the JSONL."""
     log_path = tmp_path / "turns.jsonl"
     monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_INPUT_TRANSCRIPTION", True)
     client_ws = FakeClientWebSocket()
     turn_state: dict = {"assistant_text": [], "started_at": None}
 

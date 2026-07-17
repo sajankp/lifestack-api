@@ -471,9 +471,13 @@ async def _handle_gemini_message(
 
         # Input transcription (spec-079 Q4): the user's own words as heard by the
         # model. Log-only — never echoed back on the assistant caption channel.
-        input_transcription = server_content.get("inputTranscription")
-        if input_transcription and (it_text := input_transcription.get("text")):
-            _accumulate_user_text(turn_state, it_text)
+        # Gated on the flag here as well as in the setup message: 3.1 Flash Live
+        # emits inputTranscription even when not requested, and flag-off must
+        # mean utterance text is never persisted.
+        if settings.CAPTURE_ENABLE_INPUT_TRANSCRIPTION:
+            input_transcription = server_content.get("inputTranscription")
+            if input_transcription and (it_text := input_transcription.get("text")):
+                _accumulate_user_text(turn_state, it_text)
 
         # Turn boundary: flush the accumulated user utterance then the assistant
         # reply (conversational order) to the capture log, resetting both buffers.

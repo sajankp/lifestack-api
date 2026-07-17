@@ -464,6 +464,10 @@ Findings (`gemini-3.1-flash-live-preview`, thinking budget 256):
 - The transcript was accurate even on the synthetic voice.
 - Baseline sessions (transcription not requested) also received `inputTranscription` — 3.1 Flash
   Live emits it unconditionally; the app had been dropping text that already exists on every turn.
+- 2.5 Native Audio (same-day re-run, 2 trials): opt-in only — baseline receives nothing; when
+  requested, input transcription arrives and is likewise free (delta −32.5, jitter 36). So the
+  setup-message request matters on 2.5, and the handler-side flag gate matters on 3.1 (flag-off
+  must never persist utterance text a model pushes unrequested).
 
 User utterances are now captured behind `CAPTURE_ENABLE_INPUT_TRANSCRIPTION` (default off) as
 `kind='user_transcript'` capture-log events — log-only, never echoed to the client. This unblocks
