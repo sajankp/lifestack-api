@@ -206,7 +206,7 @@ class DemoResetService:
         ]
         category_map = {}
         for cat_name in categories_to_seed:
-            style = DEMO_CATEGORY_STYLES.get(cat_name.lower(), {})
+            style = DEMO_CATEGORY_STYLES.get(cat_name.lower(), DEMO_CATEGORY_STYLES["other"])
             category = SpendingCategory(
                 workspace_id=workspace_id,
                 name=cat_name,
