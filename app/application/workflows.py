@@ -932,8 +932,11 @@ async def evaluate_workspace_kpi_breaches(session: AsyncSession, workspace: Work
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_generation_account_id(
-    session: AsyncSession, workspace_id: int, recurrence: RecurringTransaction
+def _resolve_generation_account_id(
+    recurrence: RecurringTransaction,
+    active_account_ids: set[int],
+    default_account_id: int | None,
+    workspace_id: int,
 ) -> int | None:
     """Resolve the account a generated transaction should post against.
 
@@ -944,21 +947,15 @@ async def _resolve_generation_account_id(
     account case) and fall back to the workspace's current default. Legacy
     rules created before spec-084 have account_id = NULL and keep generating
     NULL-account transactions unless/until the workspace has a default.
-    """
-    account_repo = AccountRepository(session)
-    if recurrence.account_id is not None:
-        account = await account_repo.get_by_id(workspace_id, recurrence.account_id)
-        if account and account.is_active:
-            return account.id  # type: ignore[return-value]
 
-    setting_repo = FinanceSettingRepository(session)
-    setting = await setting_repo.get_by_workspace(workspace_id)
-    if setting and setting.default_spending_account_id is not None:
-        default_account = await account_repo.get_by_id(
-            workspace_id, setting.default_spending_account_id
-        )
-        if default_account and default_account.is_active:
-            return default_account.id  # type: ignore[return-value]
+    Takes pre-fetched active_account_ids/default_account_id (one query per
+    workspace, not per recurrence) to avoid an N+1 query pattern.
+    """
+    if recurrence.account_id is not None and recurrence.account_id in active_account_ids:
+        return recurrence.account_id
+
+    if default_account_id is not None:
+        return default_account_id
 
     if recurrence.account_id is not None:
         logger.warning(
@@ -1019,6 +1016,24 @@ async def process_workspace_recurring_transactions(
         logger.info("no_due_recurrences", workspace_id=workspace.id)
         return 0
 
+    # Pre-fetch once per workspace (not per recurrence) to avoid an N+1
+    # query pattern in the loop below.
+    account_repo = AccountRepository(session)
+    workspace_accounts, _ = await account_repo.list_workspace_accounts(
+        workspace.id, limit=10000, offset=0
+    )
+    active_account_ids = {a.id for a in workspace_accounts if a.is_active}  # type: ignore[misc]
+
+    default_account_id: int | None = None
+    setting_repo = FinanceSettingRepository(session)
+    setting = await setting_repo.get_by_workspace(workspace.id)
+    if (
+        setting
+        and setting.default_spending_account_id is not None
+        and setting.default_spending_account_id in active_account_ids
+    ):
+        default_account_id = setting.default_spending_account_id
+
     audit_logger = AuditLogger(session)
     total_generated = 0
     catchup_warned = False
@@ -1059,8 +1074,8 @@ async def process_workspace_recurring_transactions(
                 recurrence.next_due_date = next_due
 
         generated_count = 0
-        effective_account_id = await _resolve_generation_account_id(
-            session, workspace.id, recurrence
+        effective_account_id = _resolve_generation_account_id(
+            recurrence, active_account_ids, default_account_id, workspace.id
         )
 
         # Inner catch-up loop — generate one transaction per missed period

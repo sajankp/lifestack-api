@@ -14,6 +14,7 @@ Covers the golden scenarios:
 import io
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
@@ -22,7 +23,7 @@ from sqlalchemy import select
 from app.auth.models import User
 from app.core.database import postgres
 from app.platform.models import WorkspaceMembership
-from app.spending.models import SpendingCategory, SpendingTransaction
+from app.spending.models import RecurringTransaction, SpendingCategory, SpendingTransaction
 
 
 async def _register_and_login(client: AsyncClient, suffix: str) -> dict:
@@ -591,3 +592,61 @@ async def test_recurring_update_can_change_account(client: AsyncClient):
     )
     assert patch_resp.status_code == 200, patch_resp.text
     assert patch_resp.json()["account_id"] == other_account_id
+
+
+@pytest.mark.asyncio
+async def test_recurring_update_explicit_null_account_is_noop_for_legacy_rule(
+    client: AsyncClient,
+):
+    """A legacy (pre-spec-084) recurring rule with account_id=NULL must stay
+    editable even if the client explicitly sends account_id: null — nothing
+    is actually being cleared, so this must not 422."""
+    suffix = "reculegacynull"
+    creds = await _register_and_login(client, suffix)
+    cookies = creds["cookies"]
+    category_id = await _first_category_id(client, cookies)
+
+    async with postgres.async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.username == f"defacct_{suffix}"))
+        ).scalar_one()
+        membership = (
+            await session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+            )
+        ).scalar_one()
+        workspace_id = membership.workspace_id
+        category = (
+            await session.execute(
+                select(SpendingCategory).where(
+                    SpendingCategory.workspace_id == workspace_id,
+                    SpendingCategory.public_id == uuid.UUID(category_id),
+                )
+            )
+        ).scalar_one()
+        legacy = RecurringTransaction(
+            public_id=uuid.uuid4(),
+            workspace_id=workspace_id,
+            user_id=user.id,
+            category_id=category.id,
+            account_id=None,
+            amount=Decimal("10.00"),
+            type="expense",
+            frequency="monthly",
+            interval=1,
+            anchor_date=datetime.now(UTC).date(),
+            next_due_date=datetime.now(UTC).date(),
+            is_active=True,
+        )
+        session.add(legacy)
+        await session.commit()
+        legacy_public_id = str(legacy.public_id)
+
+    resp = await client.patch(
+        f"/v1/spending/recurring/{legacy_public_id}",
+        json={"account_id": None, "amount": "12.00"},
+        cookies=cookies,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["account_id"] is None
+    assert resp.json()["amount"] == "12.00"

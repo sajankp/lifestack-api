@@ -2233,14 +2233,17 @@ class RecurringTransactionService:
         if "account_id" in update_data:
             account_public_id = update_data.pop("account_id")
             if account_public_id is None:
-                raise ValidationError(
-                    detail=(
-                        "account_id cannot be cleared once set; provide a replacement account_id."
+                if recurring.account_id is not None:
+                    raise ValidationError(
+                        detail=(
+                            "account_id cannot be cleared once set; provide a replacement "
+                            "account_id."
+                        )
                     )
+            else:
+                update_data["account_id"] = await resolve_account_id(
+                    self.account_repo, workspace_id, account_public_id
                 )
-            update_data["account_id"] = await resolve_account_id(
-                self.account_repo, workspace_id, account_public_id
-            )
         if "frequency" in update_data and update_data["frequency"] not in {
             "daily",
             "weekly",
