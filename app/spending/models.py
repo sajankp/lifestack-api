@@ -214,6 +214,7 @@ class RecurringTransaction(SQLModel, table=True):
     workspace_id: int = Field(foreign_key="workspaces.id", index=True)
     user_id: int = Field(foreign_key="users.id", index=True)
     category_id: int = Field(foreign_key="spending_categories.id", index=True)
+    account_id: int | None = Field(default=None, index=True)
     amount: Decimal = Field(sa_type=sa.Numeric(precision=12, scale=2))
     type: TransactionType = Field(sa_type=sa.String())
     description: str | None = Field(default=None, max_length=500)
@@ -263,6 +264,11 @@ class RecurringTransaction(SQLModel, table=True):
         sa.CheckConstraint(
             "by_ordinal IS NULL OR by_ordinal IN (-1, 1, 2, 3, 4)",
             name="ck_recurring_transactions_by_ordinal_range",
+        ),
+        sa.ForeignKeyConstraint(
+            ["account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_recurring_transactions_account_workspace",
         ),
     )
 

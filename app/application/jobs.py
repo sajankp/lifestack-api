@@ -1127,6 +1127,8 @@ async def morning_briefing_job(workspace_id: int | None = None) -> None:
                 RecurringTransactionRepository(session),
                 TransactionRepository(session),
                 category_repo,
+                account_repo,
+                finance_setting_repo,
             ),
             notification_service=notification_service,
             import_repo=ImportRepository(session),

@@ -15,6 +15,8 @@ from app.application.workflows import process_workspace_recurring_transactions
 from app.auth.models import User
 from app.core.audit import AuditLog
 from app.core.database import postgres
+from app.finance.models import Account, AccountType
+from app.finance.repository import FinanceSettingRepository
 from app.platform.models import Workspace, WorkspaceMembership
 from app.spending.models import (
     RecurringTransaction,
@@ -57,6 +59,21 @@ async def _seed_category(session, workspace_id: int, name: str) -> SpendingCateg
     return cat
 
 
+async def _seed_account(
+    session, workspace_id: int, name: str, *, is_active: bool = True
+) -> Account:
+    account = Account(
+        workspace_id=workspace_id,
+        name=name,
+        account_type=AccountType.wallet,
+        default_currency_code="USD",
+        is_active=is_active,
+    )
+    session.add(account)
+    await session.flush()
+    return account
+
+
 async def _seed_recurrence(
     session,
     workspace_id: int,
@@ -69,12 +86,14 @@ async def _seed_recurrence(
     end_date: date | None = None,
     amount: Decimal = Decimal("100.00"),
     tx_type: TransactionType = TransactionType.expense,
+    account_id: int | None = None,
 ) -> RecurringTransaction:
     anchor = next_due_date  # simplification for tests
     recurrence = RecurringTransaction(
         workspace_id=workspace_id,
         user_id=user_id,
         category_id=category_id,
+        account_id=account_id,
         amount=amount,
         type=tx_type,
         frequency=frequency,
@@ -409,3 +428,159 @@ async def test_recurring_cross_workspace_isolation(override_database_url):
         ).scalar_one()
         assert rec.next_due_date == today  # unchanged — never processed
         assert rec.last_generated_at is None
+
+
+# ---------------------------------------------------------------------------
+# Account resolution on generation (spec-084)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recurring_generation_sets_account_from_recurrence(override_database_url):
+    """A recurring rule with an account_id propagates it onto the generated transaction."""
+    workspace_id = 808
+    user_id = 88
+    today = datetime.now(UTC).date()
+
+    async with postgres.async_session_maker() as session:
+        await _seed_workspace(
+            session,
+            workspace_id,
+            user_id,
+            name="Account Propagation WS",
+            email="acctprop@example.com",
+            username="acctpropuser",
+        )
+        cat = await _seed_category(session, workspace_id, "Rent")
+        account = await _seed_account(session, workspace_id, "Checking")
+        await _seed_recurrence(
+            session,
+            workspace_id,
+            user_id,
+            cat.id,
+            next_due_date=today,
+            account_id=account.id,
+        )
+        await session.commit()
+        account_id = account.id
+
+    async with postgres.async_session_maker() as session, session.begin():
+        workspace = (
+            await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+        ).scalar_one()
+        count = await process_workspace_recurring_transactions(session, workspace)
+
+    assert count == 1
+
+    async with postgres.async_session_maker() as session:
+        tx = (
+            await session.execute(
+                select(SpendingTransaction).where(SpendingTransaction.workspace_id == workspace_id)
+            )
+        ).scalar_one()
+        assert tx.account_id == account_id
+
+
+@pytest.mark.asyncio
+async def test_recurring_generation_falls_back_to_default_when_linked_account_deactivated(
+    override_database_url,
+):
+    """If the recurrence's linked account was deactivated after the fact, generation
+    falls back to the workspace's current default spending account rather than
+    posting to (or failing on) the dead account."""
+    workspace_id = 809
+    user_id = 89
+    today = datetime.now(UTC).date()
+
+    async with postgres.async_session_maker() as session:
+        await _seed_workspace(
+            session,
+            workspace_id,
+            user_id,
+            name="Deactivated Account Fallback WS",
+            email="deactfallback@example.com",
+            username="deactfallbackuser",
+        )
+        cat = await _seed_category(session, workspace_id, "Rent")
+        dead_account = await _seed_account(session, workspace_id, "Dead", is_active=False)
+        default_account = await _seed_account(session, workspace_id, "Default")
+        await session.flush()
+        setting_repo = FinanceSettingRepository(session)
+        await setting_repo.upsert_workspace_settings(
+            workspace_id,
+            reporting_currency_code="USD",
+            currency_display_preference=None,
+            default_spending_account_id=default_account.id,
+        )
+        await _seed_recurrence(
+            session,
+            workspace_id,
+            user_id,
+            cat.id,
+            next_due_date=today,
+            account_id=dead_account.id,
+        )
+        await session.commit()
+        default_account_id = default_account.id
+
+    async with postgres.async_session_maker() as session, session.begin():
+        workspace = (
+            await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+        ).scalar_one()
+        count = await process_workspace_recurring_transactions(session, workspace)
+
+    assert count == 1
+
+    async with postgres.async_session_maker() as session:
+        tx = (
+            await session.execute(
+                select(SpendingTransaction).where(SpendingTransaction.workspace_id == workspace_id)
+            )
+        ).scalar_one()
+        assert tx.account_id == default_account_id
+
+
+@pytest.mark.asyncio
+async def test_recurring_generation_null_account_for_legacy_rule_without_default(
+    override_database_url,
+):
+    """Pre-existing (legacy) recurring rules with no account_id and no workspace
+    default keep generating NULL-account transactions — not retroactive."""
+    workspace_id = 810
+    user_id = 90
+    today = datetime.now(UTC).date()
+
+    async with postgres.async_session_maker() as session:
+        await _seed_workspace(
+            session,
+            workspace_id,
+            user_id,
+            name="Legacy No Account WS",
+            email="legacynoaccount@example.com",
+            username="legacynoaccountuser",
+        )
+        cat = await _seed_category(session, workspace_id, "Rent")
+        await _seed_recurrence(
+            session,
+            workspace_id,
+            user_id,
+            cat.id,
+            next_due_date=today,
+        )
+        await session.commit()
+
+    async with postgres.async_session_maker() as session, session.begin():
+        workspace = (
+            await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+        ).scalar_one()
+        count = await process_workspace_recurring_transactions(session, workspace)
+
+    assert count == 1
+
+    async with postgres.async_session_maker() as session:
+        tx = (
+            await session.execute(
+                select(SpendingTransaction).where(SpendingTransaction.workspace_id == workspace_id)
+            )
+        ).scalar_one()
+        assert tx.account_id is None

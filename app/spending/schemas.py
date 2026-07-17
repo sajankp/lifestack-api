@@ -288,6 +288,7 @@ class SpendingTrendResponse(BaseModel):
 
 class RecurringTransactionCreate(BaseModel):
     category_id: uuid.UUID
+    account_id: uuid.UUID | None = None
     amount: Decimal = Field(..., gt=0, decimal_places=2)
     type: TransactionType
     description: str | None = Field(default=None, max_length=500)
@@ -308,6 +309,7 @@ class RecurringTransactionCreate(BaseModel):
 
 
 class RecurringTransactionUpdate(BaseModel):
+    account_id: uuid.UUID | None = None
     amount: Decimal | None = Field(default=None, gt=0, decimal_places=2)
     description: str | None = Field(default=None, max_length=500)
     frequency: Literal["daily", "weekly", "monthly", "yearly"] | None = None
@@ -322,6 +324,7 @@ class RecurringTransactionUpdate(BaseModel):
 class RecurringTransactionResponse(BaseModel):
     public_id: uuid.UUID
     category_id: uuid.UUID
+    account_id: uuid.UUID | None
     amount: Decimal
     type: TransactionType
     description: str | None
@@ -346,6 +349,7 @@ class UpcomingTransactionItem(BaseModel):
 
     recurring_public_id: uuid.UUID
     category_id: uuid.UUID
+    account_id: uuid.UUID | None
     amount: Decimal
     type: TransactionType
     description: str | None
