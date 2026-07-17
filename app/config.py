@@ -231,6 +231,13 @@ class Settings(BaseSettings):
     # current behavior (off); enable in prod after confirming the deployed model
     # accepts `outputAudioTranscription`.
     CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION: bool = False
+    # spec-079 Q4 (input direction, resolved 2026-07-17): enable Gemini
+    # input-audio transcription so the user's own utterance is captured as text
+    # into the capture log (`kind='user_transcript'`) — the source for the
+    # real-usage eval slice. Metered free (delta within baseline jitter;
+    # 3.1 Flash Live emits inputTranscription even when not requested).
+    # Defaults to current behavior (off).
+    CAPTURE_ENABLE_INPUT_TRANSCRIPTION: bool = False
     # spec-079 Stage B: WebSocket transport resilience. Both default to current
     # behavior (off) per the spec's "new limit defaults to current behavior" rule.
     # Session resumption opts the Gemini Live session in to periodic resumption
