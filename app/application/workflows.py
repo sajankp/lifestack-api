@@ -932,6 +932,43 @@ async def evaluate_workspace_kpi_breaches(session: AsyncSession, workspace: Work
 # ---------------------------------------------------------------------------
 
 
+async def _resolve_generation_account_id(
+    session: AsyncSession, workspace_id: int, recurrence: RecurringTransaction
+) -> int | None:
+    """Resolve the account a generated transaction should post against.
+
+    The recurrence's own account_id is normally already valid (spec-054/084
+    enforce it at create/update time), but an account can be deactivated
+    after being linked to a rule, so re-check here (defense in depth, same
+    concern _resolve_create_account_id already handles for the default-
+    account case) and fall back to the workspace's current default. Legacy
+    rules created before spec-084 have account_id = NULL and keep generating
+    NULL-account transactions unless/until the workspace has a default.
+    """
+    account_repo = AccountRepository(session)
+    if recurrence.account_id is not None:
+        account = await account_repo.get_by_id(workspace_id, recurrence.account_id)
+        if account and account.is_active:
+            return account.id  # type: ignore[return-value]
+
+    setting_repo = FinanceSettingRepository(session)
+    setting = await setting_repo.get_by_workspace(workspace_id)
+    if setting and setting.default_spending_account_id is not None:
+        default_account = await account_repo.get_by_id(
+            workspace_id, setting.default_spending_account_id
+        )
+        if default_account and default_account.is_active:
+            return default_account.id  # type: ignore[return-value]
+
+    if recurrence.account_id is not None:
+        logger.warning(
+            "recurring_generation_account_unresolved",
+            workspace_id=workspace_id,
+            recurrence_id=recurrence.id,
+        )
+    return None
+
+
 async def process_workspace_recurring_transactions(
     session: AsyncSession, workspace: Workspace
 ) -> int:
@@ -1022,6 +1059,9 @@ async def process_workspace_recurring_transactions(
                 recurrence.next_due_date = next_due
 
         generated_count = 0
+        effective_account_id = await _resolve_generation_account_id(
+            session, workspace.id, recurrence
+        )
 
         # Inner catch-up loop — generate one transaction per missed period
         while recurrence.next_due_date <= today:
@@ -1038,6 +1078,7 @@ async def process_workspace_recurring_transactions(
                 workspace_id=workspace.id,
                 user_id=user_id,
                 category_id=recurrence.category_id,
+                account_id=effective_account_id,
                 amount=recurrence.amount,
                 type=recurrence.type,
                 description=recurrence.description,

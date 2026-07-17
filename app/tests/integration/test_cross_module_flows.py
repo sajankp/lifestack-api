@@ -25,10 +25,19 @@ async def test_notifications_capture_summaries_and_analytics(client: AsyncClient
     cats = (await client.get("/v1/spending/categories", cookies=creds["cookies"])).json()["items"]
     other = next(c for c in cats if c["name"] == "Other")
 
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     rec = await client.post(
         "/v1/spending/recurring",
         json={
             "category_id": other["public_id"],
+            "account_id": account_id,
             "amount": "20.00",
             "type": "expense",
             "description": "Subscription",

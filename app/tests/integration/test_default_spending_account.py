@@ -1,12 +1,14 @@
 """
-Integration tests for spec-054 (mandatory account on spending transactions).
+Integration tests for spec-054 (mandatory account on spending transactions) and
+spec-084 (account resolution on recurring transactions, same resolver reused).
 
-Covers the 5 golden scenarios:
+Covers the golden scenarios:
   1. Create-time resolution order + 422/404 rejections
   2. Default-account management (set/clear, deactivation clears it)
   3. Forward-only enforcement (existing NULL rows untouched)
   4. Import resolution order (row name -> target account -> workspace default -> error)
   5. (web-side coverage lives in lifestack-web's vitest suite)
+  6. Recurring transactions reuse the same create-time resolver (spec-084)
 """
 
 import io
@@ -453,3 +455,139 @@ async def test_import_row_missing_account_and_no_fallback_errors(client: AsyncCl
     assert payload["import_batch"]["status"] == "failed_validation"
     assert payload["error_summary"]["by_field"]["account_name"] == 1
     assert payload["errors"][0]["error_code"] == "required"
+
+
+# ---------------------------------------------------------------------------
+# 6. Recurring transactions (spec-084) — same resolver as manual creates
+# ---------------------------------------------------------------------------
+
+
+async def _recurring_payload(category_id: str, **overrides: object) -> dict:
+    payload = {
+        "category_id": category_id,
+        "amount": "14.99",
+        "type": "expense",
+        "frequency": "monthly",
+        "interval": 1,
+        "anchor_date": datetime.now(UTC).date().isoformat(),
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_recurring_create_uses_explicit_account_id(client: AsyncClient):
+    creds = await _register_and_login(client, "recurexplicit")
+    cookies = creds["cookies"]
+    category_id = await _first_category_id(client, cookies)
+    account_id = await _create_account(client, cookies)
+
+    resp = await client.post(
+        "/v1/spending/recurring",
+        json=await _recurring_payload(category_id, account_id=account_id),
+        cookies=cookies,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["account_id"] == account_id
+
+
+@pytest.mark.asyncio
+async def test_recurring_create_falls_back_to_workspace_default_account(client: AsyncClient):
+    creds = await _register_and_login(client, "recurfallback")
+    cookies = creds["cookies"]
+    category_id = await _first_category_id(client, cookies)
+    account_id = await _create_account(client, cookies)
+
+    settings_resp = await client.patch(
+        "/v1/finance/settings",
+        json={"default_spending_account_id": account_id},
+        cookies=cookies,
+    )
+    assert settings_resp.status_code == 200, settings_resp.text
+
+    resp = await client.post(
+        "/v1/spending/recurring",
+        json=await _recurring_payload(category_id),
+        cookies=cookies,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["account_id"] == account_id
+
+
+@pytest.mark.asyncio
+async def test_recurring_create_rejected_when_no_account_and_no_default(client: AsyncClient):
+    creds = await _register_and_login(client, "recurnoaccount")
+    cookies = creds["cookies"]
+    category_id = await _first_category_id(client, cookies)
+
+    resp = await client.post(
+        "/v1/spending/recurring",
+        json=await _recurring_payload(category_id),
+        cookies=cookies,
+    )
+    assert resp.status_code == 422, resp.text
+    assert "account_id" in resp.json()["detail"] or "default" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_recurring_create_rejects_inactive_account_id(client: AsyncClient):
+    creds = await _register_and_login(client, "recurinactive")
+    cookies = creds["cookies"]
+    category_id = await _first_category_id(client, cookies)
+    account_id = await _create_account(client, cookies)
+
+    deactivate = await client.patch(
+        f"/v1/finance/accounts/{account_id}",
+        json={"is_active": False},
+        cookies=cookies,
+    )
+    assert deactivate.status_code == 200, deactivate.text
+
+    resp = await client.post(
+        "/v1/spending/recurring",
+        json=await _recurring_payload(category_id, account_id=account_id),
+        cookies=cookies,
+    )
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_recurring_create_rejects_foreign_workspace_account_id(client: AsyncClient):
+    owner = await _register_and_login(client, "recurownerws")
+    other = await _register_and_login(client, "recurotherws")
+
+    category_id = await _first_category_id(client, other["cookies"])
+    foreign_account_id = await _create_account(client, owner["cookies"])
+
+    resp = await client.post(
+        "/v1/spending/recurring",
+        json=await _recurring_payload(category_id, account_id=foreign_account_id),
+        cookies=other["cookies"],
+    )
+    assert resp.status_code == 404, resp.text
+    assert "Cross-workspace" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_recurring_update_can_change_account(client: AsyncClient):
+    creds = await _register_and_login(client, "recurupdate")
+    cookies = creds["cookies"]
+    category_id = await _first_category_id(client, cookies)
+    account_id = await _create_account(client, cookies, name="First")
+    other_account_id = await _create_account(client, cookies, name="Second")
+
+    create_resp = await client.post(
+        "/v1/spending/recurring",
+        json=await _recurring_payload(category_id, account_id=account_id),
+        cookies=cookies,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    recurring_id = create_resp.json()["public_id"]
+
+    patch_resp = await client.patch(
+        f"/v1/spending/recurring/{recurring_id}",
+        json={"account_id": other_account_id},
+        cookies=cookies,
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    assert patch_resp.json()["account_id"] == other_account_id

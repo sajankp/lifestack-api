@@ -114,9 +114,11 @@ def budget_response(
 def recurring_response(
     recurring: RecurringTransaction,
     category_public_id: uuid.UUID,
+    account_public_id: uuid.UUID | None = None,
 ) -> RecurringTransactionResponse:
     data = recurring.model_dump()
     data["category_id"] = category_public_id
+    data["account_id"] = account_public_id
     return RecurringTransactionResponse.model_validate(data)
 
 

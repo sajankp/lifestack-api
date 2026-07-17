@@ -671,6 +671,57 @@ class CategoryService:
         await self.repository.create_many(categories)
 
 
+async def resolve_account_id(
+    account_repo: AccountRepository, workspace_id: int, account_public_id: uuid.UUID | None
+) -> int | None:
+    if account_public_id is None:
+        return None
+    account = await account_repo.get_by_public_id(workspace_id, account_public_id)
+    if not account:
+        raise NotFoundError(
+            detail=f"Account with id {account_public_id} not found in this workspace"
+        )
+    return account.id
+
+
+async def resolve_create_account_id(
+    account_repo: AccountRepository,
+    setting_repo: FinanceSettingRepository | None,
+    workspace_id: int,
+    account_public_id: uuid.UUID | None,
+) -> int:
+    """Every new transaction must resolve to an account (spec-054, extended to
+    recurring transactions by spec-084): explicit account_id, else the
+    workspace default, else a 422 telling the caller how to fix it. Historical
+    NULL-account rows are untouched — this only governs creates."""
+    if account_public_id is not None:
+        account = await account_repo.get_by_public_id(workspace_id, account_public_id)
+        if not account or not account.is_active:
+            raise NotFoundError(
+                detail=(
+                    f"Account with id {account_public_id} not found in this workspace. "
+                    "Cross-workspace account references are not permitted."
+                )
+            )
+        return account.id  # type: ignore[return-value]
+
+    if setting_repo is not None:
+        setting = await setting_repo.get_by_workspace(workspace_id)
+        if setting and setting.default_spending_account_id is not None:
+            # Defense in depth: the default is cleared when its account
+            # is deactivated through the API (AccountService.update_account),
+            # but don't trust that path alone — re-check is_active here.
+            default_account = await account_repo.get_by_id(
+                workspace_id, setting.default_spending_account_id
+            )
+            if default_account and default_account.is_active:
+                return setting.default_spending_account_id
+
+    raise ValidationError(
+        detail=("Provide account_id or set a default spending account in Finance Settings.")
+    )
+
+
 class TransactionService:
     def __init__(
         self,
@@ -835,47 +886,13 @@ class TransactionService:
     async def _resolve_account_id(
         self, workspace_id: int, account_public_id: uuid.UUID | None
     ) -> int | None:
-        if account_public_id is None:
-            return None
-        account = await self.account_repo.get_by_public_id(workspace_id, account_public_id)
-        if not account:
-            raise NotFoundError(
-                detail=f"Account with id {account_public_id} not found in this workspace"
-            )
-        return account.id
+        return await resolve_account_id(self.account_repo, workspace_id, account_public_id)
 
     async def _resolve_create_account_id(
         self, workspace_id: int, account_public_id: uuid.UUID | None
     ) -> int:
-        """Every new transaction must resolve to an account (spec-054):
-        explicit account_id, else the workspace default, else a 422 telling
-        the caller how to fix it. Historical NULL-account rows are untouched
-        — this only governs creates."""
-        if account_public_id is not None:
-            account = await self.account_repo.get_by_public_id(workspace_id, account_public_id)
-            if not account or not account.is_active:
-                raise NotFoundError(
-                    detail=(
-                        f"Account with id {account_public_id} not found in this workspace. "
-                        "Cross-workspace account references are not permitted."
-                    )
-                )
-            return account.id  # type: ignore[return-value]
-
-        if self.setting_repo is not None:
-            setting = await self.setting_repo.get_by_workspace(workspace_id)
-            if setting and setting.default_spending_account_id is not None:
-                # Defense in depth: the default is cleared when its account
-                # is deactivated through the API (AccountService.update_account),
-                # but don't trust that path alone — re-check is_active here.
-                default_account = await self.account_repo.get_by_id(
-                    workspace_id, setting.default_spending_account_id
-                )
-                if default_account and default_account.is_active:
-                    return setting.default_spending_account_id
-
-        raise ValidationError(
-            detail=("Provide account_id or set a default spending account in Finance Settings.")
+        return await resolve_create_account_id(
+            self.account_repo, self.setting_repo, workspace_id, account_public_id
         )
 
     async def list_transactions(
@@ -2070,14 +2087,24 @@ class RecurringTransactionService:
         recurring_repo: RecurringTransactionRepository,
         tx_repo: TransactionRepository,
         category_repo: CategoryRepository,
+        account_repo: AccountRepository,
+        setting_repo: FinanceSettingRepository | None = None,
     ):
         self.recurring_repo = recurring_repo
         self.tx_repo = tx_repo
         self.category_repo = category_repo
+        self.account_repo = account_repo
+        self.setting_repo = setting_repo
 
     async def _build_category_cache(self, workspace_id: int) -> dict[int, uuid.UUID]:
         cats, _ = await self.category_repo.get_all(workspace_id, limit=10000, offset=0)
         return {c.id: c.public_id for c in cats}
+
+    async def _build_account_cache(self, workspace_id: int) -> dict[int, uuid.UUID]:
+        accounts, _ = await self.account_repo.list_workspace_accounts(
+            workspace_id, limit=10000, offset=0
+        )
+        return {a.id: a.public_id for a in accounts}
 
     async def get_due_between(
         self, workspace_id: int, start_date, end_date
@@ -2101,7 +2128,13 @@ class RecurringTransactionService:
     ) -> tuple[list[RecurringTransactionResponse], int]:
         items, total = await self.list_recurring(workspace_id, is_active, limit, offset)
         cat_cache = await self._build_category_cache(workspace_id)
-        detailed = [recurring_response(item, cat_cache.get(item.category_id)) for item in items]
+        acct_cache = await self._build_account_cache(workspace_id)
+        detailed = [
+            recurring_response(
+                item, cat_cache.get(item.category_id), acct_cache.get(item.account_id)
+            )
+            for item in items
+        ]
         return detailed, total
 
     async def create_recurring_with_details(
@@ -2111,7 +2144,14 @@ class RecurringTransactionService:
         payload: RecurringTransactionCreate,
     ) -> RecurringTransactionResponse:
         item = await self.create_recurring(workspace_id, actor_id, payload)
-        return recurring_response(item, payload.category_id)
+        account_public_id = None
+        if item.account_id is not None:
+            if payload.account_id is not None:
+                account_public_id = payload.account_id
+            else:
+                account = await self.account_repo.get_by_id(workspace_id, item.account_id)
+                account_public_id = account.public_id if account else None
+        return recurring_response(item, payload.category_id, account_public_id)
 
     async def get_recurring_with_details(
         self,
@@ -2121,7 +2161,11 @@ class RecurringTransactionService:
         item = await self.get_recurring(workspace_id, recurring_id)
         category = await self.category_repo.get_by_id(workspace_id, item.category_id)
         category_public_id = category.public_id if category else None
-        return recurring_response(item, category_public_id)
+        account_public_id = None
+        if item.account_id is not None:
+            account = await self.account_repo.get_by_id(workspace_id, item.account_id)
+            account_public_id = account.public_id if account else None
+        return recurring_response(item, category_public_id, account_public_id)
 
     async def update_recurring_with_details(
         self,
@@ -2132,7 +2176,11 @@ class RecurringTransactionService:
         item = await self.update_recurring(workspace_id, recurring_id, payload)
         category = await self.category_repo.get_by_id(workspace_id, item.category_id)
         category_public_id = category.public_id if category else None
-        return recurring_response(item, category_public_id)
+        account_public_id = None
+        if item.account_id is not None:
+            account = await self.account_repo.get_by_id(workspace_id, item.account_id)
+            account_public_id = account.public_id if account else None
+        return recurring_response(item, category_public_id, account_public_id)
 
     async def list_recurring(
         self, workspace_id: int, is_active: bool | None, limit: int, offset: int
@@ -2149,10 +2197,14 @@ class RecurringTransactionService:
             )
         if payload.end_date and payload.end_date < payload.anchor_date:
             raise ValidationError(detail="end_date cannot be before anchor_date")
+        account_id = await resolve_create_account_id(
+            self.account_repo, self.setting_repo, workspace_id, payload.account_id
+        )
         recurring = RecurringTransaction(
             workspace_id=workspace_id,
             user_id=user_id,
             category_id=category.id,  # type: ignore[arg-type]
+            account_id=account_id,
             amount=payload.amount,
             type=payload.type,
             description=payload.description,
@@ -2178,6 +2230,17 @@ class RecurringTransactionService:
     ) -> RecurringTransaction:
         recurring = await self.get_recurring(workspace_id, public_id)
         update_data = payload.model_dump(exclude_unset=True)
+        if "account_id" in update_data:
+            account_public_id = update_data.pop("account_id")
+            if account_public_id is None:
+                raise ValidationError(
+                    detail=(
+                        "account_id cannot be cleared once set; provide a replacement account_id."
+                    )
+                )
+            update_data["account_id"] = await resolve_account_id(
+                self.account_repo, workspace_id, account_public_id
+            )
         if "frequency" in update_data and update_data["frequency"] not in {
             "daily",
             "weekly",
@@ -2226,9 +2289,10 @@ class RecurringTransactionService:
             workspace_id, is_active=True, limit=10000, offset=0
         )
 
-        # Build category public_id lookup
+        # Build category/account public_id lookups
         cats, _ = await category_repo.get_all(workspace_id, limit=10000, offset=0)
         cat_pub_id: dict[int, uuid.UUID] = {c.id: c.public_id for c in cats}  # type: ignore[union-attr]
+        acct_pub_id = await self._build_account_cache(workspace_id)
 
         items: list[UpcomingTransactionItem] = []
         for recurrence in all_active:
@@ -2247,6 +2311,7 @@ class RecurringTransactionService:
                         UpcomingTransactionItem(
                             recurring_public_id=recurrence.public_id,
                             category_id=cat_public_id,
+                            account_id=acct_pub_id.get(recurrence.account_id),
                             amount=recurrence.amount,
                             type=recurrence.type,
                             description=recurrence.description,

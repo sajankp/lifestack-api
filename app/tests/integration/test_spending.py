@@ -697,6 +697,7 @@ async def test_merge_categories_repoints_transactions_recurring_and_deletes_sour
         "/v1/spending/recurring",
         json={
             "category_id": source_b,
+            "account_id": account_id,
             "amount": "14.99",
             "type": "expense",
             "frequency": "monthly",
@@ -872,11 +873,20 @@ async def test_cannot_delete_category_with_recurring_rule(client: AsyncClient):
     assert cat_resp.status_code == 201
     cat_id = cat_resp.json()["public_id"]
 
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     # Create a recurring rule against it
     recurring_resp = await client.post(
         "/v1/spending/recurring",
         json={
             "category_id": cat_id,
+            "account_id": account_id,
             "amount": "14.99",
             "type": "expense",
             "description": "Test delete guard with recurring transaction",

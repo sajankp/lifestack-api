@@ -15,6 +15,7 @@ import pytest
 
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.recurrence import advance_due_date
+from app.finance.models import Account, AccountType
 from app.spending.models import RecurringTransaction, SpendingCategory, TransactionType
 from app.spending.schemas import RecurringTransactionCreate
 from app.spending.service import RecurringTransactionService
@@ -59,19 +60,36 @@ def mock_category_repo():
 
 
 @pytest.fixture
-def recurring_service(mock_recurring_repo, mock_tx_repo, mock_category_repo):
+def mock_account_repo():
+    return AsyncMock()
+
+
+@pytest.fixture
+def mock_setting_repo():
+    return AsyncMock()
+
+
+@pytest.fixture
+def recurring_service(
+    mock_recurring_repo, mock_tx_repo, mock_category_repo, mock_account_repo, mock_setting_repo
+):
     return RecurringTransactionService(
         recurring_repo=mock_recurring_repo,
         tx_repo=mock_tx_repo,
         category_repo=mock_category_repo,
+        account_repo=mock_account_repo,
+        setting_repo=mock_setting_repo,
     )
 
 
 @pytest.mark.asyncio
-async def test_create_recurring_success(recurring_service, mock_recurring_repo, mock_category_repo):
+async def test_create_recurring_success(
+    recurring_service, mock_recurring_repo, mock_category_repo, mock_account_repo
+):
     workspace_id = 1
     user_id = 10
     cat_public_id = uuid.uuid4()
+    account_public_id = uuid.uuid4()
 
     mock_category_repo.get_by_public_id.return_value = SpendingCategory(
         id=5,
@@ -81,9 +99,19 @@ async def test_create_recurring_success(recurring_service, mock_recurring_repo, 
         normalized_name="utilities",
         is_system=False,
     )
+    mock_account_repo.get_by_public_id.return_value = Account(
+        id=9,
+        public_id=account_public_id,
+        workspace_id=workspace_id,
+        name="Checking",
+        account_type=AccountType.wallet,
+        default_currency_code="USD",
+        is_active=True,
+    )
 
     payload = RecurringTransactionCreate(
         category_id=cat_public_id,
+        account_id=account_public_id,
         amount=Decimal("150.00"),
         type=TransactionType.expense,
         frequency="monthly",
@@ -100,6 +128,7 @@ async def test_create_recurring_success(recurring_service, mock_recurring_repo, 
     assert result.workspace_id == workspace_id
     assert result.user_id == user_id
     assert result.category_id == 5
+    assert result.account_id == 9
     assert result.amount == Decimal("150.00")
     assert result.type == TransactionType.expense
     assert result.frequency == "monthly"
@@ -191,7 +220,9 @@ async def test_deactivate_recurring(recurring_service, mock_recurring_repo):
 
 
 @pytest.mark.asyncio
-async def test_upcoming_preview_success(recurring_service, mock_recurring_repo, mock_category_repo):
+async def test_upcoming_preview_success(
+    recurring_service, mock_recurring_repo, mock_category_repo, mock_account_repo
+):
     workspace_id = 1
     cat_id = 5
     cat_public_id = uuid.uuid4()
@@ -202,6 +233,7 @@ async def test_upcoming_preview_success(recurring_service, mock_recurring_repo, 
         [SpendingCategory(id=cat_id, public_id=cat_public_id, name="Rent")],
         1,
     )
+    mock_account_repo.list_workspace_accounts.return_value = ([], 0)
 
     # Stub active recurring rules using UTC-derived date for consistency with service logic.
     today = datetime.now(UTC).date()

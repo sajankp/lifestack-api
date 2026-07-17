@@ -290,8 +290,13 @@ async def get_spending_recurring_service(
     recurring_repo: RecurringTransactionRepository = Depends(get_recurring_repo),
     tx_repo: TransactionRepository = Depends(get_transaction_repo),
     cat_repo: CategoryRepository = Depends(get_category_repo),
+    session: AsyncSession = Depends(get_db_session),
 ) -> RecurringTransactionService:
-    return RecurringTransactionService(recurring_repo, tx_repo, cat_repo)
+    account_repo = AccountRepository(session)
+    setting_repo = FinanceSettingRepository(session)
+    return RecurringTransactionService(
+        recurring_repo, tx_repo, cat_repo, account_repo, setting_repo
+    )
 
 
 # ---------------------------------------------------------------------------

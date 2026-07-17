@@ -88,8 +88,16 @@ async def test_spending_category_and_recurring_contracts(client: AsyncClient):
     first_category = categories_body["items"][0]
     assert {"public_id", "name", "is_system"}.issubset(first_category.keys())
 
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     recurring_payload = {
         "category_id": first_category["public_id"],
+        "account_id": account_id,
         "amount": "14.99",
         "type": "expense",
         "description": f"Contract recurring {suffix}",
@@ -101,6 +109,7 @@ async def test_spending_category_and_recurring_contracts(client: AsyncClient):
     assert create_recurring.status_code == 201
     recurring_body = create_recurring.json()
     assert recurring_body["category_id"] == first_category["public_id"]
+    assert recurring_body["account_id"] == account_id
     assert recurring_body["description"] == recurring_payload["description"]
     recurring_id = recurring_body["public_id"]
 

@@ -111,10 +111,19 @@ async def test_e2e_recurring_hook_generates_due_transaction(client: AsyncClient)
     assert categories.status_code == 200
     category_id = categories.json()["items"][0]["public_id"]
 
+    account_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+        cookies=creds["cookies"],
+    )
+    assert account_res.status_code == 201, account_res.text
+    account_id = account_res.json()["public_id"]
+
     recurrence = await client.post(
         "/v1/spending/recurring",
         json={
             "category_id": category_id,
+            "account_id": account_id,
             "amount": "19.99",
             "type": "expense",
             "description": rule_description,
@@ -146,10 +155,12 @@ async def test_e2e_recurring_hook_generates_due_transaction(client: AsyncClient)
         cookies=creds["cookies"],
     )
     assert transactions.status_code == 200
-    assert any(
-        item["description"] == rule_description and item["amount"] == "19.99"
+    generated = next(
+        item
         for item in transactions.json()["items"]
+        if item["description"] == rule_description and item["amount"] == "19.99"
     )
+    assert generated["account_id"] == account_id
 
 
 @pytest.mark.asyncio
