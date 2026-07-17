@@ -564,6 +564,114 @@ async def test_weekly_summary_net_worth_unavailable_without_baseline(client: Asy
 
 
 @pytest.mark.asyncio
+async def test_weekly_summary_net_worth_zero_baseline_stays_a_real_complete_summary(
+    client: AsyncClient,
+):
+    """A zero-value boundary is a legitimate data point — a user's first
+    tracked net worth, or a genuine drop to zero — not necessarily a
+    placeholder. Treating it as "unavailable" would hide a real "first
+    investment" or "wiped out" week. Only week_change_pct is undefined
+    (division by zero); status and week_change must still be real."""
+    creds = await _register_and_login(client, "sumnetworthzero")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("0.00"),
+                source="user_provided",
+            ),
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=6),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1100.00"),
+                source="user_provided",
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.net_worth_summary["status"] == "complete"
+    assert summary.net_worth_summary["net_worth_start"] == "0.00"
+    assert summary.net_worth_summary["net_worth_end"] == "1100.00"
+    assert summary.net_worth_summary["week_change"] == "1100.00"
+    assert summary.net_worth_summary["week_change_pct"] is None
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_investing_zero_baseline_stays_a_real_complete_summary(
+    client: AsyncClient,
+):
+    """Same as the net-worth case above: a zero holdings_value boundary can be
+    a genuine first-investment or full-liquidation week and must not be
+    suppressed as "unavailable"."""
+    creds = await _register_and_login(client, "suminvestingzero")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            PortfolioSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                total_value="0.00",
+                total_cost="0.00",
+                holdings_value="0.00",
+                cash_value="0.00",
+                currency_code="USD",
+            ),
+            PortfolioSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=6),
+                total_value="1280.00",
+                total_cost="800.00",
+                holdings_value="1200.00",
+                cash_value="80.00",
+                currency_code="USD",
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.investing_summary["status"] == "complete"
+    assert summary.investing_summary["portfolio_value_start"] == "0.00"
+    assert summary.investing_summary["portfolio_value_end"] == "1200.00"
+    assert summary.investing_summary["week_change"] == "1200.00"
+    assert summary.investing_summary["week_change_pct"] is None
+
+
+@pytest.mark.asyncio
 async def test_weekly_summary_return_metrics_unavailable_without_investing_data(
     client: AsyncClient,
 ):
