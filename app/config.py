@@ -67,6 +67,14 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/lifestack",
         validation_alias=AliasChoices("DATABASE_URL", "POSTGRES_URL"),
     )
+    DATABASE_POOL_SIZE: int = Field(
+        default=0,  # 0 means auto-calculate (CPU * 2)
+        validation_alias=AliasChoices("DATABASE_POOL_SIZE", "DB_POOL_SIZE"),
+    )
+    DATABASE_MAX_OVERFLOW: int = Field(
+        default=0,  # 0 means auto-calculate (pool_size)
+        validation_alias=AliasChoices("DATABASE_MAX_OVERFLOW", "DB_MAX_OVERFLOW"),
+    )
 
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
