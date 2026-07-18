@@ -804,6 +804,77 @@ async def test_weekly_summary_no_revert_overlap_when_no_reverted_import(client: 
 
 
 @pytest.mark.asyncio
+async def test_weekly_summary_is_stale_when_fresher_boundary_snapshot_lands_after_generation(
+    client: AsyncClient,
+):
+    """spec-085: a stored summary's net-worth/investing sections can be
+    generated before the week's real end-of-week snapshot lands (e.g. the
+    daily job runs after the weekly-summary job that same day, or a workspace
+    catches up on a missed day). is_stale must flag that a fresher boundary
+    snapshot now exists that would change the stored figures -- read-time
+    only, no new column."""
+    creds = await _register_and_login(client, "sumstaleworth")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1000.00"),
+                source="user_provided",
+            ),
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1050.00"),
+                source="user_provided",
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+        # Not stale immediately after generation -- nothing has changed since.
+        assert await service.is_stale(summary) is False
+
+        # A fresher snapshot lands for the same week after generation.
+        session.add(
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=3),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1100.00"),
+                source="user_provided",
+            )
+        )
+        await session.flush()
+
+        assert await service.is_stale(summary) is True
+        await session.commit()
+
+    # Router wiring: GET /latest surfaces the same signal over the API.
+    res = await client.get("/v1/summaries/weekly/latest")
+    assert res.status_code == 200, res.text
+    assert res.json()["data_stale"] is True
+
+
+@pytest.mark.asyncio
 async def test_weekly_summary_return_metrics_unavailable_without_investing_data(
     client: AsyncClient,
 ):

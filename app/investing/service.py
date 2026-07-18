@@ -1606,6 +1606,13 @@ class ExposureAnalyticsService:
         warnings: list[str] = []
         decomposable = 0
         decomposed = 0
+        # Value-weighted coverage accumulators (spec-085): a coverage ratio
+        # counted by *position* rather than *value* lets one small unresolved
+        # fund drag coverage to 0 even when the overwhelming majority of
+        # portfolio value (e.g. fully-resolved stocks) is already charted.
+        direct_value = Decimal("0")
+        decomposable_value = Decimal("0")
+        decomposed_value = Decimal("0")
         instruments_by_id = await self.instrument_repo.get_by_ids([
             h.instrument_id for h in holdings if h.instrument_id is not None
         ])
@@ -1661,9 +1668,11 @@ class ExposureAnalyticsService:
                 lookthrough[instrument.company_id] = (
                     lookthrough.get(instrument.company_id, Decimal("0")) + value
                 )
+                direct_value += value
                 continue
 
             decomposable += 1
+            decomposable_value += value
             rows = constituents_by_instrument.get(instrument.id, [])  # type: ignore[arg-type]
             if not rows:
                 warnings.append(f"No constituent snapshot for {display_name}")
@@ -1673,6 +1682,7 @@ class ExposureAnalyticsService:
                 warnings.append(f"Stale constituent snapshot for {display_name}")
                 continue
             decomposed += 1
+            decomposed_value += value
             for row in rows:
                 lookthrough[row.constituent_company_id] = lookthrough.get(
                     row.constituent_company_id, Decimal("0")
@@ -1695,10 +1705,13 @@ class ExposureAnalyticsService:
                 )
             )
 
-        coverage = Decimal("1")
-        if decomposable > 0:
-            coverage = Decimal(decomposed) / Decimal(decomposable)
-        analysis_status = "complete" if not warnings else "partial"
+        # Value-weighted coverage (spec-085): fraction of attempted portfolio
+        # value that's fully resolved, not a raw count of resolved positions
+        # -- see accumulators above for why count-weighting misleads.
+        attempted_value = direct_value + decomposable_value
+        resolved_value = direct_value + decomposed_value
+        coverage = resolved_value / attempted_value if attempted_value > 0 else Decimal("1")
+        analysis_status = "complete" if coverage >= Decimal("1") and not warnings else "partial"
         total_direct = sum((r.direct_exposure for r in rows), Decimal("0"))
         total_lookthrough = sum((r.lookthrough_exposure for r in rows), Decimal("0"))
         visible_rows = rows

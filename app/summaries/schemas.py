@@ -36,16 +36,25 @@ class WeeklySummaryResponse(BaseModel):
     # corrected, so this is an honest annotation, not a stale-data refresh
     # hint like data_stale would be).
     data_revised_after_snapshot: bool = False
+    # spec-085: read-time-only signal, never stored -- whether a fresher
+    # net-worth/investing boundary snapshot now exists than what this summary
+    # was generated from.
+    data_stale: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
     @classmethod
     def from_summary(
-        cls, item: WeeklySummary, *, data_revised_after_snapshot: bool = False
+        cls,
+        item: WeeklySummary,
+        *,
+        data_revised_after_snapshot: bool = False,
+        data_stale: bool = False,
     ) -> WeeklySummaryResponse:
         resp = cls.model_validate(item)
         resp.is_superseded = item.superseded_by_id is not None
         resp.data_revised_after_snapshot = data_revised_after_snapshot
+        resp.data_stale = data_stale
         return resp
 
 
