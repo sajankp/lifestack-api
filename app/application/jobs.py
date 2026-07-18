@@ -80,6 +80,9 @@ from app.investing.repository import (
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.observability.posthog_client import capture_exception
+from app.observability.scheduler_metrics import (
+    track_job,
+)
 from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.spending.repository import (
     BudgetRepository,
@@ -141,7 +144,8 @@ async def run_workspace_job(
     start_time = datetime.now(UTC)
     logger.info(f"{job_name}_start", job_name=job_name)
 
-    async with postgres.async_session_maker() as session:
+    # Track job-level metrics
+    async with track_job(job_name), postgres.async_session_maker() as session:
         lock_res = await session.execute(select(func.pg_try_advisory_lock(lock_key)))
         has_lock = lock_res.scalar()
         if not has_lock:
@@ -175,10 +179,12 @@ async def run_workspace_job(
                         workspace = await session.get(Workspace, ws_id)
                         if workspace is None or not workspace.is_active:
                             continue
-                        await asyncio.wait_for(
-                            process_workspace(session, workspace),
-                            timeout=timeout_seconds,
-                        )
+                        # Track workspace-level metrics
+                        async with track_job(job_name, workspace_id=ws_id):
+                            await asyncio.wait_for(
+                                process_workspace(session, workspace),
+                                timeout=timeout_seconds,
+                            )
 
                     duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
                     logger.info(
