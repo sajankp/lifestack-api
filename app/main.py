@@ -5,6 +5,7 @@ import structlog
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
@@ -36,6 +37,7 @@ from app.capture.router import router as capture_router
 from app.config import settings
 from app.core.database import postgres
 from app.core.dependencies import limiter
+from app.core.etag import ETagMiddleware
 from app.core.exceptions import (
     APIError,
     api_exception_handler,
@@ -53,6 +55,7 @@ from app.core.middleware import (
 )
 from app.core.scheduler import (
     register_daily_job,
+    register_daily_job_staggered,
     register_interval_job,
     scheduler,
     shutdown_scheduler,
@@ -67,6 +70,7 @@ from app.investing.router import router as investing_router
 from app.notifications.router import router as notifications_router
 from app.observability.log_export import setup_log_export
 from app.observability.posthog_client import init_posthog
+from app.observability.scheduler_metrics import set_jobs_registered, set_scheduler_running
 from app.observability.tracing import setup_tracing
 from app.platform.router import router as platform_router
 from app.spending.router import router as spending_router
@@ -119,49 +123,50 @@ async def lifespan(_app: FastAPI):
             hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
             idempotent=True,
         )
+        # Jobs with jitter to spread across 00:00-23:59 (previously clustered 02:00-07:00)
         register_daily_job(
             recurring_transactions_job,
             job_id="recurring_transactions",
             hour_utc=settings.RECURRING_TXN_GENERATION_HOUR,
         )
-        register_daily_job(
+        register_daily_job_staggered(
             fx_rate_ingestion_job,
             job_id="fx_rate_ingestion",
             hour_utc=2,
         )
-        register_daily_job(
+        register_daily_job_staggered(
             bhavcopy_price_feed_job,
             job_id="bhavcopy_price_feed",
             hour_utc=2,
             minute_utc=0,
         )
-        register_daily_job(
+        register_daily_job_staggered(
             investment_closing_prices_job,
             job_id="investment_closing_prices",
             hour_utc=2,
             minute_utc=30,
         )
-        register_daily_job(
+        register_daily_job_staggered(
             export_cleanup_job,
             job_id="export_cleanup",
             hour_utc=3,
         )
-        register_daily_job(
+        register_daily_job_staggered(
             session_cleanup_job,
             job_id="session_cleanup",
             hour_utc=4,
         )
-        register_daily_job(
+        register_daily_job_staggered(
             import_preview_cleanup_job,
             job_id="import_preview_cleanup",
             hour_utc=5,
         )
-        register_daily_job(
+        register_daily_job_staggered(
             dashboard_insights_job,
             job_id="dashboard_insights",
             hour_utc=6,
         )
-        register_daily_job(
+        register_daily_job_staggered(
             net_worth_snapshot_job,
             job_id="net_worth_snapshot",
             hour_utc=7,
@@ -205,10 +210,15 @@ async def lifespan(_app: FastAPI):
             hour_utc=settings.BRIEFING_JOB_HOUR_UTC,
             minute_utc=settings.BRIEFING_JOB_MINUTE_UTC,
         )
+
+        # Update scheduler metrics
+        set_scheduler_running(True)
+        set_jobs_registered(len(scheduler.get_jobs()))
         start_scheduler()
     yield
     if settings.SCHEDULER_ENABLED:
         shutdown_scheduler()
+        set_scheduler_running(False)
 
 
 def create_app() -> FastAPI:
@@ -246,6 +256,24 @@ def create_app() -> FastAPI:
                 "Accept",
             ],
         )
+
+    # Response compression
+    _app.add_middleware(GZipMiddleware, minimum_size=500)
+
+    # ETag support for conditional requests on GET list endpoints
+    _app.add_middleware(
+        ETagMiddleware,
+        paths=[
+            f"{settings.API_V1_STR}/dashboard",
+            f"{settings.API_V1_STR}/finance",
+            f"{settings.API_V1_STR}/summaries",
+            f"{settings.API_V1_STR}/spending",
+            f"{settings.API_V1_STR}/investing",
+            f"{settings.API_V1_STR}/health",
+            f"{settings.API_V1_STR}/todo",
+        ],
+        min_content_length=100,
+    )
 
     # Core middlewares
     _app.state.limiter = limiter
