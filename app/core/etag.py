@@ -14,18 +14,26 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
 
-def generate_etag(data: dict | list | str | BaseModel) -> str:
-    """Generate a strong ETag from response data using SHA-256."""
-    if isinstance(data, BaseModel):
-        content = json.dumps(data.model_dump(mode="json"), sort_keys=True, default=str)
+def generate_etag(data: dict | list | str | bytes | BaseModel) -> str:
+    """Generate a strong ETag from response data using SHA-256.
+
+    Accepts raw ``bytes`` directly to avoid JSON decode/re-encode overhead in
+    the middleware path where the response body is already available as bytes.
+    """
+    if isinstance(data, bytes):
+        content_bytes = data
+    elif isinstance(data, BaseModel):
+        content_bytes = json.dumps(
+            data.model_dump(mode="json"), sort_keys=True, default=str
+        ).encode("utf-8")
     elif isinstance(data, str):
-        content = data
+        content_bytes = data.encode("utf-8")
     else:
         # Use JSON serialization with sorted keys for consistent hashing
-        content = json.dumps(data, sort_keys=True, default=str)
+        content_bytes = json.dumps(data, sort_keys=True, default=str).encode("utf-8")
 
     # Generate SHA-256 hash and truncate to 32 chars for reasonable header size
-    etag = hashlib.sha256(content.encode("utf-8")).hexdigest()[:32]
+    etag = hashlib.sha256(content_bytes).hexdigest()[:32]
     return f'W/"{etag}"'  # Weak ETag since content may be semantically equivalent but not byte-identical
 
 
@@ -104,9 +112,8 @@ class ETagMiddleware(BaseHTTPMiddleware):
             return response
 
         try:
-            # Parse JSON to generate ETag
-            data = json.loads(body.decode("utf-8"))
-            etag = generate_etag(data)
+            # Hash raw bytes directly — avoids json.loads + re-encode overhead on every GET
+            etag = generate_etag(body)
 
             # Check If-None-Match
             if if_none_match and if_none_match == etag:
@@ -116,8 +123,8 @@ class ETagMiddleware(BaseHTTPMiddleware):
             response.headers["ETag"] = etag
             return response
 
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            # Not valid JSON, return original response
+        except Exception:
+            # Unexpected error hashing body — return original response without ETag
             return response
 
 
@@ -187,22 +194,27 @@ def with_etag(
             result = await func(*args, **kwargs)
 
             # Generate ETag from result
-            if key_params and hasattr(result, "model_dump"):
+            if generate_fn:
+                etag = generate_fn(result)
+            elif key_params and hasattr(result, "model_dump"):
                 data = {k: getattr(result, k) for k in key_params if hasattr(result, k)}
+                etag = generate_etag(data)
             elif hasattr(result, "model_dump"):
-                data = result.model_dump(mode="json")
+                etag = generate_etag(result.model_dump(mode="json"))
             else:
-                data = result
-
-            etag = generate_etag(data)
+                etag = generate_etag(result)
 
             # Check If-None-Match
             if_none_match = request.headers.get("if-none-match") if request else None
             if if_none_match and if_none_match == etag:
                 return Response(status_code=304, headers={"ETag": etag})
 
-            # Add ETag to response headers if it's a Response object
-            if isinstance(result, Response):
+            # Set ETag on the FastAPI-injected Response object (standard FastAPI pattern for
+            # header injection when the endpoint returns a Pydantic model/dict, not a Response)
+            injected_response = kwargs.get("response")
+            if isinstance(injected_response, Response):
+                injected_response.headers["ETag"] = etag
+            elif isinstance(result, Response):
                 result.headers["ETag"] = etag
 
             return result
