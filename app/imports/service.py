@@ -1242,6 +1242,25 @@ class ImportService:
             else:
                 deleted_records = 0
             action = "import_rolled_back"
+
+            # spec-086 Layer 1: a rollback removes holdings/orders/cash/
+            # transactions that fed today's valuation, but snapshots are
+            # date-keyed and not otherwise touched — so invalidate the
+            # current-day net-worth and portfolio snapshots, exactly as every
+            # interactive mutation endpoint does (delete_for_date(today)).
+            # Without this, the history/weekly-summary read paths (which read
+            # snapshots directly, no recompute) serve a snapshot captured while
+            # the now-reverted data was live (api#183 item 2, same-day case).
+            from app.finance.repository import (  # noqa: PLC0415
+                NetWorthSnapshotRepository,
+            )
+            from app.investing.repository import (  # noqa: PLC0415
+                PortfolioSnapshotRepository,
+            )
+
+            today = datetime.now(UTC).date()
+            await NetWorthSnapshotRepository(self.session).delete_for_date(workspace_id, today)
+            await PortfolioSnapshotRepository(self.session).delete_for_date(workspace_id, today)
         else:
             deleted_records = 0
             action = "import_deleted"
@@ -1261,6 +1280,17 @@ class ImportService:
                     "total_rows": batch.total_rows,
                     "valid_rows": batch.valid_rows,
                     "error_rows": batch.error_rows,
+                    # spec-086 Layers 2-3: the ONLY surviving record of when
+                    # this batch's data went live, once the ImportBatch row
+                    # itself is hard-deleted below. Lets a later read of a
+                    # snapshot/summary/history point detect "this covers a
+                    # period when since-reverted data was live" via an
+                    # append-only, tamper-proof trail -- never by mutating
+                    # the historical snapshot itself (see spec-086 "Why
+                    # restatement is not viable").
+                    "committed_at": (
+                        batch.committed_at.isoformat() if batch.committed_at else None
+                    ),
                 },
                 "after": None,
                 "changed_fields": ["status", "deleted_records"],

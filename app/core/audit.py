@@ -1,9 +1,10 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 import sqlalchemy as sa
 import structlog
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Field, SQLModel
 
@@ -163,3 +164,53 @@ class AuditLogger:
             workspace_id=workspace_id,
         )
         return audit_log
+
+
+# ---------------------------------------------------------------------------
+# Import-Revert Provenance (spec-086 Layers 2-3)
+# ---------------------------------------------------------------------------
+
+
+async def find_import_revert_windows(
+    session: AsyncSession, workspace_id: int, from_date: date, to_date: date
+) -> list[tuple[date, date]]:
+    """(committed_date, reverted_date) windows for import_rolled_back audit
+    entries in this workspace whose live-window could overlap
+    [from_date, to_date]. Sourced from the append-only audit trail -- the
+    only surviving record of a rolled-back ImportBatch's committed_at, since
+    the batch row itself is hard-deleted on revert (see AuditLogger usage in
+    ImportService.delete_batch). Never used to mutate the historical
+    snapshot/summary itself -- only to annotate that it may reflect
+    since-reverted data (spec-086 "Why restatement is not viable")."""
+    rows = (
+        (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.workspace_id == workspace_id,
+                    AuditLog.action == "import_rolled_back",
+                    # A revert's window can only overlap [from_date, to_date]
+                    # if the revert itself happened on or after from_date --
+                    # prunes the scan without needing to index into the JSON
+                    # `details` column.
+                    AuditLog.timestamp >= datetime.combine(from_date, datetime.min.time(), UTC),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    windows: list[tuple[date, date]] = []
+    for row in rows:
+        before = row.details.get("before") or {}
+        committed_at_raw = before.get("committed_at") if isinstance(before, dict) else None
+        if not committed_at_raw:
+            continue
+        committed_date = datetime.fromisoformat(committed_at_raw).date()
+        reverted_date = row.timestamp.date()
+        if committed_date <= to_date and reverted_date >= from_date:
+            windows.append((committed_date, reverted_date))
+    return windows
+
+
+def date_in_any_window(target_date: date, windows: list[tuple[date, date]]) -> bool:
+    return any(start <= target_date <= end for start, end in windows)

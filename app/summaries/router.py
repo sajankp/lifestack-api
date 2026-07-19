@@ -80,7 +80,10 @@ async def get_latest_weekly_summary(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
 ):
-    return WeeklySummaryResponse.from_summary(await service.latest(workspace_id))
+    item = await service.latest(workspace_id)
+    return WeeklySummaryResponse.from_summary(
+        item, data_revised_after_snapshot=await service.has_reverted_import_overlap(item)
+    )
 
 
 @router.get("/{summary_id}", response_model=WeeklySummaryResponse)
@@ -90,7 +93,10 @@ async def get_weekly_summary(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
 ):
-    return WeeklySummaryResponse.from_summary(await service.get(workspace_id, summary_id))
+    item = await service.get(workspace_id, summary_id)
+    return WeeklySummaryResponse.from_summary(
+        item, data_revised_after_snapshot=await service.has_reverted_import_overlap(item)
+    )
 
 
 @router.post("/{summary_id}/read", response_model=WeeklySummaryResponse)

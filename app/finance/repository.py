@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import case, func, or_, select, true
+from sqlalchemy import case, delete, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -866,6 +866,22 @@ class NetWorthSnapshotRepository:
         else:
             self.session.add(snapshot)
             return snapshot
+
+    async def delete_for_date(self, workspace_id: int, snapshot_date: date) -> None:
+        """Delete the LIVE net-worth snapshot for a date so the next net-worth
+        read recomputes it. User-provided backfill points are never touched
+        (they only exist for dates before the earliest live snapshot, so a
+        current-day delete can't hit one — the source filter makes that
+        explicit and safe). Mirrors PortfolioSnapshotRepository.delete_for_date;
+        used to invalidate a stale current-day snapshot after an import revert
+        (spec-086)."""
+        await self.session.execute(
+            delete(NetWorthSnapshot).where(
+                NetWorthSnapshot.workspace_id == workspace_id,
+                NetWorthSnapshot.snapshot_date == snapshot_date,
+                NetWorthSnapshot.source == "live",
+            )
+        )
 
     async def get_history(
         self, workspace_id: int, from_date: date, to_date: date

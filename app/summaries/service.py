@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import date_in_any_window, find_import_revert_windows
 from app.core.exceptions import NotFoundError
 from app.finance.models import Account, NetWorthSnapshot
 from app.finance.repository import (
@@ -75,6 +76,41 @@ class WeeklySummaryService:
         if not item:
             raise NotFoundError(detail=f"Weekly summary with id {public_id} not found")
         return item
+
+    async def has_reverted_import_overlap(self, item: WeeklySummary) -> bool:
+        """spec-086 Layers 2-3: whether this summary's net-worth/investing
+        boundary snapshot dates overlap a since-reverted import's live
+        window -- i.e. the existing "complete" figure may reflect data that
+        was later reverted. Distinct from is_stale (a FRESHER snapshot
+        exists): here the snapshot itself can never be corrected (see
+        spec-086 "Why restatement is not viable" -- historical quantities/
+        prices aren't reconstructable), so annotation is the only honest
+        signal. Sourced from the append-only import_rolled_back audit
+        trail, not from the (already-deleted) ImportBatch row."""
+        dates: list[date] = []
+        if item.net_worth_summary and item.net_worth_summary.get("status") == "complete":
+            start_nw = item.net_worth_summary.get("start_snapshot_date")
+            end_nw = item.net_worth_summary.get("end_snapshot_date")
+            if start_nw:
+                dates.append(date.fromisoformat(start_nw))
+            if end_nw:
+                dates.append(date.fromisoformat(end_nw))
+        if item.investing_summary and item.investing_summary.get("status") == "complete":
+            start_inv = item.investing_summary.get("start_snapshot_date")
+            end_inv = item.investing_summary.get("end_snapshot_date")
+            if start_inv:
+                dates.append(date.fromisoformat(start_inv))
+            if end_inv:
+                dates.append(date.fromisoformat(end_inv))
+        if not dates:
+            return False
+
+        windows = await find_import_revert_windows(
+            self.session, item.workspace_id, min(dates), max(dates)
+        )
+        if not windows:
+            return False
+        return any(date_in_any_window(d, windows) for d in dates)
 
     async def mark_read(self, workspace_id: int, public_id: uuid.UUID):
         """Record that the user has opened this summary (spec-080). Workspace-scoped

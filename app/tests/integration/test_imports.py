@@ -12,8 +12,15 @@ from app.auth.models import User
 from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
+from app.finance.models import NetWorthSnapshot
 from app.imports.models import ImportBatch
-from app.investing.models import Company, Instrument, InstrumentConstituent, ReferenceSecurity
+from app.investing.models import (
+    Company,
+    Instrument,
+    InstrumentConstituent,
+    PortfolioSnapshot,
+    ReferenceSecurity,
+)
 from app.platform.models import WorkspaceMembership
 from app.spending.models import SpendingTransaction
 
@@ -517,6 +524,132 @@ async def test_import_delete_completed_spending_budgets_rolls_back_records(
     budgets_after_delete = await client.get("/v1/spending/budgets", cookies=creds["cookies"])
     assert budgets_after_delete.status_code == 200
     assert budgets_after_delete.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_import_revert_invalidates_current_day_snapshots(client: AsyncClient):
+    """spec-086 Layer 1: reverting a completed import that changed balances
+    must invalidate today's NetWorthSnapshot and PortfolioSnapshot, matching
+    what every interactive mutation endpoint already does
+    (snapshot_repo.delete_for_date(today)). Otherwise a snapshot captured
+    while the imported (now-reverted) data was live is served stale by the
+    history/weekly-summary read paths, which read snapshots directly without
+    recomputing -- the api#183 item-2 root cause for the same-day case."""
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    broker = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "BROKER", "account_type": "brokerage", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert broker.status_code == 201
+    settings_resp = await client.patch(
+        "/v1/finance/settings", json={"reporting_currency_code": "INR"}, cookies=creds["cookies"]
+    )
+    assert settings_resp.status_code == 200, settings_resp.text
+
+    # Seed cash then commit an investing-orders import that creates a holding.
+    cash_resp = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": broker.json()["public_id"],
+            "balance": "100000.00",
+            "currency": "INR",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+        cookies=creds["cookies"],
+    )
+    assert cash_resp.status_code == 201, cash_resp.text
+
+    files = {
+        "file": (
+            "orders.csv",
+            io.BytesIO(
+                b"order_type,symbol,instrument_type,instrument_name,account_name,"
+                b"quantity,price_per_unit,currency,brokerage_fee,tax_amount,other_fees,"
+                b"occurred_at,exchange_name,notes\n"
+                b"buy,TESTFUND,mutual_fund,Test Fund,BROKER,900,10,INR,0,0,0,"
+                b"2023-02-01T00:00:00+00:00,,\n"
+            ),
+            "text/csv",
+        )
+    }
+    r = await client.post(
+        "/v1/imports", data={"module": "investing-orders"}, files=files, cookies=creds["cookies"]
+    )
+    assert r.status_code == 200, r.text
+    import_id = r.json()["import_batch"]["public_id"]
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code in (200, 202), commit.text
+
+    # Materialize today's snapshots via the opportunistic recompute-on-read paths.
+    assert (await client.get("/v1/finance/net-worth", cookies=creds["cookies"])).status_code == 200
+    assert (
+        await client.get("/v1/investing/performance/summary", cookies=creds["cookies"])
+    ).status_code == 200
+
+    today = datetime.now(UTC).date()
+    async with postgres.async_session_maker() as session:
+        nw = (
+            (
+                await session.execute(
+                    select(NetWorthSnapshot).where(NetWorthSnapshot.snapshot_date == today)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        pf = (
+            (
+                await session.execute(
+                    select(PortfolioSnapshot).where(PortfolioSnapshot.snapshot_date == today)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(nw) == 1, "expected today's net-worth snapshot to exist after read"
+        assert len(pf) == 1, "expected today's portfolio snapshot to exist after read"
+
+    # Revert the import.
+    del_resp = await client.delete(f"/v1/imports/{import_id}", cookies=creds["cookies"])
+    assert del_resp.status_code == 204
+
+    async with postgres.async_session_maker() as session:
+        nw_after = (
+            (
+                await session.execute(
+                    select(NetWorthSnapshot).where(NetWorthSnapshot.snapshot_date == today)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        pf_after = (
+            (
+                await session.execute(
+                    select(PortfolioSnapshot).where(PortfolioSnapshot.snapshot_date == today)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert nw_after == [], "today's net-worth snapshot should be invalidated on import revert"
+    assert pf_after == [], "today's portfolio snapshot should be invalidated on import revert"
+
+    # spec-086 Layers 2-3: the revert audit entry must carry the batch's
+    # committed_at -- the only surviving record of when the reverted data
+    # went live, since the ImportBatch row itself is hard-deleted below.
+    async with postgres.async_session_maker() as session:
+        audit = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "import_rolled_back",
+                    AuditLog.entity_type == "import_batch",
+                )
+            )
+        ).scalar_one()
+    assert audit.details["before"]["committed_at"] is not None
 
 
 @pytest.mark.asyncio
