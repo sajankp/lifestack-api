@@ -637,6 +637,20 @@ async def test_import_revert_invalidates_current_day_snapshots(client: AsyncClie
     assert nw_after == [], "today's net-worth snapshot should be invalidated on import revert"
     assert pf_after == [], "today's portfolio snapshot should be invalidated on import revert"
 
+    # spec-086 Layers 2-3: the revert audit entry must carry the batch's
+    # committed_at -- the only surviving record of when the reverted data
+    # went live, since the ImportBatch row itself is hard-deleted below.
+    async with postgres.async_session_maker() as session:
+        audit = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "import_rolled_back",
+                    AuditLog.entity_type == "import_batch",
+                )
+            )
+        ).scalar_one()
+    assert audit.details["before"]["committed_at"] is not None
+
 
 @pytest.mark.asyncio
 async def test_import_spending_budgets_upserts_on_duplicate(client: AsyncClient):

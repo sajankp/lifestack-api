@@ -345,6 +345,12 @@ class NetWorthHistoryItem(BaseModel):
     spending_cash: Decimal | None
     total_net_worth: Decimal
     source: str = "live"
+    # spec-086 Layer 3: read-time-only, never stored -- whether this point's
+    # date overlaps a since-reverted import's live window (the append-only
+    # import_rolled_back audit trail). The snapshot itself can never be
+    # corrected (see spec-086 "Why restatement is not viable"), so this is
+    # an honest annotation, computed by the router, not on the ORM model.
+    data_revised: bool = False
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 

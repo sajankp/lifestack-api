@@ -1,7 +1,7 @@
 # Spec-086: Import-Revert Snapshot Integrity & Post-Snapshot Data-Change Provenance (api#183 item 2)
 
 **Created:** 2026-07-18
-**Status:** Layer 1 (same-day invalidation) landed as a fix; Layers 2–3 (provenance surfacing) approved (option 1). **Snapshot *restatement* evaluated and rejected as unsound — see "Why restatement is not viable" below.**
+**Status:** Implemented (api side, all 3 layers, this PR). A follow-up `lifestack-web` PR renders `data_revised_after_snapshot` (weekly summary) and `data_revised` (net-worth history) — not yet built. **Snapshot *restatement* evaluated and rejected as unsound — see "Why restatement is not viable" below.**
 **Depends on:** spec-072 (net-worth backfill / snapshot model), spec-076 (weekly summaries), spec-085 (weekly-summary status reconciliation — the sibling api#183 work)
 **Scope:** `lifestack-api` (Layer 1 + 2 + 3); a follow-up `lifestack-web` PR renders the Layer 2 warning and Layer 3 asterisk (separate repo, merged after api per one-PR-per-repo).
 
@@ -70,7 +70,7 @@ Wire the same `delete_for_date(workspace_id, today)` the interactive endpoints u
 removed snapshot-affecting data. This closes the same-day gap for the read paths that don't
 recompute (history, weekly summary). Consistency hygiene; does not address past-day reverts.
 
-### Layer 2 — weekly-summary "data changed after snapshot" warning (a FEATURE, needs approval)
+### Layer 2 — weekly-summary "data changed after snapshot" warning (implemented)
 Because we must not mutate historical snapshots, we *annotate* instead — and we need **no new
 table**: `delete_batch` already writes a permanent `import_rolled_back` audit entry
 (`app/core/audit.py` `AuditLog`, append-only, enforced by a DB trigger that blocks update/delete —
@@ -87,9 +87,10 @@ table**: `delete_batch` already writes a permanent `import_rolled_back` audit en
 - This composes with spec-085's `data_stale` (fresher snapshot exists) but is a distinct signal
   (underlying data for the *existing* snapshot was reverted).
 
-### Layer 3 — daily net-worth history "*" note (a FEATURE, needs approval)
-Same overlap check on the net-worth history endpoint → a per-point boolean flag (e.g.
-`data_revised: true`) the web renders as the asterisk/footnote the owner asked for. Read-time only.
+### Layer 3 — daily net-worth history "*" note (implemented)
+Same overlap check on the net-worth history endpoint → a per-point boolean flag (`data_revised`)
+the web renders as the asterisk/footnote the owner asked for. Read-time only, one revert-window
+fetch for the whole requested date range (not per-point, to avoid N+1).
 
 ## Retroactivity / policy
 
@@ -104,12 +105,17 @@ Same overlap check on the net-worth history endpoint → a per-point boolean fla
   audit-window overlap is intentionally coarse — a safe over-flag, never a silent miss).
 - The web rendering of the Layer 2 warning / Layer 3 asterisk (separate lifestack-web PR).
 
-## Validation
-- Layer 1 Red test: commit an import that affects net worth, materialize today's
-  `NetWorthSnapshot`/`PortfolioSnapshot`, revert the import → assert today's snapshots are gone
-  (invalidated). Fails on current code, passes after wiring `delete_for_date`.
-- Layer 2 Red test (pending approval): a reverted import whose live-window covers a summary's
-  boundary snapshot dates → `data_revised_after_snapshot` true; a revert outside the window → false.
-- Layer 3 Red test (pending approval): net-worth history point inside a revert window flagged,
-  outside not.
-- Full suite + `--cov-fail-under=80`; ruff.
+## Validation (all Red→Green, per the change-control TDD discipline)
+- **Layer 1:** `test_import_revert_invalidates_current_day_snapshots` — commits a real
+  investing-orders import, materializes today's `NetWorthSnapshot`/`PortfolioSnapshot` via the
+  opportunistic recompute-on-read endpoints, reverts the import → asserts both are gone. Also
+  asserts the revert's `import_rolled_back` audit entry carries a non-null `committed_at` (proves
+  the Layer 2/3 provenance source is actually wired, not just referenced).
+- **Layer 2:** `test_weekly_summary_flags_reverted_import_overlapping_boundary_snapshot` (positive)
+  + `test_weekly_summary_no_revert_overlap_when_no_reverted_import` (negative) — both at the
+  service method (`has_reverted_import_overlap`) and HTTP (`GET /latest`) level.
+- **Layer 3:** `test_net_worth_history_flags_point_overlapping_reverted_import` — a history point
+  dated inside a revert window is flagged, others aren't; existing
+  `test_net_worth_live_cash_and_snapshot_creation` extended to assert `data_revised: false` in the
+  ordinary (no-revert) case.
+- Full suite: 847 passed, 84% coverage (gate 80%); `ruff check`/`ruff format` clean.

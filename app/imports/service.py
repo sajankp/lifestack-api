@@ -1280,6 +1280,17 @@ class ImportService:
                     "total_rows": batch.total_rows,
                     "valid_rows": batch.valid_rows,
                     "error_rows": batch.error_rows,
+                    # spec-086 Layers 2-3: the ONLY surviving record of when
+                    # this batch's data went live, once the ImportBatch row
+                    # itself is hard-deleted below. Lets a later read of a
+                    # snapshot/summary/history point detect "this covers a
+                    # period when since-reverted data was live" via an
+                    # append-only, tamper-proof trail -- never by mutating
+                    # the historical snapshot itself (see spec-086 "Why
+                    # restatement is not viable").
+                    "committed_at": (
+                        batch.committed_at.isoformat() if batch.committed_at else None
+                    ),
                 },
                 "after": None,
                 "changed_fields": ["status", "deleted_records"],

@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, status
 
 from app.config import settings
-from app.core.audit import AuditLogger
+from app.core.audit import AuditLogger, date_in_any_window, find_import_revert_windows
 from app.core.dependencies import (
     get_audit_logger,
     get_current_user,
@@ -509,7 +509,16 @@ async def get_net_worth_history(
         from_dt = to_dt - timedelta(days=365)
 
     history = await net_worth_service.get_history(workspace_id, from_dt, to_dt)
-    return [NetWorthHistoryItem.model_validate(h) for h in history]
+    # spec-086 Layer 3: one revert-window fetch for the whole range, not
+    # per-point, to avoid N+1 -- then flag each point in memory.
+    windows = await find_import_revert_windows(
+        net_worth_service.session, workspace_id, from_dt, to_dt
+    )
+    items = [NetWorthHistoryItem.model_validate(h) for h in history]
+    if windows:
+        for item in items:
+            item.data_revised = date_in_any_window(item.snapshot_date, windows)
+    return items
 
 
 @router.get(

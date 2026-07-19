@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 
 from app.application.jobs import weekly_summary_job
 from app.auth.repository import UserRepository
+from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account, AccountType, NetWorthSnapshot
 from app.health.models import Medication, MedicationEvent, WeightEntry
@@ -669,6 +670,137 @@ async def test_weekly_summary_investing_zero_baseline_stays_a_real_complete_summ
     assert summary.investing_summary["portfolio_value_end"] == "1200.00"
     assert summary.investing_summary["week_change"] == "1200.00"
     assert summary.investing_summary["week_change_pct"] is None
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_flags_reverted_import_overlapping_boundary_snapshot(
+    client: AsyncClient,
+):
+    """spec-086 Layers 2-3: a weekly summary whose net-worth boundary
+    snapshot dates overlap a since-reverted import's live window must flag
+    that the figure may reflect data that was later reverted. Sourced from
+    the append-only import_rolled_back audit trail -- the only surviving
+    record of the revert once the ImportBatch row itself is hard-deleted.
+    This is a distinct signal from is_stale (fresher snapshot exists): here
+    the EXISTING snapshot's own underlying data was reverted, and per
+    spec-086 that snapshot can never be corrected (historical quantities/
+    prices aren't reconstructable) -- annotation is the only honest option."""
+    creds = await _register_and_login(client, "sumrevertoverlap")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1000.00"),
+                source="user_provided",
+            ),
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("5000.00"),
+                source="user_provided",
+            ),
+        ])
+        # An import that was live during this week, later reverted -- the
+        # ImportBatch row itself is gone; only the audit trail survives.
+        session.add(
+            AuditLog(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action="import_rolled_back",
+                module="import",
+                entity_type="import_batch",
+                entity_id=999999,
+                details={
+                    "entity_public_id": str(uuid.uuid4()),
+                    "before": {
+                        "module": "investing_orders",
+                        "status": "completed",
+                        "total_rows": 1,
+                        "valid_rows": 1,
+                        "error_rows": 0,
+                        "committed_at": datetime.combine(
+                            week_start, datetime.min.time(), tzinfo=UTC
+                        ).isoformat(),
+                    },
+                    "after": None,
+                    "changed_fields": ["status"],
+                },
+                timestamp=datetime.combine(
+                    week_start + timedelta(days=2), datetime.min.time(), tzinfo=UTC
+                ),
+            )
+        )
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+        assert await service.has_reverted_import_overlap(summary) is True
+
+    # Router wiring: GET /latest surfaces the same signal over the API.
+    res = await client.get("/v1/summaries/weekly/latest")
+    assert res.status_code == 200, res.text
+    assert res.json()["data_revised_after_snapshot"] is True
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_no_revert_overlap_when_no_reverted_import(client: AsyncClient):
+    """Negative case: no import_rolled_back audit entries at all -> false."""
+    creds = await _register_and_login(client, "sumnorevert")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1000.00"),
+                source="user_provided",
+            ),
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1050.00"),
+                source="user_provided",
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+        assert await service.has_reverted_import_overlap(summary) is False
 
 
 @pytest.mark.asyncio
