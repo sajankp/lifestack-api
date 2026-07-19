@@ -368,6 +368,29 @@ class PushSubscriptionRepository:
             .all()
         )
 
+    async def list_active_for_users(
+        self, pairs: set[tuple[int, int]]
+    ) -> dict[tuple[int, int], list[PushSubscription]]:
+        """Batch form of ``list_active_for_user`` for N notifications fanning
+        out over M distinct (workspace, user) recipients in one round trip."""
+        if not pairs:
+            return {}
+        workspace_ids = {workspace_id for workspace_id, _ in pairs}
+        user_ids = {user_id for _, user_id in pairs}
+        result = await self.session.execute(
+            select(PushSubscription).where(
+                PushSubscription.workspace_id.in_(workspace_ids),
+                PushSubscription.user_id.in_(user_ids),
+                PushSubscription.is_active,
+            )
+        )
+        grouped: dict[tuple[int, int], list[PushSubscription]] = {}
+        for subscription in result.scalars().all():
+            key = (subscription.workspace_id, subscription.user_id)
+            if key in pairs:
+                grouped.setdefault(key, []).append(subscription)
+        return grouped
+
     async def get_by_public_id(
         self, workspace_id: int, user_id: int, public_id: uuid.UUID
     ) -> PushSubscription | None:

@@ -795,13 +795,7 @@ class DividendService:
             workspace_id, limit, offset, account_id=internal_account_id, symbol=symbol
         )
         account_ids = {r.account_id for r in rows}
-        accounts = {
-            a.id: a
-            for a in [
-                await self.account_repository.get_by_id(workspace_id, aid) for aid in account_ids
-            ]
-            if a is not None
-        }
+        accounts = await self.account_repository.get_by_ids(workspace_id, account_ids)
         return rows, total, accounts
 
     async def get_dividend(
