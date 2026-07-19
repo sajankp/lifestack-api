@@ -1,7 +1,7 @@
 # Spec-086: Import-Revert Snapshot Integrity & Post-Snapshot Data-Change Provenance (api#183 item 2)
 
 **Created:** 2026-07-18
-**Status:** Layer 1 (same-day invalidation) implementing as a fix; Layers 2–3 (provenance surfacing) proposed — awaiting maintainer approval before implementation code
+**Status:** Layer 1 (same-day invalidation) landed as a fix; Layers 2–3 (provenance surfacing) approved (option 1). **Snapshot *restatement* evaluated and rejected as unsound — see "Why restatement is not viable" below.**
 **Depends on:** spec-072 (net-worth backfill / snapshot model), spec-076 (weekly summaries), spec-085 (weekly-summary status reconciliation — the sibling api#183 work)
 **Scope:** `lifestack-api` (Layer 1 + 2 + 3); a follow-up `lifestack-web` PR renders the Layer 2 warning and Layer 3 asterisk (separate repo, merged after api per one-PR-per-repo).
 
@@ -28,6 +28,39 @@ Traced in code:
 Note (nuance): the **same-day** case largely self-heals, because `get_net_worth`/portfolio-summary
 recompute and re-upsert *today's* snapshot on read. The durable damage is a **past-day** snapshot
 (revert after the day rolled over), which by policy we must NOT retroactively mutate.
+
+## Why restatement is not viable (settled — do not reopen)
+
+The tempting "correct" fix is to *recompute* the corrupted past snapshot to its true value after
+the revert, logging before/after to the append-only `audit_logs` (which would satisfy the
+provenance objection). We evaluated this and it is **unsound by construction**, because a past
+net-worth/portfolio snapshot **cannot be faithfully recomputed** — both inputs are unrecoverable:
+
+1. **Historical quantities are not reconstructable.** `PerformanceService.create_snapshot(date)`
+   values *current* holdings (`holding_repo.get_all()`, `performance_service.py:202`) at as-of-date
+   prices — it does not reconstruct share counts as of a past date. There is no date-bounded order
+   replay (`_replay_orders` only rebuilds current state), and holdings created without orders
+   (holdings-CSV import, `source_type` defaults to `manual`/`imported`) have no order history to
+   replay at all.
+2. **Historical market prices are not retained.** Price capture is forward-only:
+   `investment_closing_prices_job` / `bhavcopy_price_feed_job` (`jobs.py:248,286`) write only the
+   current expected close each day. `latest_prices_on_or_before(D)` for a past D returns a stale
+   price or nothing (→ cost-basis fallback), never the true day-D market price.
+
+**Conclusion:** the daily snapshot is a **primary observation**, not a recomputable cache — it is
+the only faithful record that will ever exist of the point-in-time valuation, precisely because the
+inputs to recompute it are gone. Therefore:
+- Non-retroactivity for `net_worth_snapshots` / `portfolio_snapshots` is **forced by the data
+  model**, not a relaxable simplification. (This is stronger than the general spec-049/050
+  forward-only policy — here recomputation is not merely disallowed, it is impossible.)
+- Restatement would substitute fabricated numbers (wrong quantities × stale/absent prices) for a
+  real observation — strictly worse than preserving it. Rejected.
+- **Annotation is the correct answer, not a compromise:** preserve the observation, flag that it
+  includes data later reverted. The "correct" value is genuinely unknowable, so surfacing the
+  caveat is the most truthful thing the system can do.
+
+(The append-only `audit_logs` trail is still used — as the *provenance source* for the annotation
+below, not to justify mutating a snapshot.)
 
 ## Design — three layers
 
