@@ -89,11 +89,19 @@ class WeeklySummaryService:
         trail, not from the (already-deleted) ImportBatch row."""
         dates: list[date] = []
         if item.net_worth_summary and item.net_worth_summary.get("status") == "complete":
-            dates.append(date.fromisoformat(item.net_worth_summary["start_snapshot_date"]))
-            dates.append(date.fromisoformat(item.net_worth_summary["end_snapshot_date"]))
+            start_nw = item.net_worth_summary.get("start_snapshot_date")
+            end_nw = item.net_worth_summary.get("end_snapshot_date")
+            if start_nw:
+                dates.append(date.fromisoformat(start_nw))
+            if end_nw:
+                dates.append(date.fromisoformat(end_nw))
         if item.investing_summary and item.investing_summary.get("status") == "complete":
-            dates.append(date.fromisoformat(item.investing_summary["start_snapshot_date"]))
-            dates.append(date.fromisoformat(item.investing_summary["end_snapshot_date"]))
+            start_inv = item.investing_summary.get("start_snapshot_date")
+            end_inv = item.investing_summary.get("end_snapshot_date")
+            if start_inv:
+                dates.append(date.fromisoformat(start_inv))
+            if end_inv:
+                dates.append(date.fromisoformat(end_inv))
         if not dates:
             return False
 

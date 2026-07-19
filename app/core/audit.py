@@ -201,7 +201,8 @@ async def find_import_revert_windows(
     )
     windows: list[tuple[date, date]] = []
     for row in rows:
-        committed_at_raw = row.details.get("before", {}).get("committed_at")
+        before = row.details.get("before") or {}
+        committed_at_raw = before.get("committed_at") if isinstance(before, dict) else None
         if not committed_at_raw:
             continue
         committed_date = datetime.fromisoformat(committed_at_raw).date()
