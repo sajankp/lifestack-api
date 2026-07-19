@@ -26,6 +26,7 @@ from app.core.exceptions import (
 )
 from app.core.pagination import DEFAULT_LIMIT
 from app.core.recurrence import advance_due_date, first_due_date, validate_recurrence_fields
+from app.finance.models import Account
 from app.finance.repository import AccountRepository, FinanceSettingRepository
 from app.finance.statement_service import StatementService
 from app.spending.models import (
@@ -2493,16 +2494,35 @@ class KpiService:
             return current_value > kpi.target_value
         return current_value < kpi.target_value
 
-    async def _to_response(self, workspace_id: int, kpi: FinancialKpi) -> KpiResponse:
+    async def _to_response(
+        self,
+        workspace_id: int,
+        kpi: FinancialKpi,
+        category_map: dict[int, SpendingCategory] | None = None,
+        group_map: dict[int, CategoryGroup] | None = None,
+        account_map: dict[int, Account] | None = None,
+    ) -> KpiResponse:
         category_uuid = group_uuid = account_uuid = None
         if kpi.category_id:
-            category = await self.category_repo.get_by_id(workspace_id, kpi.category_id)
+            category = (
+                category_map.get(kpi.category_id)
+                if category_map is not None
+                else await self.category_repo.get_by_id(workspace_id, kpi.category_id)
+            )
             category_uuid = category.public_id if category else None
         if kpi.category_group_id:
-            group = await self.group_repo.get_by_id(workspace_id, kpi.category_group_id)
+            group = (
+                group_map.get(kpi.category_group_id)
+                if group_map is not None
+                else await self.group_repo.get_by_id(workspace_id, kpi.category_group_id)
+            )
             group_uuid = group.public_id if group else None
         if kpi.account_id:
-            account = await self.account_repo.get_by_id(workspace_id, kpi.account_id)
+            account = (
+                account_map.get(kpi.account_id)
+                if account_map is not None
+                else await self.account_repo.get_by_id(workspace_id, kpi.account_id)
+            )
             account_uuid = account.public_id if account else None
 
         today = datetime.now(UTC).date()
@@ -2534,7 +2554,19 @@ class KpiService:
         self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
     ) -> tuple[list[KpiResponse], int]:
         kpis, total = await self.kpi_repo.get_all(workspace_id, limit=limit, offset=offset)
-        return [await self._to_response(workspace_id, k) for k in kpis], total
+        category_map = await self.category_repo.get_by_ids(
+            workspace_id, {k.category_id for k in kpis if k.category_id}
+        )
+        group_map = await self.group_repo.get_by_ids(
+            workspace_id, {k.category_group_id for k in kpis if k.category_group_id}
+        )
+        account_map = await self.account_repo.get_by_ids(
+            workspace_id, {k.account_id for k in kpis if k.account_id}
+        )
+        return [
+            await self._to_response(workspace_id, k, category_map, group_map, account_map)
+            for k in kpis
+        ], total
 
     async def create_kpi(self, workspace_id: int, kpi_in: KpiCreate) -> KpiResponse:
         category_id, category_group_id, account_id = await self._resolve_filter_ids(

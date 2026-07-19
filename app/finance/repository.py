@@ -119,6 +119,17 @@ class AccountRepository(BaseRepository[Account]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_ids(self, workspace_id: int, ids: set[int]) -> dict[int, Account]:
+        if not ids:
+            return {}
+        result = await self.session.execute(
+            select(Account).where(
+                Account.workspace_id == workspace_id,
+                Account.id.in_(ids),
+            )
+        )
+        return {account.id: account for account in result.scalars().all() if account.id is not None}
+
     async def get_by_id(self, workspace_id: int, account_id: int) -> Account | None:
         result = await self.session.execute(
             select(Account).where(

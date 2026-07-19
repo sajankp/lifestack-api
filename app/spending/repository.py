@@ -103,6 +103,17 @@ class CategoryGroupRepository(BaseRepository[CategoryGroup]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_ids(self, workspace_id: int, ids: set[int]) -> dict[int, CategoryGroup]:
+        if not ids:
+            return {}
+        result = await self.session.execute(
+            select(CategoryGroup).where(
+                CategoryGroup.workspace_id == workspace_id,
+                CategoryGroup.id.in_(ids),
+            )
+        )
+        return {group.id: group for group in result.scalars().all() if group.id is not None}
+
 
 class CategoryRepository(BaseRepository[SpendingCategory]):
     async def get_all(
@@ -145,6 +156,19 @@ class CategoryRepository(BaseRepository[SpendingCategory]):
             )
         )
         return result.scalar_one_or_none()
+
+    async def get_by_ids(self, workspace_id: int, ids: set[int]) -> dict[int, SpendingCategory]:
+        if not ids:
+            return {}
+        result = await self.session.execute(
+            select(SpendingCategory).where(
+                SpendingCategory.workspace_id == workspace_id,
+                SpendingCategory.id.in_(ids),
+            )
+        )
+        return {
+            category.id: category for category in result.scalars().all() if category.id is not None
+        }
 
     async def has_usage(self, category_id: int) -> bool:
         tx_exists = (

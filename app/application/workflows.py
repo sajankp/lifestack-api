@@ -1624,13 +1624,17 @@ async def deliver_pending_push_notifications(session: AsyncSession, limit: int =
     subscription_repo = PushSubscriptionRepository(session)
 
     pending = await notification_repo.list_pending_push_deliveries(limit)
+    recipient_pairs = {
+        (notification.workspace_id, notification.user_id) for _, notification in pending
+    }
+    subscriptions_by_recipient = await subscription_repo.list_active_for_users(recipient_pairs)
     sent_count = 0
     failed_count = 0
 
     for delivery, notification in pending:
         try:
-            subscriptions = await subscription_repo.list_active_for_user(
-                notification.workspace_id, notification.user_id
+            subscriptions = subscriptions_by_recipient.get(
+                (notification.workspace_id, notification.user_id), []
             )
             if not subscriptions:
                 await notification_repo.mark_delivery(
