@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.notifications.models import (
@@ -375,20 +375,16 @@ class PushSubscriptionRepository:
         out over M distinct (workspace, user) recipients in one round trip."""
         if not pairs:
             return {}
-        workspace_ids = {workspace_id for workspace_id, _ in pairs}
-        user_ids = {user_id for _, user_id in pairs}
         result = await self.session.execute(
             select(PushSubscription).where(
-                PushSubscription.workspace_id.in_(workspace_ids),
-                PushSubscription.user_id.in_(user_ids),
+                tuple_(PushSubscription.workspace_id, PushSubscription.user_id).in_(list(pairs)),
                 PushSubscription.is_active,
             )
         )
         grouped: dict[tuple[int, int], list[PushSubscription]] = {}
         for subscription in result.scalars().all():
             key = (subscription.workspace_id, subscription.user_id)
-            if key in pairs:
-                grouped.setdefault(key, []).append(subscription)
+            grouped.setdefault(key, []).append(subscription)
         return grouped
 
     async def get_by_public_id(
