@@ -875,6 +875,61 @@ async def test_weekly_summary_is_stale_when_fresher_boundary_snapshot_lands_afte
 
 
 @pytest.mark.asyncio
+async def test_weekly_summary_is_stale_when_boundary_snapshot_is_deleted(client: AsyncClient):
+    """Edge case flagged in PR #190 review: if the snapshot the summary was
+    generated from is later deleted outright (not just superseded by a
+    fresher one), `end_snapshot` comes back None while `stored_date` is still
+    populated -- that must also count as stale, not silently pass through as
+    "unchanged"."""
+    creds = await _register_and_login(client, "sumstaledeleted")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        start_snapshot = NetWorthSnapshot(
+            workspace_id=workspace_id,
+            snapshot_date=week_start - timedelta(days=1),
+            reporting_currency="USD",
+            total_net_worth=Decimal("1000.00"),
+            source="user_provided",
+        )
+        end_snapshot = NetWorthSnapshot(
+            workspace_id=workspace_id,
+            snapshot_date=week_start + timedelta(days=1),
+            reporting_currency="USD",
+            total_net_worth=Decimal("1050.00"),
+            source="user_provided",
+        )
+        session.add_all([start_snapshot, end_snapshot])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+        assert await service.is_stale(summary) is False
+
+        # Both snapshots gone -- no snapshot at all now exists <= week_end,
+        # so the "current" side of the comparison is None while the stored
+        # side is still populated. This must not be treated as "unchanged".
+        await session.delete(start_snapshot)
+        await session.delete(end_snapshot)
+        await session.flush()
+
+        assert await service.is_stale(summary) is True
+
+
+@pytest.mark.asyncio
 async def test_weekly_summary_return_metrics_unavailable_without_investing_data(
     client: AsyncClient,
 ):

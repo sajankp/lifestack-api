@@ -133,7 +133,10 @@ class WeeklySummaryService:
                 )
             ).scalar_one_or_none()
             stored_date = item.net_worth_summary.get("end_snapshot_date")
-            if end_snapshot is not None and end_snapshot.snapshot_date.isoformat() != stored_date:
+            current_date = (
+                end_snapshot.snapshot_date.isoformat() if end_snapshot is not None else None
+            )
+            if current_date != stored_date:
                 return True
 
         if item.investing_summary and item.investing_summary.get("status") == "complete":
@@ -149,7 +152,10 @@ class WeeklySummaryService:
                 )
             ).scalar_one_or_none()
             stored_date = item.investing_summary.get("end_snapshot_date")
-            if end_snapshot is not None and end_snapshot.snapshot_date.isoformat() != stored_date:
+            current_date = (
+                end_snapshot.snapshot_date.isoformat() if end_snapshot is not None else None
+            )
+            if current_date != stored_date:
                 return True
 
         return False
