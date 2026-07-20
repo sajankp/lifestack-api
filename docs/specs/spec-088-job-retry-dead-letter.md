@@ -70,7 +70,7 @@ recovery stays what it is: the next scheduled run. We add (a) surviving transien
 | `attempts` | int | tries before giving up (1 if retry not enabled for this job) |
 | `first_failed_at` | datetime(tz) | |
 | `created_at` | datetime(tz) | when the ledger row was written |
-| `notified_at` | datetime(tz), nullable | set by the digest once it has reported this row — **guarantees each failure is emailed exactly once** |
+| `notified_at` | datetime(tz), nullable | set by the digest once it has reported this row — **at-least-once delivery**: if the send succeeds but the `notified_at` write fails/is interrupted, the row is reported again on the next run. Accepted tradeoff (occasional duplicate digest line) over the complexity of exactly-once (e.g. Resend idempotency keys). |
 | `resolved_at` | datetime(tz), nullable | NULL = still open; set on auto-resolve (see below) or manually |
 
 - **Append-only by convention** (not a delete-blocking trigger like `audit_logs`): these are
@@ -83,7 +83,11 @@ recovery stays what it is: the next scheduled run. We add (a) surviving transien
 - **Auto-resolve (self-heal):** when an opted-in job later *succeeds* for a (job_name, workspace_id),
   mark that unit's still-open rows `resolved_at = now()`. Keeps a "currently broken" view honest and
   lets the heartbeat report "N failed, M auto-recovered." One cheap UPDATE on the success path,
-  guarded so it never fails the job.
+  guarded so it never fails the job. **`workspace_id` is nullable** (NULL for global jobs) and SQL
+  equality never matches `NULL`, so the query must branch on it explicitly — e.g. in SQLAlchemy,
+  `JobFailure.workspace_id == workspace_id` when `workspace_id` is an int, or
+  `JobFailure.workspace_id.is_(None)` when resolving a global job's failures — not a single
+  `== workspace_id` for both cases.
 
 ### Layer B — In-run retry: `app/core/retry.py` (pure, no DB)
 
@@ -125,15 +129,16 @@ email is sent *directly* via `send_email(...)` to a new `OWNER_ALERT_EMAIL` sett
 the existing `EMAIL_ENABLED` + `RESEND_API_KEY` master switches. If `OWNER_ALERT_EMAIL` is unset, the
 email step is skipped-and-logged (the in-app notification still happens).
 
-**C1 — Daily failure digest** (`job_failure_digest_job`, new; scheduled at a **fixed 04:00 UTC =
-09:30 IST — NOT jitter-staggered**, deliberately: the critical jobs carry ±60min jitter (closing-
-prices up to 03:30 UTC), so a jittered digest could fire *before* them and miss the failure. A fixed
-04:00 UTC sits safely after their max finish). Rationale: the three data-integrity jobs this spec exists for run at
-02:00–02:30 UTC ±60min jitter, finishing by ~03:30 UTC, so 04:00 UTC reliably captures them *and*
-lands in the owner's IST morning. Tradeoff (accepted): the low-value cluster tail
-(cleanup/insights/net-worth, 03:00–08:00 UTC) reports the *next* morning if it fails — fine, since
-those self-retry/self-heal and a persistent failure still nags daily. Catching the tail same-day
-would push the digest to ~08:30 UTC (14:00 IST), out of the IST morning window:
+**C1 — Daily failure digest** (`job_failure_digest_job`, new; scheduled at a **fixed 04:30 UTC =
+10:00 IST — NOT jitter-staggered**, deliberately: the critical jobs carry ±60min jitter (closing-
+prices up to 03:30 UTC *start*), so a jittered digest could fire *before* them and miss the failure.
+A fixed 04:30 UTC leaves a 60-minute runtime buffer after their latest possible start, not just their
+nominal finish). Rationale: the three data-integrity jobs this spec exists for run at 02:00–02:30 UTC
+±60min jitter, i.e. starting by 03:30 UTC at the latest; 04:30 UTC reliably captures them even if a
+run takes up to an hour, and still lands in the owner's IST morning. Tradeoff (accepted): the
+low-value cluster tail (cleanup/insights/net-worth, 03:00–08:00 UTC) reports the *next* morning if it
+fails — fine, since those self-retry/self-heal and a persistent failure still nags daily. Catching
+the tail same-day would push the digest to ~08:30 UTC (14:00 IST), out of the IST morning window:
 - Reads `job_failures` rows where `notified_at IS NULL`.
 - **If none → do nothing** (silence = healthy; no "all clear" spam).
 - If any → compose **one** email (not one-per-failure) listing job / workspace / error_type /
@@ -167,8 +172,10 @@ today's behavior; nothing becomes insecure).
 ### Retention
 
 `job_failures` rows are written only on failure (tiny volume for one user). Fold a purge of
-`resolved_at IS NOT NULL AND created_at < now() - 90d` into an existing hygiene job
-(`export_cleanup_job`) — one line, included here. Open rows (`resolved_at IS NULL`) are never
+`resolved_at IS NOT NULL AND resolved_at < now() - 90d` into an existing hygiene job
+(`export_cleanup_job`) — one line, included here. Purging on `resolved_at` (not `created_at`)
+guarantees at least 90 days of post-resolution history for the heartbeat/audit trail even for a
+failure that was open a long time before resolving. Open rows (`resolved_at IS NULL`) are never
 auto-purged.
 
 ## Out of scope
@@ -225,6 +232,8 @@ resolved rows past the window; open rows untouched.
 
 ## Resolved decisions
 
-- **Digest / heartbeat timing** (owner-decided 2026-07-19): daily digest **04:00 UTC (09:30 IST)**,
-  weekly heartbeat **Monday 04:30 UTC (10:00 IST)** — earliest IST-morning slot that still lands
-  after the critical data-integrity jobs. See C1 rationale above.
+- **Digest / heartbeat timing** (owner-decided 2026-07-19; digest time revised 2026-07-20 per
+  review — see C1): daily digest **04:30 UTC (10:00 IST)**, weekly heartbeat **Monday 04:30 UTC
+  (10:00 IST)** — same clock time (harmless: the heartbeat only fires Mondays), chosen as the
+  earliest IST-morning slot that leaves a full 60-minute runtime buffer after the critical
+  data-integrity jobs' latest possible start. See C1 rationale above.
