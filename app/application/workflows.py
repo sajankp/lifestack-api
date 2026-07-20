@@ -1,6 +1,7 @@
 import asyncio
 import calendar
 import html as html_lib
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -8,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import structlog
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
@@ -17,7 +18,9 @@ from app.auth.schemas import UserCreate
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.audit import AuditLogger, snapshot_columns
+from app.core.job_failures import JobFailure
 from app.core.recurrence import advance_due_date
+from app.core.retry import TRANSIENT_JOB_EXCEPTIONS, retry_async
 from app.dashboard.schemas import (
     BriefingLine,
     BriefingResponse,
@@ -1303,10 +1306,21 @@ async def ingest_fx_rates(session: AsyncSession) -> None:
     logger.info("ingesting_fx_rates_start", base_currency="USD")
 
     url = f"https://v6.exchangerate-api.com/v6/{settings.EXCHANGERATE_API_KEY}/latest/USD"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        data = resp.json()
+
+    async def _fetch() -> dict:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
+
+    # spec-088: retry only the network call. The DB upserts below are cheap,
+    # idempotent date-keyed writes and stay outside the retry loop.
+    data = await retry_async(
+        _fetch,
+        attempts=settings.JOB_RETRY_MAX_ATTEMPTS,
+        base_delay_seconds=settings.JOB_RETRY_BASE_DELAY_SECONDS,
+        transient_exceptions=TRANSIENT_JOB_EXCEPTIONS,
+    )
 
     if not isinstance(data, dict) or data.get("result") != "success":
         error_type = (
@@ -1751,3 +1765,122 @@ async def deliver_pending_email_notifications(session: AsyncSession, limit: int 
                 failed_count += 1
 
     return {"sent": sent_count, "failed": failed_count, "skipped": skipped_count}
+
+
+# ---------------------------------------------------------------------------
+# Job failure digest + health heartbeat (spec-088 Layer C)
+# ---------------------------------------------------------------------------
+
+
+async def collect_unnotified_job_failures(session: AsyncSession) -> list[JobFailure]:
+    """job_failures rows the daily digest hasn't reported yet, oldest first."""
+    result = await session.execute(
+        select(JobFailure).where(JobFailure.notified_at.is_(None)).order_by(JobFailure.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def mark_job_failures_notified(session: AsyncSession, failure_ids: list[int]) -> None:
+    if not failure_ids:
+        return
+    await session.execute(
+        update(JobFailure)
+        .where(JobFailure.id.in_(failure_ids))
+        .values(notified_at=datetime.now(UTC))
+    )
+
+
+def build_job_failure_digest_email(rows: list[JobFailure]) -> tuple[str, str]:
+    """(subject, html) for the daily failure digest -- one email listing every
+    row reported for the first time, never one email per failure."""
+    subject = f"[Lifestack] {len(rows)} job failure(s) need attention"
+    items = "".join(
+        "<li><b>{job}</b> (workspace {workspace}) — {error_type}: {message} "
+        "(attempts={attempts}, first failed {first_failed_at})</li>".format(
+            job=html_lib.escape(row.job_name),
+            workspace=row.workspace_id if row.workspace_id is not None else "global",
+            error_type=html_lib.escape(row.error_type),
+            message=html_lib.escape(row.error_message),
+            attempts=row.attempts,
+            first_failed_at=row.first_failed_at.isoformat(),
+        )
+        for row in rows
+    )
+    html = f"<p>{len(rows)} job failure(s) since the last digest:</p><ul>{items}</ul>"
+    return subject, html
+
+
+@dataclass
+class JobHealthHeartbeatSummary:
+    since: datetime
+    total: int = 0
+    resolved: int = 0
+    open: int = 0
+    by_job: dict[str, dict[str, int]] = field(default_factory=dict)
+
+
+async def collect_job_health_heartbeat_summary(
+    session: AsyncSession, since: datetime
+) -> JobHealthHeartbeatSummary:
+    """Rollup of job_failures created in [since, now) for the weekly heartbeat:
+    total / resolved / still-open, broken out by job_name."""
+    rows = (
+        (await session.execute(select(JobFailure).where(JobFailure.created_at >= since)))
+        .scalars()
+        .all()
+    )
+    summary = JobHealthHeartbeatSummary(since=since)
+    for row in rows:
+        stats = summary.by_job.setdefault(row.job_name, {"total": 0, "resolved": 0, "open": 0})
+        stats["total"] += 1
+        summary.total += 1
+        if row.resolved_at is not None:
+            stats["resolved"] += 1
+            summary.resolved += 1
+        else:
+            stats["open"] += 1
+            summary.open += 1
+    return summary
+
+
+JOB_FAILURE_RETENTION_DAYS = 90
+
+
+async def purge_resolved_job_failures(session: AsyncSession) -> int:
+    """Delete job_failures rows resolved more than 90 days ago (spec-088
+    Retention). Keyed on resolved_at, not created_at, so a failure open for a
+    long time before resolving still keeps its post-resolution history for at
+    least 90 days. Open rows (resolved_at IS NULL) are never auto-purged."""
+    cutoff = datetime.now(UTC) - timedelta(days=JOB_FAILURE_RETENTION_DAYS)
+    result = await session.execute(
+        delete(JobFailure)
+        .where(JobFailure.resolved_at.is_not(None), JobFailure.resolved_at < cutoff)
+        .returning(JobFailure.id)
+    )
+    return len(result.all())
+
+
+def build_job_health_heartbeat_email(summary: JobHealthHeartbeatSummary) -> tuple[str, str]:
+    """(subject, html) for the weekly heartbeat -- sent even at zero failures,
+    since its absence (not its content) is the "monitoring itself is dead" signal."""
+    subject = "[Lifestack] Weekly job health heartbeat"
+    if summary.total == 0:
+        body = "<p>No job failures in the last 7 days. Monitoring is alive.</p>"
+    else:
+        rows_html = "".join(
+            "<li>{job}: {total} total, {resolved} auto-recovered, {open} still open</li>".format(
+                job=html_lib.escape(job), **stats
+            )
+            for job, stats in summary.by_job.items()
+        )
+        body = (
+            f"<p>{summary.total} job failure(s) in the last 7 days "
+            f"({summary.resolved} auto-recovered, {summary.open} still open):</p>"
+            f"<ul>{rows_html}</ul>"
+        )
+    html = (
+        body + "<p>This is a periodic heartbeat: you get it whether or not there were "
+        "failures, so its absence is itself the signal something's wrong "
+        "(cron, email, or the app itself).</p>"
+    )
+    return subject, html

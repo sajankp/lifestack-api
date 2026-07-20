@@ -4,7 +4,7 @@ This document details all background jobs registered in Lifestack's FastAPI life
 
 Most background jobs are subject to **advisory lock coordination** on Postgres to prevent split-brain conflicts during rolling deployment windows, using one of two primitives:
 
-- **Transaction-scoped** (`pg_try_advisory_xact_lock`, released automatically on commit): `fx_rate_ingestion`, `export_cleanup`, `session_cleanup`, `import_preview_cleanup`, `push_delivery`.
+- **Transaction-scoped** (`pg_try_advisory_xact_lock`, released automatically on commit): `fx_rate_ingestion`, `export_cleanup`, `session_cleanup`, `import_preview_cleanup`, `push_delivery`, `job_failure_digest`, `job_health_heartbeat`.
 - **Session-scoped** (`pg_try_advisory_lock`, held across the per-workspace loop and released explicitly): the remaining per-workspace jobs, via the shared `run_workspace_job` helper — this primitive is used instead of the transaction-scoped one specifically so the lock survives `COMMIT` between workspaces in the loop (see the helper's docstring). `investment_closing_prices_job` was the last per-workspace job managing its own per-workspace sessions with no lock at all; it now uses `run_workspace_job` too (key 1013, see `app/core/constants.py`).
 
 Additionally, non-idempotent scheduler jobs are blocked from registering unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly configured.
@@ -128,4 +128,44 @@ Additionally, non-idempotent scheduler jobs are blocked from registering unless 
 - **Job Function**: `medication_reminder_job`
 - **Workflow Function**: `process_workspace_medication_reminders` (`app/application/workflows.py`)
 - **Purpose**: Clone of the Todo Reminder Job for Health Memory (spec-069) — finds dose slots (derived via `app/health/schedule.py::get_dose_slots_in_window`, never stored) entering the look-ahead window (now → now + interval) for active medications with `reminders_enabled=True`, and creates a `Notification` (`category="medication_reminder"`, title = medication name, body = dose text + local time) for each via the existing `NotificationService.notify`. Exactly one push per dose slot, no follow-up nudges — the morning briefing's missed-dose line is the only escalation.
+
+## 16. Job Failure Digest Job (spec-088)
+- **Job ID**: `job_failure_digest`
+- **Schedule**: Daily at 04:30 UTC — **fixed, deliberately NOT jitter-staggered**. The three
+  external-API jobs it reports on (`fx_rate_ingestion`, `bhavcopy_price_feed`,
+  `investment_closing_prices`) run at 02:00–02:30 UTC with ±60min jitter, i.e. starting by 03:30 UTC
+  at the latest; a fixed 04:30 UTC leaves a full hour of runtime buffer after their latest possible
+  start, so a jittered digest can never fire before them and miss a same-day failure.
+- **Job Function**: `job_failure_digest_job`
+- **Workflow Functions**: `collect_unnotified_job_failures`, `build_job_failure_digest_email`,
+  `mark_job_failures_notified` (`app/application/workflows.py`)
+- **Purpose**: Reads `job_failures` rows with `notified_at IS NULL`. If none, does nothing (silence =
+  healthy, no "all clear" email). If any, sends exactly **one** email (job/workspace/error/attempts
+  per row) to `OWNER_ALERT_EMAIL` and creates exactly **one** in-app `Notification`
+  (`category="system"`, `severity="warning"`), then stamps `notified_at` on every reported row.
+- **Idempotency / delivery guarantee**: at-least-once — if the email send succeeds but the
+  `notified_at` write is interrupted, the row is reported again next run (accepted tradeoff over
+  exactly-once complexity). A persistently-failing job produces a fresh `job_failures` row each day
+  it fails again (see per-job ledger writers), so it keeps nagging by design, never more than once/day.
+- **Gating**: `JOB_FAILURE_DIGEST_ENABLED` (default `true`) master switch; the email step additionally
+  requires `OWNER_ALERT_EMAIL` set (unset ⇒ email skipped-and-logged, in-app notification still fires).
+
+## 17. Job Health Heartbeat Job (spec-088)
+- **Job ID**: `job_health_heartbeat`
+- **Schedule**: Weekly, Monday at 04:30 UTC
+- **Job Function**: `job_health_heartbeat_job`
+- **Workflow Functions**: `collect_job_health_heartbeat_summary`, `build_job_health_heartbeat_email`
+  (`app/application/workflows.py`)
+- **Purpose**: Sends **one** email to `OWNER_ALERT_EMAIL` summarizing the last 7 days of
+  `job_failures` — total, auto-recovered (`resolved_at` set), still open, broken out by job name.
+  Sends even at **zero** failures — that's the point: a periodic "the monitoring pipeline itself
+  (cron/email/app) is alive" proof, so the *absence* of failure emails can be trusted as healthy
+  rather than silently broken.
+- **Gating**: `JOB_HEALTH_HEARTBEAT_ENABLED` (default `true`) AND `OWNER_ALERT_EMAIL` set (unlike the
+  digest, the heartbeat has no in-app fallback — its only output is the email, so it no-ops entirely
+  without a recipient).
+
+Both jobs are code-only, in-process (no broker) — see spec-088 for why, and `app/core/retry.py` /
+`app/core/job_failures.py` for the retry + ledger layers the three external-API jobs above (FX
+ingestion, bhavcopy, investment closing prices) opt into.
 - **Idempotency**: `Medication.last_reminded_slot` — the slot datetime most recently reminded (the `reminded_at` pattern, keyed to the slot rather than a boolean since one medication has many recurring slots). A re-run only reminds slots strictly after this marker.

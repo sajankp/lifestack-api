@@ -22,6 +22,8 @@ from app.application.jobs import (
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
     investment_closing_prices_job,
+    job_failure_digest_job,
+    job_health_heartbeat_job,
     kpi_guardrails_job,
     medication_reminder_job,
     morning_briefing_job,
@@ -209,6 +211,24 @@ async def lifespan(_app: FastAPI):
             job_id="morning_briefing",
             hour_utc=settings.BRIEFING_JOB_HOUR_UTC,
             minute_utc=settings.BRIEFING_JOB_MINUTE_UTC,
+        )
+        # spec-088: fixed 04:30 UTC, deliberately NOT jittered -- must reliably
+        # run after the data-integrity jobs' latest possible (jittered) start.
+        register_daily_job(
+            job_failure_digest_job,
+            job_id="job_failure_digest",
+            hour_utc=4,
+            minute_utc=30,
+        )
+        scheduler.add_job(
+            job_health_heartbeat_job,
+            "cron",
+            day_of_week="mon",
+            hour=4,
+            minute=30,
+            id="job_health_heartbeat",
+            replace_existing=True,
+            timezone="UTC",
         )
 
         # Update scheduler metrics

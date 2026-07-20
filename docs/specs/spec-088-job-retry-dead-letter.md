@@ -1,7 +1,7 @@
 # Spec-088: Job Failure Visibility & Alerting (retry + failure ledger + owner digest)
 
 **Created:** 2026-07-19
-**Status:** Approved (2026-07-19) — not yet implemented
+**Status:** Implemented (2026-07-21)
 **Depends on:** none new. Reuses: the advisory-lock single-connection job design (`app/application/jobs.py`,
 api#119) — **must be preserved exactly**; the Resend email path (`app/notifications/email.py::send_email`,
 spec-081); `NotificationService` for in-app notifications (spec-052).
