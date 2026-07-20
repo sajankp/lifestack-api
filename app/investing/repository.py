@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 from uuid import UUID
 
 from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -843,27 +844,48 @@ class PortfolioSnapshotRepository:
         self.session = session
 
     async def upsert(self, snapshot: PortfolioSnapshot) -> PortfolioSnapshot:
-        existing = (
+        """Atomic upsert on (workspace_id, snapshot_date) via ON CONFLICT DO
+        UPDATE. Plain check-then-insert let two unlocked callers (e.g. a
+        dashboard request and morning_briefing_job) both find no row for
+        today and both INSERT, raising IntegrityError on
+        uq_snapshot_workspace_date (prod incident 2026-07-18/19)."""
+        stmt = pg_insert(PortfolioSnapshot).values(
+            workspace_id=snapshot.workspace_id,
+            snapshot_date=snapshot.snapshot_date,
+            total_value=snapshot.total_value,
+            total_cost=snapshot.total_cost,
+            holdings_value=snapshot.holdings_value,
+            cash_value=snapshot.cash_value,
+            currency_code=snapshot.currency_code,
+            fx_rates_used=snapshot.fx_rates_used,
+            created_at=snapshot.created_at,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["workspace_id", "snapshot_date"],
+            set_={
+                "total_value": stmt.excluded.total_value,
+                "total_cost": stmt.excluded.total_cost,
+                "holdings_value": stmt.excluded.holdings_value,
+                "cash_value": stmt.excluded.cash_value,
+                "currency_code": stmt.excluded.currency_code,
+                "fx_rates_used": stmt.excluded.fx_rates_used,
+            },
+        )
+        await self.session.execute(stmt)
+        # populate_existing=True: the ON CONFLICT UPDATE above is raw Core DML
+        # and bypasses the unit-of-work, so a PortfolioSnapshot already in this
+        # session's identity map (e.g. loaded earlier via `latest()`) would
+        # otherwise be returned with its stale pre-conflict attribute values.
+        return (
             await self.session.execute(
-                select(PortfolioSnapshot).where(
+                select(PortfolioSnapshot)
+                .where(
                     PortfolioSnapshot.workspace_id == snapshot.workspace_id,
                     PortfolioSnapshot.snapshot_date == snapshot.snapshot_date,
                 )
+                .execution_options(populate_existing=True)
             )
-        ).scalar_one_or_none()
-        if existing:
-            existing.total_value = snapshot.total_value
-            existing.total_cost = snapshot.total_cost
-            existing.holdings_value = snapshot.holdings_value
-            existing.cash_value = snapshot.cash_value
-            existing.currency_code = snapshot.currency_code
-            existing.fx_rates_used = snapshot.fx_rates_used
-            self.session.add(existing)
-            await self.session.flush()
-            return existing
-        self.session.add(snapshot)
-        await self.session.flush()
-        return snapshot
+        ).scalar_one()
 
     async def delete_for_date(self, workspace_id: int, snapshot_date: date) -> None:
         await self.session.execute(
