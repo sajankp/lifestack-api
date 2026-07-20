@@ -1,7 +1,7 @@
 # Spec-087: Redis Cache for Dashboard Summary & Net Worth
 
 **Created:** 2026-07-19
-**Status:** Approved (2026-07-19) — not yet implemented
+**Status:** Implemented (2026-07-20) — `ENABLE_RESPONSE_CACHE` defaults `False` everywhere per Rollout
 **Depends on:** none (additive). Related: spec-086 (net-worth snapshot upsert-on-read semantics — see "Interaction with snapshot upsert" below)
 **Scope:** `lifestack-api` only — `app/core/cache.py` (new), `app/dashboard/router.py`, `app/finance/router.py`, `app/config.py`, `.env.example`. No `lifestack-web` or `lifestack-e2e` changes required.
 **Source:** `PERFORMANCE_ANALYSIS_REPORT.md` §1.2 ("No API-level caching") and §5 Quick Win #7 ("Cache dashboard summary in Redis (TTL 60s) — -200ms p95 on `/dashboard/summary`")

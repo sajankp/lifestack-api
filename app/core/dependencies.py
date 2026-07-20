@@ -15,6 +15,7 @@ from app.auth.dependencies import get_user_repo as get_user_repo
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.audit import AuditLogger
+from app.core.cache import ResponseCache
 from app.core.database.postgres import get_db_session
 from app.core.exceptions import ForbiddenError
 from app.exports.repository import ExportRepository
@@ -124,6 +125,12 @@ limiter = Limiter(
     storage_uri=settings.RATE_LIMIT_STORAGE_URI,
     enabled=settings.RATE_LIMIT_ENABLED,
 )
+
+response_cache = ResponseCache(settings.REDIS_URL, settings.ENABLE_RESPONSE_CACHE)
+
+
+async def get_response_cache() -> ResponseCache:
+    return response_cache
 
 
 async def get_audit_logger(session: AsyncSession = Depends(get_db_session)) -> AuditLogger:
