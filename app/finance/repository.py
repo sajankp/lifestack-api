@@ -4,6 +4,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import case, delete, func, or_, select, true
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -858,25 +859,48 @@ class NetWorthSnapshotRepository:
         self.session = session
 
     async def upsert(self, snapshot: NetWorthSnapshot) -> NetWorthSnapshot:
-        stmt = select(NetWorthSnapshot).where(
-            NetWorthSnapshot.workspace_id == snapshot.workspace_id,
-            NetWorthSnapshot.snapshot_date == snapshot.snapshot_date,
+        """Atomic upsert on (workspace_id, snapshot_date) via ON CONFLICT DO
+        UPDATE -- same fix as PortfolioSnapshotRepository.upsert(), applied
+        here since this repository has the identical check-then-insert race
+        against uq_workspace_net_worth_snapshot_day."""
+        stmt = pg_insert(NetWorthSnapshot).values(
+            workspace_id=snapshot.workspace_id,
+            snapshot_date=snapshot.snapshot_date,
+            reporting_currency=snapshot.reporting_currency,
+            holdings_value=snapshot.holdings_value,
+            investing_cash=snapshot.investing_cash,
+            spending_cash=snapshot.spending_cash,
+            total_net_worth=snapshot.total_net_worth,
+            fx_rates_used=snapshot.fx_rates_used,
+            source=snapshot.source,
+            created_at=snapshot.created_at,
         )
-        res = await self.session.execute(stmt)
-        existing = res.scalar_one_or_none()
-
-        if existing:
-            existing.reporting_currency = snapshot.reporting_currency
-            existing.holdings_value = snapshot.holdings_value
-            existing.investing_cash = snapshot.investing_cash
-            existing.spending_cash = snapshot.spending_cash
-            existing.total_net_worth = snapshot.total_net_worth
-            existing.fx_rates_used = snapshot.fx_rates_used
-            self.session.add(existing)
-            return existing
-        else:
-            self.session.add(snapshot)
-            return snapshot
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["workspace_id", "snapshot_date"],
+            set_={
+                "reporting_currency": stmt.excluded.reporting_currency,
+                "holdings_value": stmt.excluded.holdings_value,
+                "investing_cash": stmt.excluded.investing_cash,
+                "spending_cash": stmt.excluded.spending_cash,
+                "total_net_worth": stmt.excluded.total_net_worth,
+                "fx_rates_used": stmt.excluded.fx_rates_used,
+            },
+        )
+        await self.session.execute(stmt)
+        # populate_existing=True: see PortfolioSnapshotRepository.upsert() --
+        # the ON CONFLICT UPDATE above is raw Core DML and bypasses the
+        # unit-of-work, so an already identity-mapped NetWorthSnapshot would
+        # otherwise be returned with stale pre-conflict attribute values.
+        return (
+            await self.session.execute(
+                select(NetWorthSnapshot)
+                .where(
+                    NetWorthSnapshot.workspace_id == snapshot.workspace_id,
+                    NetWorthSnapshot.snapshot_date == snapshot.snapshot_date,
+                )
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
 
     async def delete_for_date(self, workspace_id: int, snapshot_date: date) -> None:
         """Delete the LIVE net-worth snapshot for a date so the next net-worth
