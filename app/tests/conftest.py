@@ -11,6 +11,8 @@ from testcontainers.redis import RedisContainer
 
 from alembic import command
 from app.config import settings
+from app.core import dependencies as core_dependencies
+from app.core.cache import ResponseCache
 from app.core.database import postgres
 from app.core.dependencies import limiter
 from app.main import app
@@ -43,6 +45,20 @@ def override_redis_url(redis_container):
     limiter._storage = storage_from_string(url)
     limiter._limiter = strategy_cls(limiter._storage)
     yield url
+
+
+@pytest.fixture
+def enable_response_cache(redis_container):
+    """Point the response cache singleton at the Redis testcontainer and enable it for one test.
+
+    ENABLE_RESPONSE_CACHE defaults False so tests get live behavior unless they opt in via this
+    fixture (spec-087 testing plan). Uses DB 2 to avoid any key overlap with rate-limit storage.
+    """
+    url = f"redis://{redis_container.get_container_host_ip()}:{redis_container.get_exposed_port(6379)}/2"
+    original = core_dependencies.response_cache
+    core_dependencies.response_cache = ResponseCache(url, enabled=True)
+    yield core_dependencies.response_cache
+    core_dependencies.response_cache = original
 
 
 @pytest.fixture(scope="session")

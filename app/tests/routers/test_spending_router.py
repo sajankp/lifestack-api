@@ -1,5 +1,20 @@
+from datetime import UTC, datetime
+from decimal import Decimal
+
 import pytest
 from httpx import AsyncClient
+from sqlmodel import select
+
+from app.auth.models import User
+from app.core.database import postgres
+from app.imports.models import ImportBatch, ImportModule
+from app.platform.models import WorkspaceMembership
+from app.spending.models import (
+    SpendingCategory,
+    SpendingTransaction,
+    TransactionSourceType,
+    TransactionType,
+)
 
 
 async def _register_and_login(client: AsyncClient, email: str, username: str) -> dict:
@@ -100,6 +115,70 @@ async def test_transaction_router_endpoints(client: AsyncClient):
     # 4. Delete transaction
     del_res = await client.delete(f"/v1/spending/transactions/{tx_id}", cookies=cookies)
     assert del_res.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_patch_import_sourced_transaction(client: AsyncClient):
+    """Regression test: PATCHing a transaction created via import must not crash
+    while resolving its source import batch (app/spending/service.py update_transaction_with_details).
+    """
+    cookies = await _register_and_login(client, "spendingimport@example.com", "spendingimport")
+
+    list_res = await client.get("/v1/spending/categories", cookies=cookies)
+    category_id = list_res.json()["items"][0]["public_id"]
+
+    async with postgres.async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.username == "spendingimport"))
+        ).scalar_one()
+        membership = (
+            await session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+            )
+        ).scalar_one()
+        workspace_id = membership.workspace_id
+
+        import_batch = ImportBatch(
+            workspace_id=workspace_id,
+            user_id=user.id,
+            module=ImportModule.spending_transactions,
+            filename="statement.csv",
+            file_sha256="a" * 64,
+        )
+        session.add(import_batch)
+        await session.flush()
+
+        category_row = (
+            await session.execute(
+                select(SpendingCategory).where(SpendingCategory.public_id == category_id)
+            )
+        ).scalar_one()
+
+        tx = SpendingTransaction(
+            workspace_id=workspace_id,
+            user_id=user.id,
+            category_id=category_row.id,
+            amount=Decimal("12.34"),
+            type=TransactionType.expense,
+            occurred_at=datetime.now(UTC),
+            source_type=TransactionSourceType.imported,
+            source_ref=f"import:{import_batch.id}:1",
+            source_import_id=import_batch.id,
+        )
+        session.add(tx)
+        await session.commit()
+        tx_public_id = tx.public_id
+        import_public_id = import_batch.public_id
+
+    patch_res = await client.patch(
+        f"/v1/spending/transactions/{tx_public_id}",
+        json={"description": "updated via patch"},
+        cookies=cookies,
+    )
+    assert patch_res.status_code == 200, patch_res.text
+    body = patch_res.json()
+    assert body["description"] == "updated via patch"
+    assert body["source_metadata"]["import_public_id"] == str(import_public_id)
 
 
 @pytest.mark.asyncio

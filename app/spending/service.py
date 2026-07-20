@@ -858,10 +858,10 @@ class TransactionService:
             account = await self.account_repo.get_by_id(workspace_id, tx.account_id)
             account_public_id = account.public_id if account else None
 
-        import_batch = None
-        if tx.source_import_id is not None:
-            import_repo = ImportRepository(self.repository.session)
-            import_batch = await import_repo.get_by_id(workspace_id, tx.source_import_id)
+        import_cache = await self._build_import_batch_cache(workspace_id, [tx])
+        import_batch = (
+            import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None
+        )
 
         return transaction_response(
             tx,

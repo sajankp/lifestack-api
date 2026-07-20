@@ -3,6 +3,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from httpx import AsyncClient
 
+from app.config import settings
+
 
 @pytest.mark.asyncio
 async def test_dashboard_summary_empty_workspace(client: AsyncClient):
@@ -200,3 +202,85 @@ async def test_briefing_workspace_isolation(client: AsyncClient):
     res = await client.get("/v1/dashboard/briefing")
     assert res.status_code == 200
     assert res.json()["all_clear"] is True
+
+
+# Response cache (spec-087)
+
+
+@pytest.mark.asyncio
+async def test_dashboard_summary_cache_hit_returns_stale_value(
+    client: AsyncClient, enable_response_cache
+):
+    user = {"email": "cache1@example.com", "username": "cache1", "password": "TestPass123!"}
+    await client.post("/v1/auth/register", json=user)
+    await client.post(
+        "/v1/auth/login", data={"username": user["username"], "password": user["password"]}
+    )
+
+    first = await client.get("/v1/dashboard/summary")
+    assert first.status_code == 200
+    assert first.json()["todos"]["open_count"] == 0
+
+    todo_res = await client.post("/v1/todo/", json={"title": "New Todo", "priority": "low"})
+    assert todo_res.status_code == 201
+
+    # Within TTL, the cached (stale) value should still be served.
+    second = await client.get("/v1/dashboard/summary")
+    assert second.status_code == 200
+    assert second.json()["todos"]["open_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_dashboard_summary_cache_disabled_by_default_recomputes_live(client: AsyncClient):
+    assert settings.ENABLE_RESPONSE_CACHE is False
+
+    user = {"email": "cache2@example.com", "username": "cache2", "password": "TestPass123!"}
+    await client.post("/v1/auth/register", json=user)
+    await client.post(
+        "/v1/auth/login", data={"username": user["username"], "password": user["password"]}
+    )
+
+    first = await client.get("/v1/dashboard/summary")
+    assert first.status_code == 200
+    assert first.json()["todos"]["open_count"] == 0
+
+    todo_res = await client.post("/v1/todo/", json={"title": "New Todo", "priority": "low"})
+    assert todo_res.status_code == 201
+
+    second = await client.get("/v1/dashboard/summary")
+    assert second.status_code == 200
+    assert second.json()["todos"]["open_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_dashboard_summary_cache_workspace_isolation(
+    client: AsyncClient, enable_response_cache
+):
+    user1 = {
+        "email": "cache_iso1@example.com",
+        "username": "cache_iso1",
+        "password": "TestPass123!",
+    }
+    await client.post("/v1/auth/register", json=user1)
+    await client.post(
+        "/v1/auth/login", data={"username": user1["username"], "password": user1["password"]}
+    )
+    await client.post("/v1/todo/", json={"title": "U1 Todo", "priority": "low"})
+    ws1_summary = await client.get("/v1/dashboard/summary")
+    assert ws1_summary.status_code == 200
+    assert ws1_summary.json()["todos"]["open_count"] == 1
+
+    await client.post("/v1/auth/logout")
+    user2 = {
+        "email": "cache_iso2@example.com",
+        "username": "cache_iso2",
+        "password": "TestPass123!",
+    }
+    await client.post("/v1/auth/register", json=user2)
+    await client.post(
+        "/v1/auth/login", data={"username": user2["username"], "password": user2["password"]}
+    )
+
+    ws2_summary = await client.get("/v1/dashboard/summary")
+    assert ws2_summary.status_code == 200
+    assert ws2_summary.json()["todos"]["open_count"] == 0

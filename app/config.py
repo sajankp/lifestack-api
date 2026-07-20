@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     RATE_LIMIT_AUTH: str = "10/minute"
     RATE_LIMIT_STORAGE_URI: str = "memory://"  # Set to REDIS_URL in production
 
+    # Response Cache (spec-087) — TTL-only cache-aside for dashboard summary & net worth
+    ENABLE_RESPONSE_CACHE: bool = False
+    REDIS_URL: str = "redis://localhost:6379/1"
+    DASHBOARD_CACHE_TTL_SECONDS: int = 30
+    NET_WORTH_CACHE_TTL_SECONDS: int = 120
+
     # Cookie Security
     COOKIE_SECURE: bool = False  # Set True in production (HTTPS)
     COOKIE_SAMESITE: str = "lax"

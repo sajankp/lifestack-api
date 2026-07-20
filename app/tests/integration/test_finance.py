@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from app.auth.models import User
+from app.config import settings
 from app.core.database import postgres
 from app.finance.models import Account, CapitalTransfer, FxRate, TransferModule
 from app.platform.models import WorkspaceMembership
@@ -1274,6 +1275,80 @@ async def test_legacy_outflow_transfer_without_snapshot_is_unaffected(client: As
 
     delete_res = await client.delete(f"/v1/finance/transfers/{transfer_id}")
     assert delete_res.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# Response cache (spec-087)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_net_worth_cache_hit_returns_stale_value(client: AsyncClient, enable_response_cache):
+    await _register_and_login(
+        client, email="nwcache1@example.com", username="nwcache1", password="TestPass123!"
+    )
+
+    first = await client.get("/v1/finance/net-worth")
+    assert first.status_code == 200
+    assert first.json()["spending_accounts"] == []
+
+    create_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+    )
+    assert create_res.status_code == 201
+
+    # Within TTL, the cached (stale) value should still be served — new account not reflected.
+    second = await client.get("/v1/finance/net-worth")
+    assert second.status_code == 200
+    assert second.json()["spending_accounts"] == []
+
+
+@pytest.mark.asyncio
+async def test_net_worth_cache_disabled_by_default_recomputes_live(client: AsyncClient):
+    assert settings.ENABLE_RESPONSE_CACHE is False
+
+    await _register_and_login(
+        client, email="nwcache2@example.com", username="nwcache2", password="TestPass123!"
+    )
+
+    first = await client.get("/v1/finance/net-worth")
+    assert first.status_code == 200
+    assert first.json()["spending_accounts"] == []
+
+    create_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+    )
+    assert create_res.status_code == 201
+
+    second = await client.get("/v1/finance/net-worth")
+    assert second.status_code == 200
+    assert len(second.json()["spending_accounts"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_net_worth_cache_workspace_isolation(client: AsyncClient, enable_response_cache):
+    await _register_and_login(
+        client, email="nwcache_iso1@example.com", username="nwcache_iso1", password="TestPass123!"
+    )
+    create_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Wallet", "account_type": "wallet", "default_currency_code": "USD"},
+    )
+    assert create_res.status_code == 201
+    ws1_net_worth = await client.get("/v1/finance/net-worth")
+    assert ws1_net_worth.status_code == 200
+    assert len(ws1_net_worth.json()["spending_accounts"]) == 1
+
+    await client.post("/v1/auth/logout")
+    await _register_and_login(
+        client, email="nwcache_iso2@example.com", username="nwcache_iso2", password="TestPass123!"
+    )
+
+    ws2_net_worth = await client.get("/v1/finance/net-worth")
+    assert ws2_net_worth.status_code == 200
+    assert ws2_net_worth.json()["spending_accounts"] == []
 
 
 # ---------------------------------------------------------------------------
