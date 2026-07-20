@@ -66,6 +66,22 @@ async def test_fail_open_on_unreachable_redis():
 
 
 @pytest.mark.asyncio
+async def test_get_json_fails_open_on_corrupted_cached_value(redis_container):
+    """Regression test: json.loads used to run outside the try/except, so a
+    corrupted cache entry (never written by set_json, e.g. hand-edited or
+    partially written) would raise JSONDecodeError instead of the documented
+    fail-open miss."""
+    url = _container_url(redis_container)
+    client = redis.Redis.from_url(url, decode_responses=True)
+    key = "cache:v1:test:corrupted"
+    await client.set(key, "{not valid json", ex=60)
+    await client.aclose()
+
+    cache = ResponseCache(url, enabled=True)
+    assert await cache.get_json(key) is None
+
+
+@pytest.mark.asyncio
 async def test_workspace_scoped_keys_do_not_collide(redis_container):
     cache = ResponseCache(_container_url(redis_container), enabled=True)
     key_ws1 = "cache:v1:dashboard:summary:1"

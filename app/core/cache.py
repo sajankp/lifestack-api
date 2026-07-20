@@ -34,12 +34,12 @@ class ResponseCache:
             return None
         try:
             raw = await self._get_client().get(key)
+            if raw is None:
+                return None
+            return json.loads(raw)
         except Exception:
             logger.warning("response cache GET failed for key=%s, treating as miss", key)
             return None
-        if raw is None:
-            return None
-        return json.loads(raw)
 
     async def set_json(self, key: str, value: dict, ttl_seconds: int) -> None:
         if not self.enabled:
