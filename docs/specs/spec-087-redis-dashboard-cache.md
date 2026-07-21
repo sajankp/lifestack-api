@@ -93,15 +93,19 @@ displayed values:
 | Investing order placement | `POST /investing/orders` (`app/investing/router.py:467`) | `dashboard:summary` |
 | Investing order update | `PATCH /investing/orders/{id}` (`:564`) | `dashboard:summary` |
 | Investing order delete | `DELETE /investing/orders/{id}` (`:545`) | `dashboard:summary` |
+| Capital transfer create/update/delete | `POST/PATCH/DELETE /finance/transfers` (`app/finance/router.py:438,456,474`) | `dashboard:summary` |
 
-**Deliberately excluded:** capital transfer create/update/delete. Traced `DashboardSummaryWorkflow`
-end to end — its `investing` section comes from `PerformanceService` (IRR/TWR/holdings
-performance), and transfers do not feed that computation directly (transfers move cash between
-accounts; performance is computed from orders and holdings). Budget and todo mutations are also
-excluded — they're outside the write-path list this spec was scoped against, and the 60s TTL is
-an accepted staleness backstop for that gap (a user changing a budget and immediately checking the
-dashboard may see stale spotlight numbers for up to 60s — judged acceptable; **flagged explicitly
-here rather than silently narrowed**, see §11 Q2).
+**Corrected (was wrongly excluded in an earlier draft):** capital transfer create/update/delete
+*does* feed this key. `DashboardSummaryWorkflow.get_summary`'s `investing` section comes from
+`PerformanceService.summary()`, whose `cash_total` is computed by `_live_cash_total` reading
+`CashBalanceRepository.get_latest_per_account_currency` (brokerage-account-filtered) — exactly the
+`InvestingCashBalance` rows `CapitalTransferService.create_transfer`/`update_transfer` write for any
+transfer leg touching a brokerage account. Omitting it would leave the dashboard's investing cash
+total stale after a transfer. Budget and todo mutations remain excluded — they're outside the
+write-path list this spec was scoped against, and the 60s TTL is an accepted staleness backstop for
+that gap (a user changing a budget and immediately checking the dashboard may see stale spotlight
+numbers for up to 60s — judged acceptable; **flagged explicitly here rather than silently
+narrowed**, see §11 Q2).
 
 ### 5.2 `finance:net-worth` (key #2)
 
