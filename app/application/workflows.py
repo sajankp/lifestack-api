@@ -1823,23 +1823,25 @@ async def collect_job_health_heartbeat_summary(
     session: AsyncSession, since: datetime
 ) -> JobHealthHeartbeatSummary:
     """Rollup of job_failures created in [since, now) for the weekly heartbeat:
-    total / resolved / still-open, broken out by job_name."""
-    rows = (
-        (await session.execute(select(JobFailure).where(JobFailure.created_at >= since)))
-        .scalars()
-        .all()
+    total / resolved / still-open, broken out by job_name. Aggregated in the
+    database via GROUP BY rather than loading every row into memory to count
+    them."""
+    stmt = (
+        select(
+            JobFailure.job_name,
+            func.count(JobFailure.id).label("total"),
+            func.count(JobFailure.id).filter(JobFailure.resolved_at.is_not(None)).label("resolved"),
+        )
+        .where(JobFailure.created_at >= since)
+        .group_by(JobFailure.job_name)
     )
     summary = JobHealthHeartbeatSummary(since=since)
-    for row in rows:
-        stats = summary.by_job.setdefault(row.job_name, {"total": 0, "resolved": 0, "open": 0})
-        stats["total"] += 1
-        summary.total += 1
-        if row.resolved_at is not None:
-            stats["resolved"] += 1
-            summary.resolved += 1
-        else:
-            stats["open"] += 1
-            summary.open += 1
+    for job_name, total, resolved in await session.execute(stmt):
+        open_count = total - resolved
+        summary.by_job[job_name] = {"total": total, "resolved": resolved, "open": open_count}
+        summary.total += total
+        summary.resolved += resolved
+        summary.open += open_count
     return summary
 
 

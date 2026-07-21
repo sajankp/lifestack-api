@@ -100,9 +100,14 @@ async def test_digest_with_no_unnotified_rows_sends_nothing(override_database_ur
 
 
 @pytest.mark.asyncio
-async def test_digest_without_owner_alert_email_still_creates_in_app_notification(
+async def test_digest_without_owner_alert_email_skips_email_and_in_app_notification(
     override_database_url, monkeypatch
 ):
+    """OWNER_ALERT_EMAIL is how the owner's user account is resolved for the
+    in-app notification (matched against User.email) -- without it there's no
+    identity to notify, so both channels are skipped. The ledger rows are
+    still stamped notified_at so a later run doesn't re-report them once
+    OWNER_ALERT_EMAIL is configured."""
     monkeypatch.setattr(settings, "OWNER_ALERT_EMAIL", None)
     await _seed_failure("fx_rate_ingestion_job")
 
@@ -114,8 +119,28 @@ async def test_digest_without_owner_alert_email_still_creates_in_app_notificatio
     async with postgres.async_session_maker() as session:
         notifications = (await session.execute(select(Notification))).scalars().all()
         rows = (await session.execute(select(JobFailure))).scalars().all()
-    assert len(notifications) == 1
+    assert notifications == []
     assert all(r.notified_at is not None for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_digest_owner_email_not_matching_any_user_skips_in_app_notification(
+    override_database_url, monkeypatch
+):
+    """OWNER_ALERT_EMAIL set but not matching any User row (e.g. misconfigured)
+    must not create an in-app notification for the wrong/no user -- email
+    still sends since Resend doesn't need a local User match."""
+    monkeypatch.setattr(settings, "OWNER_ALERT_EMAIL", "nobody@example.com")
+    await _seed_failure("fx_rate_ingestion_job")
+
+    email_mock = AsyncMock(return_value=EmailResult(success=True))
+    with patch("app.application.jobs.send_email", new=email_mock):
+        await job_failure_digest_job()
+
+    email_mock.assert_awaited_once()
+    async with postgres.async_session_maker() as session:
+        notifications = (await session.execute(select(Notification))).scalars().all()
+    assert notifications == []
 
 
 @pytest.mark.asyncio

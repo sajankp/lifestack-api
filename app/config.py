@@ -138,8 +138,8 @@ class Settings(BaseSettings):
     OWNER_ALERT_EMAIL: str | None = None
     JOB_FAILURE_DIGEST_ENABLED: bool = True
     JOB_HEALTH_HEARTBEAT_ENABLED: bool = True
-    JOB_RETRY_MAX_ATTEMPTS: int = 3
-    JOB_RETRY_BASE_DELAY_SECONDS: float = 2.0
+    JOB_RETRY_MAX_ATTEMPTS: int = Field(default=3, ge=1)
+    JOB_RETRY_BASE_DELAY_SECONDS: float = Field(default=2.0, ge=0.0)
 
     # Recurring Transactions (Spec 013)
     RECURRING_TXN_GENERATION_HOUR: int = 0  # UTC hour to run generation job

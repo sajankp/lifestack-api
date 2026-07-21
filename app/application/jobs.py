@@ -44,6 +44,7 @@ from app.application.workflows import (
     process_workspace_todo_reminders,
     purge_resolved_job_failures,
 )
+from app.auth.models import User
 from app.config import settings
 from app.core.constants import (
     ADVISORY_LOCK_BHAVCOPY_PRICE_FEED,
@@ -859,28 +860,27 @@ JOB_HEALTH_HEARTBEAT_LOCK_KEY = ADVISORY_LOCK_JOB_HEALTH_HEARTBEAT
 
 
 async def _resolve_owner_workspace_and_user(session: AsyncSession) -> tuple[int, int] | None:
-    """Pick the first active workspace's owner-role member as "the owner" for
-    operational alerts. Single-user app today; a multi-owner alert routing
-    scheme is out of scope for spec-088."""
-    ws_res = await session.execute(
-        select(Workspace.id).where(Workspace.is_active).order_by(Workspace.id).limit(1)
-    )
-    workspace_id = ws_res.scalar()
-    if workspace_id is None:
+    """Resolve the owner's (workspace_id, user_id) for the in-app failure
+    notification from ``OWNER_ALERT_EMAIL`` -- the User row matching that
+    address, then their earliest-joined active workspace membership. This
+    setting already names the owner unambiguously wherever alerting is
+    configured, so there's no need to guess via "first active workspace";
+    unset/unmatched ⇒ no owner to notify (email and in-app both skipped)."""
+    if not settings.OWNER_ALERT_EMAIL:
         return None
 
-    member_res = await session.execute(
-        select(WorkspaceMembership.user_id)
-        .where(WorkspaceMembership.workspace_id == workspace_id)
-        .order_by(
-            (WorkspaceMembership.role == "owner").desc(), WorkspaceMembership.created_at.asc()
-        )
+    stmt = (
+        select(WorkspaceMembership.workspace_id, WorkspaceMembership.user_id)
+        .join(User, User.id == WorkspaceMembership.user_id)
+        .join(Workspace, Workspace.id == WorkspaceMembership.workspace_id)
+        .where(User.email == settings.OWNER_ALERT_EMAIL, Workspace.is_active)
+        .order_by(WorkspaceMembership.created_at.asc())
         .limit(1)
     )
-    user_id = member_res.scalar()
-    if user_id is None:
+    row = (await session.execute(stmt)).first()
+    if row is None:
         return None
-    return workspace_id, user_id
+    return row.workspace_id, row.user_id
 
 
 async def job_failure_digest_job() -> None:
