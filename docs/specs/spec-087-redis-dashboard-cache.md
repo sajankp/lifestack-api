@@ -282,7 +282,14 @@ here is forward-only and reversible, not something that requires reconciling pas
    and `summaries` paths in `ETagMiddleware` (`main.py:263-276`). The implementation PR needs to
    decide whether the Redis cache check happens before or after ETag computation (cache the raw
    response body so ETag can still be computed from it, vs. cache the ETag alongside the body to
-   skip re-hashing) — a design detail for that PR, flagged now so it isn't missed.
+   skip re-hashing) — a design detail for that PR, flagged now so it isn't missed. Two concrete
+   constraints for whichever ordering is chosen (review feedback, 2026-07-21): **(a)** any
+   middleware that touches the response body for hashing/caching should operate on the raw bytes,
+   not decode/parse them as JSON first — decoding is wasted CPU if the operation (hashing, storing)
+   works fine on bytes directly; **(b)** if the cache layer is implemented as an endpoint decorator
+   rather than middleware, headers (ETag, cache status) must be set on the FastAPI-injected
+   `Response` object (`kwargs.get("response")`), not on a return value the endpoint hands back as a
+   Pydantic model/dict — header mutations on the latter are silently dropped.
 4. **Import-revert as a weekly-summary invalidation trigger (§5.4):** this was discovered by
    tracing spec-086's read-time annotation, not requested in the original write-path list.
    Recommend including it; maintainer sign-off requested since it's an addition beyond the
