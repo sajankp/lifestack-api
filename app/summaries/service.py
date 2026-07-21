@@ -112,6 +112,54 @@ class WeeklySummaryService:
             return False
         return any(date_in_any_window(d, windows) for d in dates)
 
+    async def is_stale(self, item: WeeklySummary) -> bool:
+        """spec-085: whether fresher net-worth/investing boundary data now
+        exists than what this stored summary was generated from -- a cheap,
+        read-time-only check (two indexed single-row queries), not a stored
+        column. Only checked for sections that reported "complete" at
+        generation time; an "unavailable" section has no boundary date to
+        compare against and a newly-available snapshot there is a status
+        change, not staleness of an existing figure."""
+        if item.net_worth_summary and item.net_worth_summary.get("status") == "complete":
+            end_snapshot = (
+                await self.session.execute(
+                    select(NetWorthSnapshot)
+                    .where(
+                        NetWorthSnapshot.workspace_id == item.workspace_id,
+                        NetWorthSnapshot.snapshot_date <= item.week_end,
+                    )
+                    .order_by(NetWorthSnapshot.snapshot_date.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            stored_date = item.net_worth_summary.get("end_snapshot_date")
+            current_date = (
+                end_snapshot.snapshot_date.isoformat() if end_snapshot is not None else None
+            )
+            if current_date != stored_date:
+                return True
+
+        if item.investing_summary and item.investing_summary.get("status") == "complete":
+            end_snapshot = (
+                await self.session.execute(
+                    select(PortfolioSnapshot)
+                    .where(
+                        PortfolioSnapshot.workspace_id == item.workspace_id,
+                        PortfolioSnapshot.snapshot_date <= item.week_end,
+                    )
+                    .order_by(PortfolioSnapshot.snapshot_date.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            stored_date = item.investing_summary.get("end_snapshot_date")
+            current_date = (
+                end_snapshot.snapshot_date.isoformat() if end_snapshot is not None else None
+            )
+            if current_date != stored_date:
+                return True
+
+        return False
+
     async def mark_read(self, workspace_id: int, public_id: uuid.UUID):
         """Record that the user has opened this summary (spec-080). Workspace-scoped
         404 for unknown/other-workspace ids; idempotent on repeat reads."""

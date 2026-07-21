@@ -82,7 +82,9 @@ async def get_latest_weekly_summary(
 ):
     item = await service.latest(workspace_id)
     return WeeklySummaryResponse.from_summary(
-        item, data_revised_after_snapshot=await service.has_reverted_import_overlap(item)
+        item,
+        data_revised_after_snapshot=await service.has_reverted_import_overlap(item),
+        data_stale=await service.is_stale(item),
     )
 
 
@@ -95,7 +97,9 @@ async def get_weekly_summary(
 ):
     item = await service.get(workspace_id, summary_id)
     return WeeklySummaryResponse.from_summary(
-        item, data_revised_after_snapshot=await service.has_reverted_import_overlap(item)
+        item,
+        data_revised_after_snapshot=await service.has_reverted_import_overlap(item),
+        data_stale=await service.is_stale(item),
     )
 
 
