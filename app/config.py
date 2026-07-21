@@ -147,8 +147,9 @@ class Settings(BaseSettings):
     JOB_RETRY_MAX_ATTEMPTS: int = Field(default=3, ge=1)
     JOB_RETRY_BASE_DELAY_SECONDS: float = Field(default=2.0, ge=0.0)
 
-    # Recurring Transactions (Spec 013)
-    RECURRING_TXN_GENERATION_HOUR: int = 0  # UTC hour to run generation job
+    # Recurring Transactions (Spec 013). 22 UTC = 22:30 UTC = 03:30 IST per
+    # spec-089's IST-morning schedule (registered with minute_utc=30 inline).
+    RECURRING_TXN_GENERATION_HOUR: int = 22  # UTC hour to run generation job
     RECURRING_TXN_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up generation
     RECURRING_TODO_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up todo generation
 
@@ -160,11 +161,11 @@ class Settings(BaseSettings):
     PUSH_DELIVERY_INTERVAL_MINUTES: int = 1
     TODO_REMINDER_INTERVAL_MINUTES: int = 5
 
-    # Morning briefing (spec-067) — daily at ~08:00 IST by default, after
-    # Monday's 01:30 UTC weekly_summary cron so a fresh summary lands in
-    # that same Monday briefing.
-    BRIEFING_JOB_HOUR_UTC: int = 2
-    BRIEFING_JOB_MINUTE_UTC: int = 30
+    # Morning briefing (spec-067) — retimed by spec-089 to 23:45 UTC = 05:15
+    # IST, the last step before the job_failure_digest, so it reflects the
+    # fully-updated net worth/insights from earlier in the IST-morning chain.
+    BRIEFING_JOB_HOUR_UTC: int = 23
+    BRIEFING_JOB_MINUTE_UTC: int = 45
 
     # Health Memory v1 (spec-069)
     HEALTH_DOSE_GRACE_HOURS: int = 4  # owner-confirmed grace window before a dose reads as "missed"
