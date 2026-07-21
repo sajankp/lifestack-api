@@ -4,6 +4,7 @@ from sqlmodel import SQLModel
 
 from app.auth.models import AuthSession, PasswordResetToken, User  # noqa: F401
 from app.core.audit import AuditLog  # noqa: F401
+from app.core.job_failures import JobFailure  # noqa: F401
 from app.exports.models import ExportRecord  # noqa: F401
 from app.finance.models import (  # noqa: F401
     Account,

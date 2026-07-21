@@ -25,6 +25,9 @@
 #   1014 – morning_briefing_job
 #   1015 – medication_reminder_job
 #   1016 – kpi_guardrails_job
+#   1017 – email_delivery_job
+#   1018 – job_failure_digest_job
+#   1019 – job_health_heartbeat_job
 # ---------------------------------------------------------------------------
 
 ADVISORY_LOCK_BUDGET_GUARDRAILS: int = 1001
@@ -44,3 +47,5 @@ ADVISORY_LOCK_MORNING_BRIEFING: int = 1014
 ADVISORY_LOCK_MEDICATION_REMINDER: int = 1015
 ADVISORY_LOCK_KPI_GUARDRAILS: int = 1016
 ADVISORY_LOCK_EMAIL_DELIVERY: int = 1017
+ADVISORY_LOCK_JOB_FAILURE_DIGEST: int = 1018
+ADVISORY_LOCK_JOB_HEALTH_HEARTBEAT: int = 1019

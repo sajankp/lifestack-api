@@ -1,7 +1,7 @@
 # Spec-088: Job Failure Visibility & Alerting (retry + failure ledger + owner digest)
 
 **Created:** 2026-07-19
-**Status:** Approved (2026-07-19) — not yet implemented
+**Status:** Implemented (2026-07-21)
 **Depends on:** none new. Reuses: the advisory-lock single-connection job design (`app/application/jobs.py`,
 api#119) — **must be preserved exactly**; the Resend email path (`app/notifications/email.py::send_email`,
 spec-081); `NotificationService` for in-app notifications (spec-052).
@@ -126,8 +126,15 @@ connection assertions are the regression guard and must pass unchanged.
 notifications (dose reminders etc.) are opt-in per `NotificationPreference` (`channel_email` defaults
 False). **Operational alerts must not be silenceable by a product toggle**, so the digest/heartbeat
 email is sent *directly* via `send_email(...)` to a new `OWNER_ALERT_EMAIL` setting, gated only by
-the existing `EMAIL_ENABLED` + `RESEND_API_KEY` master switches. If `OWNER_ALERT_EMAIL` is unset, the
-email step is skipped-and-logged (the in-app notification still happens).
+the existing `EMAIL_ENABLED` + `RESEND_API_KEY` master switches. **`OWNER_ALERT_EMAIL` also identifies
+the owner for the in-app notification** — resolved as the `User` row whose `email` matches
+`OWNER_ALERT_EMAIL`, then that user's earliest-joined active workspace membership (not a "first active
+workspace" guess, which breaks the moment there's more than one workspace/user). If `OWNER_ALERT_EMAIL`
+is unset, or set to an address with no matching `User`, there is no identity to notify: **both** the
+email and the in-app notification are skipped-and-logged (revised 2026-07-21 — an earlier draft of
+this spec had the in-app notification fire regardless of `OWNER_ALERT_EMAIL`; that required guessing
+the owner rather than naming them, so it was dropped in favor of always deriving identity from the
+setting).
 
 **C1 — Daily failure digest** (`job_failure_digest_job`, new; scheduled at a **fixed 04:30 UTC =
 10:00 IST — NOT jitter-staggered**, deliberately: the critical jobs carry ±60min jitter (closing-
@@ -160,7 +167,7 @@ the tail same-day would push the digest to ~08:30 UTC (14:00 IST), out of the IS
 
 | Field | Default | Notes |
 |---|---|---|
-| `OWNER_ALERT_EMAIL` | `None` | Ops-alert recipient. Unset ⇒ digest/heartbeat email skipped (in-app notification still fires). |
+| `OWNER_ALERT_EMAIL` | `None` | Ops-alert recipient, and the `User.email` lookup key for the digest's in-app notification. Unset or no matching `User` ⇒ both email and in-app notification skipped. |
 | `JOB_FAILURE_DIGEST_ENABLED` | `True` | Master switch for the daily digest. |
 | `JOB_HEALTH_HEARTBEAT_ENABLED` | `True` | Master switch for the weekly heartbeat. |
 | `JOB_RETRY_MAX_ATTEMPTS` | `3` | Opted-in jobs; 1 = no retry. |
@@ -214,7 +221,10 @@ with retry enabled.
 Alerting:
 9. Digest with failures → exactly one `send_email` call (to `OWNER_ALERT_EMAIL`) + one owner
 `Notification`; reported rows get `notified_at`. 10. Digest with no unnotified rows → **no** email,
-**no** notification. 11. `OWNER_ALERT_EMAIL` unset → no email, but in-app notification still created.
+**no** notification. 11. `OWNER_ALERT_EMAIL` unset → no email **and** no in-app notification (no
+identity to resolve), but rows still get `notified_at` so they aren't re-reported once the setting is
+configured. 11b. `OWNER_ALERT_EMAIL` set but matching no `User` → email still sends, in-app
+notification still skipped.
 12. Weekly heartbeat sends even at zero failures; respects `JOB_HEALTH_HEARTBEAT_ENABLED=False`.
 13. `JOB_FAILURE_DIGEST_ENABLED=False` → digest job is a no-op. 14. Retention purge removes only
 resolved rows past the window; open rows untouched.

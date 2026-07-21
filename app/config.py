@@ -138,6 +138,15 @@ class Settings(BaseSettings):
     BUDGET_WARNING_THRESHOLD: float = 0.9
     BUDGET_CRITICAL_THRESHOLD: float = 1.0
 
+    # Job failure visibility & alerting (spec-088). All fail safe: unset/disabled
+    # reverts to today's behavior (no retry, no alert emails), so no
+    # production-validator requirement.
+    OWNER_ALERT_EMAIL: str | None = None
+    JOB_FAILURE_DIGEST_ENABLED: bool = True
+    JOB_HEALTH_HEARTBEAT_ENABLED: bool = True
+    JOB_RETRY_MAX_ATTEMPTS: int = Field(default=3, ge=1)
+    JOB_RETRY_BASE_DELAY_SECONDS: float = Field(default=2.0, ge=0.0)
+
     # Recurring Transactions (Spec 013)
     RECURRING_TXN_GENERATION_HOUR: int = 0  # UTC hour to run generation job
     RECURRING_TXN_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up generation
