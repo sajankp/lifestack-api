@@ -147,7 +147,7 @@ class Settings(BaseSettings):
     JOB_RETRY_MAX_ATTEMPTS: int = Field(default=3, ge=1)
     JOB_RETRY_BASE_DELAY_SECONDS: float = Field(default=2.0, ge=0.0)
 
-    # Recurring Transactions (Spec 013). 22 UTC = 22:30 UTC = 03:30 IST per
+    # Recurring Transactions (Spec 013). 22:30 UTC = 04:00 IST per
     # spec-089's IST-morning schedule (registered with minute_utc=30 inline).
     RECURRING_TXN_GENERATION_HOUR: int = 22  # UTC hour to run generation job
     RECURRING_TXN_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up generation

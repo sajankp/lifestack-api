@@ -14,20 +14,25 @@ from app.config import settings
 from app.core.scheduler import scheduler
 from app.main import app, lifespan
 
-# (job_id, hour_utc, minute_utc) per spec-089's schedule table.
-FIXED_SCHEDULE = [
-    ("export_cleanup", 21, 30),
-    ("session_cleanup", 21, 45),
-    ("import_preview_cleanup", 22, 0),
-    ("fx_rate_ingestion", 22, 15),
-    ("recurring_transactions", 22, 30),
-    ("bhavcopy_price_feed", 22, 45),
-    ("investment_closing_prices", 23, 0),
-    ("net_worth_snapshot", 23, 15),
-    ("dashboard_insights", 23, 30),
-    ("morning_briefing", 23, 45),
-    ("job_failure_digest", 0, 0),
-]
+
+def _expected_schedule() -> list[tuple[str, int, int]]:
+    """(job_id, hour_utc, minute_utc) per spec-089's schedule table.
+    ``recurring_transactions`` and ``morning_briefing`` read their hour/minute
+    from Settings rather than hardcoding the default, so this stays correct
+    under a customized `.env`/test-environment override of those two anchors."""
+    return [
+        ("export_cleanup", 21, 30),
+        ("session_cleanup", 21, 45),
+        ("import_preview_cleanup", 22, 0),
+        ("fx_rate_ingestion", 22, 15),
+        ("recurring_transactions", settings.RECURRING_TXN_GENERATION_HOUR, 30),
+        ("bhavcopy_price_feed", 22, 45),
+        ("investment_closing_prices", 23, 0),
+        ("net_worth_snapshot", 23, 15),
+        ("dashboard_insights", 23, 30),
+        ("morning_briefing", settings.BRIEFING_JOB_HOUR_UTC, settings.BRIEFING_JOB_MINUTE_UTC),
+        ("job_failure_digest", 0, 0),
+    ]
 
 
 def _cron_field(job_id: str, field_name: str) -> str:
@@ -65,7 +70,7 @@ async def running_scheduler(override_database_url, monkeypatch):
 async def test_fixed_daily_jobs_registered_at_exact_utc_times_no_jitter(running_scheduler):
     """Every retimed job lands on its exact fixed hour/minute -- not a range --
     proving jitter is off for these jobs."""
-    for job_id, hour, minute in FIXED_SCHEDULE:
+    for job_id, hour, minute in _expected_schedule():
         assert _cron_field(job_id, "hour") == str(hour), f"{job_id} hour mismatch"
         assert _cron_field(job_id, "minute") == str(minute), f"{job_id} minute mismatch"
 
