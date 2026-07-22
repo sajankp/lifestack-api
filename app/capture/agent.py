@@ -20,6 +20,11 @@ from app.capture.session_limiter import (
     CaptureSessionLimiter,
     CaptureSessionLimitExceededError,
 )
+from app.capture.tool_dedup import (
+    WRITE_TOOLS,
+    SessionDedupContext,
+    get_global_ledger,
+)
 from app.capture.tools import AgentTools
 from app.config import settings
 from app.core.database import postgres
@@ -89,6 +94,7 @@ def _log_capture_turn(
     user_id: int,
     workspace_id: int,
     session_id: str | None = None,
+    call_id: str | None = None,
 ) -> None:
     """Record one voice tool-call turn (`kind='tool_call'`): tool name, args, and
     outcome. The user's utterance is not on this row — with input transcription
@@ -99,6 +105,7 @@ def _log_capture_turn(
     _log_capture_event({
         "kind": "tool_call",
         "session_id": session_id,
+        "call_id": call_id,
         "tool": tool_name,
         "args": args,
         "status": status,
@@ -398,6 +405,7 @@ async def _handle_gemini_message(
     *,
     session_id: str | None = None,
     turn_state: dict | None = None,
+    dedup_ctx: SessionDedupContext | None = None,
 ):
     """
     Parse a single message from Gemini and forward content to the client.
@@ -505,13 +513,51 @@ async def _handle_gemini_message(
 
             await client_ws.send_json({"type": "tool_call", "name": name, "arguments": args})
 
-            result = await execute_agent_tool(
-                name,
-                args,
-                user_id,
-                workspace_id,
-                user_timezone,
-            )
+            # spec-090 replay guard: on a resumed connection where the user has
+            # not yet spoken/typed, a write call matching a recent successful
+            # execution is Gemini re-emitting a call whose side effect already
+            # committed (toolResponse lost in the drop) — return the original
+            # result instead of double-executing. Measured at ≥15% of write
+            # executions before the guard; see the spec's 2026-07-22 addendum.
+            result = None
+            if dedup_ctx is not None and name in WRITE_TOOLS and dedup_ctx.replay_suspect:
+                original = dedup_ctx.ledger.check_replay(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    tool=name,
+                    args=args,
+                    user_timezone=user_timezone,
+                )
+                if original is not None:
+                    result = {**original, "status": "duplicate_suppressed"}
+                    logger.info(
+                        "capture_tool_replay_suppressed",
+                        tool=name,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                    )
+
+            if result is None:
+                result = await execute_agent_tool(
+                    name,
+                    args,
+                    user_id,
+                    workspace_id,
+                    user_timezone,
+                )
+                if (
+                    dedup_ctx is not None
+                    and name in WRITE_TOOLS
+                    and result.get("status", "success") != "error"
+                ):
+                    dedup_ctx.ledger.record(
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                        tool=name,
+                        args=args,
+                        result=result,
+                        user_timezone=user_timezone,
+                    )
             _log_capture_turn(
                 name,
                 args,
@@ -519,6 +565,7 @@ async def _handle_gemini_message(
                 user_id=user_id,
                 workspace_id=workspace_id,
                 session_id=session_id,
+                call_id=call_id,
             )
 
             await client_ws.send_json({
@@ -550,7 +597,30 @@ async def run_agent_session(
     workspace_id: int,
     user_timezone: str = "UTC",
     resumption_handle: str | None = None,
+    prev_session_id: str | None = None,
 ):
+    # spec-090: one id per WS session (also used further down to group capture
+    # log turns). Announced to the client first thing so it can send it back as
+    # `?prev_session=` when it reconnects with a resumption handle — that field
+    # is what lets the capture log correlate a resumed session with the
+    # connection it resumed from.
+    session_id = uuid.uuid4().hex
+    with suppress(Exception):
+        await client_ws.send_json({"type": "session_info", "session_id": session_id})
+    # Replay guard state for this connection (spec-090): the ledger is process
+    # wide (replays land on NEW connections); resumed-ness gates suppression.
+    dedup_ctx = SessionDedupContext(
+        ledger=get_global_ledger(), resumed=resumption_handle is not None
+    )
+    _log_capture_event({
+        "kind": "session_started",
+        "session_id": session_id,
+        "resumed": resumption_handle is not None,
+        "resume_of_session_id": prev_session_id,
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+    })
+
     api_key = settings.GEMINI_API_KEY
     if not api_key:
         logger.error("gemini_api_key_missing")
@@ -569,10 +639,9 @@ async def run_agent_session(
     gemini_ws = None
     ws_context_manager = None
     session_started_at = time.monotonic()
-    # spec-079 Stage B: one id per WS session groups the capture log's turns into
-    # a conversation; the mutable turn_state accumulates the assistant's reply
-    # across messages so a full turn can be logged at its turnComplete boundary.
-    session_id = uuid.uuid4().hex
+    # spec-079 Stage B: the mutable turn_state accumulates the assistant's reply
+    # across messages so a full turn can be logged at its turnComplete boundary
+    # (session_id itself is minted at the top of this function, spec-090).
     turn_state: dict = {"assistant_text": [], "started_at": None}
     # spec-079 Stage A: mutable holder so nested closures can record why the
     # session ended, for the disconnect/resume-failure instrumentation logged
@@ -641,6 +710,7 @@ async def run_agent_session(
                         user_timezone,
                         session_id=session_id,
                         turn_state=turn_state,
+                        dedup_ctx=dedup_ctx,
                     )
             except asyncio.CancelledError:
                 pass
@@ -667,10 +737,15 @@ async def run_agent_session(
                     return
 
                 if message.get("bytes") is not None:
+                    # Real user activity on this connection — from here on,
+                    # identical write calls are intentional, not replays
+                    # (spec-090).
+                    dedup_ctx.user_input_seen = True
                     # Encoded audio (WebM/Opus etc.) — ffmpeg decodes to PCM
                     await decoder.send_encoded_chunk(message["bytes"])
 
                 elif message.get("text") is not None:
+                    dedup_ctx.user_input_seen = True
                     try:
                         client_msg = json.loads(message["text"])
                     except json.JSONDecodeError:

@@ -274,6 +274,12 @@ class Settings(BaseSettings):
     # prod only after confirming the deployed model accepts these setup fields.
     CAPTURE_ENABLE_SESSION_RESUMPTION: bool = False
     CAPTURE_ENABLE_CONTEXT_COMPRESSION: bool = False
+    # spec-090: replay-dedup window for write tool-calls on resumed sessions.
+    # 45 min covers the worst observed replay delay (+37 min, 2026-07-22
+    # production log analysis) with margin; suppression is additionally gated
+    # on "resumed connection, before any user input", so the wide window has
+    # no false-positive cost for live usage.
+    CAPTURE_TOOL_DEDUP_WINDOW_SECONDS: int = 45 * 60
     EXCHANGERATE_API_KEY: str | None = None
     LOOKTHROUGH_MIN_DISPLAY_WEIGHT_PCT: Decimal = Decimal("0.5")
     IMPORT_S3_ENDPOINT: str | None = Field(
