@@ -128,11 +128,20 @@ def _text_matches(expected_value: Any, actual_value: Any) -> bool:
     routing miss, so it now passes; an answer missing an expected word (or
     substituting unrelated content, e.g. adv-03's injected text landing in
     ``description``) still correctly fails.
+
+    Guards (PR #174 review): ``None`` compares only to ``None`` (``str(None)``
+    would otherwise normalize to the matchable word "none"), and an empty
+    expected string never subset-matches a non-empty actual (the empty set is
+    a subset of everything).
     """
+    if expected_value is None or actual_value is None:
+        return expected_value == actual_value
     norm_expected = _normalize_text(expected_value)
     norm_actual = _normalize_text(actual_value)
     if norm_expected == norm_actual:
         return True
+    if not norm_expected:
+        return False
     return set(norm_expected.split()).issubset(set(norm_actual.split()))
 
 

@@ -467,3 +467,76 @@ def test_validate_case_rejects_unknown_tool_in_calls():
     case = _multi_case([{"tool": "not_a_tool", "args": {}}])
     errors = validate_case(case)
     assert any("not a known capture tool" in e for e in errors)
+
+
+def test_text_field_empty_expected_does_not_match_arbitrary_actual():
+    """Review finding (PR #174): an empty expected string normalizes to zero
+    words, and the empty set is a subset of everything — it must not pass."""
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {
+            "tool": "log_spending_transaction",
+            "args": {"amount": "12", "category_name": "food", "description": ""},
+            "text_fields": ["description"],
+        },
+    }
+    result = score_case(
+        case,
+        [
+            ToolCall(
+                "log_spending_transaction",
+                {"amount": "12", "category_name": "food", "description": "lunch"},
+            )
+        ],
+    )
+    assert not result.passed
+
+
+def test_text_field_none_does_not_match_the_literal_string_none():
+    """Review finding (PR #174): str(None) == 'none' after normalization, so a
+    Python None expected value must not match a spoken 'none'."""
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {
+            "tool": "log_spending_transaction",
+            "args": {"amount": "12", "category_name": "food", "description": None},
+            "text_fields": ["description"],
+        },
+    }
+    result = score_case(
+        case,
+        [
+            ToolCall(
+                "log_spending_transaction",
+                {"amount": "12", "category_name": "food", "description": "none of these"},
+            )
+        ],
+    )
+    assert not result.passed
+
+
+def test_text_field_none_still_matches_none():
+    case = {
+        "id": "c1",
+        "category": "adversarial",
+        "utterance": "x",
+        "expected": {
+            "tool": "log_spending_transaction",
+            "args": {"amount": "12", "category_name": "food", "description": None},
+            "text_fields": ["description"],
+        },
+    }
+    result = score_case(
+        case,
+        [
+            ToolCall(
+                "log_spending_transaction",
+                {"amount": "12", "category_name": "food", "description": None},
+            )
+        ],
+    )
+    assert result.passed
