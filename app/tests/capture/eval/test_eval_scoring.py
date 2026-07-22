@@ -345,12 +345,125 @@ def test_fixture_ids_are_unique():
     assert len(ids) == len(set(ids))
 
 
-def test_fixture_currently_only_holds_adversarial_cases():
-    """spec-079: real_usage transcripts aren't captured anywhere yet (no
-    source to draw the 60% split from) — tracked as an open item, not
-    silently faked. This test documents the gap so it fails loudly (as a
-    reminder to update it) once real_usage cases are added."""
+def test_fixture_holds_adversarial_and_first_real_usage_cases():
+    """spec-079 planned the real_usage cases to be added once transcript
+    capture shipped; the first 6 landed 2026-07-22, derived from production
+    capture-log usage patterns with all personal data scrubbed to synthetic
+    values (spec-090 addendum). This test pins the current composition so a
+    category or count drift is a deliberate act, not an accident."""
     cases = _load_cases()
-    categories = {c["category"] for c in cases}
-    assert categories == {"adversarial"}
-    assert len(cases) == 20
+    by_category = {}
+    for c in cases:
+        by_category.setdefault(c["category"], []).append(c["id"])
+    assert len(by_category["adversarial"]) == 20
+    assert len(by_category["real_usage"]) == 6
+    assert set(by_category) == {"adversarial", "real_usage"}
+
+
+# ── multi-call (expected.calls) scoring ──────────────────────────────────────
+
+
+def _spend(amount: str, category: str, description: str, **extra) -> ToolCall:
+    args = {"amount": amount, "category_name": category, "description": description, **extra}
+    return ToolCall("log_spending_transaction", args)
+
+
+def _multi_case(specs: list[dict]) -> dict:
+    return {"id": "m1", "category": "real_usage", "utterance": "x", "expected": {"calls": specs}}
+
+
+def _spend_spec(amount: str, category: str, description: str) -> dict:
+    return {
+        "tool": "log_spending_transaction",
+        "args": {"amount": amount, "category_name": category, "description": description},
+        "text_fields": ["description"],
+        "numeric_fields": ["amount"],
+    }
+
+
+def test_multi_call_passes_regardless_of_order():
+    case = _multi_case([
+        _spend_spec("40", "food", "coffee"),
+        _spend_spec("85", "transport", "bike rental"),
+    ])
+    actual = [_spend("85", "transport", "bike rental"), _spend("40", "food", "coffee")]
+    result = score_case(case, actual)
+    assert result.passed
+
+
+def test_multi_call_fails_on_missing_call():
+    case = _multi_case([
+        _spend_spec("40", "food", "coffee"),
+        _spend_spec("85", "transport", "bike rental"),
+    ])
+    result = score_case(case, [_spend("40", "food", "coffee")])
+    assert not result.passed
+    assert "expected 2 calls, got 1" in result.reason
+
+
+def test_multi_call_fails_on_extra_call():
+    case = _multi_case([_spend_spec("40", "food", "coffee")])
+    actual = [_spend("40", "food", "coffee"), _spend("40", "food", "coffee")]
+    result = score_case(case, actual)
+    assert not result.passed
+
+
+def test_multi_call_identical_repeats_require_matching_multiplicity():
+    """The real-02 pattern: two genuinely identical items in one utterance —
+    the model must emit both calls (not self-dedup), and each expected spec
+    consumes exactly one actual call."""
+    case = _multi_case([
+        _spend_spec("30", "transport", "bus ticket"),
+        _spend_spec("30", "transport", "bus ticket"),
+    ])
+    both = [_spend("30", "transport", "bus ticket"), _spend("30", "transport", "bus ticket")]
+    assert score_case(case, both).passed
+    assert not score_case(case, both[:1]).passed
+
+
+def test_multi_call_backtracks_past_greedy_mismatch():
+    """Two expected specs whose text_fields overlap: a greedy matcher could
+    bind the ambiguous actual call to the wrong spec and fail; the assignment
+    must backtrack to the consistent pairing."""
+    ambiguous = _spend_spec("10", "food", "tea")  # word-subset: matches "tea" AND "tea snacks"
+    specific = _spend_spec("10", "food", "tea snacks")
+    case = _multi_case([ambiguous, specific])
+    actual = [_spend("10", "food", "tea snacks"), _spend("10", "food", "tea")]
+    result = score_case(case, actual)
+    assert result.passed
+
+
+def test_multi_call_arg_mismatch_fails():
+    case = _multi_case([_spend_spec("40", "food", "coffee")])
+    result = score_case(case, [_spend("41", "food", "coffee")])
+    assert not result.passed
+
+
+def test_multi_call_wrong_tool_fails():
+    case = _multi_case([_spend_spec("40", "food", "coffee")])
+    result = score_case(case, [ToolCall("log_weight", {"weight_kg": "72"})])
+    assert not result.passed
+
+
+def test_validate_case_accepts_calls_form():
+    errors = validate_case(_multi_case([_spend_spec("40", "food", "coffee")]))
+    assert errors == []
+
+
+def test_validate_case_rejects_calls_and_tool_together():
+    case = _multi_case([_spend_spec("40", "food", "coffee")])
+    case["expected"]["tool"] = "log_weight"
+    errors = validate_case(case)
+    assert any("mutually exclusive" in e for e in errors)
+
+
+def test_validate_case_rejects_empty_calls():
+    case = _multi_case([])
+    errors = validate_case(case)
+    assert any("non-empty" in e for e in errors)
+
+
+def test_validate_case_rejects_unknown_tool_in_calls():
+    case = _multi_case([{"tool": "not_a_tool", "args": {}}])
+    errors = validate_case(case)
+    assert any("not a known capture tool" in e for e in errors)
