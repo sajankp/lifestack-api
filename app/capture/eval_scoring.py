@@ -79,6 +79,28 @@ def validate_case(case: dict) -> list[str]:
         errors.append(f"expected must be a dict, got {type(expected).__name__}")
         return errors
 
+    calls = expected.get("calls")
+    if calls is not None:
+        # Multi-call form (Stage C: multi-item capture, e.g. a batch of
+        # spending items in one utterance). Mutually exclusive with the
+        # single-intent `tool` form.
+        if "tool" in expected:
+            errors.append("expected.calls and expected.tool are mutually exclusive")
+        if not isinstance(calls, list) or not calls:
+            errors.append("expected.calls must be a non-empty list")
+            return errors
+        for i, spec in enumerate(calls):
+            if not isinstance(spec, dict):
+                errors.append(f"expected.calls[{i}] must be a dict")
+                continue
+            if spec.get("tool") not in KNOWN_TOOLS:
+                errors.append(
+                    f"expected.calls[{i}].tool {spec.get('tool')!r} is not a known capture tool"
+                )
+            if "args" not in spec:
+                errors.append(f"expected.calls[{i}].args is required")
+        return errors
+
     tool = expected.get("tool")
     if tool is not None:
         if tool not in KNOWN_TOOLS:
@@ -148,6 +170,61 @@ def _args_match(expected: dict, actual_args: dict[str, Any]) -> tuple[bool, str]
     return True, "exact match"
 
 
+def _score_multi_call_case(
+    case_id: str, expected_calls: list[dict], actual_tool_calls: list[ToolCall]
+) -> ScoreResult:
+    """Score a Stage C multi-item case (``expected.calls``): the model must make
+    exactly one actual call per expected call spec, matched one-to-one but
+    **order-insensitive** — the model is free to log a batch in any order.
+
+    Matching is multiplicity-aware: two identical expected calls need two
+    identical actual calls (real usage contains genuine identical repeats —
+    e.g. two same-price transit fares in one utterance — and the model must
+    emit both, not self-dedup; spec-090 2026-07-22 addendum). Each spec uses
+    the same per-call matchers as the single-intent form (``text_fields``,
+    ``numeric_fields``, ``optional_extra_args``). Backtracking search keeps
+    the one-to-one assignment exact; batch sizes are single digits, so cost
+    is irrelevant.
+    """
+    if len(actual_tool_calls) != len(expected_calls):
+        return ScoreResult(
+            case_id,
+            False,
+            f"expected {len(expected_calls)} calls, got {len(actual_tool_calls)}: "
+            f"{[c.name for c in actual_tool_calls]}",
+        )
+
+    used = [False] * len(actual_tool_calls)
+
+    def _assign(i: int) -> bool:
+        if i == len(expected_calls):
+            return True
+        spec = expected_calls[i]
+        for j, actual in enumerate(actual_tool_calls):
+            if used[j] or actual.name != spec["tool"]:
+                continue
+            matched, _ = _args_match(spec, actual.args)
+            if not matched:
+                continue
+            used[j] = True
+            if _assign(i + 1):
+                return True
+            used[j] = False
+        return False
+
+    if _assign(0):
+        return ScoreResult(
+            case_id, True, f"all {len(expected_calls)} calls matched (order-insensitive)"
+        )
+    return ScoreResult(
+        case_id,
+        False,
+        "no one-to-one matching between expected calls "
+        f"{[s['tool'] for s in expected_calls]} and actual calls "
+        f"{[(c.name, c.args) for c in actual_tool_calls]}",
+    )
+
+
 def score_case(case: dict, actual_tool_calls: list[ToolCall]) -> ScoreResult:
     """Exact tool+args match (spec-079 resolved question 3), with a few
     deliberately narrow tolerances added after Run 1 (2026-07-12) showed most
@@ -170,8 +247,10 @@ def score_case(case: dict, actual_tool_calls: list[ToolCall]) -> ScoreResult:
     A case with ``expected.tool: null`` (and no read-only allowance) passes
     only if the model made no tool call at all. Otherwise the model must make
     exactly one tool call whose name matches and whose args satisfy the
-    matchers above — Stage A measures single-intent routing; multi-item
-    capture is Stage C.
+    matchers above — Stage A measures single-intent routing.
+
+    A case with ``expected.calls`` (a list of per-call specs) is a Stage C
+    multi-item case, scored order-insensitively by ``_score_multi_call_case``.
 
     A case with ``skip: true`` (e.g. a relative-date utterance whose expected
     args aren't fixed) is excluded from the accuracy denominator — see
@@ -187,6 +266,9 @@ def score_case(case: dict, actual_tool_calls: list[ToolCall]) -> ScoreResult:
         )
 
     expected = case["expected"]
+    if expected.get("calls") is not None:
+        return _score_multi_call_case(case_id, expected["calls"], actual_tool_calls)
+
     expected_tool = expected.get("tool")
 
     if expected_tool is None:
