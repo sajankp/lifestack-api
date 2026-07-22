@@ -2,6 +2,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
+from app.core.scheduler import scheduler
 from app.main import app, create_app
 
 
@@ -12,6 +13,33 @@ async def test_health_check():
         response = await client.get("/health")
         assert response.status_code == 200
         assert response.json() == {"status": "ok", "version": settings.VERSION}
+
+
+@pytest.mark.asyncio
+async def test_readiness_check_reports_503_when_scheduler_not_running(client: AsyncClient):
+    """``client`` points the DB dependency at the migrated testcontainer but
+    does not run the app lifespan, so the scheduler reads as not-running here
+    while DB and Redis (both real testcontainers) read True."""
+    response = await client.get("/ready")
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "not_ready",
+        "checks": {"database": True, "scheduler": False, "redis": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_readiness_check_returns_200_when_all_dependencies_are_up(client: AsyncClient):
+    scheduler.start()
+    try:
+        response = await client.get("/ready")
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ready",
+            "checks": {"database": True, "scheduler": True, "redis": True},
+        }
+    finally:
+        scheduler.shutdown(wait=False)
 
 
 @pytest.mark.asyncio

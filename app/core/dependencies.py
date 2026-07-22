@@ -15,6 +15,7 @@ from app.auth.dependencies import get_user_repo as get_user_repo
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.audit import AuditLogger
+from app.core.cache import ResponseCache
 from app.core.database.postgres import get_db_session
 from app.core.exceptions import ForbiddenError
 from app.exports.repository import ExportRepository
@@ -46,6 +47,7 @@ from app.imports.repository import ImportRepository
 from app.imports.service import ImportService
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService, PerformanceService
+from app.investing.reference_resolve_service import ReferenceResolveService
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
@@ -59,6 +61,7 @@ from app.investing.repository import (
     InvestingOrderRepository,
     LotRepository,
     PortfolioSnapshotRepository,
+    ReferenceSecurityRepository,
 )
 from app.investing.return_metrics_service import ReturnMetricsService
 from app.investing.service import (
@@ -89,8 +92,8 @@ from app.spending.service import (
     RecurringTransactionService,
     TransactionService,
 )
-from app.summaries.repository import WeeklySummaryRepository
-from app.summaries.service import WeeklySummaryService
+from app.summaries.repository import WeeklySummaryRepository, WorkspaceSummarySettingRepository
+from app.summaries.service import SummarySettingsService, WeeklySummaryService
 from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
 
@@ -122,6 +125,12 @@ limiter = Limiter(
     storage_uri=settings.RATE_LIMIT_STORAGE_URI,
     enabled=settings.RATE_LIMIT_ENABLED,
 )
+
+response_cache = ResponseCache(settings.REDIS_URL, settings.ENABLE_RESPONSE_CACHE)
+
+
+async def get_response_cache() -> ResponseCache:
+    return response_cache
 
 
 async def get_audit_logger(session: AsyncSession = Depends(get_db_session)) -> AuditLogger:
@@ -288,8 +297,13 @@ async def get_spending_recurring_service(
     recurring_repo: RecurringTransactionRepository = Depends(get_recurring_repo),
     tx_repo: TransactionRepository = Depends(get_transaction_repo),
     cat_repo: CategoryRepository = Depends(get_category_repo),
+    session: AsyncSession = Depends(get_db_session),
 ) -> RecurringTransactionService:
-    return RecurringTransactionService(recurring_repo, tx_repo, cat_repo)
+    account_repo = AccountRepository(session)
+    setting_repo = FinanceSettingRepository(session)
+    return RecurringTransactionService(
+        recurring_repo, tx_repo, cat_repo, account_repo, setting_repo
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +339,18 @@ async def get_investing_company_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> CompanyRepository:
     return CompanyRepository(session)
+
+
+async def get_reference_security_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> ReferenceSecurityRepository:
+    return ReferenceSecurityRepository(session)
+
+
+async def get_reference_resolve_service(
+    reference_repo: ReferenceSecurityRepository = Depends(get_reference_security_repo),
+) -> ReferenceResolveService:
+    return ReferenceResolveService(reference_repo)
 
 
 async def get_investing_constituent_repo(
@@ -713,6 +739,18 @@ async def get_weekly_summary_service(
     notification_service: NotificationService = Depends(get_notification_service),
 ) -> WeeklySummaryService:
     return WeeklySummaryService(repo, session, notification_service)
+
+
+async def get_summary_settings_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> WorkspaceSummarySettingRepository:
+    return WorkspaceSummarySettingRepository(session)
+
+
+async def get_summary_settings_service(
+    repo: WorkspaceSummarySettingRepository = Depends(get_summary_settings_repo),
+) -> SummarySettingsService:
+    return SummarySettingsService(repo)
 
 
 async def get_current_workspace_id(

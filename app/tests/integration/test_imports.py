@@ -12,8 +12,15 @@ from app.auth.models import User
 from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
+from app.finance.models import NetWorthSnapshot
 from app.imports.models import ImportBatch
-from app.investing.models import Company, Instrument, InstrumentConstituent
+from app.investing.models import (
+    Company,
+    Instrument,
+    InstrumentConstituent,
+    PortfolioSnapshot,
+    ReferenceSecurity,
+)
 from app.platform.models import WorkspaceMembership
 from app.spending.models import SpendingTransaction
 
@@ -148,6 +155,62 @@ async def test_import_template_download_as_attachment(client: AsyncClient):
         == 'attachment; filename="spending-transactions-template.csv"'
     )
     assert "occurred_at,type,amount,category,description,account_name" in response.text
+
+
+@pytest.mark.asyncio
+async def test_investing_constituents_template_is_self_documenting_and_roundtrips(
+    client: AsyncClient,
+):
+    """spec-083 §8a.1: the downloaded constituent CSV template carries a
+    per-type identifier-rule header comment plus filled example rows, and
+    re-uploading it unedited must still parse (the '#' comment lines must
+    not be mistaken for the header row).
+    """
+    suffix = uuid.uuid4().hex[:8]
+    creds = await _register_and_login(client, suffix)
+
+    template = await client.get(
+        "/v1/imports/templates/investing-constituents", cookies=creds["cookies"]
+    )
+    assert template.status_code == 200
+    assert template.text.startswith("# Required identifier by security type/market:")
+    assert "company_isin,company_ticker,company_exchange" in template.text
+    assert "HIEU.L" in template.text  # London-suffixed ETF example
+    assert "INF209K01165" in template.text  # India-MF ISIN example
+
+    async with postgres.async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.username == f"import_{suffix}"))
+        ).scalar_one()
+        membership = (
+            await session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+            )
+        ).scalar_one()
+        session.add(
+            Instrument(
+                workspace_id=membership.workspace_id,
+                symbol="UMMA",
+                name="Wahed Shariah ETF",
+                instrument_type="etf",
+                is_active=True,
+            )
+        )
+        await session.commit()
+
+    files = {"file": ("constituents.csv", io.BytesIO(template.text.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    # The comment lines were correctly skipped (not treated as the header
+    # row / a data row) — only the 3 example rows became preview rows.
+    assert body["import_batch"]["total_rows"] == 3
+    assert not any(err["field_name"] == "company_ticker" for err in body["errors"])
 
 
 @pytest.mark.asyncio
@@ -464,6 +527,132 @@ async def test_import_delete_completed_spending_budgets_rolls_back_records(
 
 
 @pytest.mark.asyncio
+async def test_import_revert_invalidates_current_day_snapshots(client: AsyncClient):
+    """spec-086 Layer 1: reverting a completed import that changed balances
+    must invalidate today's NetWorthSnapshot and PortfolioSnapshot, matching
+    what every interactive mutation endpoint already does
+    (snapshot_repo.delete_for_date(today)). Otherwise a snapshot captured
+    while the imported (now-reverted) data was live is served stale by the
+    history/weekly-summary read paths, which read snapshots directly without
+    recomputing -- the api#183 item-2 root cause for the same-day case."""
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    broker = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "BROKER", "account_type": "brokerage", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert broker.status_code == 201
+    settings_resp = await client.patch(
+        "/v1/finance/settings", json={"reporting_currency_code": "INR"}, cookies=creds["cookies"]
+    )
+    assert settings_resp.status_code == 200, settings_resp.text
+
+    # Seed cash then commit an investing-orders import that creates a holding.
+    cash_resp = await client.post(
+        "/v1/investing/cash-balances",
+        json={
+            "account_id": broker.json()["public_id"],
+            "balance": "100000.00",
+            "currency": "INR",
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+        cookies=creds["cookies"],
+    )
+    assert cash_resp.status_code == 201, cash_resp.text
+
+    files = {
+        "file": (
+            "orders.csv",
+            io.BytesIO(
+                b"order_type,symbol,instrument_type,instrument_name,account_name,"
+                b"quantity,price_per_unit,currency,brokerage_fee,tax_amount,other_fees,"
+                b"occurred_at,exchange_name,notes\n"
+                b"buy,TESTFUND,mutual_fund,Test Fund,BROKER,900,10,INR,0,0,0,"
+                b"2023-02-01T00:00:00+00:00,,\n"
+            ),
+            "text/csv",
+        )
+    }
+    r = await client.post(
+        "/v1/imports", data={"module": "investing-orders"}, files=files, cookies=creds["cookies"]
+    )
+    assert r.status_code == 200, r.text
+    import_id = r.json()["import_batch"]["public_id"]
+    commit = await client.post(f"/v1/imports/{import_id}/commit", cookies=creds["cookies"])
+    assert commit.status_code in (200, 202), commit.text
+
+    # Materialize today's snapshots via the opportunistic recompute-on-read paths.
+    assert (await client.get("/v1/finance/net-worth", cookies=creds["cookies"])).status_code == 200
+    assert (
+        await client.get("/v1/investing/performance/summary", cookies=creds["cookies"])
+    ).status_code == 200
+
+    today = datetime.now(UTC).date()
+    async with postgres.async_session_maker() as session:
+        nw = (
+            (
+                await session.execute(
+                    select(NetWorthSnapshot).where(NetWorthSnapshot.snapshot_date == today)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        pf = (
+            (
+                await session.execute(
+                    select(PortfolioSnapshot).where(PortfolioSnapshot.snapshot_date == today)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(nw) == 1, "expected today's net-worth snapshot to exist after read"
+        assert len(pf) == 1, "expected today's portfolio snapshot to exist after read"
+
+    # Revert the import.
+    del_resp = await client.delete(f"/v1/imports/{import_id}", cookies=creds["cookies"])
+    assert del_resp.status_code == 204
+
+    async with postgres.async_session_maker() as session:
+        nw_after = (
+            (
+                await session.execute(
+                    select(NetWorthSnapshot).where(NetWorthSnapshot.snapshot_date == today)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        pf_after = (
+            (
+                await session.execute(
+                    select(PortfolioSnapshot).where(PortfolioSnapshot.snapshot_date == today)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert nw_after == [], "today's net-worth snapshot should be invalidated on import revert"
+    assert pf_after == [], "today's portfolio snapshot should be invalidated on import revert"
+
+    # spec-086 Layers 2-3: the revert audit entry must carry the batch's
+    # committed_at -- the only surviving record of when the reverted data
+    # went live, since the ImportBatch row itself is hard-deleted below.
+    async with postgres.async_session_maker() as session:
+        audit = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "import_rolled_back",
+                    AuditLog.entity_type == "import_batch",
+                )
+            )
+        ).scalar_one()
+    assert audit.details["before"]["committed_at"] is not None
+
+
+@pytest.mark.asyncio
 async def test_import_spending_budgets_upserts_on_duplicate(client: AsyncClient):
     creds = await _register_and_login(client, uuid.uuid4().hex[:8])
 
@@ -543,6 +732,143 @@ async def test_import_workspace_isolation(client: AsyncClient):
     assert list_resp.status_code == 200
     batch_ids = [item["public_id"] for item in list_resp.json()["items"]]
     assert import_id not in batch_ids
+
+
+@pytest.mark.asyncio
+async def test_import_investing_constituents_rejects_name_only_rows(client: AsyncClient):
+    """spec-083 §6 mandate: a constituent row with a company_name but no
+    company_ticker/company_isin must fail validation — this is exactly the
+    name-only path that fragmented "Apple Inc" / "Apple Inc." pre-spec-083.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    creds = await _register_and_login(client, suffix)
+
+    async with postgres.async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.username == f"import_{suffix}"))
+        ).scalar_one()
+        membership = (
+            await session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+            )
+        ).scalar_one()
+        workspace_id = membership.workspace_id
+        session.add(
+            Instrument(
+                workspace_id=workspace_id,
+                symbol="UMMA",
+                name="Wahed Shariah ETF",
+                instrument_type="etf",
+                is_active=True,
+            )
+        )
+        await session.commit()
+
+    csv_name_only = (
+        "instrument_symbol,company_name,company_ticker,weight,as_of_date\n"
+        "UMMA,Apple Inc,,0.50,2026-06-14\n"
+        "UMMA,Microsoft Corp,MSFT,0.50,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_name_only.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    assert body["import_batch"]["status"] == "failed_validation"
+    assert body["error_summary"]["by_code"]["identifier_required"] == 1
+    assert any("company_ticker or company_isin" in err["message"] for err in body["errors"])
+
+
+@pytest.mark.asyncio
+async def test_import_investing_constituents_preview_reports_identifier_status(
+    client: AsyncClient,
+):
+    """spec-083 §5.5: each constituent preview row is classified against
+    `reference_securities` — resolved / unresolved / ambiguous — so the
+    import-preview UI can flag rows before commit, not just reject the
+    completely-blank-identifier case.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    creds = await _register_and_login(client, suffix)
+
+    async with postgres.async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.username == f"import_{suffix}"))
+        ).scalar_one()
+        membership = (
+            await session.execute(
+                select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+            )
+        ).scalar_one()
+        workspace_id = membership.workspace_id
+        session.add(
+            Instrument(
+                workspace_id=workspace_id,
+                symbol="UMMA",
+                name="Wahed Shariah ETF",
+                instrument_type="etf",
+                is_active=True,
+            )
+        )
+        session.add(
+            ReferenceSecurity(
+                isin="US0378331005",
+                ticker="AAPL",
+                exchange="XNAS",
+                security_type="stock",
+                name="Apple Inc",
+                source="test",
+                fetched_at=datetime.now(UTC),
+            )
+        )
+        session.add(
+            ReferenceSecurity(
+                ticker="TATASTEEL",
+                exchange="XNSE",
+                security_type="stock",
+                name="Tata Steel Ltd (India)",
+                source="test",
+                fetched_at=datetime.now(UTC),
+            )
+        )
+        session.add(
+            ReferenceSecurity(
+                ticker="TATASTEEL",
+                exchange="XLON",
+                security_type="stock",
+                name="Tata Steel Ltd (London)",
+                source="test",
+                fetched_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    csv_rows = (
+        "instrument_symbol,company_name,company_isin,company_ticker,company_exchange,weight,as_of_date\n"
+        "UMMA,Apple Inc,,AAPL,,0.40,2026-06-14\n"
+        "UMMA,Unknown Co,,UNKNOWNCO,,0.30,2026-06-14\n"
+        "UMMA,Tata Steel,,TATASTEEL,,0.30,2026-06-14\n"
+    )
+    files = {"file": ("constituents.csv", io.BytesIO(csv_rows.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={"module": "investing-constituents"},
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200
+    body = validate.json()
+    statuses = {
+        row["payload_json"]["company_ticker"]: row["payload_json"]["identifier_status"]
+        for row in body["preview_rows"]
+    }
+    assert statuses["AAPL"] == "resolved"
+    assert statuses["UNKNOWNCO"] == "unresolved"
+    assert statuses["TATASTEEL"] == "ambiguous"
 
 
 @pytest.mark.asyncio

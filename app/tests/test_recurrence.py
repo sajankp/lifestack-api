@@ -3,7 +3,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.core.recurrence import advance_due_date
+from app.core.recurrence import advance_due_date, first_due_date
 
 
 def _old_advance_due_date(current: date, frequency: str, interval: int) -> date:
@@ -109,3 +109,21 @@ class TestNonMonthlyFrequenciesUnaffected:
     def test_yearly_leap_day_anchor_falls_back_to_feb_28(self):
         result = advance_due_date(date(2028, 2, 29), "yearly", 1)
         assert result == date(2029, 2, 28)
+
+
+class TestFirstDueDate:
+    def test_anchor_on_or_after_today_is_unchanged(self):
+        result = first_due_date(date(2026, 7, 20), date(2026, 7, 17), "monthly", 1)
+        assert result == date(2026, 7, 20)
+
+    def test_advances_past_elapsed_monthly_cycles(self):
+        result = first_due_date(date(2026, 6, 7), date(2026, 7, 17), "monthly", 1)
+        assert result == date(2026, 8, 7)
+
+    def test_zero_interval_rejected_instead_of_looping_forever(self):
+        with pytest.raises(ValueError, match="interval must be greater than 0"):
+            first_due_date(date(2026, 6, 1), date(2026, 7, 17), "daily", 0)
+
+    def test_negative_interval_rejected(self):
+        with pytest.raises(ValueError, match="interval must be greater than 0"):
+            first_due_date(date(2026, 6, 1), date(2026, 7, 17), "monthly", -1)

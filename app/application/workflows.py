@@ -1,6 +1,7 @@
 import asyncio
 import calendar
 import html as html_lib
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -8,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import structlog
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
@@ -17,7 +18,9 @@ from app.auth.schemas import UserCreate
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.audit import AuditLogger, snapshot_columns
+from app.core.job_failures import JobFailure
 from app.core.recurrence import advance_due_date
+from app.core.retry import TRANSIENT_JOB_EXCEPTIONS, retry_async
 from app.dashboard.schemas import (
     BriefingLine,
     BriefingResponse,
@@ -932,6 +935,40 @@ async def evaluate_workspace_kpi_breaches(session: AsyncSession, workspace: Work
 # ---------------------------------------------------------------------------
 
 
+def _resolve_generation_account_id(
+    recurrence: RecurringTransaction,
+    active_account_ids: set[int],
+    default_account_id: int | None,
+    workspace_id: int,
+) -> int | None:
+    """Resolve the account a generated transaction should post against.
+
+    The recurrence's own account_id is normally already valid (spec-054/084
+    enforce it at create/update time), but an account can be deactivated
+    after being linked to a rule, so re-check here (defense in depth, same
+    concern _resolve_create_account_id already handles for the default-
+    account case) and fall back to the workspace's current default. Legacy
+    rules created before spec-084 have account_id = NULL and keep generating
+    NULL-account transactions unless/until the workspace has a default.
+
+    Takes pre-fetched active_account_ids/default_account_id (one query per
+    workspace, not per recurrence) to avoid an N+1 query pattern.
+    """
+    if recurrence.account_id is not None and recurrence.account_id in active_account_ids:
+        return recurrence.account_id
+
+    if default_account_id is not None:
+        return default_account_id
+
+    if recurrence.account_id is not None:
+        logger.warning(
+            "recurring_generation_account_unresolved",
+            workspace_id=workspace_id,
+            recurrence_id=recurrence.id,
+        )
+    return None
+
+
 async def process_workspace_recurring_transactions(
     session: AsyncSession, workspace: Workspace
 ) -> int:
@@ -982,6 +1019,24 @@ async def process_workspace_recurring_transactions(
         logger.info("no_due_recurrences", workspace_id=workspace.id)
         return 0
 
+    # Pre-fetch once per workspace (not per recurrence) to avoid an N+1
+    # query pattern in the loop below.
+    account_repo = AccountRepository(session)
+    workspace_accounts, _ = await account_repo.list_workspace_accounts(
+        workspace.id, limit=10000, offset=0
+    )
+    active_account_ids = {a.id for a in workspace_accounts if a.is_active}  # type: ignore[misc]
+
+    default_account_id: int | None = None
+    setting_repo = FinanceSettingRepository(session)
+    setting = await setting_repo.get_by_workspace(workspace.id)
+    if (
+        setting
+        and setting.default_spending_account_id is not None
+        and setting.default_spending_account_id in active_account_ids
+    ):
+        default_account_id = setting.default_spending_account_id
+
     audit_logger = AuditLogger(session)
     total_generated = 0
     catchup_warned = False
@@ -1022,6 +1077,9 @@ async def process_workspace_recurring_transactions(
                 recurrence.next_due_date = next_due
 
         generated_count = 0
+        effective_account_id = _resolve_generation_account_id(
+            recurrence, active_account_ids, default_account_id, workspace.id
+        )
 
         # Inner catch-up loop — generate one transaction per missed period
         while recurrence.next_due_date <= today:
@@ -1038,6 +1096,7 @@ async def process_workspace_recurring_transactions(
                 workspace_id=workspace.id,
                 user_id=user_id,
                 category_id=recurrence.category_id,
+                account_id=effective_account_id,
                 amount=recurrence.amount,
                 type=recurrence.type,
                 description=recurrence.description,
@@ -1247,10 +1306,21 @@ async def ingest_fx_rates(session: AsyncSession) -> None:
     logger.info("ingesting_fx_rates_start", base_currency="USD")
 
     url = f"https://v6.exchangerate-api.com/v6/{settings.EXCHANGERATE_API_KEY}/latest/USD"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        data = resp.json()
+
+    async def _fetch() -> dict:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
+
+    # spec-088: retry only the network call. The DB upserts below are cheap,
+    # idempotent date-keyed writes and stay outside the retry loop.
+    data = await retry_async(
+        _fetch,
+        attempts=settings.JOB_RETRY_MAX_ATTEMPTS,
+        base_delay_seconds=settings.JOB_RETRY_BASE_DELAY_SECONDS,
+        transient_exceptions=TRANSIENT_JOB_EXCEPTIONS,
+    )
 
     if not isinstance(data, dict) or data.get("result") != "success":
         error_type = (
@@ -1568,13 +1638,17 @@ async def deliver_pending_push_notifications(session: AsyncSession, limit: int =
     subscription_repo = PushSubscriptionRepository(session)
 
     pending = await notification_repo.list_pending_push_deliveries(limit)
+    recipient_pairs = {
+        (notification.workspace_id, notification.user_id) for _, notification in pending
+    }
+    subscriptions_by_recipient = await subscription_repo.list_active_for_users(recipient_pairs)
     sent_count = 0
     failed_count = 0
 
     for delivery, notification in pending:
         try:
-            subscriptions = await subscription_repo.list_active_for_user(
-                notification.workspace_id, notification.user_id
+            subscriptions = subscriptions_by_recipient.get(
+                (notification.workspace_id, notification.user_id), []
             )
             if not subscriptions:
                 await notification_repo.mark_delivery(
@@ -1691,3 +1765,124 @@ async def deliver_pending_email_notifications(session: AsyncSession, limit: int 
                 failed_count += 1
 
     return {"sent": sent_count, "failed": failed_count, "skipped": skipped_count}
+
+
+# ---------------------------------------------------------------------------
+# Job failure digest + health heartbeat (spec-088 Layer C)
+# ---------------------------------------------------------------------------
+
+
+async def collect_unnotified_job_failures(session: AsyncSession) -> list[JobFailure]:
+    """job_failures rows the daily digest hasn't reported yet, oldest first."""
+    result = await session.execute(
+        select(JobFailure).where(JobFailure.notified_at.is_(None)).order_by(JobFailure.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def mark_job_failures_notified(session: AsyncSession, failure_ids: list[int]) -> None:
+    if not failure_ids:
+        return
+    await session.execute(
+        update(JobFailure)
+        .where(JobFailure.id.in_(failure_ids))
+        .values(notified_at=datetime.now(UTC))
+    )
+
+
+def build_job_failure_digest_email(rows: list[JobFailure]) -> tuple[str, str]:
+    """(subject, html) for the daily failure digest -- one email listing every
+    row reported for the first time, never one email per failure."""
+    subject = f"[Lifestack] {len(rows)} job failure(s) need attention"
+    items = "".join(
+        "<li><b>{job}</b> (workspace {workspace}) — {error_type}: {message} "
+        "(attempts={attempts}, first failed {first_failed_at})</li>".format(
+            job=html_lib.escape(row.job_name),
+            workspace=row.workspace_id if row.workspace_id is not None else "global",
+            error_type=html_lib.escape(row.error_type),
+            message=html_lib.escape(row.error_message),
+            attempts=row.attempts,
+            first_failed_at=row.first_failed_at.isoformat(),
+        )
+        for row in rows
+    )
+    html = f"<p>{len(rows)} job failure(s) since the last digest:</p><ul>{items}</ul>"
+    return subject, html
+
+
+@dataclass
+class JobHealthHeartbeatSummary:
+    since: datetime
+    total: int = 0
+    resolved: int = 0
+    open: int = 0
+    by_job: dict[str, dict[str, int]] = field(default_factory=dict)
+
+
+async def collect_job_health_heartbeat_summary(
+    session: AsyncSession, since: datetime
+) -> JobHealthHeartbeatSummary:
+    """Rollup of job_failures created in [since, now) for the weekly heartbeat:
+    total / resolved / still-open, broken out by job_name. Aggregated in the
+    database via GROUP BY rather than loading every row into memory to count
+    them."""
+    stmt = (
+        select(
+            JobFailure.job_name,
+            func.count(JobFailure.id).label("total"),
+            func.count(JobFailure.id).filter(JobFailure.resolved_at.is_not(None)).label("resolved"),
+        )
+        .where(JobFailure.created_at >= since)
+        .group_by(JobFailure.job_name)
+    )
+    summary = JobHealthHeartbeatSummary(since=since)
+    for job_name, total, resolved in await session.execute(stmt):
+        open_count = total - resolved
+        summary.by_job[job_name] = {"total": total, "resolved": resolved, "open": open_count}
+        summary.total += total
+        summary.resolved += resolved
+        summary.open += open_count
+    return summary
+
+
+JOB_FAILURE_RETENTION_DAYS = 90
+
+
+async def purge_resolved_job_failures(session: AsyncSession) -> int:
+    """Delete job_failures rows resolved more than 90 days ago (spec-088
+    Retention). Keyed on resolved_at, not created_at, so a failure open for a
+    long time before resolving still keeps its post-resolution history for at
+    least 90 days. Open rows (resolved_at IS NULL) are never auto-purged."""
+    cutoff = datetime.now(UTC) - timedelta(days=JOB_FAILURE_RETENTION_DAYS)
+    result = await session.execute(
+        delete(JobFailure)
+        .where(JobFailure.resolved_at.is_not(None), JobFailure.resolved_at < cutoff)
+        .returning(JobFailure.id)
+    )
+    return len(result.all())
+
+
+def build_job_health_heartbeat_email(summary: JobHealthHeartbeatSummary) -> tuple[str, str]:
+    """(subject, html) for the weekly heartbeat -- sent even at zero failures,
+    since its absence (not its content) is the "monitoring itself is dead" signal."""
+    subject = "[Lifestack] Weekly job health heartbeat"
+    if summary.total == 0:
+        body = "<p>No job failures in the last 7 days. Monitoring is alive.</p>"
+    else:
+        rows_html = "".join(
+            "<li>{job}: {total} total, {resolved} auto-recovered, {open} still open</li>".format(
+                job=html_lib.escape(job), **stats
+            )
+            for job, stats in summary.by_job.items()
+        )
+        body = (
+            f"<p>{summary.total} job failure(s) in the last 7 days "
+            f"({summary.resolved} auto-recovered, {summary.open} still open):</p>"
+            f"<ul>{rows_html}</ul>"
+        )
+    html = (
+        body + "<p>This is a periodic heartbeat: you get it whether or not there were "
+        "failures, so its absence is itself the signal something's wrong "
+        "(cron, email, or the app itself).</p>"
+    )
+    return subject, html

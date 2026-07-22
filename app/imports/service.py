@@ -52,9 +52,13 @@ from app.imports.finance_transfers_import import (
     validate_finance_transfer_row,
 )
 from app.imports.investing_constituents_import import (
-    TEMPLATE_ROW as INVESTING_CONSTITUENTS_TEMPLATE_ROW,
+    TEMPLATE_EXAMPLE_ROWS as INVESTING_CONSTITUENTS_TEMPLATE_EXAMPLE_ROWS,
 )
 from app.imports.investing_constituents_import import (
+    TEMPLATE_HEADER_COMMENT as INVESTING_CONSTITUENTS_TEMPLATE_HEADER_COMMENT,
+)
+from app.imports.investing_constituents_import import (
+    ReferenceLookup,
     check_weight_group_totals,
     commit_constituents_chunk,
     prepare_constituents_commit,
@@ -95,6 +99,7 @@ from app.investing.models import (
     Company,
     Instrument,
     InstrumentType,
+    ReferenceSecurity,
 )
 from app.investing.order_service import InvestingOrderService
 from app.investing.repository import (
@@ -114,6 +119,21 @@ try:
     import boto3  # type: ignore
 except Exception:  # pragma: no cover
     boto3 = None
+
+
+class CommentStrippedStream:
+    """Wraps a text stream/file, stripping lines starting with '#' and tracking the skipped count."""
+
+    def __init__(self, file_obj):
+        self.file_obj = file_obj
+        self.skipped_count = 0
+
+    def __iter__(self):
+        for line in self.file_obj:
+            if line.startswith("#"):
+                self.skipped_count += 1
+            else:
+                yield line
 
 
 class ImportService:
@@ -309,7 +329,8 @@ class ImportService:
         elif module == ImportModule.spending_budgets:
             lines.append(SPENDING_BUDGETS_TEMPLATE_ROW)
         elif module == ImportModule.investing_constituents:
-            lines.append(INVESTING_CONSTITUENTS_TEMPLATE_ROW)
+            lines = [INVESTING_CONSTITUENTS_TEMPLATE_HEADER_COMMENT, ",".join(header)]
+            lines.extend(INVESTING_CONSTITUENTS_TEMPLATE_EXAMPLE_ROWS)
         elif module == ImportModule.investing_orders:
             lines.extend(INVESTING_ORDERS_TEMPLATE_ROWS)
         elif module == ImportModule.finance_transfers:
@@ -624,6 +645,7 @@ class ImportService:
             ImportModule.investing_dividends,
         }:
             order_account_pub_map = await self._account_public_id_map(workspace_id)
+        reference_lookup: ReferenceLookup | None = None
         if batch.module == ImportModule.investing_constituents:
             inst_rows = (
                 (
@@ -635,6 +657,8 @@ class ImportService:
                 .all()
             )
             instruments_map = {inst.symbol.upper(): inst for inst in inst_rows}
+            reference_rows = (await self.session.execute(select(ReferenceSecurity))).scalars().all()
+            reference_lookup = ReferenceLookup.build(list(reference_rows))
 
         account_obj_map = {}
         if batch.module == ImportModule.investing_dividends:
@@ -689,11 +713,16 @@ class ImportService:
             reader = xlsx_row_reader()
         else:
             f = open(file_path, encoding="utf-8-sig", newline="")  # noqa: SIM115
-            csv_reader = csv.DictReader(f)
+            # Skip leading '#' comment lines (spec-083 §8a.1: the downloaded
+            # constituent template ships a header comment block documenting
+            # the per-type identifier rule) so re-uploading that template
+            # unedited doesn't mistake a comment line for the header row.
+            stream = CommentStrippedStream(f)
+            csv_reader = csv.DictReader(stream)
             headers = csv_reader.fieldnames or []
 
             def csv_row_reader():
-                yield from enumerate(csv_reader, start=2)
+                yield from enumerate(csv_reader, start=2 + stream.skipped_count)
 
             reader = csv_row_reader()
 
@@ -808,7 +837,7 @@ class ImportService:
                     )
                 elif batch.module == ImportModule.investing_constituents:
                     payload, weight_entry = validate_investing_constituent_row(
-                        row, add_error, instruments_map
+                        row, add_error, instruments_map, reference_lookup
                     )
                     if weight_entry is not None:
                         key, weight = weight_entry
@@ -1213,6 +1242,25 @@ class ImportService:
             else:
                 deleted_records = 0
             action = "import_rolled_back"
+
+            # spec-086 Layer 1: a rollback removes holdings/orders/cash/
+            # transactions that fed today's valuation, but snapshots are
+            # date-keyed and not otherwise touched — so invalidate the
+            # current-day net-worth and portfolio snapshots, exactly as every
+            # interactive mutation endpoint does (delete_for_date(today)).
+            # Without this, the history/weekly-summary read paths (which read
+            # snapshots directly, no recompute) serve a snapshot captured while
+            # the now-reverted data was live (api#183 item 2, same-day case).
+            from app.finance.repository import (  # noqa: PLC0415
+                NetWorthSnapshotRepository,
+            )
+            from app.investing.repository import (  # noqa: PLC0415
+                PortfolioSnapshotRepository,
+            )
+
+            today = datetime.now(UTC).date()
+            await NetWorthSnapshotRepository(self.session).delete_for_date(workspace_id, today)
+            await PortfolioSnapshotRepository(self.session).delete_for_date(workspace_id, today)
         else:
             deleted_records = 0
             action = "import_deleted"
@@ -1232,6 +1280,17 @@ class ImportService:
                     "total_rows": batch.total_rows,
                     "valid_rows": batch.valid_rows,
                     "error_rows": batch.error_rows,
+                    # spec-086 Layers 2-3: the ONLY surviving record of when
+                    # this batch's data went live, once the ImportBatch row
+                    # itself is hard-deleted below. Lets a later read of a
+                    # snapshot/summary/history point detect "this covers a
+                    # period when since-reverted data was live" via an
+                    # append-only, tamper-proof trail -- never by mutating
+                    # the historical snapshot itself (see spec-086 "Why
+                    # restatement is not viable").
+                    "committed_at": (
+                        batch.committed_at.isoformat() if batch.committed_at else None
+                    ),
                 },
                 "after": None,
                 "changed_fields": ["status", "deleted_records"],

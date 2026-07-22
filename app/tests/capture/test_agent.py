@@ -8,6 +8,7 @@ from sqlalchemy import select
 from structlog.testing import capture_logs
 
 from app.auth.models import User
+from app.capture import agent as agent_module
 from app.capture.agent import (
     CAPTURE_PROVIDER_ERROR,
     CaptureSessionLimiter,
@@ -1385,6 +1386,33 @@ async def test_log_capture_turn_offloads_to_executor_inside_running_loop(tmp_pat
     assert entry["args"] == {"weight_kg": "72.4"}
 
 
+@pytest.mark.asyncio
+async def test_log_capture_turn_falls_back_to_sync_write_when_executor_submit_fails(
+    tmp_path, monkeypatch
+):
+    """`run_in_executor` can itself raise RuntimeError (e.g. the event loop is
+    closing during shutdown) even though a loop is currently running — that must
+    fall back to a synchronous write, not propagate and sink the session."""
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+
+    loop = asyncio.get_running_loop()
+    original_run_in_executor = loop.run_in_executor
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("loop is closing")
+
+    monkeypatch.setattr(loop, "run_in_executor", _raise)
+
+    # Must not raise, and must still write (synchronously, inline).
+    _log_capture_turn("log_weight", {"weight_kg": "72.4"}, "success", user_id=1, workspace_id=1)
+
+    monkeypatch.setattr(loop, "run_in_executor", original_run_in_executor)
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["tool"] == "log_weight"
+    assert entry["args"] == {"weight_kg": "72.4"}
+
+
 # ── spec-079 Stage B: session-keyed, content-bearing capture log ─────────────
 
 
@@ -1499,3 +1527,179 @@ def test_setup_message_includes_output_transcription_only_when_enabled(monkeypat
 
     monkeypatch.setattr(settings, "CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION", True)
     assert _build_setup_message()["setup"]["outputAudioTranscription"] == {}
+
+
+# ── spec-079: input (user-speech) transcription — Q4 resolved, metered free ──
+
+
+def test_setup_message_includes_input_transcription_only_when_enabled(monkeypatch):
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_INPUT_TRANSCRIPTION", False)
+    assert "inputAudioTranscription" not in _build_setup_message()["setup"]
+
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_INPUT_TRANSCRIPTION", True)
+    assert _build_setup_message()["setup"]["inputAudioTranscription"] == {}
+
+
+def test_log_user_transcript_writes_entry(tmp_path, monkeypatch):
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+
+    agent_module._log_user_transcript(
+        "Add a todo to buy milk tomorrow.",
+        user_id=3,
+        workspace_id=4,
+        session_id="sess-xyz",
+    )
+
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["kind"] == "user_transcript"
+    assert entry["text"] == "Add a todo to buy milk tomorrow."
+    assert entry["session_id"] == "sess-xyz"
+
+
+def test_log_user_transcript_noop_on_empty_text(tmp_path, monkeypatch):
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+
+    agent_module._log_user_transcript("   ", user_id=1, workspace_id=1, session_id="s")
+
+    assert not log_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_handle_gemini_message_logs_user_transcript_on_turn_complete(tmp_path, monkeypatch):
+    """Input-transcription fragments accumulate across messages and flush as one
+    user_transcript entry at the turnComplete boundary — the real-usage utterance
+    source spec-079's eval expansion needs."""
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_INPUT_TRANSCRIPTION", True)
+    client_ws = FakeClientWebSocket()
+    turn_state: dict = {"assistant_text": [], "started_at": None}
+
+    await _handle_gemini_message(
+        {"serverContent": {"inputTranscription": {"text": "Add a todo "}}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-1",
+        turn_state=turn_state,
+    )
+    await _handle_gemini_message(
+        {"serverContent": {"inputTranscription": {"text": "to buy milk."}}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-1",
+        turn_state=turn_state,
+    )
+    # No entry until the turn completes, and the user's words are never sent
+    # back to the client on the assistant caption channel.
+    assert not log_path.exists()
+    assert client_ws.sent_json == []
+
+    await _handle_gemini_message(
+        {"serverContent": {"turnComplete": True}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-1",
+        turn_state=turn_state,
+    )
+    for _ in range(50):
+        if log_path.exists() and log_path.read_text().strip():
+            break
+        await asyncio.sleep(0.02)
+
+    entry = json.loads(log_path.read_text().strip())
+    assert entry["kind"] == "user_transcript"
+    assert entry["text"] == "Add a todo to buy milk."
+    assert entry["session_id"] == "sess-1"
+    # Buffer reset so the next turn starts clean.
+    assert turn_state["user_text"] == []
+
+
+@pytest.mark.asyncio
+async def test_user_transcript_not_logged_when_flag_disabled(tmp_path, monkeypatch):
+    """3.1 Flash Live emits inputTranscription even when not requested in setup;
+    the flag must still gate persistence — off means utterance text is never
+    written, exactly the pre-flag behavior."""
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_INPUT_TRANSCRIPTION", False)
+    client_ws = FakeClientWebSocket()
+    turn_state: dict = {"assistant_text": [], "started_at": None}
+
+    await _handle_gemini_message(
+        {"serverContent": {"inputTranscription": {"text": "Add a todo to buy milk."}}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-3",
+        turn_state=turn_state,
+    )
+    await _handle_gemini_message(
+        {"serverContent": {"turnComplete": True}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-3",
+        turn_state=turn_state,
+    )
+    await asyncio.sleep(0.1)
+
+    assert not log_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_turn_complete_flushes_user_transcript_before_assistant(tmp_path, monkeypatch):
+    """A turn carrying both sides logs the user's utterance first, then the
+    assistant's reply — conversational order in the JSONL."""
+    log_path = tmp_path / "turns.jsonl"
+    monkeypatch.setattr(settings, "CAPTURE_TURN_LOG_PATH", str(log_path))
+    monkeypatch.setattr(settings, "CAPTURE_ENABLE_INPUT_TRANSCRIPTION", True)
+    client_ws = FakeClientWebSocket()
+    turn_state: dict = {"assistant_text": [], "started_at": None}
+
+    await _handle_gemini_message(
+        {"serverContent": {"inputTranscription": {"text": "What's my balance?"}}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-2",
+        turn_state=turn_state,
+    )
+    await _handle_gemini_message(
+        {"serverContent": {"outputTranscription": {"text": "You have 40 dollars."}}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-2",
+        turn_state=turn_state,
+    )
+    await _handle_gemini_message(
+        {"serverContent": {"turnComplete": True}},
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws=None,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-2",
+        turn_state=turn_state,
+    )
+    for _ in range(50):
+        lines = log_path.read_text().strip().splitlines() if log_path.exists() else []
+        if len(lines) == 2:
+            break
+        await asyncio.sleep(0.02)
+
+    entries = [json.loads(line) for line in log_path.read_text().strip().splitlines()]
+    assert [e["kind"] for e in entries] == ["user_transcript", "assistant_transcript"]
+    assert entries[0]["text"] == "What's my balance?"
+    assert entries[1]["text"] == "You have 40 dollars."

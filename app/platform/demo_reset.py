@@ -37,6 +37,18 @@ from app.todo.models import RecurringTodoRule, Todo
 
 DEMO_RESET_FIXTURE_VERSION = "2026-06-10"
 
+# Matches the DEFAULT_CATEGORIES styling convention in app.spending.service —
+# seeded demo categories otherwise render as colorless "-" pills (UX review 2026-07-16).
+DEMO_CATEGORY_STYLES: dict[str, dict[str, str]] = {
+    "rent": {"color": "#45B7D1", "icon": "🏠"},
+    "food": {"color": "#FF6B6B", "icon": "🍽️"},
+    "utilities": {"color": "#96CEB4", "icon": "💡"},
+    "entertainment": {"color": "#FFEAA7", "icon": "🎬"},
+    "travel": {"color": "#DDA0DD", "icon": "✈️"},
+    "salary": {"color": "#98FB98", "icon": "💰"},
+    "other": {"color": "#D3D3D3", "icon": "📦"},
+}
+
 
 class DemoResetService:
     def __init__(self, session: AsyncSession, audit_logger: AuditLogger):
@@ -194,11 +206,14 @@ class DemoResetService:
         ]
         category_map = {}
         for cat_name in categories_to_seed:
+            style = DEMO_CATEGORY_STYLES.get(cat_name.lower(), DEMO_CATEGORY_STYLES["other"])
             category = SpendingCategory(
                 workspace_id=workspace_id,
                 name=cat_name,
                 normalized_name=cat_name.lower(),
                 is_system=True,
+                color=style.get("color"),
+                icon=style.get("icon"),
             )
             self.session.add(category)
             await self.session.flush()

@@ -445,6 +445,10 @@ def _build_setup_message(
     # the assistant side of the capture log). Metered free; off by default.
     if settings.CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION:
         setup_message["setup"]["outputAudioTranscription"] = {}
+    # spec-079 Q4 (input direction): capture the user's utterance as text for
+    # the capture log's user_transcript events. Metered free; off by default.
+    if settings.CAPTURE_ENABLE_INPUT_TRANSCRIPTION:
+        setup_message["setup"]["inputAudioTranscription"] = {}
     # spec-079 Stage B: transport resilience. An empty `sessionResumption` opts
     # the session in to receiving resumption handles; a handle (round-tripped back
     # from the client on reconnect) resumes the prior conversation context.

@@ -20,22 +20,31 @@ import structlog
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.company_identity_merge import merge_company_identities
 from app.application.insights import generate_workspace_insights
+from app.application.reference_data_loader import load_reference_securities
 from app.application.workflows import (
     MorningBriefingWorkflow,
+    build_job_failure_digest_email,
+    build_job_health_heartbeat_email,
     cleanup_expired_exports,
     cleanup_expired_sessions,
     cleanup_import_previews,
+    collect_job_health_heartbeat_summary,
+    collect_unnotified_job_failures,
     deliver_pending_email_notifications,
     deliver_pending_push_notifications,
     evaluate_workspace_budget_guardrails,
     evaluate_workspace_kpi_breaches,
     ingest_fx_rates,
+    mark_job_failures_notified,
     process_workspace_medication_reminders,
     process_workspace_recurring_todos,
     process_workspace_recurring_transactions,
     process_workspace_todo_reminders,
+    purge_resolved_job_failures,
 )
+from app.auth.models import User
 from app.config import settings
 from app.core.constants import (
     ADVISORY_LOCK_BHAVCOPY_PRICE_FEED,
@@ -46,6 +55,8 @@ from app.core.constants import (
     ADVISORY_LOCK_FX_RATE_INGESTION,
     ADVISORY_LOCK_IMPORT_PREVIEW_CLEANUP,
     ADVISORY_LOCK_INVESTMENT_CLOSING_PRICES,
+    ADVISORY_LOCK_JOB_FAILURE_DIGEST,
+    ADVISORY_LOCK_JOB_HEALTH_HEARTBEAT,
     ADVISORY_LOCK_KPI_GUARDRAILS,
     ADVISORY_LOCK_MEDICATION_REMINDER,
     ADVISORY_LOCK_MORNING_BRIEFING,
@@ -57,6 +68,8 @@ from app.core.constants import (
     ADVISORY_LOCK_WEEKLY_SUMMARY,
 )
 from app.core.database import postgres
+from app.core.job_failures import record_job_failure, resolve_job_failures
+from app.core.retry import TRANSIENT_JOB_EXCEPTIONS, RetryPolicy, retry_async
 from app.finance.repository import AccountRepository, FinanceSettingRepository, FxRateRepository
 from app.health.repository import (
     MedicationEventRepository,
@@ -75,9 +88,13 @@ from app.investing.repository import (
     InstrumentRepository,
     PortfolioSnapshotRepository,
 )
+from app.notifications.email import send_email
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.observability.posthog_client import capture_exception
+from app.observability.scheduler_metrics import (
+    track_job,
+)
 from app.platform.models import Workspace, WorkspaceMembership, WorkspaceRole
 from app.spending.repository import (
     BudgetRepository,
@@ -87,7 +104,7 @@ from app.spending.repository import (
     TransactionRepository,
 )
 from app.spending.service import BudgetService, RecurringTransactionService
-from app.summaries.repository import WeeklySummaryRepository
+from app.summaries.repository import WeeklySummaryRepository, WorkspaceSummarySettingRepository
 from app.summaries.service import WeeklySummaryService
 from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
@@ -103,6 +120,16 @@ BUDGET_GUARDRAILS_LOCK_KEY = ADVISORY_LOCK_BUDGET_GUARDRAILS
 WORKSPACE_EVALUATION_TIMEOUT_SECONDS = 300.0
 
 
+def _default_retry_policy() -> RetryPolicy:
+    """Retry policy for the three opted-in, idempotent jobs (spec-088). Built
+    fresh per call so a settings override (e.g. in tests) is picked up."""
+    return RetryPolicy(
+        attempts=settings.JOB_RETRY_MAX_ATTEMPTS,
+        base_delay_seconds=settings.JOB_RETRY_BASE_DELAY_SECONDS,
+        transient_exceptions=TRANSIENT_JOB_EXCEPTIONS,
+    )
+
+
 async def run_workspace_job(
     *,
     job_name: str,
@@ -110,6 +137,8 @@ async def run_workspace_job(
     process_workspace: Callable[[AsyncSession, Workspace], Awaitable[None]],
     timeout_seconds: float = WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
     workspace_id: int | None = None,
+    retry: RetryPolicy | None = None,
+    record_failures: bool = False,
 ) -> None:
     """Run ``process_workspace`` for each active workspace under an advisory
     lock, isolating failures per workspace.
@@ -135,11 +164,21 @@ async def run_workspace_job(
     ``_completed``) match what the jobs logged before extraction — do not
     rename them without checking ``test_scheduler.py`` and any log-based
     alerting.
+
+    ``retry`` / ``record_failures`` (spec-088, both default off = today's
+    behavior): when ``retry`` is set, each attempt at a workspace's unit of
+    work is its own ``session.begin()`` (reusing this same session/connection
+    — no new session is ever opened, preserving the single-connection
+    invariant above) so a failed attempt rolls back cleanly before the next.
+    When ``record_failures`` is True, an exhausted/deterministic failure is
+    written to the ``job_failures`` ledger, and a later success auto-resolves
+    that workspace's open rows.
     """
     start_time = datetime.now(UTC)
     logger.info(f"{job_name}_start", job_name=job_name)
 
-    async with postgres.async_session_maker() as session:
+    # Track job-level metrics
+    async with track_job(job_name), postgres.async_session_maker() as session:
         lock_res = await session.execute(select(func.pg_try_advisory_lock(lock_key)))
         has_lock = lock_res.scalar()
         if not has_lock:
@@ -168,15 +207,29 @@ async def run_workspace_job(
 
             for ws_id in workspace_ids:
                 ws_start = datetime.now(UTC)
-                try:
+
+                async def _attempt(ws_id: int = ws_id) -> None:
                     async with session.begin():
                         workspace = await session.get(Workspace, ws_id)
                         if workspace is None or not workspace.is_active:
-                            continue
-                        await asyncio.wait_for(
-                            process_workspace(session, workspace),
-                            timeout=timeout_seconds,
+                            return
+                        # Track workspace-level metrics
+                        async with track_job(job_name, workspace_id=ws_id):
+                            await asyncio.wait_for(
+                                process_workspace(session, workspace),
+                                timeout=timeout_seconds,
+                            )
+
+                try:
+                    if retry is not None:
+                        await retry_async(
+                            _attempt,
+                            attempts=retry.attempts,
+                            base_delay_seconds=retry.base_delay_seconds,
+                            transient_exceptions=retry.transient_exceptions,
                         )
+                    else:
+                        await _attempt()
 
                     duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
                     logger.info(
@@ -186,7 +239,9 @@ async def run_workspace_job(
                         duration_ms=duration_ms,
                         status="success",
                     )
-                except TimeoutError:
+                    if record_failures:
+                        await resolve_job_failures(session, job_name=job_name, workspace_id=ws_id)
+                except TimeoutError as exc:
                     duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
                     logger.error(
                         f"{job_name}_workspace_timeout",
@@ -195,6 +250,16 @@ async def run_workspace_job(
                         duration_ms=duration_ms,
                         status="timeout",
                     )
+                    if record_failures:
+                        attempts_used = retry.attempts if retry is not None else 1
+                        await record_job_failure(
+                            session,
+                            job_name=job_name,
+                            workspace_id=ws_id,
+                            exc=exc,
+                            attempts=attempts_used,
+                            first_failed_at=ws_start,
+                        )
                 except Exception as exc:
                     duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
                     logger.error(
@@ -206,6 +271,20 @@ async def run_workspace_job(
                         exc_info=True,
                     )
                     capture_exception(exc, job_name=job_name)
+                    if record_failures:
+                        attempts_used = (
+                            retry.attempts
+                            if retry is not None and isinstance(exc, retry.transient_exceptions)
+                            else 1
+                        )
+                        await record_job_failure(
+                            session,
+                            job_name=job_name,
+                            workspace_id=ws_id,
+                            exc=exc,
+                            attempts=attempts_used,
+                            first_failed_at=ws_start,
+                        )
 
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.info(
@@ -268,6 +347,8 @@ async def investment_closing_prices_job(workspace_id: int | None = None) -> None
         lock_key=INVESTMENT_CLOSING_PRICES_LOCK_KEY,
         process_workspace=_process_workspace,
         workspace_id=workspace_id,
+        retry=_default_retry_policy(),
+        record_failures=True,
     )
 
 
@@ -285,8 +366,39 @@ async def bhavcopy_price_feed_job() -> None:
     """
     trade_date = investing_service._previous_weekday(datetime.now(UTC).date())
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        bhavcopy = await investing_service._fetch_nse_bhavcopy(client, trade_date)
+    async def _fetch() -> dict:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            return await investing_service._fetch_nse_bhavcopy(client, trade_date)
+
+    fetch_start = datetime.now(UTC)
+    retry = _default_retry_policy()
+    try:
+        bhavcopy = await retry_async(
+            _fetch,
+            attempts=retry.attempts,
+            base_delay_seconds=retry.base_delay_seconds,
+            transient_exceptions=retry.transient_exceptions,
+        )
+    except Exception as exc:
+        logger.error(
+            "bhavcopy_price_feed_fetch_failed", trade_date=trade_date.isoformat(), exc_info=True
+        )
+        capture_exception(exc, job_name="bhavcopy_price_feed_job")
+        async with postgres.async_session_maker() as failure_session:
+            await record_job_failure(
+                failure_session,
+                job_name="bhavcopy_price_feed_job",
+                workspace_id=None,
+                exc=exc,
+                attempts=retry.attempts if isinstance(exc, retry.transient_exceptions) else 1,
+                first_failed_at=fetch_start,
+            )
+        return
+
+    async with postgres.async_session_maker() as resolve_session:
+        await resolve_job_failures(
+            resolve_session, job_name="bhavcopy_price_feed_job", workspace_id=None
+        )
 
     if not bhavcopy:
         logger.info("bhavcopy_price_feed_no_data", trade_date=trade_date.isoformat())
@@ -327,6 +439,7 @@ async def bhavcopy_price_feed_job() -> None:
         job_name="bhavcopy_price_feed_job",
         lock_key=BHAVCOPY_PRICE_FEED_LOCK_KEY,
         process_workspace=_process_workspace,
+        record_failures=True,
     )
 
 
@@ -515,11 +628,22 @@ WEEKLY_SUMMARY_ROLE_ORDER = {
 
 
 async def weekly_summary_job(
-    workspace_id: int | None = None, week_start: date | None = None
+    workspace_id: int | None = None,
+    week_start: date | None = None,
+    respect_cadence: bool = False,
 ) -> None:
     """
-    Cron-triggered job that generates weekly summaries across all active workspaces.
-    Runs every Monday at 01:30 UTC.
+    Generates weekly summaries for active workspaces. The real scheduler
+    ticks this hourly with `respect_cadence=True`, so each tick only
+    generates for workspaces whose `workspace_summary_settings` row
+    (spec-076 — per-workspace day-of-week + hour) matches the current UTC
+    day/hour; a workspace with no row defaults to Monday hour 1, preserving
+    the pre-spec-076 global Monday 01:30 UTC schedule.
+
+    `respect_cadence` defaults to False so CLI/manual/test invocations keep
+    the pre-spec-076 behavior of always processing every targeted workspace
+    regardless of the clock — cadence gating is a scheduler-tick concern,
+    not something an explicit "run this now" call should silently skip.
     """
     start_time = datetime.now(UTC)
     logger.info("weekly_summary_job_start", job_name="weekly_summary_job")
@@ -552,6 +676,11 @@ async def weekly_summary_job(
                 logger.warning(
                     "weekly_summary_job_workspace_not_found_or_inactive",
                     workspace_id=workspace_id,
+                )
+            if respect_cadence and workspace_id is None and workspace_ids:
+                cadence_repo = WorkspaceSummarySettingRepository(session)
+                workspace_ids = await cadence_repo.list_due(
+                    workspace_ids, start_time.weekday(), start_time.hour
                 )
             # user ids per workspace, sorted owner → admin → member → viewer
             user_ids_by_workspace: dict[int, list[int]] = {}
@@ -670,37 +799,205 @@ async def fx_rate_ingestion_job() -> None:
     start_time = datetime.now(UTC)
     logger.info("fx_rate_ingestion_job_start", job_name="fx_rate_ingestion_job")
 
+    # spec-088: the ledger write/resolve below deliberately happen on a fresh
+    # session AFTER this transactional block has fully exited (committed or
+    # rolled back) -- writing through a second session while this one's
+    # transaction is still open would nest as a sub-savepoint of it and get
+    # wiped out by its rollback, since both share physical work here.
+    try:
+        async with postgres.async_session_maker() as session, session.begin():
+            lock_res = await session.execute(
+                select(func.pg_try_advisory_xact_lock(FX_RATE_INGESTION_LOCK_KEY))
+            )
+            has_lock = lock_res.scalar()
+            if not has_lock:
+                logger.info(
+                    "fx_rate_ingestion_job_skipped_lock_held",
+                    job_name="fx_rate_ingestion_job",
+                )
+                return
+
+            await ingest_fx_rates(session)
+
+        total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+        logger.info(
+            "fx_rate_ingestion_job_completed",
+            job_name="fx_rate_ingestion_job",
+            duration_ms=total_ms,
+        )
+        async with postgres.async_session_maker() as resolve_session:
+            await resolve_job_failures(
+                resolve_session, job_name="fx_rate_ingestion_job", workspace_id=None
+            )
+    except Exception as e:
+        total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+        logger.error(
+            "fx_rate_ingestion_job_failed",
+            job_name="fx_rate_ingestion_job",
+            duration_ms=total_ms,
+            error=str(e),
+            exc_info=True,
+        )
+        async with postgres.async_session_maker() as failure_session:
+            await record_job_failure(
+                failure_session,
+                job_name="fx_rate_ingestion_job",
+                workspace_id=None,
+                exc=e,
+                attempts=(
+                    settings.JOB_RETRY_MAX_ATTEMPTS
+                    if isinstance(e, TRANSIENT_JOB_EXCEPTIONS)
+                    else 1
+                ),
+                first_failed_at=start_time,
+            )
+        raise e
+
+
+# Advisory lock keys — see app.core.constants for the full registry
+JOB_FAILURE_DIGEST_LOCK_KEY = ADVISORY_LOCK_JOB_FAILURE_DIGEST
+JOB_HEALTH_HEARTBEAT_LOCK_KEY = ADVISORY_LOCK_JOB_HEALTH_HEARTBEAT
+
+
+async def _resolve_owner_workspace_and_user(session: AsyncSession) -> tuple[int, int] | None:
+    """Resolve the owner's (workspace_id, user_id) for the in-app failure
+    notification from ``OWNER_ALERT_EMAIL`` -- the User row matching that
+    address, then their earliest-joined active workspace membership. This
+    setting already names the owner unambiguously wherever alerting is
+    configured, so there's no need to guess via "first active workspace";
+    unset/unmatched ⇒ no owner to notify (email and in-app both skipped)."""
+    if not settings.OWNER_ALERT_EMAIL:
+        return None
+
+    stmt = (
+        select(WorkspaceMembership.workspace_id, WorkspaceMembership.user_id)
+        .join(User, User.id == WorkspaceMembership.user_id)
+        .join(Workspace, Workspace.id == WorkspaceMembership.workspace_id)
+        .where(User.email == settings.OWNER_ALERT_EMAIL, Workspace.is_active)
+        .order_by(WorkspaceMembership.created_at.asc())
+        .limit(1)
+    )
+    row = (await session.execute(stmt)).first()
+    if row is None:
+        return None
+    return row.workspace_id, row.user_id
+
+
+async def job_failure_digest_job() -> None:
+    """Daily digest of job/workspace units that failed since the last digest
+    (spec-088 Layer C1). Silence (no unnotified rows) means no email -- never
+    an "all clear" spam message."""
+    if not settings.JOB_FAILURE_DIGEST_ENABLED:
+        logger.info("job_failure_digest_job_disabled", job_name="job_failure_digest_job")
+        return
+
+    start_time = datetime.now(UTC)
+    logger.info("job_failure_digest_job_start", job_name="job_failure_digest_job")
+
     async with postgres.async_session_maker() as session, session.begin():
         lock_res = await session.execute(
-            select(func.pg_try_advisory_xact_lock(FX_RATE_INGESTION_LOCK_KEY))
+            select(func.pg_try_advisory_xact_lock(JOB_FAILURE_DIGEST_LOCK_KEY))
         )
-        has_lock = lock_res.scalar()
-        if not has_lock:
+        if not lock_res.scalar():
             logger.info(
-                "fx_rate_ingestion_job_skipped_lock_held",
-                job_name="fx_rate_ingestion_job",
+                "job_failure_digest_job_skipped_lock_held", job_name="job_failure_digest_job"
             )
             return
 
-        try:
-            await ingest_fx_rates(session)
+        rows = await collect_unnotified_job_failures(session)
+        if not rows:
+            logger.info("job_failure_digest_job_no_new_failures", job_name="job_failure_digest_job")
+            return
 
-            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+        subject, html = build_job_failure_digest_email(rows)
+
+        if settings.OWNER_ALERT_EMAIL:
+            result = await send_email(to=settings.OWNER_ALERT_EMAIL, subject=subject, html=html)
+            if not result.success:
+                logger.warning(
+                    "job_failure_digest_job_email_failed",
+                    job_name="job_failure_digest_job",
+                    skipped=result.skipped,
+                    error=result.error_detail,
+                )
+        else:
             logger.info(
-                "fx_rate_ingestion_job_completed",
-                job_name="fx_rate_ingestion_job",
-                duration_ms=total_ms,
+                "job_failure_digest_job_email_skipped_no_owner_email",
+                job_name="job_failure_digest_job",
             )
-        except Exception as e:
-            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
-            logger.error(
-                "fx_rate_ingestion_job_failed",
-                job_name="fx_rate_ingestion_job",
-                duration_ms=total_ms,
-                error=str(e),
-                exc_info=True,
+
+        owner = await _resolve_owner_workspace_and_user(session)
+        if owner is not None:
+            owner_workspace_id, owner_user_id = owner
+            notification_repo = NotificationRepository(session)
+            notification_service = NotificationService(notification_repo)
+            await notification_service.notify(
+                workspace_id=owner_workspace_id,
+                user_id=owner_user_id,
+                category="system",
+                severity="warning",
+                title=f"{len(rows)} job failure(s) need attention",
+                body=subject,
+                module="application",
             )
-            raise e
+
+        await mark_job_failures_notified(session, [row.id for row in rows if row.id is not None])
+
+    total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+    logger.info(
+        "job_failure_digest_job_completed",
+        job_name="job_failure_digest_job",
+        duration_ms=total_ms,
+        failure_count=len(rows),
+    )
+
+
+async def job_health_heartbeat_job() -> None:
+    """Weekly "the monitoring itself is alive" proof (spec-088 Layer C2).
+    Sends even at zero failures -- its absence is the signal something in the
+    pipeline (cron/email/app) is broken, not a claim that everything's fine."""
+    if not settings.JOB_HEALTH_HEARTBEAT_ENABLED:
+        logger.info("job_health_heartbeat_job_disabled", job_name="job_health_heartbeat_job")
+        return
+    if not settings.OWNER_ALERT_EMAIL:
+        logger.info(
+            "job_health_heartbeat_job_skipped_no_owner_email",
+            job_name="job_health_heartbeat_job",
+        )
+        return
+
+    start_time = datetime.now(UTC)
+    logger.info("job_health_heartbeat_job_start", job_name="job_health_heartbeat_job")
+
+    async with postgres.async_session_maker() as session, session.begin():
+        lock_res = await session.execute(
+            select(func.pg_try_advisory_xact_lock(JOB_HEALTH_HEARTBEAT_LOCK_KEY))
+        )
+        if not lock_res.scalar():
+            logger.info(
+                "job_health_heartbeat_job_skipped_lock_held", job_name="job_health_heartbeat_job"
+            )
+            return
+
+        since = start_time - timedelta(days=7)
+        summary = await collect_job_health_heartbeat_summary(session, since)
+        subject, html = build_job_health_heartbeat_email(summary)
+        result = await send_email(to=settings.OWNER_ALERT_EMAIL, subject=subject, html=html)
+        if not result.success:
+            logger.warning(
+                "job_health_heartbeat_job_email_failed",
+                job_name="job_health_heartbeat_job",
+                skipped=result.skipped,
+                error=result.error_detail,
+            )
+
+    total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+    logger.info(
+        "job_health_heartbeat_job_completed",
+        job_name="job_health_heartbeat_job",
+        duration_ms=total_ms,
+        total_failures=summary.total,
+    )
 
 
 async def export_cleanup_job() -> None:
@@ -724,6 +1021,7 @@ async def export_cleanup_job() -> None:
 
         try:
             cleaned_count = await cleanup_expired_exports(session)
+            purged_job_failures = await purge_resolved_job_failures(session)  # spec-088 retention
 
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
             logger.info(
@@ -731,6 +1029,7 @@ async def export_cleanup_job() -> None:
                 job_name="export_cleanup_job",
                 duration_ms=total_ms,
                 cleaned_count=cleaned_count,
+                purged_job_failures=purged_job_failures,
             )
         except Exception as exc:
             total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
@@ -1109,6 +1408,8 @@ async def morning_briefing_job(workspace_id: int | None = None) -> None:
                 RecurringTransactionRepository(session),
                 TransactionRepository(session),
                 category_repo,
+                account_repo,
+                finance_setting_repo,
             ),
             notification_service=notification_service,
             import_repo=ImportRepository(session),
@@ -1146,3 +1447,32 @@ async def morning_briefing_job(workspace_id: int | None = None) -> None:
         process_workspace=_process_workspace,
         workspace_id=workspace_id,
     )
+
+
+async def load_reference_securities_job() -> None:
+    """CLI-only loader (spec-083 §7.1): idempotent-upsert the bundled
+    `securities.json` master data into `reference_securities`. Global
+    (no workspace scope) — re-run any time the JSON changes.
+    """
+    async with postgres.async_session_maker() as session:
+        summary = await load_reference_securities(session)
+        logger.info("load_reference_securities_completed", **summary.as_dict())
+        print(summary.as_dict())
+
+
+async def merge_company_identities_job(workspace_id: int, dry_run: bool = False) -> None:
+    """CLI-only backfill (spec-083 §9): merge duplicate `Company` rows within
+    ONE workspace, created by the pre-spec-083 name-string identity bug.
+
+    Deliberately not scheduler-run and not under `run_workspace_job` — this
+    mutates/deletes historical identity rows and must only ever run against
+    an operator-chosen `--workspace-id`, never automatically across all
+    workspaces.
+    """
+    async with postgres.async_session_maker() as session:
+        summary = await merge_company_identities(session, workspace_id, dry_run=dry_run)
+        logger.info(
+            "merge_company_identities_completed",
+            **summary.as_dict(),
+        )
+        print(summary.as_dict())

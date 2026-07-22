@@ -67,12 +67,26 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://postgres:postgres@localhost:5432/lifestack",
         validation_alias=AliasChoices("DATABASE_URL", "POSTGRES_URL"),
     )
+    DATABASE_POOL_SIZE: int = Field(
+        default=0,  # 0 means auto-calculate (CPU * 2)
+        validation_alias=AliasChoices("DATABASE_POOL_SIZE", "DB_POOL_SIZE"),
+    )
+    DATABASE_MAX_OVERFLOW: int = Field(
+        default=0,  # 0 means auto-calculate (pool_size)
+        validation_alias=AliasChoices("DATABASE_MAX_OVERFLOW", "DB_MAX_OVERFLOW"),
+    )
 
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_DEFAULT: str = "100/minute"
     RATE_LIMIT_AUTH: str = "10/minute"
     RATE_LIMIT_STORAGE_URI: str = "memory://"  # Set to REDIS_URL in production
+
+    # Response Cache (spec-087) — TTL-only cache-aside for dashboard summary & net worth
+    ENABLE_RESPONSE_CACHE: bool = False
+    REDIS_URL: str = "redis://localhost:6379/1"
+    DASHBOARD_CACHE_TTL_SECONDS: int = 30
+    NET_WORTH_CACHE_TTL_SECONDS: int = 120
 
     # Cookie Security
     COOKIE_SECURE: bool = False  # Set True in production (HTTPS)
@@ -124,8 +138,18 @@ class Settings(BaseSettings):
     BUDGET_WARNING_THRESHOLD: float = 0.9
     BUDGET_CRITICAL_THRESHOLD: float = 1.0
 
-    # Recurring Transactions (Spec 013)
-    RECURRING_TXN_GENERATION_HOUR: int = 0  # UTC hour to run generation job
+    # Job failure visibility & alerting (spec-088). All fail safe: unset/disabled
+    # reverts to today's behavior (no retry, no alert emails), so no
+    # production-validator requirement.
+    OWNER_ALERT_EMAIL: str | None = None
+    JOB_FAILURE_DIGEST_ENABLED: bool = True
+    JOB_HEALTH_HEARTBEAT_ENABLED: bool = True
+    JOB_RETRY_MAX_ATTEMPTS: int = Field(default=3, ge=1)
+    JOB_RETRY_BASE_DELAY_SECONDS: float = Field(default=2.0, ge=0.0)
+
+    # Recurring Transactions (Spec 013). 22:30 UTC = 04:00 IST per
+    # spec-089's IST-morning schedule (registered with minute_utc=30 inline).
+    RECURRING_TXN_GENERATION_HOUR: int = 22  # UTC hour to run generation job
     RECURRING_TXN_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up generation
     RECURRING_TODO_CATCHUP_LIMIT_DAYS: int = 90  # Max days of catch-up todo generation
 
@@ -137,11 +161,11 @@ class Settings(BaseSettings):
     PUSH_DELIVERY_INTERVAL_MINUTES: int = 1
     TODO_REMINDER_INTERVAL_MINUTES: int = 5
 
-    # Morning briefing (spec-067) — daily at ~08:00 IST by default, after
-    # Monday's 01:30 UTC weekly_summary cron so a fresh summary lands in
-    # that same Monday briefing.
-    BRIEFING_JOB_HOUR_UTC: int = 2
-    BRIEFING_JOB_MINUTE_UTC: int = 30
+    # Morning briefing (spec-067) — retimed by spec-089 to 23:45 UTC = 05:15
+    # IST, the last step before the job_failure_digest, so it reflects the
+    # fully-updated net worth/insights from earlier in the IST-morning chain.
+    BRIEFING_JOB_HOUR_UTC: int = 23
+    BRIEFING_JOB_MINUTE_UTC: int = 45
 
     # Health Memory v1 (spec-069)
     HEALTH_DOSE_GRACE_HOURS: int = 4  # owner-confirmed grace window before a dose reads as "missed"
@@ -158,6 +182,11 @@ class Settings(BaseSettings):
     MAX_ACTIVE_SESSIONS_PER_USER: int = 5
     ENABLE_DEMO_RESET: bool = False
     ENABLE_E2E_TEST_HOOKS: bool = False
+
+    # Security reference data (Spec 083): bundled data works fully offline by
+    # default; the Yahoo quote/identity API fallback is opt-in.
+    REFERENCE_DATA_API_ENABLED: bool = False
+    REFERENCE_DATA_CACHE_STALENESS_DAYS: int = 30
 
     # Export storage hardening (Spec 006)
     EXPORT_STORAGE_BACKEND: str = "db"  # db|local|s3
@@ -228,6 +257,13 @@ class Settings(BaseSettings):
     # current behavior (off); enable in prod after confirming the deployed model
     # accepts `outputAudioTranscription`.
     CAPTURE_ENABLE_OUTPUT_TRANSCRIPTION: bool = False
+    # spec-079 Q4 (input direction, resolved 2026-07-17): enable Gemini
+    # input-audio transcription so the user's own utterance is captured as text
+    # into the capture log (`kind='user_transcript'`) — the source for the
+    # real-usage eval slice. Metered free (delta within baseline jitter;
+    # 3.1 Flash Live emits inputTranscription even when not requested).
+    # Defaults to current behavior (off).
+    CAPTURE_ENABLE_INPUT_TRANSCRIPTION: bool = False
     # spec-079 Stage B: WebSocket transport resilience. Both default to current
     # behavior (off) per the spec's "new limit defaults to current behavior" rule.
     # Session resumption opts the Gemini Live session in to periodic resumption

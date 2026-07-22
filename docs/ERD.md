@@ -360,6 +360,27 @@ erDiagram
     USERS ||--o{ RECURRING_TRANSACTIONS : configures
     SPENDING_CATEGORIES ||--o{ RECURRING_TRANSACTIONS : categorizes
     RECURRING_TRANSACTIONS ||--o{ SPENDING_TRANSACTIONS : generates
+
+    FINANCIAL_KPIS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        string name
+        enum metric_type
+        enum evaluation_window
+        int category_id FK
+        int category_group_id FK
+        int account_id FK
+        string currency_code FK
+        decimal target_value
+        enum target_direction
+        string display_format
+        boolean is_active
+        datetime created_at
+        datetime updated_at
+    }
+
+    WORKSPACES ||--o{ FINANCIAL_KPIS : scopes
 ```
 
 A budget scopes to exactly one of `category_id` or `category_group_id` (DB check
@@ -512,6 +533,63 @@ read for today, and by the daily `net_worth_snapshot_job` cron. Both paths
 compute holdings/cash live via `InvestingSummaryService` rather than reading
 the (investing-only, cache-prone) `portfolio_snapshots` table, so the job
 doesn't depend on a dashboard visit having happened that day.
+
+## Finance / Wallet Reconciliation (spec-078)
+
+Statement matching is metadata-only — these tables never mutate `spending_transactions`,
+`capital_transfers`, or `investing_cash_balances`. `reconciled_through` is informational,
+not a lock.
+
+```mermaid
+erDiagram
+    ACCOUNTS {
+        int id PK
+        string name
+    }
+
+    WORKSPACES {
+        int id PK
+    }
+
+    ACCOUNT_STATEMENTS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int account_id FK
+        date period_start
+        date period_end
+        decimal closing_balance
+        string currency_code FK
+        int import_batch_id FK
+        date reconciled_through
+        datetime created_at
+        datetime updated_at
+    }
+
+    STATEMENT_LINES {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int account_id FK
+        int statement_id FK
+        date occurred_at
+        string description
+        decimal amount
+        decimal balance
+        string external_ref UK
+        int matched_transaction_id FK
+        int matched_transfer_id FK
+        enum matched_transfer_leg
+        datetime matched_at
+        datetime created_at
+        datetime updated_at
+    }
+
+    WORKSPACES ||--o{ ACCOUNT_STATEMENTS : scopes
+    ACCOUNTS ||--o{ ACCOUNT_STATEMENTS : has_statements
+    ACCOUNT_STATEMENTS ||--o{ STATEMENT_LINES : contains
+    ACCOUNTS ||--o{ STATEMENT_LINES : scopes
+```
 
 ## Investing
 
@@ -741,6 +819,46 @@ erDiagram
     WORKSPACES ||--o{ INVESTING_HOLDING_VERIFICATIONS : scopes
     ACCOUNTS ||--o{ INVESTING_HOLDING_VERIFICATIONS : verifies
     IMPORT_BATCHES ||--o{ INVESTING_HOLDING_VERIFICATIONS : produces
+
+    REFERENCE_SECURITIES {
+        int id PK
+        uuid public_id UK
+        string isin UK
+        string ticker
+        string exchange
+        string amfi_code UK
+        enum security_type
+        string name
+        string[] aliases
+        string country_code
+        string source
+        datetime fetched_at
+    }
+
+    INVESTING_DIVIDENDS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        int account_id FK
+        int holding_id FK
+        string symbol
+        enum income_type
+        decimal gross_amount
+        decimal tax_withheld
+        decimal net_amount
+        string currency FK
+        date pay_date
+        string external_ref UK
+        string notes
+        datetime created_at
+        datetime updated_at
+    }
+
+    WORKSPACES ||--o{ INVESTING_DIVIDENDS : scopes
+    USERS ||--o{ INVESTING_DIVIDENDS : records
+    ACCOUNTS ||--o{ INVESTING_DIVIDENDS : credited_to
+    INVESTING_HOLDINGS ||--o{ INVESTING_DIVIDENDS : attributed_to
 ```
 
 ## Notifications & Summaries
@@ -941,3 +1059,7 @@ erDiagram
 - `import_batches.extra_json` (spec-056) carries module-specific batch context, e.g. the CAMS CAS `target_account_id` and advisory preview signals.
 - `import_batches` tracks the life of bulk data uploads for transaction and holdings modules.
 - `exports` handles the user-driven data exports lifecycle.
+- `reference_securities` (spec-083, migration 0053) is a **global** (no `workspace_id`) security-master table populated from the bundled `securities.json.gz` dataset (AMFI mutual funds, NSE equities/ETFs, Nasdaq/NYSE listings) and enriched on demand via the Yahoo Finance API fallback. It is the authoritative lookup for `ReferenceResolveService` when resolving ISIN/ticker/AMFI codes to a canonical security identity. The table carries conditional unique indexes: `isin` (where not null), `(ticker, exchange)` (where ticker not null), and `amfi_code` (where not null). There are no foreign keys from tenant tables into `reference_securities` — it is read-only reference data consulted during resolution and enrichment, never linked by FK.
+- `investing_dividends` (spec-073) records dividend/interest/coupon income events. Each row credits `investing_cash_balances` once via the service layer — there is no offsetting debit, replacing the former workaround of a fake wallet→brokerage transfer. `holding_id` is an opportunistic link (null when the position has been exited); `income_type` is one of `dividend`/`interest`/`coupon`. A conditional unique index on `(workspace_id, account_id, external_ref)` prevents duplicate imports.
+- `financial_kpis` (spec-077) stores user-defined KPI definitions (spend total, income total, net cash flow) scoped to a workspace with optional `category_id`, `category_group_id`, or `account_id` filters. Single-currency enforcement is checked at evaluation time (service layer), not as a DB constraint. Exactly one of `target_value`/`target_direction` is set (check constraint `ck_financial_kpis_target_pair`).
+- `account_statements` and `statement_lines` (spec-078, wallet ledger reconciliation) are **metadata-only** — they never mutate any ledger table. A `statement_line` can be matched to at most one of `spending_transactions` or `capital_transfers` (check constraint `ck_statement_lines_exactly_one_match_target`). `account_statements.reconciled_through` is informational, not a processing lock. Duplicate statement-line detection uses the deterministic `external_ref` derived from `(account, date, amount, description, within-file index)`.

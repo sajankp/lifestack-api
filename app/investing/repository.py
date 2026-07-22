@@ -1,8 +1,10 @@
+import re
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from uuid import UUID
 
 from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.pagination import DEFAULT_LIMIT
@@ -21,7 +23,17 @@ from app.investing.models import (
     LotConsumption,
     OrderLot,
     PortfolioSnapshot,
+    ReferenceSecurity,
 )
+
+_PUNCTUATION_RE = re.compile(r"[^\w\s]", re.UNICODE)
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalize_company_name(name: str) -> str:
+    """Collapse "Apple Inc" / "Apple Inc." to the same key (spec-083 §4.2)."""
+    stripped = _PUNCTUATION_RE.sub("", name.strip().lower())
+    return _WHITESPACE_RE.sub(" ", stripped).strip()
 
 
 class HoldingRepository(BaseRepository[Holding]):
@@ -433,25 +445,6 @@ class CompanyRepository(BaseRepository[Company]):
         )
         return result.scalar_one_or_none()
 
-    async def get_by_name(self, workspace_id: int | None, name: str) -> Company | None:
-        if workspace_id is not None:
-            # Query workspace first (override)
-            result = await self.session.execute(
-                select(Company).where(
-                    Company.workspace_id == workspace_id,
-                    Company.name == name,
-                )
-            )
-            val = result.scalar_one_or_none()
-            if val is not None:
-                return val
-
-        # Query global
-        res_global = await self.session.execute(
-            select(Company).where(Company.workspace_id.is_(None), Company.name == name)
-        )
-        return res_global.scalar_one_or_none()
-
     async def get_by_id(self, company_id: int) -> Company | None:
         result = await self.session.execute(select(Company).where(Company.id == company_id))
         return result.scalar_one_or_none()
@@ -464,24 +457,143 @@ class CompanyRepository(BaseRepository[Company]):
         rows = result.scalars().all()
         return {row.id: row for row in rows if row.id is not None}
 
-    async def get_by_names(self, workspace_id: int, names: Sequence[str]) -> dict[str, Company]:
-        unique_names = {n for n in names if n}
-        if not unique_names:
-            return {}
+    async def _scope_candidates(self, workspace_id: int | None) -> Sequence[Company]:
         result = await self.session.execute(
-            select(Company)
-            .where(
-                (Company.workspace_id == workspace_id) | (Company.workspace_id.is_(None)),
-                Company.name.in_(unique_names),
+            select(Company).where(
+                (Company.workspace_id == workspace_id) | (Company.workspace_id.is_(None))
             )
-            .order_by(Company.workspace_id.desc().nulls_last())
         )
+        return result.scalars().all()
+
+    async def resolve_or_create_company(
+        self,
+        workspace_id: int | None,
+        *,
+        name: str,
+        ticker: str | None = None,
+        isin: str | None = None,
+        country_code: str | None = None,
+    ) -> Company:
+        """Resolve `name`/`ticker`/`isin` to a single stable `Company` row.
+
+        Precedence: ISIN -> ticker -> normalized(name) (spec-083 §4.2). Both
+        ingestion paths (CSV import, constituent API upsert) must call this
+        instead of matching on raw name, or "Apple Inc"/"Apple Inc."/"AAPL"
+        fragment into separate companies and understate look-through overlap.
+        """
+        isin = isin.strip().upper() if isin else None
+        ticker = ticker.strip().upper() if ticker else None
+        candidates = await self._scope_candidates(workspace_id)
+
+        if isin:
+            for candidate in candidates:
+                if candidate.isin and candidate.isin.strip().upper() == isin:
+                    return candidate
+
+        if ticker:
+            for candidate in candidates:
+                if not (candidate.ticker and candidate.ticker.strip().upper() == ticker):
+                    continue
+                # Same ticker string can denote different companies on different
+                # markets (e.g. a symbol reused across exchanges); when both sides
+                # know the market, require it to match so we don't false-merge.
+                if (
+                    country_code
+                    and candidate.country_code
+                    and candidate.country_code.upper() != country_code.upper()
+                ):
+                    continue
+                if isin and not candidate.isin:
+                    candidate.isin = isin
+                    await self.save(candidate)
+                return candidate
+
+        normalized_target = normalize_company_name(name)
+        for candidate in candidates:
+            if normalize_company_name(candidate.name) == normalized_target:
+                changed = False
+                if isin and not candidate.isin:
+                    candidate.isin = isin
+                    changed = True
+                if ticker and not candidate.ticker:
+                    candidate.ticker = ticker
+                    changed = True
+                if changed:
+                    await self.save(candidate)
+                return candidate
+
+        return await self.create(
+            Company(
+                workspace_id=workspace_id,
+                name=name,
+                ticker=ticker,
+                isin=isin,
+                country_code=country_code,
+            )
+        )
+
+
+class ReferenceSecurityRepository(BaseRepository[ReferenceSecurity]):
+    async def get_by_isin(self, isin: str) -> ReferenceSecurity | None:
+        result = await self.session.execute(
+            select(ReferenceSecurity).where(ReferenceSecurity.isin == isin.strip().upper())
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_ticker_exchange(
+        self, ticker: str, exchange: str | None
+    ) -> ReferenceSecurity | None:
+        stmt = select(ReferenceSecurity).where(ReferenceSecurity.ticker == ticker.strip().upper())
+        stmt = stmt.where(ReferenceSecurity.exchange == exchange) if exchange else stmt
+        result = await self.session.execute(stmt)
         rows = result.scalars().all()
-        res = {}
-        for row in rows:
-            if row.name not in res:
-                res[row.name] = row
-        return res
+        return rows[0] if rows else None
+
+    async def list_by_ticker(self, ticker: str) -> Sequence[ReferenceSecurity]:
+        result = await self.session.execute(
+            select(ReferenceSecurity).where(ReferenceSecurity.ticker == ticker.strip().upper())
+        )
+        return result.scalars().all()
+
+    async def get_by_amfi_code(self, amfi_code: str) -> ReferenceSecurity | None:
+        result = await self.session.execute(
+            select(ReferenceSecurity).where(ReferenceSecurity.amfi_code == amfi_code.strip())
+        )
+        return result.scalar_one_or_none()
+
+    async def find_by_normalized_name(self, name: str) -> ReferenceSecurity | None:
+        normalized_target = normalize_company_name(name)
+        result = await self.session.execute(select(ReferenceSecurity))
+        for row in result.scalars().all():
+            if normalize_company_name(row.name) == normalized_target:
+                return row
+            if any(normalize_company_name(alias) == normalized_target for alias in row.aliases):
+                return row
+        return None
+
+    async def upsert(self, entity: ReferenceSecurity) -> ReferenceSecurity:
+        existing: ReferenceSecurity | None = None
+        if entity.isin:
+            existing = await self.get_by_isin(entity.isin)
+        if existing is None and entity.ticker:
+            existing = await self.get_by_ticker_exchange(entity.ticker, entity.exchange)
+        if existing is None and entity.amfi_code:
+            existing = await self.get_by_amfi_code(entity.amfi_code)
+
+        if existing is None:
+            return await self.create(entity)
+
+        existing.isin = entity.isin or existing.isin
+        existing.ticker = entity.ticker or existing.ticker
+        existing.exchange = entity.exchange or existing.exchange
+        existing.amfi_code = entity.amfi_code or existing.amfi_code
+        existing.security_type = entity.security_type
+        existing.name = entity.name
+        existing.aliases = entity.aliases
+        existing.country_code = entity.country_code or existing.country_code
+        existing.source = entity.source
+        existing.fetched_at = entity.fetched_at
+        return await self.save(existing)
 
 
 class InstrumentConstituentRepository:
@@ -732,27 +844,48 @@ class PortfolioSnapshotRepository:
         self.session = session
 
     async def upsert(self, snapshot: PortfolioSnapshot) -> PortfolioSnapshot:
-        existing = (
+        """Atomic upsert on (workspace_id, snapshot_date) via ON CONFLICT DO
+        UPDATE. Plain check-then-insert let two unlocked callers (e.g. a
+        dashboard request and morning_briefing_job) both find no row for
+        today and both INSERT, raising IntegrityError on
+        uq_snapshot_workspace_date (prod incident 2026-07-18/19)."""
+        stmt = pg_insert(PortfolioSnapshot).values(
+            workspace_id=snapshot.workspace_id,
+            snapshot_date=snapshot.snapshot_date,
+            total_value=snapshot.total_value,
+            total_cost=snapshot.total_cost,
+            holdings_value=snapshot.holdings_value,
+            cash_value=snapshot.cash_value,
+            currency_code=snapshot.currency_code,
+            fx_rates_used=snapshot.fx_rates_used,
+            created_at=snapshot.created_at,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["workspace_id", "snapshot_date"],
+            set_={
+                "total_value": stmt.excluded.total_value,
+                "total_cost": stmt.excluded.total_cost,
+                "holdings_value": stmt.excluded.holdings_value,
+                "cash_value": stmt.excluded.cash_value,
+                "currency_code": stmt.excluded.currency_code,
+                "fx_rates_used": stmt.excluded.fx_rates_used,
+            },
+        )
+        await self.session.execute(stmt)
+        # populate_existing=True: the ON CONFLICT UPDATE above is raw Core DML
+        # and bypasses the unit-of-work, so a PortfolioSnapshot already in this
+        # session's identity map (e.g. loaded earlier via `latest()`) would
+        # otherwise be returned with its stale pre-conflict attribute values.
+        return (
             await self.session.execute(
-                select(PortfolioSnapshot).where(
+                select(PortfolioSnapshot)
+                .where(
                     PortfolioSnapshot.workspace_id == snapshot.workspace_id,
                     PortfolioSnapshot.snapshot_date == snapshot.snapshot_date,
                 )
+                .execution_options(populate_existing=True)
             )
-        ).scalar_one_or_none()
-        if existing:
-            existing.total_value = snapshot.total_value
-            existing.total_cost = snapshot.total_cost
-            existing.holdings_value = snapshot.holdings_value
-            existing.cash_value = snapshot.cash_value
-            existing.currency_code = snapshot.currency_code
-            existing.fx_rates_used = snapshot.fx_rates_used
-            self.session.add(existing)
-            await self.session.flush()
-            return existing
-        self.session.add(snapshot)
-        await self.session.flush()
-        return snapshot
+        ).scalar_one()
 
     async def delete_for_date(self, workspace_id: int, snapshot_date: date) -> None:
         await self.session.execute(

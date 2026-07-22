@@ -4,14 +4,16 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.application.jobs import weekly_summary_job
 from app.auth.repository import UserRepository
+from app.core.audit import AuditLog
 from app.core.database import postgres
-from app.finance.models import Account, AccountType
+from app.finance.models import Account, AccountType, NetWorthSnapshot
 from app.health.models import Medication, MedicationEvent, WeightEntry
-from app.investing.models import PortfolioSnapshot
+from app.investing.models import Dividend, PortfolioSnapshot
+from app.notifications.models import Notification
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.platform.repository import WorkspaceRepository
@@ -415,3 +417,664 @@ async def test_mark_weekly_summary_read(client: AsyncClient):
     # Unknown id is a 404, not a silent success.
     missing = await client.post(f"/v1/summaries/weekly/{uuid.uuid4()}/read", cookies=cookies)
     assert missing.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_computes_dividend_summary(client: AsyncClient):
+    """spec-076: dividend/interest income received in the period."""
+    creds = await _register_and_login(client, "sumdividend")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        account = Account(
+            workspace_id=workspace_id,
+            name="Broker",
+            account_type=AccountType.brokerage,
+            default_currency_code="USD",
+        )
+        session.add(account)
+        await session.flush()
+
+        session.add_all([
+            Dividend(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                account_id=account.id,
+                symbol="NVDA",
+                income_type="dividend",
+                gross_amount=Decimal("100.00"),
+                tax_withheld=Decimal("10.00"),
+                net_amount=Decimal("90.00"),
+                currency="USD",
+                pay_date=week_start + timedelta(days=1),
+            ),
+            Dividend(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                account_id=account.id,
+                symbol=None,
+                income_type="interest",
+                gross_amount=Decimal("20.00"),
+                tax_withheld=Decimal("0"),
+                net_amount=Decimal("20.00"),
+                currency="USD",
+                pay_date=week_start + timedelta(days=2),
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.dividend_summary["status"] == "complete"
+    assert summary.dividend_summary["count"] == 2
+    assert summary.dividend_summary["total_net"] == "110.00"
+    assert summary.dividend_summary["currency"] == "USD"
+    by_symbol = {row["symbol"]: row["net_amount"] for row in summary.dividend_summary["by_symbol"]}
+    assert by_symbol == {"NVDA": "90.00", "Interest": "20.00"}
+    assert any(f["type"] == "dividend_income" for f in summary.highlights["flags"])
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_computes_net_worth_summary(client: AsyncClient):
+    """spec-076: net-worth change with as-of provenance (spec-065 snapshots)."""
+    creds = await _register_and_login(client, "sumnetworth")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1000.00"),
+                source="user_provided",
+            ),
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=6),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1100.00"),
+                source="user_provided",
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.net_worth_summary == {
+        "status": "complete",
+        "net_worth_start": "1000.00",
+        "net_worth_end": "1100.00",
+        "week_change": "100.00",
+        "week_change_pct": "10.00",
+        "currency": "USD",
+        "start_snapshot_date": (week_start - timedelta(days=1)).isoformat(),
+        "end_snapshot_date": (week_start + timedelta(days=6)).isoformat(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_net_worth_unavailable_without_baseline(client: AsyncClient):
+    creds = await _register_and_login(client, "sumnetworthnone")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.net_worth_summary["status"] == "unavailable"
+    assert summary.net_worth_summary["net_worth_start"] is None
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_net_worth_zero_baseline_stays_a_real_complete_summary(
+    client: AsyncClient,
+):
+    """A zero-value boundary is a legitimate data point — a user's first
+    tracked net worth, or a genuine drop to zero — not necessarily a
+    placeholder. Treating it as "unavailable" would hide a real "first
+    investment" or "wiped out" week. Only week_change_pct is undefined
+    (division by zero); status and week_change must still be real."""
+    creds = await _register_and_login(client, "sumnetworthzero")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("0.00"),
+                source="user_provided",
+            ),
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=6),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1100.00"),
+                source="user_provided",
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.net_worth_summary["status"] == "complete"
+    assert summary.net_worth_summary["net_worth_start"] == "0.00"
+    assert summary.net_worth_summary["net_worth_end"] == "1100.00"
+    assert summary.net_worth_summary["week_change"] == "1100.00"
+    assert summary.net_worth_summary["week_change_pct"] is None
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_investing_zero_baseline_stays_a_real_complete_summary(
+    client: AsyncClient,
+):
+    """Same as the net-worth case above: a zero holdings_value boundary can be
+    a genuine first-investment or full-liquidation week and must not be
+    suppressed as "unavailable"."""
+    creds = await _register_and_login(client, "suminvestingzero")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            PortfolioSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                total_value="0.00",
+                total_cost="0.00",
+                holdings_value="0.00",
+                cash_value="0.00",
+                currency_code="USD",
+            ),
+            PortfolioSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=6),
+                total_value="1280.00",
+                total_cost="800.00",
+                holdings_value="1200.00",
+                cash_value="80.00",
+                currency_code="USD",
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.investing_summary["status"] == "complete"
+    assert summary.investing_summary["portfolio_value_start"] == "0.00"
+    assert summary.investing_summary["portfolio_value_end"] == "1200.00"
+    assert summary.investing_summary["week_change"] == "1200.00"
+    assert summary.investing_summary["week_change_pct"] is None
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_flags_reverted_import_overlapping_boundary_snapshot(
+    client: AsyncClient,
+):
+    """spec-086 Layers 2-3: a weekly summary whose net-worth boundary
+    snapshot dates overlap a since-reverted import's live window must flag
+    that the figure may reflect data that was later reverted. Sourced from
+    the append-only import_rolled_back audit trail -- the only surviving
+    record of the revert once the ImportBatch row itself is hard-deleted.
+    This is a distinct signal from is_stale (fresher snapshot exists): here
+    the EXISTING snapshot's own underlying data was reverted, and per
+    spec-086 that snapshot can never be corrected (historical quantities/
+    prices aren't reconstructable) -- annotation is the only honest option."""
+    creds = await _register_and_login(client, "sumrevertoverlap")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1000.00"),
+                source="user_provided",
+            ),
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("5000.00"),
+                source="user_provided",
+            ),
+        ])
+        # An import that was live during this week, later reverted -- the
+        # ImportBatch row itself is gone; only the audit trail survives.
+        session.add(
+            AuditLog(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action="import_rolled_back",
+                module="import",
+                entity_type="import_batch",
+                entity_id=999999,
+                details={
+                    "entity_public_id": str(uuid.uuid4()),
+                    "before": {
+                        "module": "investing_orders",
+                        "status": "completed",
+                        "total_rows": 1,
+                        "valid_rows": 1,
+                        "error_rows": 0,
+                        "committed_at": datetime.combine(
+                            week_start, datetime.min.time(), tzinfo=UTC
+                        ).isoformat(),
+                    },
+                    "after": None,
+                    "changed_fields": ["status"],
+                },
+                timestamp=datetime.combine(
+                    week_start + timedelta(days=2), datetime.min.time(), tzinfo=UTC
+                ),
+            )
+        )
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+        assert await service.has_reverted_import_overlap(summary) is True
+
+    # Router wiring: GET /latest surfaces the same signal over the API.
+    res = await client.get("/v1/summaries/weekly/latest")
+    assert res.status_code == 200, res.text
+    assert res.json()["data_revised_after_snapshot"] is True
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_no_revert_overlap_when_no_reverted_import(client: AsyncClient):
+    """Negative case: no import_rolled_back audit entries at all -> false."""
+    creds = await _register_and_login(client, "sumnorevert")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1000.00"),
+                source="user_provided",
+            ),
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1050.00"),
+                source="user_provided",
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+        assert await service.has_reverted_import_overlap(summary) is False
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_is_stale_when_fresher_boundary_snapshot_lands_after_generation(
+    client: AsyncClient,
+):
+    """spec-085: a stored summary's net-worth/investing sections can be
+    generated before the week's real end-of-week snapshot lands (e.g. the
+    daily job runs after the weekly-summary job that same day, or a workspace
+    catches up on a missed day). is_stale must flag that a fresher boundary
+    snapshot now exists that would change the stored figures -- read-time
+    only, no new column."""
+    creds = await _register_and_login(client, "sumstaleworth")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        session.add_all([
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start - timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1000.00"),
+                source="user_provided",
+            ),
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=1),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1050.00"),
+                source="user_provided",
+            ),
+        ])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+        # Not stale immediately after generation -- nothing has changed since.
+        assert await service.is_stale(summary) is False
+
+        # A fresher snapshot lands for the same week after generation.
+        session.add(
+            NetWorthSnapshot(
+                workspace_id=workspace_id,
+                snapshot_date=week_start + timedelta(days=3),
+                reporting_currency="USD",
+                total_net_worth=Decimal("1100.00"),
+                source="user_provided",
+            )
+        )
+        await session.flush()
+
+        assert await service.is_stale(summary) is True
+        await session.commit()
+
+    # Router wiring: GET /latest surfaces the same signal over the API.
+    res = await client.get("/v1/summaries/weekly/latest")
+    assert res.status_code == 200, res.text
+    assert res.json()["data_stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_is_stale_when_boundary_snapshot_is_deleted(client: AsyncClient):
+    """Edge case flagged in PR #190 review: if the snapshot the summary was
+    generated from is later deleted outright (not just superseded by a
+    fresher one), `end_snapshot` comes back None while `stored_date` is still
+    populated -- that must also count as stale, not silently pass through as
+    "unchanged"."""
+    creds = await _register_and_login(client, "sumstaledeleted")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        start_snapshot = NetWorthSnapshot(
+            workspace_id=workspace_id,
+            snapshot_date=week_start - timedelta(days=1),
+            reporting_currency="USD",
+            total_net_worth=Decimal("1000.00"),
+            source="user_provided",
+        )
+        end_snapshot = NetWorthSnapshot(
+            workspace_id=workspace_id,
+            snapshot_date=week_start + timedelta(days=1),
+            reporting_currency="USD",
+            total_net_worth=Decimal("1050.00"),
+            source="user_provided",
+        )
+        session.add_all([start_snapshot, end_snapshot])
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+        assert await service.is_stale(summary) is False
+
+        # Both snapshots gone -- no snapshot at all now exists <= week_end,
+        # so the "current" side of the comparison is None while the stored
+        # side is still populated. This must not be treated as "unchanged".
+        await session.delete(start_snapshot)
+        await session.delete(end_snapshot)
+        await session.flush()
+
+        assert await service.is_stale(summary) is True
+
+
+@pytest.mark.asyncio
+async def test_weekly_summary_return_metrics_unavailable_without_investing_data(
+    client: AsyncClient,
+):
+    """No orders/holdings at all -> return_metrics_summary reports unavailable,
+    not a crash (ReturnMetricsService.valuation_status stays 'current' with
+    xirr=None for an empty portfolio, which the composer treats the same as
+    genuinely unavailable — there is nothing to report)."""
+    creds = await _register_and_login(client, "sumreturnmetrics")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.return_metrics_summary["status"] == "unavailable"
+    assert summary.return_metrics_summary["notable"] is False
+
+
+@pytest.mark.asyncio
+async def test_regenerate_weekly_summary_supersedes_without_notification(client: AsyncClient):
+    """spec-076: regenerate recomputes from current data, retains the old row
+    marked superseded (never deletes it), does NOT send a notification, and
+    list/latest return only the new non-superseded row."""
+    creds = await _register_and_login(client, "sumregen")
+    cookies = creds["cookies"]
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        original_public_id = str(summary.public_id)
+        await session.commit()
+
+        notif_count_before = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Notification)
+                    .where(Notification.workspace_id == workspace_id)
+                )
+            ).scalar_one()
+        )
+
+    regen_resp = await client.post(
+        f"/v1/summaries/weekly/{original_public_id}/regenerate",
+        json={"reason": "late import corrected this week's spending"},
+        cookies=cookies,
+    )
+    assert regen_resp.status_code == 200, regen_resp.text
+    regenerated = regen_resp.json()
+    assert regenerated["public_id"] != original_public_id
+    assert regenerated["regeneration_reason"] == "late import corrected this week's spending"
+    assert regenerated["regenerated_at"] is not None
+    assert regenerated["is_superseded"] is False
+
+    # The old row is retained (never deleted), reachable by its own id, and
+    # now marked superseded.
+    old_resp = await client.get(f"/v1/summaries/weekly/{original_public_id}", cookies=cookies)
+    assert old_resp.status_code == 200
+    assert old_resp.json()["is_superseded"] is True
+
+    # list/latest only surface the new, non-superseded row.
+    list_resp = await client.get("/v1/summaries/weekly", cookies=cookies)
+    items = list_resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["public_id"] == regenerated["public_id"]
+
+    latest_resp = await client.get("/v1/summaries/weekly/latest", cookies=cookies)
+    assert latest_resp.json()["public_id"] == regenerated["public_id"]
+
+    # No new notification was sent for the regeneration.
+    async with async_session_maker() as session:
+        notif_count_after = int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(Notification)
+                    .where(Notification.workspace_id == workspace_id)
+                )
+            ).scalar_one()
+        )
+    assert notif_count_after == notif_count_before
+
+
+@pytest.mark.asyncio
+async def test_regenerate_weekly_summary_404s(client: AsyncClient):
+    creds = await _register_and_login(client, "sumregen404")
+    cookies = creds["cookies"]
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_service = NotificationService(NotificationRepository(session))
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        public_id = str(summary.public_id)
+        await session.commit()
+
+    # Unknown id.
+    missing = await client.post(
+        f"/v1/summaries/weekly/{uuid.uuid4()}/regenerate", json={}, cookies=cookies
+    )
+    assert missing.status_code == 404
+
+    # Regenerate once — succeeds.
+    first = await client.post(
+        f"/v1/summaries/weekly/{public_id}/regenerate", json={}, cookies=cookies
+    )
+    assert first.status_code == 200, first.text
+
+    # Regenerating the now-superseded original again is a 404 — regenerate
+    # the latest version instead.
+    second = await client.post(
+        f"/v1/summaries/weekly/{public_id}/regenerate", json={}, cookies=cookies
+    )
+    assert second.status_code == 404

@@ -506,6 +506,32 @@ async def test_workspace_demo_reset(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_workspace_demo_reset_seeds_category_colors_and_icons(client: AsyncClient):
+    """Demo-seeded system categories must carry a color/icon like real registration
+    categories do — otherwise every pill in the demo renders as the same colorless
+    blue (UX review 2026-07-16)."""
+    owner = await _register_and_login(client, "platformresetcolors")
+
+    settings.ENABLE_DEMO_RESET = True
+    try:
+        reset_resp = await client.post(
+            f"/v1/platform/workspaces/{owner['workspace_public_id']}/reset-demo",
+            cookies=owner["cookies"],
+        )
+        assert reset_resp.status_code == 200
+
+        categories_resp = await client.get("/v1/spending/categories", cookies=owner["cookies"])
+        assert categories_resp.status_code == 200
+        system_categories = [c for c in categories_resp.json()["items"] if c["is_system"]]
+        assert len(system_categories) == 7
+        for category in system_categories:
+            assert category["color"], f"{category['name']} has no color"
+            assert category["icon"], f"{category['name']} has no icon"
+    finally:
+        settings.ENABLE_DEMO_RESET = False
+
+
+@pytest.mark.asyncio
 async def test_workspace_demo_reset_with_default_spending_account(client: AsyncClient):
     """A default spending account on the workspace (spec-054) must not make the
     next demo reset fail: clearing accounts while

@@ -7,7 +7,7 @@ basic daily/weekly/yearly/monthly cases still directly relevant here.
 """
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
@@ -15,6 +15,7 @@ import pytest
 
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.recurrence import advance_due_date
+from app.finance.models import Account, AccountType
 from app.spending.models import RecurringTransaction, SpendingCategory, TransactionType
 from app.spending.schemas import RecurringTransactionCreate
 from app.spending.service import RecurringTransactionService
@@ -59,16 +60,99 @@ def mock_category_repo():
 
 
 @pytest.fixture
-def recurring_service(mock_recurring_repo, mock_tx_repo, mock_category_repo):
+def mock_account_repo():
+    return AsyncMock()
+
+
+@pytest.fixture
+def mock_setting_repo():
+    return AsyncMock()
+
+
+@pytest.fixture
+def recurring_service(
+    mock_recurring_repo, mock_tx_repo, mock_category_repo, mock_account_repo, mock_setting_repo
+):
     return RecurringTransactionService(
         recurring_repo=mock_recurring_repo,
         tx_repo=mock_tx_repo,
         category_repo=mock_category_repo,
+        account_repo=mock_account_repo,
+        setting_repo=mock_setting_repo,
     )
 
 
 @pytest.mark.asyncio
-async def test_create_recurring_success(recurring_service, mock_recurring_repo, mock_category_repo):
+async def test_create_recurring_success(
+    recurring_service, mock_recurring_repo, mock_category_repo, mock_account_repo
+):
+    workspace_id = 1
+    user_id = 10
+    cat_public_id = uuid.uuid4()
+    account_public_id = uuid.uuid4()
+
+    mock_category_repo.get_by_public_id.return_value = SpendingCategory(
+        id=5,
+        public_id=cat_public_id,
+        workspace_id=workspace_id,
+        name="Utilities",
+        normalized_name="utilities",
+        is_system=False,
+    )
+    mock_account_repo.get_by_public_id.return_value = Account(
+        id=9,
+        public_id=account_public_id,
+        workspace_id=workspace_id,
+        name="Checking",
+        account_type=AccountType.wallet,
+        default_currency_code="USD",
+        is_active=True,
+    )
+
+    future_anchor = datetime.now(UTC).date() + timedelta(days=30)
+
+    payload = RecurringTransactionCreate(
+        category_id=cat_public_id,
+        account_id=account_public_id,
+        amount=Decimal("150.00"),
+        type=TransactionType.expense,
+        frequency="monthly",
+        interval=1,
+        anchor_date=future_anchor,
+        end_date=future_anchor + timedelta(days=180),
+        description="Electricity bill",
+    )
+
+    mock_recurring_repo.create.side_effect = lambda x: x
+
+    result = await recurring_service.create_recurring(workspace_id, user_id, payload)
+
+    assert result.workspace_id == workspace_id
+    assert result.user_id == user_id
+    assert result.category_id == 5
+    assert result.account_id == 9
+    assert result.amount == Decimal("150.00")
+    assert result.type == TransactionType.expense
+    assert result.frequency == "monthly"
+    assert result.interval == 1
+    assert result.anchor_date == future_anchor
+    # anchor_date is not yet in the past, so next_due_date passes through unchanged.
+    assert result.next_due_date == future_anchor
+    assert result.end_date == future_anchor + timedelta(days=180)
+    assert result.description == "Electricity bill"
+    assert result.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_create_recurring_advances_next_due_date_past_elapsed_cycles(
+    recurring_service, mock_recurring_repo, mock_category_repo, mock_account_repo
+):
+    """A rule anchored to a date already in the past isn't born overdue.
+
+    Regression for a rule created mid-cycle (e.g. anchor = month start, created
+    mid-month): next_due_date must advance past any cycles that already elapsed
+    by the time of creation, not sit on the stale anchor date.
+    """
     workspace_id = 1
     user_id = 10
     cat_public_id = uuid.uuid4()
@@ -82,33 +166,25 @@ async def test_create_recurring_success(recurring_service, mock_recurring_repo, 
         is_system=False,
     )
 
+    today = datetime.now(UTC).date()
+    past_anchor = today - timedelta(days=40)
+
     payload = RecurringTransactionCreate(
         category_id=cat_public_id,
         amount=Decimal("150.00"),
         type=TransactionType.expense,
         frequency="monthly",
         interval=1,
-        anchor_date=date(2026, 6, 1),
-        end_date=date(2026, 12, 31),
-        description="Electricity bill",
+        anchor_date=past_anchor,
     )
 
     mock_recurring_repo.create.side_effect = lambda x: x
 
     result = await recurring_service.create_recurring(workspace_id, user_id, payload)
 
-    assert result.workspace_id == workspace_id
-    assert result.user_id == user_id
-    assert result.category_id == 5
-    assert result.amount == Decimal("150.00")
-    assert result.type == TransactionType.expense
-    assert result.frequency == "monthly"
-    assert result.interval == 1
-    assert result.anchor_date == date(2026, 6, 1)
-    assert result.next_due_date == date(2026, 6, 1)
-    assert result.end_date == date(2026, 12, 31)
-    assert result.description == "Electricity bill"
-    assert result.is_active is True
+    assert result.anchor_date == past_anchor
+    assert result.next_due_date >= today
+    assert result.next_due_date != past_anchor
 
 
 @pytest.mark.asyncio
@@ -191,7 +267,9 @@ async def test_deactivate_recurring(recurring_service, mock_recurring_repo):
 
 
 @pytest.mark.asyncio
-async def test_upcoming_preview_success(recurring_service, mock_recurring_repo, mock_category_repo):
+async def test_upcoming_preview_success(
+    recurring_service, mock_recurring_repo, mock_category_repo, mock_account_repo
+):
     workspace_id = 1
     cat_id = 5
     cat_public_id = uuid.uuid4()
@@ -202,6 +280,7 @@ async def test_upcoming_preview_success(recurring_service, mock_recurring_repo, 
         [SpendingCategory(id=cat_id, public_id=cat_public_id, name="Rent")],
         1,
     )
+    mock_account_repo.list_workspace_accounts.return_value = ([], 0)
 
     # Stub active recurring rules using UTC-derived date for consistency with service logic.
     today = datetime.now(UTC).date()

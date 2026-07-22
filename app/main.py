@@ -5,6 +5,7 @@ import structlog
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
@@ -21,6 +22,8 @@ from app.application.jobs import (
     fx_rate_ingestion_job,
     import_preview_cleanup_job,
     investment_closing_prices_job,
+    job_failure_digest_job,
+    job_health_heartbeat_job,
     kpi_guardrails_job,
     medication_reminder_job,
     morning_briefing_job,
@@ -36,6 +39,7 @@ from app.capture.router import router as capture_router
 from app.config import settings
 from app.core.database import postgres
 from app.core.dependencies import limiter
+from app.core.etag import ETagMiddleware
 from app.core.exceptions import (
     APIError,
     api_exception_handler,
@@ -67,6 +71,7 @@ from app.investing.router import router as investing_router
 from app.notifications.router import router as notifications_router
 from app.observability.log_export import setup_log_export
 from app.observability.posthog_client import init_posthog
+from app.observability.scheduler_metrics import set_jobs_registered, set_scheduler_running
 from app.observability.tracing import setup_tracing
 from app.platform.router import router as platform_router
 from app.spending.router import router as spending_router
@@ -119,52 +124,69 @@ async def lifespan(_app: FastAPI):
             hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
             idempotent=True,
         )
-        register_daily_job(
-            recurring_transactions_job,
-            job_id="recurring_transactions",
-            hour_utc=settings.RECURRING_TXN_GENERATION_HOUR,
-        )
-        register_daily_job(
-            fx_rate_ingestion_job,
-            job_id="fx_rate_ingestion",
-            hour_utc=2,
-        )
-        register_daily_job(
-            bhavcopy_price_feed_job,
-            job_id="bhavcopy_price_feed",
-            hour_utc=2,
-            minute_utc=0,
-        )
-        register_daily_job(
-            investment_closing_prices_job,
-            job_id="investment_closing_prices",
-            hour_utc=2,
-            minute_utc=30,
-        )
+        # spec-089: deterministic IST-morning window (03:00-05:30 IST =
+        # 21:30-00:00 UTC), fixed (no jitter), ordered by real data
+        # dependencies -- not the calendar order above. Jitter was removed
+        # here because it broke a real ordering guarantee: bhavcopy_price_feed
+        # (the preferred official NSE price source) must precede
+        # investment_closing_prices (Yahoo fallback), and +-60min jitter could
+        # let them race (see a025a1a, the commit that added the jitter this
+        # spec removes). 23:00 UTC is the binding floor for
+        # investment_closing_prices -- ~1h margin past the worst-case (EST)
+        # US market close settle. See docs/specs/spec-089-daily-job-schedule-ist-morning.md.
         register_daily_job(
             export_cleanup_job,
             job_id="export_cleanup",
-            hour_utc=3,
+            hour_utc=21,
+            minute_utc=30,
         )
         register_daily_job(
             session_cleanup_job,
             job_id="session_cleanup",
-            hour_utc=4,
+            hour_utc=21,
+            minute_utc=45,
         )
         register_daily_job(
             import_preview_cleanup_job,
             job_id="import_preview_cleanup",
-            hour_utc=5,
+            hour_utc=22,
+            minute_utc=0,
         )
         register_daily_job(
-            dashboard_insights_job,
-            job_id="dashboard_insights",
-            hour_utc=6,
+            fx_rate_ingestion_job,
+            job_id="fx_rate_ingestion",
+            hour_utc=22,
+            minute_utc=15,
+        )
+        register_daily_job(
+            recurring_transactions_job,
+            job_id="recurring_transactions",
+            hour_utc=settings.RECURRING_TXN_GENERATION_HOUR,
+            minute_utc=30,
+        )
+        register_daily_job(
+            bhavcopy_price_feed_job,
+            job_id="bhavcopy_price_feed",
+            hour_utc=22,
+            minute_utc=45,
+        )
+        register_daily_job(
+            investment_closing_prices_job,
+            job_id="investment_closing_prices",
+            hour_utc=23,
+            minute_utc=0,
         )
         register_daily_job(
             net_worth_snapshot_job,
             job_id="net_worth_snapshot",
-            hour_utc=7,
+            hour_utc=23,
+            minute_utc=15,
+        )
+        register_daily_job(
+            dashboard_insights_job,
+            job_id="dashboard_insights",
+            hour_utc=23,
+            minute_utc=30,
         )
         register_interval_job(
             push_delivery_job,
@@ -193,12 +215,11 @@ async def lifespan(_app: FastAPI):
         scheduler.add_job(
             weekly_summary_job,
             "cron",
-            day_of_week="mon",
-            hour=1,
             minute=30,
             id="weekly_summary",
             replace_existing=True,
             timezone="UTC",
+            kwargs={"respect_cadence": True},
         )
         register_daily_job(
             morning_briefing_job,
@@ -206,10 +227,36 @@ async def lifespan(_app: FastAPI):
             hour_utc=settings.BRIEFING_JOB_HOUR_UTC,
             minute_utc=settings.BRIEFING_JOB_MINUTE_UTC,
         )
+        # spec-089 supersedes spec-088's original 04:30 UTC digest/heartbeat
+        # times (sized around the old 02:00-07:00 UTC cluster): the whole
+        # chain above now finishes by 23:45 UTC, so digest/heartbeat move
+        # earlier too. Digest stays fixed (never jittered) and strictly last
+        # -- a jittered digest could fire before the jobs it reports on.
+        register_daily_job(
+            job_failure_digest_job,
+            job_id="job_failure_digest",
+            hour_utc=0,
+            minute_utc=0,
+        )
+        scheduler.add_job(
+            job_health_heartbeat_job,
+            "cron",
+            day_of_week="mon",
+            hour=0,
+            minute=15,
+            id="job_health_heartbeat",
+            replace_existing=True,
+            timezone="UTC",
+        )
+
+        # Update scheduler metrics
+        set_scheduler_running(True)
+        set_jobs_registered(len(scheduler.get_jobs()))
         start_scheduler()
     yield
     if settings.SCHEDULER_ENABLED:
         shutdown_scheduler()
+        set_scheduler_running(False)
 
 
 def create_app() -> FastAPI:
@@ -247,6 +294,24 @@ def create_app() -> FastAPI:
                 "Accept",
             ],
         )
+
+    # Response compression
+    _app.add_middleware(GZipMiddleware, minimum_size=500)
+
+    # ETag support for conditional requests on GET list endpoints
+    _app.add_middleware(
+        ETagMiddleware,
+        paths=[
+            f"{settings.API_V1_STR}/dashboard",
+            f"{settings.API_V1_STR}/finance",
+            f"{settings.API_V1_STR}/summaries",
+            f"{settings.API_V1_STR}/spending",
+            f"{settings.API_V1_STR}/investing",
+            f"{settings.API_V1_STR}/health",
+            f"{settings.API_V1_STR}/todo",
+        ],
+        min_content_length=100,
+    )
 
     # Core middlewares
     _app.state.limiter = limiter
