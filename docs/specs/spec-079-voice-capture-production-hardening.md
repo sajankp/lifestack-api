@@ -470,3 +470,40 @@ rather than by scorer strictness — further scorer tolerance is unlikely to mov
 The twice-a-week-apart clock still has not started: that requires the 30 real-usage cases, still
 blocked on confirming Gemini input-transcription billing (owner action item, unchanged from Stage A
 next steps).
+
+## 2026-07-22 addendum — first real-usage cases, multi-call scoring, repeat-item prompt fix
+
+The block on real-usage cases is lifted: input transcription shipped (Q4) and the production
+capture log yielded enough usage data to derive the first 6 `real_usage` fixtures
+(`real-01..06`) — **scrubbed** reconstructions (synthetic amounts/items/dates; only the
+structural patterns are real: multi-item batch dumps, intentional identical repeats, batch-wide
+account attachment, casual queries). Source analysis: spec-090's 2026-07-22 addendum.
+
+Supporting changes in the same pass:
+
+- **Multi-call scoring** (`expected.calls`): order-insensitive one-to-one matching with
+  backtracking, multiplicity-aware — the Stage C multi-item capture the scorer docstring
+  previously deferred.
+- **System-prompt hardening for repeated items:** the first live run exposed that the model
+  self-de-duplicates identical items in one utterance ("two bus tickets, 30 each" → ONE call) —
+  reproducible 2/2 runs, live-confirmed against real usage (production had a genuine two-fares
+  case). Added an explicit each-item-is-its-own-call instruction; `real-02` then passed 4/4
+  runs. This is the model-level flip side of spec-090's transport-replay guard, and the eval
+  case pins it so neither fix overcorrects into the other.
+- **Recalibration:** `real-01` expected description `bike rental` → `bike` (model paraphrases
+  to "rented a bike"; routing/amounts/categories were all correct — same class as the 07-12
+  recalibration).
+
+Run results (`run-20260722-real-usage-cases.json`, gemini-3.1-flash-live-preview):
+
+| Run | adversarial | real_usage | overall |
+|---|---|---|---|
+| 2026-07-15 baseline | 15/19 (78.9%) | — | 78.9% |
+| 2026-07-22 pre-fixes | 17/19 (89.5%) | 2/5 (40.0%) | 79.2% |
+| 2026-07-22 post-fixes | 16/19 (84.2%) | 4/5 (80.0%) | 83.3% |
+
+Remaining failures are the documented run-to-run non-determinism set (`adv-03`/`adv-08`/`adv-19`
+flicker across runs; `real-06` sometimes answers the portfolio query without calling the tool —
+passed on an immediate retest). The 90% Stage C bar remains unmet; the real-usage split now
+exists, so the twice-a-week-apart clock can start once the remaining ~24 real-usage cases
+accumulate from production transcripts.
