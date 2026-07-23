@@ -12,7 +12,7 @@ from app.application.jobs import net_worth_snapshot_job
 from app.auth.models import User
 from app.core.audit import AuditLog
 from app.core.database import postgres
-from app.finance.models import NetWorthSnapshot
+from app.finance.models import Currency, NetWorthSnapshot, WorkspaceCurrency
 from app.platform.models import Workspace
 
 
@@ -101,6 +101,111 @@ async def test_net_worth_live_cash_and_snapshot_creation(client: AsyncClient):
     assert float(history_data[0]["total_net_worth"]) == 0.0
     # spec-086 Layer 3: no reverted import for this workspace -> not flagged.
     assert history_data[0]["data_revised"] is False
+
+
+async def _create_category(client, cookies, name="General"):
+    res = await client.post(
+        "/v1/spending/categories",
+        json={"name": name, "color": "#00FF00", "icon": "🏦"},
+        cookies=cookies,
+    )
+    assert res.status_code == 201, res.text
+    return res.json()["public_id"]
+
+
+async def _add_income(client, cookies, account_id, category_id, amount):
+    res = await client.post(
+        "/v1/spending/transactions",
+        json={
+            "category_id": category_id,
+            "account_id": account_id,
+            "amount": amount,
+            "type": "income",
+            "occurred_at": datetime.now(UTC).isoformat(),
+            "description": "seed balance",
+        },
+        cookies=cookies,
+    )
+    assert res.status_code == 201, res.text
+
+
+@pytest.mark.asyncio
+async def test_net_worth_partial_when_one_currency_unconvertible(client: AsyncClient):
+    """spec-091 / issue #182: one spending currency lacking an FX rate must
+    not blank the whole headline. total_net_worth/spending_total stay null
+    (unchanged contract), but the new *_partial fields expose the sum of
+    convertible balances plus which currencies were excluded."""
+    cookies = await _register_and_login(client, "nw_partial@example.com", "nw_partial")
+    await client.patch(
+        "/v1/finance/settings", json={"reporting_currency_code": "USD"}, cookies=cookies
+    )
+    category_id = await _create_category(client, cookies)
+
+    session_maker = postgres.async_session_maker
+    async with session_maker() as session:
+        ws_res = await session.execute(
+            select(Workspace).where(Workspace.name == "nw_partial's Workspace")
+        )
+        workspace_id = ws_res.scalar_one().id
+        existing_eur = (
+            await session.execute(select(Currency).where(Currency.code == "EUR"))
+        ).scalar_one_or_none()
+        if existing_eur is None:
+            session.add(Currency(code="EUR", name="Euro", symbol="EUR", minor_unit=2))
+            await session.flush()
+        session.add(WorkspaceCurrency(workspace_id=workspace_id, currency_code="EUR"))
+        await session.commit()
+
+    usd_account = await _create_account(client, cookies, "USD Wallet", "USD")
+    eur_account = await _create_account(client, cookies, "EUR Wallet", "EUR")
+    await _add_income(client, cookies, usd_account, category_id, "500.00")
+    await _add_income(client, cookies, eur_account, category_id, "300.00")
+    # No EUR->USD (or USD->EUR) FxRate seeded -- EUR stays unconvertible.
+
+    res = await client.get("/v1/finance/net-worth", cookies=cookies)
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["valuation_status"] == "partial"
+    assert data["total_net_worth"] is None
+    assert data["spending_total"] is None
+    assert float(data["spending_total_partial"]) == 500.0
+    assert data["excluded_currencies"] == [{"currency_code": "EUR", "total_balance": "300.00"}]
+
+    # No snapshot persisted from a partial valuation (unchanged, no double record).
+    session_maker = postgres.async_session_maker
+    async with session_maker() as session:
+        ws_res = await session.execute(
+            select(Workspace).where(Workspace.name == "nw_partial's Workspace")
+        )
+        workspace = ws_res.scalar_one()
+        snap_res = await session.execute(
+            select(NetWorthSnapshot).where(NetWorthSnapshot.workspace_id == workspace.id)
+        )
+        assert snap_res.scalars().first() is None
+
+
+@pytest.mark.asyncio
+async def test_net_worth_ok_status_has_no_partial_fields(client: AsyncClient):
+    """Regression: when every currency converts, the new fields stay empty
+    and the existing total_net_worth/spending_total are untouched."""
+    cookies = await _register_and_login(client, "nw_full@example.com", "nw_full")
+    await client.patch(
+        "/v1/finance/settings", json={"reporting_currency_code": "USD"}, cookies=cookies
+    )
+    category_id = await _create_category(client, cookies)
+    usd_account = await _create_account(client, cookies, "USD Wallet", "USD")
+    await _add_income(client, cookies, usd_account, category_id, "500.00")
+
+    res = await client.get("/v1/finance/net-worth", cookies=cookies)
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["valuation_status"] == "ok"
+    assert float(data["total_net_worth"]) == 500.0
+    assert data["spending_total_partial"] is None
+    assert data["total_net_worth_partial"] is None
+    assert data["excluded_currencies"] == []
 
 
 @pytest.mark.asyncio

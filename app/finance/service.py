@@ -1380,6 +1380,10 @@ class NetWorthService:
         spending_accounts = []
         spending_total = Decimal("0")
         spending_convertible = True
+        # spec-091 / #182: track native-currency totals for balances that
+        # couldn't convert, so a partial total can still be exposed alongside
+        # which currencies were excluded from it.
+        excluded_currency_totals: dict[str, Decimal] = {}
         for data in raw_balances:
             balance = data["spending_balance"]
             currency = data["currency_code"]
@@ -1390,6 +1394,9 @@ class NetWorthService:
                 )
                 if balance_in_rc is None:
                     spending_convertible = False
+                    excluded_currency_totals[currency] = (
+                        excluded_currency_totals.get(currency, Decimal("0")) + balance
+                    )
                 else:
                     spending_total += balance_in_rc
             spending_accounts.append({
@@ -1447,12 +1454,28 @@ class NetWorthService:
         else:
             valuation_status = "partial"
 
+        # spec-091 / #182: expose a partial total on `partial` status instead
+        # of only "—" — spending_total already holds the convertible-only sum
+        # in that branch (it just wasn't surfaced before).
+        spending_total_partial = None
+        total_net_worth_partial = None
+        if valuation_status == "partial" and reporting_currency:
+            spending_total_partial = spending_total
+            if investing_total is not None:
+                total_net_worth_partial = spending_total_partial + investing_total
+
         res = {
             "reporting_currency": effective_reporting,
             "spending_accounts": spending_accounts,
             "spending_total": spending_total
             if (spending_convertible and reporting_currency)
             else None,
+            "spending_total_partial": spending_total_partial,
+            "total_net_worth_partial": total_net_worth_partial,
+            "excluded_currencies": [
+                {"currency_code": currency, "total_balance": str(total.quantize(Decimal("0.01")))}
+                for currency, total in sorted(excluded_currency_totals.items())
+            ],
             "investing_accounts": investing_accounts,
             "investing_cash_total": investing_cash,
             "holdings_value": holdings_value,
