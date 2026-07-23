@@ -1,7 +1,7 @@
 # Spec-090: Voice Capture Session Clearing and Tool-Call Idempotency
 
 **Created:** 2026-07-22
-**Status:** Approved (implementation) — 2026-07-22
+**Status:** Implemented — 2026-07-23 (api PR #174, web PR #214)
 **Depends on:** spec-079 (voice capture production hardening, Stage B transport resilience), spec-055 (workspace context injection)
 
 ## Problem
