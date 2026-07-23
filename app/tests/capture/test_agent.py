@@ -20,7 +20,9 @@ from app.capture.agent import (
     _log_capture_turn,
     _log_session_ended,
     execute_agent_tool,
+    run_agent_session,
 )
+from app.capture.tool_dedup import CaptureToolDedupLedger, SessionDedupContext
 from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
@@ -1703,3 +1705,175 @@ async def test_turn_complete_flushes_user_transcript_before_assistant(tmp_path, 
     assert [e["kind"] for e in entries] == ["user_transcript", "assistant_transcript"]
     assert entries[0]["text"] == "What's my balance?"
     assert entries[1]["text"] == "You have 40 dollars."
+
+
+# ── spec-090: replay dedup guard in the toolCall path ────────────────────────
+
+
+class FakeGeminiWebSocket:
+    def __init__(self):
+        self.sent: list[str] = []
+
+    async def send(self, payload: str):
+        self.sent.append(payload)
+
+
+def _spend_tool_call_msg(args: dict, call_id: str = "call-1") -> dict:
+    return {
+        "toolCall": {
+            "functionCalls": [{"id": call_id, "name": "log_spending_transaction", "args": args}]
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_replay_suspect_write_call_is_suppressed(monkeypatch):
+    """spec-090: on a resumed connection with no user input yet, a write call
+    matching a recent execution must NOT re-execute — the client and Gemini
+    both get the original result with status duplicate_suppressed."""
+    ledger = CaptureToolDedupLedger(window_seconds=2700)
+    args = {"amount": "40", "category_name": "food", "description": "coffee"}
+    ledger.record(
+        workspace_id=8,
+        user_id=7,
+        tool="log_spending_transaction",
+        args=args,
+        result={"status": "success", "entity_public_id": "txn-orig"},
+        user_timezone="UTC",
+    )
+    dedup_ctx = SessionDedupContext(ledger=ledger, resumed=True)
+
+    async def _must_not_execute(*a, **k):
+        raise AssertionError("execute_agent_tool must not run for a suppressed replay")
+
+    monkeypatch.setattr(agent_module, "execute_agent_tool", _must_not_execute)
+
+    client_ws = FakeClientWebSocket()
+    gemini_ws = FakeGeminiWebSocket()
+    await _handle_gemini_message(
+        _spend_tool_call_msg(args),
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-resumed",
+        dedup_ctx=dedup_ctx,
+    )
+
+    tool_responses = [m for m in client_ws.sent_json if m.get("type") == "tool_response"]
+    assert tool_responses and tool_responses[0]["status"] == "duplicate_suppressed"
+    assert tool_responses[0]["entity_id"] == "txn-orig"
+    gemini_payload = json.loads(gemini_ws.sent[0])
+    output = gemini_payload["toolResponse"]["functionResponses"][0]["response"]["output"]
+    assert output["status"] == "duplicate_suppressed"
+
+
+@pytest.mark.asyncio
+async def test_write_call_after_user_input_executes_and_records(monkeypatch):
+    """Once the user has spoken/typed on this connection, identical calls are
+    intentional — they execute, and land in the ledger for future windows."""
+    ledger = CaptureToolDedupLedger(window_seconds=2700)
+    dedup_ctx = SessionDedupContext(ledger=ledger, resumed=True)
+    dedup_ctx.user_input_seen = True
+
+    executed = []
+
+    async def _fake_execute(name, args, user_id, workspace_id, user_timezone="UTC"):
+        executed.append(name)
+        return {"status": "success", "entity_public_id": "txn-new"}
+
+    monkeypatch.setattr(agent_module, "execute_agent_tool", _fake_execute)
+
+    client_ws = FakeClientWebSocket()
+    gemini_ws = FakeGeminiWebSocket()
+    args = {"amount": "30", "category_name": "transport", "description": "bus ticket"}
+    await _handle_gemini_message(
+        _spend_tool_call_msg(args),
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-resumed",
+        dedup_ctx=dedup_ctx,
+    )
+
+    assert executed == ["log_spending_transaction"]
+    assert ledger.size() == 1
+
+
+@pytest.mark.asyncio
+async def test_fresh_session_write_call_is_never_suppressed(monkeypatch):
+    """A non-resumed connection must never suppress, even with a matching
+    recent execution in the ledger."""
+    ledger = CaptureToolDedupLedger(window_seconds=2700)
+    args = {"amount": "40", "category_name": "food", "description": "coffee"}
+    ledger.record(
+        workspace_id=8,
+        user_id=7,
+        tool="log_spending_transaction",
+        args=args,
+        result={"status": "success", "entity_public_id": "txn-orig"},
+        user_timezone="UTC",
+    )
+    dedup_ctx = SessionDedupContext(ledger=ledger, resumed=False)
+
+    executed = []
+
+    async def _fake_execute(name, args, user_id, workspace_id, user_timezone="UTC"):
+        executed.append(name)
+        return {"status": "success", "entity_public_id": "txn-new"}
+
+    monkeypatch.setattr(agent_module, "execute_agent_tool", _fake_execute)
+
+    client_ws = FakeClientWebSocket()
+    gemini_ws = FakeGeminiWebSocket()
+    await _handle_gemini_message(
+        _spend_tool_call_msg(args),
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws,
+        user_id=7,
+        workspace_id=8,
+        session_id="sess-fresh",
+        dedup_ctx=dedup_ctx,
+    )
+
+    assert executed == ["log_spending_transaction"]
+
+
+@pytest.mark.asyncio
+async def test_error_results_are_not_recorded_in_ledger(monkeypatch):
+    ledger = CaptureToolDedupLedger(window_seconds=2700)
+    dedup_ctx = SessionDedupContext(ledger=ledger, resumed=False)
+
+    async def _fake_execute(name, args, user_id, workspace_id, user_timezone="UTC"):
+        return {"status": "error", "message": "boom"}
+
+    monkeypatch.setattr(agent_module, "execute_agent_tool", _fake_execute)
+
+    client_ws = FakeClientWebSocket()
+    gemini_ws = FakeGeminiWebSocket()
+    await _handle_gemini_message(
+        _spend_tool_call_msg({"amount": "40", "category_name": "food", "description": "x"}),
+        client_ws,  # type: ignore[arg-type]
+        gemini_ws,
+        user_id=7,
+        workspace_id=8,
+        session_id="s",
+        dedup_ctx=dedup_ctx,
+    )
+
+    assert ledger.size() == 0
+
+
+@pytest.mark.asyncio
+async def test_session_info_sent_to_client_before_provider_connect(monkeypatch):
+    """spec-090: the client needs its server-side session id (to send back as
+    ?prev_session= on resume for capture-log correlation), so run_agent_session
+    announces it even when the provider connect later fails."""
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "")
+
+    client_ws = FakeClientWebSocket()
+    await run_agent_session(client_ws, user_id=7, workspace_id=8)  # type: ignore[arg-type]
+
+    session_infos = [m for m in client_ws.sent_json if m.get("type") == "session_info"]
+    assert session_infos and session_infos[0]["session_id"]

@@ -99,10 +99,13 @@ async def websocket_agent_endpoint(websocket: WebSocket):
     # spec-079 Stage B: a client reconnecting after a dropped session passes the
     # last resumption handle it received so Gemini restores the conversation
     # context (no-op unless CAPTURE_ENABLE_SESSION_RESUMPTION is set).
+    # spec-090: it also passes the prior connection's session id
+    # (`prev_session`) so the capture log can correlate resumed sessions.
     await run_agent_session(
         websocket,
         user_id,
         workspace_id,
         websocket.query_params.get("timezone", "UTC"),
         (websocket.query_params.get("resume") or "").strip() or None,
+        (websocket.query_params.get("prev_session") or "").strip() or None,
     )
