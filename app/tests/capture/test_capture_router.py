@@ -2,6 +2,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.auth.repository import UserRepository
+from app.capture import router as capture_router
 from app.capture.router import authenticate_ws
 from app.core.database import postgres
 from app.core.exceptions import ForbiddenError, UnauthorizedError
@@ -73,3 +74,49 @@ async def test_websocket_auth_role_restriction(client: AsyncClient):
     with pytest.raises(ForbiddenError) as exc_info:
         await authenticate_ws(mock_ws)  # type: ignore
     assert "Insufficient workspace permissions" in str(exc_info.value.detail)
+
+
+class RecordingWebSocket:
+    """Records accept/close calls so tests can assert the close-code contract."""
+
+    def __init__(self):
+        self.calls: list[object] = []
+        self.query_params: dict[str, str] = {}
+
+    async def accept(self):
+        self.calls.append("accept")
+
+    async def close(self, code: int | None = None):
+        self.calls.append(("close", code))
+
+
+@pytest.mark.asyncio
+async def test_ws_endpoint_closes_4003_on_forbidden(monkeypatch):
+    """Authorization (role) rejections must accept the handshake and close 4003.
+
+    A pre-accept close never reaches the browser as its own code — the
+    handshake just fails and the client sees 1006, which the spec-079 Stage B
+    web client treats as a transient drop and retries five times. 4003 is in
+    the client's no-retry set, so a forbidden viewer stops immediately.
+    """
+
+    async def raise_forbidden(ws):
+        raise ForbiddenError(detail="Insufficient workspace permissions")
+
+    monkeypatch.setattr(capture_router, "authenticate_ws", raise_forbidden)
+    ws = RecordingWebSocket()
+    await capture_router.websocket_agent_endpoint(ws)  # type: ignore[arg-type]
+    assert ws.calls == ["accept", ("close", 4003)]
+
+
+@pytest.mark.asyncio
+async def test_ws_endpoint_closes_4001_on_unauthorized(monkeypatch):
+    """Authentication failures keep the pre-accept 4001 close (no accept)."""
+
+    async def raise_unauthorized(ws):
+        raise UnauthorizedError(detail="Missing authorization token")
+
+    monkeypatch.setattr(capture_router, "authenticate_ws", raise_unauthorized)
+    ws = RecordingWebSocket()
+    await capture_router.websocket_agent_endpoint(ws)  # type: ignore[arg-type]
+    assert ws.calls == [("close", 4001)]

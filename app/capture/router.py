@@ -90,6 +90,17 @@ async def authenticate_ws(websocket: WebSocket) -> tuple[int, int]:
 async def websocket_agent_endpoint(websocket: WebSocket):
     try:
         user_id, workspace_id = await authenticate_ws(websocket)
+    except ForbiddenError as e:
+        # Authorization (role) rejections are deterministic, so the client must
+        # not retry. A pre-accept close never reaches the browser as its own
+        # code (the handshake just fails → 1006, which the spec-079 Stage B web
+        # client treats as a transient drop and retries five times) — accept
+        # first so the browser observes 4003, which is in its no-retry set.
+        logger.error("ws_authorization_failed", error=str(e.detail))
+        with suppress(Exception):
+            await websocket.accept()
+            await websocket.close(code=4003)
+        return
     except Exception as e:
         logger.error("ws_authentication_failed", error=str(e))
         with suppress(Exception):
