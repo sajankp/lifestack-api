@@ -319,10 +319,27 @@ class InvestingAccountBalance(BaseModel):
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 
 
+class ExcludedCurrency(BaseModel):
+    """spec-091 / #182: a spending currency excluded from spending_total_partial
+    because no FX rate to the reporting currency was available."""
+
+    currency_code: str
+    total_balance: Decimal
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
 class NetWorthResponse(BaseModel):
     reporting_currency: str | None
     spending_accounts: list[SpendingAccountBalance]
     spending_total: Decimal | None
+    # spec-091 / #182: populated only when valuation_status == "partial" --
+    # the sum of spending balances that DID convert, so one missing FX rate
+    # doesn't blank the whole headline. spending_total/total_net_worth keep
+    # their exact prior null-on-partial semantics.
+    spending_total_partial: Decimal | None = None
+    total_net_worth_partial: Decimal | None = None
+    excluded_currencies: list[ExcludedCurrency] = []
     investing_accounts: list[InvestingAccountBalance]
     investing_cash_total: Decimal | None
     holdings_value: Decimal | None
