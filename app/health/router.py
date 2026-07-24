@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
 
+from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.dependencies import (
     get_audit_logger,
@@ -68,6 +69,16 @@ async def get_medication_schedule(
     return await health_service.get_schedule(workspace_id, date_)
 
 
+@router.get("/medications/overdue", response_model=list[DoseSlot])
+async def get_overdue_doses(
+    health_service: Annotated[HealthService, Depends(get_health_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    lookback_days: int = Query(default=settings.HEALTH_CATCH_UP_LOOKBACK_DAYS, ge=1, le=30),
+):
+    return await health_service.get_overdue_slots(workspace_id, lookback_days)
+
+
 @router.get("/medications/{medication_id}", response_model=MedicationResponse)
 async def get_medication(
     medication_id: uuid.UUID,
@@ -127,6 +138,7 @@ async def upsert_medication_event(
         scheduled_for=event.scheduled_for,
         status=event.status,
         logged_at=event.logged_at,
+        taken_at=event.taken_at,
         note=event.note,
         source_type=event.source_type,
     )

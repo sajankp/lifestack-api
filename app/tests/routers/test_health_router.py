@@ -251,3 +251,138 @@ async def test_medication_create_supports_legacy_and_standard_timezones(client: 
     res_standard = await client.post("/v1/health/medications", json=payload_standard)
     assert res_standard.status_code == 201, res_standard.text
     assert res_standard.json()["timezone"] == "Asia/Kolkata"
+
+
+# ---- spec-092: interval scheduling + catch-up ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_interval_mode_rejects_non_daily(client: AsyncClient):
+    await _register_and_login(client, "intervalvaliduser")
+    payload = {
+        "name": "Interval Weekly",
+        "frequency": "weekly",
+        "schedule_mode": "interval_from_last_dose",
+        "anchor_date": "2026-01-01",
+        "timezone": "UTC",
+        "times": ["09:00"],
+        "days_of_week": [0],
+    }
+    res = await client.post("/v1/health/medications", json=payload)
+    assert res.status_code == 422, res.text
+
+
+@pytest.mark.asyncio
+async def test_interval_mode_reanchors_after_late_take(client: AsyncClient):
+    await _register_and_login(client, "intervaluser")
+    today = datetime.now(UTC).date()
+    payload = {
+        "name": "Interval Med",
+        "frequency": "daily",
+        "interval": 2,
+        "schedule_mode": "interval_from_last_dose",
+        "anchor_date": today.isoformat(),
+        "timezone": "UTC",
+        "times": ["00:01"],
+    }
+    create_res = await client.post("/v1/health/medications", json=payload)
+    assert create_res.status_code == 201, create_res.text
+    assert create_res.json()["schedule_mode"] == "interval_from_last_dose"
+    med_id = create_res.json()["public_id"]
+
+    # First dose is due today (anchor); +1 day is an off day.
+    slots_today = (
+        await client.get("/v1/health/medications/schedule", params={"date": today.isoformat()})
+    ).json()
+    assert len(slots_today) == 1
+    next_day = (today + timedelta(days=1)).isoformat()
+    assert (
+        await client.get("/v1/health/medications/schedule", params={"date": next_day})
+    ).json() == []
+
+    # Take today's dose "now" — next due re-anchors to today + interval (2 days).
+    upsert = await client.put(
+        f"/v1/health/medications/{med_id}/events",
+        json={"scheduled_for": slots_today[0]["scheduled_for"], "status": "taken"},
+    )
+    assert upsert.status_code == 200
+    assert upsert.json()["taken_at"] is not None  # defaulted to now
+
+    due_date = (today + timedelta(days=2)).isoformat()
+    slots_due = (
+        await client.get("/v1/health/medications/schedule", params={"date": due_date})
+    ).json()
+    assert len(slots_due) == 1
+    assert slots_due[0]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_skipped_event_clears_taken_at(client: AsyncClient):
+    await _register_and_login(client, "takenatuser")
+    today = datetime.now(UTC).date()
+    med_id = (
+        await client.post(
+            "/v1/health/medications",
+            json={
+                "name": "Aspirin",
+                "frequency": "daily",
+                "anchor_date": today.isoformat(),
+                "timezone": "UTC",
+                "times": ["00:01"],
+            },
+        )
+    ).json()["public_id"]
+    slot = (
+        await client.get("/v1/health/medications/schedule", params={"date": today.isoformat()})
+    ).json()[0]["scheduled_for"]
+
+    taken = await client.put(
+        f"/v1/health/medications/{med_id}/events",
+        json={"scheduled_for": slot, "status": "taken"},
+    )
+    assert taken.json()["taken_at"] is not None
+    skipped = await client.put(
+        f"/v1/health/medications/{med_id}/events",
+        json={"scheduled_for": slot, "status": "skipped"},
+    )
+    assert skipped.json()["taken_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_overdue_endpoint_returns_missed_doses(client: AsyncClient):
+    await _register_and_login(client, "overdueuser")
+    today = datetime.now(UTC).date()
+    # Daily med anchored 3 days ago, dose at 00:01 → yesterday's slot is past grace.
+    med_id = (
+        await client.post(
+            "/v1/health/medications",
+            json={
+                "name": "Daily Med",
+                "frequency": "daily",
+                "anchor_date": (today - timedelta(days=3)).isoformat(),
+                "timezone": "UTC",
+                "times": ["00:01"],
+            },
+        )
+    ).json()["public_id"]
+
+    overdue = await client.get("/v1/health/medications/overdue", params={"lookback_days": 7})
+    assert overdue.status_code == 200
+    slots = overdue.json()
+    assert len(slots) >= 1
+    assert all(s["status"] == "missed" for s in slots)
+    assert all(s["medication_public_id"] == med_id for s in slots)
+    # Newest-first ordering.
+    ordered = [s["scheduled_for"] for s in slots]
+    assert ordered == sorted(ordered, reverse=True)
+
+    # Answering the most recent missed slot removes it from the catch-up list.
+    answered_before = len(slots)
+    await client.put(
+        f"/v1/health/medications/{med_id}/events",
+        json={"scheduled_for": slots[0]["scheduled_for"], "status": "taken"},
+    )
+    overdue_after = (
+        await client.get("/v1/health/medications/overdue", params={"lookback_days": 7})
+    ).json()
+    assert len(overdue_after) == answered_before - 1

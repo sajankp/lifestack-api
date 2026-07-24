@@ -165,3 +165,42 @@ async def test_medication_reminder_job_skips_course_ended_medication(override_da
         notifications = result.scalars().all()
 
     assert len(notifications) == 0
+
+
+@pytest.mark.asyncio
+async def test_medication_reminder_job_fires_for_interval_next_due(override_database_url):
+    """spec-092: an interval_from_last_dose med with no prior event reminds for
+    its next due slot (the anchor-day dose)."""
+    now = datetime.now(UTC)
+    dose_time = (now + timedelta(minutes=1)).strftime("%H:%M")
+    async with postgres.async_session_maker() as session, session.begin():
+        await _seed_workspace(session, 704, 1, "medjob4@example.com", "medjob4")
+        session.add(
+            Medication(
+                workspace_id=704,
+                user_id=1,
+                name="Interval Med",
+                frequency="daily",
+                interval=2,
+                schedule_mode="interval_from_last_dose",
+                anchor_date=now.date(),
+                timezone="UTC",
+                times=[dose_time],
+                is_active=True,
+                reminders_enabled=True,
+            )
+        )
+
+    await medication_reminder_job(workspace_id=704)
+
+    async with postgres.async_session_maker() as session:
+        result = await session.execute(
+            select(Notification).where(
+                Notification.workspace_id == 704,
+                Notification.category == "medication_reminder",
+            )
+        )
+        notifications = result.scalars().all()
+
+    assert len(notifications) == 1
+    assert notifications[0].title == "Interval Med"

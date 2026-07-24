@@ -35,6 +35,9 @@ class Medication(SQLModel, table=True):
     # 0-6 (Mon-Sun), only meaningful when frequency="weekly".
     frequency: str = Field(default=MedicationFrequency.daily.value, max_length=16)
     interval: int = Field(default=1, ge=1)
+    # spec-092: "fixed" = derived-from-anchor calendar grid (default, unchanged);
+    # "interval_from_last_dose" = next dose is intake-day + interval (daily only).
+    schedule_mode: str = Field(default="fixed", max_length=24)
     days_of_week: list[int] | None = Field(default=None, sa_type=sa.JSON())
     anchor_date: date = Field(sa_type=sa.Date())
     end_date: date | None = Field(default=None, sa_type=sa.Date())
@@ -64,6 +67,10 @@ class Medication(SQLModel, table=True):
             "frequency IN ('daily', 'weekly', 'monthly')", name="ck_medications_frequency"
         ),
         sa.CheckConstraint("interval >= 1", name="ck_medications_interval_positive"),
+        sa.CheckConstraint(
+            "schedule_mode IN ('fixed', 'interval_from_last_dose')",
+            name="ck_medications_schedule_mode",
+        ),
     )
 
 
@@ -90,6 +97,9 @@ class MedicationEvent(SQLModel, table=True):
     logged_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
+    # spec-092: the moment the dose was actually taken (nullable — set for
+    # "taken", NULL for "skipped"). interval_from_last_dose re-anchors off this.
+    taken_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
     note: str | None = Field(default=None, max_length=200)
 
     source_type: str = Field(default="manual", max_length=32, index=True)
