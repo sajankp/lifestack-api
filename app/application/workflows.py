@@ -42,8 +42,12 @@ from app.finance.repository import (
 )
 from app.finance.schemas import FxRateUpsert
 from app.finance.service import FxRateService
-from app.health.repository import MedicationRepository
-from app.health.schedule import get_dose_slots_in_window
+from app.health.repository import MedicationEventRepository, MedicationRepository
+from app.health.schedule import (
+    get_dose_slots_in_window,
+    interval_next_due_date,
+    slot_datetimes_on,
+)
 from app.health.service import HealthService
 from app.imports.models import ImportBatch, ImportPreviewRow
 from app.imports.repository import ImportRepository
@@ -1577,6 +1581,12 @@ async def process_workspace_medication_reminders(
     notification_repo = NotificationRepository(session)
     notification_service = NotificationService(notification_repo)
 
+    # spec-092: interval_from_last_dose meds have a single history-derived next
+    # due slot rather than a fixed grid — fetch their latest events once.
+    event_repo = MedicationEventRepository(session)
+    interval_ids = [med.id for med in medications if med.schedule_mode == "interval_from_last_dose"]
+    latest_events = await event_repo.get_latest_events_for_medications(interval_ids)
+
     distinct_user_ids = {med.user_id for med in medications}
     preference_cache = await notification_repo.get_preferences_for_users(
         workspace.id, distinct_user_ids, "medication_reminder"
@@ -1593,15 +1603,24 @@ async def process_workspace_medication_reminders(
 
     reminded = 0
     for med in medications:
-        due_slots = sorted(
-            slot
-            for slot in get_dose_slots_in_window(med, now, window_end)
-            if med.last_reminded_slot is None or slot > med.last_reminded_slot
-        )
         try:
             tz = ZoneInfo(med.timezone)
         except (TypeError, ValueError, ZoneInfoNotFoundError):
             tz = UTC
+        if med.schedule_mode == "interval_from_last_dose":
+            due = interval_next_due_date(med, latest_events.get(med.id), tz)
+            window_slots = (
+                [s for s in slot_datetimes_on(med, due) if now <= s <= window_end]
+                if due is not None
+                else []
+            )
+        else:
+            window_slots = get_dose_slots_in_window(med, now, window_end)
+        due_slots = sorted(
+            slot
+            for slot in window_slots
+            if med.last_reminded_slot is None or slot > med.last_reminded_slot
+        )
         for slot in due_slots:
             local_time = slot.astimezone(tz).strftime("%H:%M")
             body = f"{med.dose_text} — {local_time}" if med.dose_text else local_time

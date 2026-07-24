@@ -376,6 +376,68 @@ async def test_weekly_summary_computes_health_summary(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_weekly_summary_health_summary_interval_mode_counts_by_intake(client: AsyncClient):
+    """spec-092: an interval_from_last_dose med must NOT be counted on the fixed
+    grid. Taken Monday (every 2 days) → the only scheduled doses that week are
+    Monday (taken) and the re-anchored Wednesday due slot, i.e. 2 — not the 4
+    the fixed anchor grid (Mon/Wed/Fri/Sun) would wrongly produce."""
+    creds = await _register_and_login(client, "sumhealthinterval")
+
+    async_session_maker = postgres.get_session_maker(postgres.engine)
+    async with async_session_maker() as session:
+        user_repo = UserRepository(session)
+        user = await user_repo.get_by_username(creds["username"])
+        user_id = user.id
+        workspace_repo = WorkspaceRepository(session)
+        workspace_id = (await workspace_repo.list_user_workspaces(user_id))[0].id
+
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+        start_dt = datetime.combine(week_start, datetime.min.time(), tzinfo=UTC)
+
+        med = Medication(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            name="Interval Med",
+            frequency="daily",
+            interval=2,
+            schedule_mode="interval_from_last_dose",
+            anchor_date=week_start,
+            timezone="UTC",
+            times=["09:00"],
+            is_active=True,
+        )
+        session.add(med)
+        await session.flush()
+
+        # Taken Monday → next due re-anchors to Wednesday (Monday + 2 days).
+        session.add(
+            MedicationEvent(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                medication_id=med.id,
+                scheduled_for=start_dt.replace(hour=9),
+                status="taken",
+                taken_at=start_dt.replace(hour=9),
+            )
+        )
+        await session.flush()
+
+        summary_repo = WeeklySummaryRepository(session)
+        notification_repo = NotificationRepository(session)
+        notification_service = NotificationService(notification_repo)
+        service = WeeklySummaryService(summary_repo, session, notification_service)
+
+        summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+        await session.commit()
+
+    assert summary.health_summary is not None
+    assert summary.health_summary["doses_scheduled"] == 2  # Mon taken + Wed due, NOT 4
+    assert summary.health_summary["doses_taken"] == 1
+    assert summary.health_summary["doses_missed"] == 1  # the Wednesday slot
+
+
+@pytest.mark.asyncio
 async def test_mark_weekly_summary_read(client: AsyncClient):
     """spec-080: POST /read stamps read_at (idempotently), is workspace-scoped,
     and the response carries read_at."""

@@ -33,6 +33,7 @@ class MedicationBase(BaseModel):
     refill_note: str | None = Field(default=None, max_length=500)
     frequency: Literal["daily", "weekly", "monthly"] = Field(default="daily")
     interval: int = Field(default=1, ge=1)
+    schedule_mode: Literal["fixed", "interval_from_last_dose"] = Field(default="fixed")
     days_of_week: list[int] | None = Field(default=None)
     anchor_date: date
     end_date: date | None = Field(default=None)
@@ -45,6 +46,11 @@ class MedicationBase(BaseModel):
     def _validate_schedule(self) -> "MedicationBase":
         if self.days_of_week is not None and self.frequency != "weekly":
             raise ValueError("days_of_week is only valid when frequency='weekly'")
+        if self.schedule_mode == "interval_from_last_dose":
+            if self.frequency != "daily":
+                raise ValueError("interval_from_last_dose requires frequency='daily'")
+            if self.days_of_week is not None:
+                raise ValueError("days_of_week is not allowed with interval_from_last_dose")
         if self.frequency == "weekly":
             if not self.days_of_week:
                 raise ValueError("days_of_week is required when frequency='weekly'")
@@ -70,6 +76,7 @@ class MedicationUpdate(BaseModel):
     refill_note: str | None = Field(default=None, max_length=500)
     frequency: Literal["daily", "weekly", "monthly"] | None = Field(default=None)
     interval: int | None = Field(default=None, ge=1)
+    schedule_mode: Literal["fixed", "interval_from_last_dose"] | None = Field(default=None)
     days_of_week: list[int] | None = Field(default=None)
     anchor_date: date | None = Field(default=None)
     end_date: date | None = Field(default=None)
@@ -89,6 +96,11 @@ class MedicationUpdate(BaseModel):
                 raise ValueError(f"Unknown timezone: {self.timezone}") from exc
         if self.days_of_week is not None and any(d < 0 or d > 6 for d in self.days_of_week):
             raise ValueError("days_of_week entries must be 0-6 (Mon-Sun)")
+        if self.schedule_mode == "interval_from_last_dose":
+            if self.frequency is not None and self.frequency != "daily":
+                raise ValueError("interval_from_last_dose requires frequency='daily'")
+            if self.days_of_week is not None:
+                raise ValueError("days_of_week is not allowed with interval_from_last_dose")
         if (
             self.anchor_date is not None
             and self.end_date is not None
@@ -105,6 +117,7 @@ class MedicationResponse(BaseModel):
     refill_note: str | None
     frequency: str
     interval: int
+    schedule_mode: str
     days_of_week: list[int] | None
     anchor_date: date
     end_date: date | None
@@ -128,12 +141,16 @@ class DoseSlot(BaseModel):
     status: Literal["pending", "taken", "skipped", "missed"]
     event_public_id: uuid.UUID | None = None
     note: str | None = None
+    taken_at: datetime | None = None
 
 
 class MedicationEventUpsert(BaseModel):
     scheduled_for: datetime
     status: Literal["taken", "skipped"]
     note: str | None = Field(default=None, max_length=200)
+    # spec-092: actual intake moment. Omitted for a "taken" event → service
+    # defaults it to now (honest "I took it just now"). Ignored for "skipped".
+    taken_at: datetime | None = Field(default=None)
 
 
 class MedicationEventResponse(BaseModel):
@@ -142,6 +159,7 @@ class MedicationEventResponse(BaseModel):
     scheduled_for: datetime
     status: str
     logged_at: datetime
+    taken_at: datetime | None
     note: str | None
     source_type: str
 

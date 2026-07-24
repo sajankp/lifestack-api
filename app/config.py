@@ -170,6 +170,8 @@ class Settings(BaseSettings):
     # Health Memory v1 (spec-069)
     HEALTH_DOSE_GRACE_HOURS: int = 4  # owner-confirmed grace window before a dose reads as "missed"
     HEALTH_REMINDER_INTERVAL_MINUTES: int = 5
+    # spec-092: default lookback window for the "Catch up" overdue-dose endpoint
+    HEALTH_CATCH_UP_LOOKBACK_DAYS: int = 7
 
     # Bulk import storage (Spec 020)
     MAX_MULTIPART_BODY_BYTES: int = 10 * 1024 * 1024

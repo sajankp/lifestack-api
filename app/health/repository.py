@@ -84,6 +84,27 @@ class MedicationEventRepository(BaseRepository[MedicationEvent]):
         )
         return result.scalar_one_or_none()
 
+    async def get_latest_events_for_medications(
+        self, medication_ids: Sequence[int]
+    ) -> dict[int, MedicationEvent]:
+        """The most recent event per medication (by scheduled_for), used by
+        interval_from_last_dose scheduling (spec-092). Keyed by medication_id;
+        medications with no events are absent from the map."""
+        if not medication_ids:
+            return {}
+        result = await self.session.execute(
+            select(MedicationEvent)
+            .where(MedicationEvent.medication_id.in_(medication_ids))
+            .order_by(
+                MedicationEvent.medication_id,
+                MedicationEvent.scheduled_for.desc(),
+            )
+        )
+        latest: dict[int, MedicationEvent] = {}
+        for event in result.scalars().all():
+            latest.setdefault(event.medication_id, event)
+        return latest
+
     async def get_for_medications_between(
         self, medication_ids: Sequence[int], start: datetime, end: datetime
     ) -> Sequence[MedicationEvent]:

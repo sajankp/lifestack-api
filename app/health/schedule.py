@@ -14,7 +14,7 @@ import calendar
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from app.health.models import Medication
+from app.health.models import Medication, MedicationEvent
 
 DoseSlotStatus = str  # "pending" | "taken" | "skipped" | "missed"
 
@@ -57,12 +57,45 @@ def is_scheduled_date(medication: Medication, target: date) -> bool:
     return False
 
 
-def get_dose_slots_for_date(medication: Medication, target: date) -> list[datetime]:
-    """Dose slot datetimes (UTC-aware) on `target`, one per `times` entry,
-    interpreted in the medication's timezone. Empty if `target` isn't a
-    scheduled day or the medication is inactive."""
-    if not medication.is_active or not is_scheduled_date(medication, target):
-        return []
+def interval_next_due_date(
+    medication: Medication, last_event: MedicationEvent | None, tz: ZoneInfo
+) -> date | None:
+    """Next dose date for an ``interval_from_last_dose`` medication (spec-092).
+
+    Only the *next* dose is knowable — each subsequent dose re-anchors off an
+    actual intake — so this returns a single date (or None past ``end_date``):
+
+    - no prior event → the first dose sits on ``anchor_date``;
+    - last event ``taken`` → re-anchor off the actual intake day (``taken_at``,
+      falling back to the slot it answered), + ``interval`` days;
+    - last event ``skipped`` → no intake to anchor to, so advance off the slot
+      the skip answered, + ``interval`` days.
+
+    The caller decides whether the returned date is upcoming or overdue; an
+    overdue-but-unanswered due date stays put (this function is idempotent for a
+    given last event), which is what makes the live slot "sticky" until answered.
+    """
+    if last_event is None:
+        base = medication.anchor_date
+        due = base
+    else:
+        if last_event.status == "taken":
+            anchor_dt = last_event.taken_at or last_event.scheduled_for
+        else:
+            anchor_dt = last_event.scheduled_for
+        base = anchor_dt.astimezone(tz).date()
+        due = base + timedelta(days=medication.interval)
+    if due < medication.anchor_date:
+        due = medication.anchor_date
+    if medication.end_date is not None and due > medication.end_date:
+        return None
+    return due
+
+
+def slot_datetimes_on(medication: Medication, target: date) -> list[datetime]:
+    """The UTC-aware dose datetimes on `target` (one per `times` entry, in the
+    medication's timezone), WITHOUT any scheduled-day / active check. Used by
+    interval_from_last_dose scheduling, which decides the due date itself."""
     tz = ZoneInfo(medication.timezone)
     slots = []
     for time_str in medication.times:
@@ -70,6 +103,15 @@ def get_dose_slots_for_date(medication: Medication, target: date) -> list[dateti
         local_dt = datetime(target.year, target.month, target.day, hour, minute, tzinfo=tz)
         slots.append(local_dt.astimezone(UTC))
     return sorted(slots)
+
+
+def get_dose_slots_for_date(medication: Medication, target: date) -> list[datetime]:
+    """Dose slot datetimes (UTC-aware) on `target`, one per `times` entry,
+    interpreted in the medication's timezone. Empty if `target` isn't a
+    scheduled day or the medication is inactive. Fixed-grid mode only."""
+    if not medication.is_active or not is_scheduled_date(medication, target):
+        return []
+    return slot_datetimes_on(medication, target)
 
 
 def get_dose_slots_in_window(

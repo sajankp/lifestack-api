@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +24,11 @@ from app.health.repository import (
     MedicationRepository,
     WeightEntryRepository,
 )
-from app.health.schedule import get_dose_slots_for_date
+from app.health.schedule import (
+    get_dose_slots_for_date,
+    interval_next_due_date,
+    slot_datetimes_on,
+)
 from app.investing.models import Dividend, PortfolioSnapshot
 from app.investing.repository import (
     DividendRepository,
@@ -621,12 +626,24 @@ class WeeklySummaryService:
         medications, _total = await medication_repo.get_all(
             workspace_id, is_active=None, limit=1000
         )
+        # Fixed-grid meds: scheduled slots are a pure function of the recurrence
+        # rule. Interval_from_last_dose meds (spec-092) are history-dependent —
+        # their fixed grid is meaningless, so counting them here would corrupt
+        # adherence. They're handled event-derived below.
+        fixed_meds = [m for m in medications if m.schedule_mode != "interval_from_last_dose"]
+        interval_meds = [m for m in medications if m.schedule_mode == "interval_from_last_dose"]
+
         scheduled_count = 0
         day = week_start
         while day <= week_end:
-            for med in medications:
+            for med in fixed_meds:
                 scheduled_count += len(get_dose_slots_for_date(med, day))
             day += timedelta(days=1)
+
+        if interval_meds:
+            scheduled_count += await self._interval_scheduled_count(
+                event_repo, interval_meds, week_start, week_end, start_dt, end_dt
+            )
 
         status_counts = await event_repo.get_status_counts_for_workspace(
             workspace_id, start_dt, end_dt
@@ -664,6 +681,41 @@ class WeeklySummaryService:
             "weight_entries_logged": len(weight_entries),
             "weight_delta_kg": weight_delta_kg,
         }
+
+    async def _interval_scheduled_count(
+        self,
+        event_repo: MedicationEventRepository,
+        interval_meds: list,
+        week_start: date,
+        week_end: date,
+        start_dt: datetime,
+        end_dt: datetime,
+    ) -> int:
+        """Scheduled-dose count for interval_from_last_dose meds over the week
+        (spec-092). Every past due slot is either answered (an event whose
+        `scheduled_for` lands in the week — counted here, and also in the
+        workspace taken/skipped totals so `missed = scheduled − taken − skipped`
+        still holds) or the single still-unanswered live slot. So: answered
+        events in the window + the live slot when it comes due within the week
+        and isn't already answered."""
+        interval_ids = [m.id for m in interval_meds]
+        events = await event_repo.get_for_medications_between(interval_ids, start_dt, end_dt)
+        # Answered slots whose due datetime falls in the week.
+        count = len(events)
+        answered_by_med: dict[int, set[datetime]] = {}
+        for event in events:
+            answered_by_med.setdefault(event.medication_id, set()).add(event.scheduled_for)
+
+        latest_events = await event_repo.get_latest_events_for_medications(interval_ids)
+        for med in interval_meds:
+            due = interval_next_due_date(med, latest_events.get(med.id), ZoneInfo(med.timezone))
+            if due is None or not (week_start <= due <= week_end):
+                continue
+            answered = answered_by_med.get(med.id, set())
+            for slot in slot_datetimes_on(med, due):
+                if slot not in answered:
+                    count += 1
+        return count
 
     async def _dividend_summary(self, workspace_id: int, week_start: date, week_end: date) -> dict:
         """Dividend/interest income received in the period (spec-073 events).

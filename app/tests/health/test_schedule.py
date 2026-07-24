@@ -1,13 +1,15 @@
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.health.models import Medication
+from app.health.models import Medication, MedicationEvent
 from app.health.schedule import (
     derive_slot_status,
     get_dose_slots_for_date,
     get_dose_slots_in_window,
+    interval_next_due_date,
     is_scheduled_date,
 )
 
@@ -30,6 +32,19 @@ def _medication(**overrides) -> Medication:
     }
     defaults.update(overrides)
     return Medication(**defaults)
+
+
+def _event(**overrides) -> MedicationEvent:
+    defaults = {
+        "medication_id": 1,
+        "workspace_id": 1,
+        "user_id": 1,
+        "scheduled_for": datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+        "status": "taken",
+        "taken_at": None,
+    }
+    defaults.update(overrides)
+    return MedicationEvent(**defaults)
 
 
 class TestDaily:
@@ -161,6 +176,71 @@ class TestDeriveSlotStatus:
         now = datetime(2026, 1, 1, 14, 0, tzinfo=UTC)
         scheduled = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
         assert derive_slot_status(scheduled, "taken", now, grace_hours=4) == "taken"
+
+
+class TestIntervalNextDueDate:
+    """spec-092: interval_from_last_dose re-anchors off the actual last dose."""
+
+    tz = ZoneInfo("UTC")
+
+    def test_no_event_first_dose_on_anchor(self):
+        med = _medication(
+            schedule_mode="interval_from_last_dose", interval=2, anchor_date=date(2026, 1, 1)
+        )
+        assert interval_next_due_date(med, None, self.tz) == date(2026, 1, 1)
+
+    def test_taken_reanchors_off_taken_at(self):
+        # Every 2 days; dose was DUE on the 3rd but actually taken on the 4th.
+        # Next due must be 4th + 2 = 6th, NOT 3rd + 2 = 5th (that would be fixed).
+        med = _medication(schedule_mode="interval_from_last_dose", interval=2)
+        event = _event(
+            status="taken",
+            scheduled_for=datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+            taken_at=datetime(2026, 1, 4, 8, 0, tzinfo=UTC),
+        )
+        assert interval_next_due_date(med, event, self.tz) == date(2026, 1, 6)
+
+    def test_taken_without_taken_at_falls_back_to_slot(self):
+        med = _medication(schedule_mode="interval_from_last_dose", interval=2)
+        event = _event(
+            status="taken",
+            scheduled_for=datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+            taken_at=None,
+        )
+        assert interval_next_due_date(med, event, self.tz) == date(2026, 1, 5)
+
+    def test_skipped_advances_off_slot_date(self):
+        # A skip has no intake, so cadence continues off the slot it answered.
+        med = _medication(schedule_mode="interval_from_last_dose", interval=2)
+        event = _event(
+            status="skipped",
+            scheduled_for=datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+            taken_at=None,
+        )
+        assert interval_next_due_date(med, event, self.tz) == date(2026, 1, 5)
+
+    def test_end_date_cutoff_returns_none(self):
+        med = _medication(
+            schedule_mode="interval_from_last_dose", interval=2, end_date=date(2026, 1, 4)
+        )
+        event = _event(
+            status="taken",
+            scheduled_for=datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+            taken_at=datetime(2026, 1, 4, 8, 0, tzinfo=UTC),
+        )
+        assert interval_next_due_date(med, event, self.tz) is None
+
+    def test_timezone_boundary_uses_local_date(self):
+        # taken_at 2026-01-04 22:00 UTC == 2026-01-05 03:30 IST → +2 = Jan 7.
+        med = _medication(
+            schedule_mode="interval_from_last_dose", interval=2, timezone="Asia/Kolkata"
+        )
+        event = _event(
+            status="taken",
+            scheduled_for=datetime(2026, 1, 3, 3, 30, tzinfo=UTC),
+            taken_at=datetime(2026, 1, 4, 22, 0, tzinfo=UTC),
+        )
+        assert interval_next_due_date(med, event, ZoneInfo("Asia/Kolkata")) == date(2026, 1, 7)
 
 
 @pytest.mark.parametrize("frequency", ["daily", "monthly"])
