@@ -117,7 +117,11 @@ class ETagMiddleware(BaseHTTPMiddleware):
 
             # Check If-None-Match
             if if_none_match and if_none_match == etag:
-                return Response(status_code=304, headers={"ETag": etag})
+                headers = dict(response.headers)
+                headers["ETag"] = etag
+                headers.pop("content-length", None)
+                headers.pop("content-type", None)
+                return Response(status_code=304, headers=headers)
 
             # Add ETag header
             response.headers["ETag"] = etag
@@ -207,7 +211,13 @@ def with_etag(
             # Check If-None-Match
             if_none_match = request.headers.get("if-none-match") if request else None
             if if_none_match and if_none_match == etag:
-                return Response(status_code=304, headers={"ETag": etag})
+                headers = {"ETag": etag}
+                injected_response = kwargs.get("response")
+                if isinstance(injected_response, Response):
+                    for k, v in injected_response.headers.items():
+                        if k.lower() not in ("content-length", "content-type"):
+                            headers[k] = v
+                return Response(status_code=304, headers=headers)
 
             # Set ETag on the FastAPI-injected Response object (standard FastAPI pattern for
             # header injection when the endpoint returns a Pydantic model/dict, not a Response)
