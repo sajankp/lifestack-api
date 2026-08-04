@@ -14,6 +14,7 @@ class User(SQLModel, table=True):
     username: str = Field(index=True, unique=True, max_length=50)
     hashed_password: str
     is_active: bool = Field(default=True)
+    timezone: str | None = Field(default=None, max_length=64)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

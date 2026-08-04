@@ -126,15 +126,39 @@ def first_due_date(
 ) -> date:
     """First ``next_due_date`` for a rule created just now.
 
-    ``anchor_date`` fixes the recurrence pattern (e.g. "the 1st of the month") and is
-    often already in the past relative to ``today`` when a rule is created mid-cycle.
-    Left as-is, that made a rule created seconds ago show as immediately overdue.
-    Advance past any cycles that have already elapsed; a date on or after ``today`` is
-    returned unchanged.
+    ``anchor_date`` is the earliest allowed occurrence and fixes the recurrence
+    pattern (e.g. "the 1st of the month"). Calendar-based monthly modes first
+    resolve their selected day within the anchor month. Advance past that month
+    when its selected day precedes the anchor, then advance past any cycles that
+    elapsed before ``today``.
     """
     if interval <= 0:
         raise ValueError("interval must be greater than 0")
     due = anchor_date
+
+    if frequency == "monthly":
+        if monthly_mode == "last_day":
+            due = date(
+                anchor_date.year,
+                anchor_date.month,
+                calendar.monthrange(anchor_date.year, anchor_date.month)[1],
+            )
+        elif monthly_mode == "nth_weekday":
+            if by_weekday is None or by_ordinal is None:
+                raise ValueError("nth_weekday mode requires by_weekday and by_ordinal")
+            due = _nth_weekday_of_month(anchor_date.year, anchor_date.month, by_weekday, by_ordinal)
+
+        if due < anchor_date:
+            due = advance_due_date(
+                due,
+                frequency,
+                interval,
+                anchor_day=anchor_date.day,
+                monthly_mode=monthly_mode,
+                by_weekday=by_weekday,
+                by_ordinal=by_ordinal,
+            )
+
     while due < today:
         due = advance_due_date(
             due,

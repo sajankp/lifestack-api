@@ -40,6 +40,12 @@ class UserRepository:
         await self.session.refresh(db_user)
         return db_user
 
+    async def save(self, user: User) -> User:
+        self.session.add(user)
+        await self.session.flush()
+        await self.session.refresh(user)
+        return user
+
 
 class AuthSessionRepository(BaseRepository[AuthSession]):
     async def get_active_by_sid(self, sid: str, user_id: int | None = None) -> AuthSession | None:

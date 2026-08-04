@@ -42,6 +42,14 @@ class AuthService:
     async def get_user_by_id(self, user_id: int) -> User | None:
         return await self.user_repo.get_by_id(user_id)
 
+    async def update_user_timezone(self, user_id: int, timezone: str | None) -> User:
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            raise UnauthorizedError(detail="User not found")
+        user.timezone = timezone
+        user.updated_at = datetime.now(UTC)
+        return await self.user_repo.save(user)
+
     async def authenticate_user(self, username_or_email: str, password: str) -> User | None:
         user = await self.user_repo.get_by_username(username_or_email)
         if not user:

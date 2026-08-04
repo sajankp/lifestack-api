@@ -1,5 +1,6 @@
 import re
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -56,8 +57,24 @@ class UserResponse(BaseModel):
     email: EmailStr
     username: str
     is_active: bool
+    timezone: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserTimezoneUpdate(BaseModel):
+    timezone: str | None = Field(..., min_length=1, max_length=64)
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Unknown timezone: {value}") from exc
+        return value
 
 
 class TokenResponse(BaseModel):
