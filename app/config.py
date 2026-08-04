@@ -299,6 +299,7 @@ class Settings(BaseSettings):
         if not value.startswith("/") or value == "/" or "//" in value:
             raise ValueError("MCP_MOUNT_PATH must be a non-root absolute path")
         return value.rstrip("/")
+
     IMPORT_S3_BUCKET: str | None = Field(
         default=None,
         validation_alias=AliasChoices("IMPORT_S3_BUCKET", "CLOUDFLARE_R2_BUCKET"),

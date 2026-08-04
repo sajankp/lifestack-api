@@ -136,10 +136,12 @@ if settings.MCP_ENABLED:
 
 # Create the final lifespan that combines FastAPI + MCP
 if _mcp_app:
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         async with _combined_lifespan(_app), _mcp_app.lifespan(_app):
             yield
+
 else:
     lifespan = _combined_lifespan
 
