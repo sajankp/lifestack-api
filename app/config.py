@@ -288,6 +288,17 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("IMPORT_S3_ENDPOINT", "CLOUDFLARE_R2_ENDPOINT"),
     )
+
+    # MCP (Model Context Protocol)
+    MCP_ENABLED: bool = False
+    MCP_MOUNT_PATH: str = "/mcp"
+
+    @field_validator("MCP_MOUNT_PATH")
+    @classmethod
+    def validate_mcp_mount_path(cls, value: str) -> str:
+        if not value.startswith("/") or value == "/" or "//" in value:
+            raise ValueError("MCP_MOUNT_PATH must be a non-root absolute path")
+        return value.rstrip("/")
     IMPORT_S3_BUCKET: str | None = Field(
         default=None,
         validation_alias=AliasChoices("IMPORT_S3_BUCKET", "CLOUDFLARE_R2_BUCKET"),

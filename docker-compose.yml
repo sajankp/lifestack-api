@@ -8,6 +8,8 @@ x-app-base: &app-base
     DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://lifestack:lifestack@postgres:5432/lifestack}
     REDIS_URL: ${REDIS_URL:-redis://redis:6379/1}
     RATE_LIMIT_STORAGE_URI: ${RATE_LIMIT_STORAGE_URI:-redis://redis:6379/1}
+    MCP_ENABLED: ${MCP_ENABLED:-false}
+    MCP_MOUNT_PATH: ${MCP_MOUNT_PATH:-/mcp}
     # Migrations run in the dedicated `migrate` service, not on app boot.
     RUN_MIGRATIONS: "false"
   volumes:
