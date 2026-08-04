@@ -45,9 +45,19 @@ async def test_auth_contract_and_error_envelope(client: AsyncClient):
     me = await client.get("/v1/auth/me")
     assert me.status_code == 200
     me_body = me.json()
-    assert set(me_body.keys()) == {"public_id", "email", "username", "is_active"}
+    assert set(me_body.keys()) == {"public_id", "email", "username", "is_active", "timezone"}
     assert me_body["email"] == email
     assert me_body["username"] == username
+    assert me_body["timezone"] is None
+
+    timezone_update = await client.patch("/v1/auth/me/timezone", json={"timezone": "Asia/Kolkata"})
+    assert timezone_update.status_code == 200
+    assert timezone_update.json()["timezone"] == "Asia/Kolkata"
+
+    invalid_timezone = await client.patch(
+        "/v1/auth/me/timezone", json={"timezone": "Mars/Olympus_Mons"}
+    )
+    assert invalid_timezone.status_code == 422
 
     logout = await client.post("/v1/auth/logout")
     assert logout.status_code == 200

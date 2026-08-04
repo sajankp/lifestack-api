@@ -44,7 +44,9 @@ async def test_e2e_hooks_are_not_registered_by_default(client: AsyncClient):
     )
 
     assert response.status_code == 404
-    route_paths = {route.path for route in app.routes}
+    # FastAPI 0.141 may expose included-router wrapper entries alongside
+    # concrete routes; only concrete routes have a path attribute.
+    route_paths = {route.path for route in app.routes if hasattr(route, "path")}
     assert "/v1/e2e/workflows/budget-guardrails" not in route_paths
 
 

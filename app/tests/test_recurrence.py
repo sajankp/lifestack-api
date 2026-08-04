@@ -120,6 +120,47 @@ class TestFirstDueDate:
         result = first_due_date(date(2026, 6, 7), date(2026, 7, 17), "monthly", 1)
         assert result == date(2026, 8, 7)
 
+    @pytest.mark.parametrize(
+        ("ordinal", "expected"),
+        [
+            (1, date(2026, 8, 7)),
+            (2, date(2026, 8, 14)),
+        ],
+    )
+    def test_nth_weekday_aligns_initial_due_date_to_selected_weekday(self, ordinal, expected):
+        result = first_due_date(
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+            "monthly",
+            1,
+            monthly_mode="nth_weekday",
+            by_weekday=4,
+            by_ordinal=ordinal,
+        )
+        assert result == expected
+
+    def test_nth_weekday_before_anchor_rolls_to_next_recurrence_month(self):
+        result = first_due_date(
+            date(2026, 8, 8),
+            date(2026, 8, 8),
+            "monthly",
+            1,
+            monthly_mode="nth_weekday",
+            by_weekday=4,
+            by_ordinal=1,
+        )
+        assert result == date(2026, 9, 4)
+
+    def test_last_day_aligns_initial_due_date_to_month_end(self):
+        result = first_due_date(
+            date(2026, 8, 1),
+            date(2026, 8, 1),
+            "monthly",
+            1,
+            monthly_mode="last_day",
+        )
+        assert result == date(2026, 8, 31)
+
     def test_zero_interval_rejected_instead_of_looping_forever(self):
         with pytest.raises(ValueError, match="interval must be greater than 0"):
             first_due_date(date(2026, 6, 1), date(2026, 7, 17), "daily", 0)

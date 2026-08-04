@@ -15,6 +15,7 @@ from app.auth.schemas import (
     TokenResponse,
     UserCreate,
     UserResponse,
+    UserTimezoneUpdate,
 )
 from app.auth.service import AuthService
 from app.config import settings
@@ -54,6 +55,15 @@ async def get_me(
     if not user:
         raise NotFoundError(detail="User not found")
     return user
+
+
+@router.patch("/me/timezone", response_model=UserResponse)
+async def update_my_timezone(
+    payload: UserTimezoneUpdate,
+    current_user: dict = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service),
+):
+    return await auth_service.update_user_timezone(current_user["id"], payload.timezone)
 
 
 @router.post("/login", response_model=TokenResponse)

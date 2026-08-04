@@ -51,6 +51,8 @@ dependencies = [
     "pywebpush>=2.3.0",
     "httplib2>=0.32.0",
     "tzdata",
+    # MCP
+    "fastmcp>=3.4.5",
 ]
 
 [dependency-groups]
