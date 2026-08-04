@@ -68,6 +68,7 @@ from app.finance.router import router as finance_router
 from app.health.router import router as health_module_router
 from app.imports.router import router as imports_router
 from app.investing.router import router as investing_router
+from app.mcp.server import create_mcp_asgi_app, create_mcp_server
 from app.notifications.router import router as notifications_router
 from app.observability.log_export import setup_log_export
 from app.observability.posthog_client import init_posthog
@@ -109,154 +110,184 @@ async def _startup_check() -> None:
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def _combined_lifespan(_app: FastAPI):
+    """Combined lifespan for FastAPI + MCP server."""
+    # Startup
     await _startup_check()
-    if settings.SCHEDULER_ENABLED:
-        register_interval_job(
-            budget_guardrails_job,
-            job_id="budget_guardrails",
-            hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
-            idempotent=True,
-        )
-        register_interval_job(
-            kpi_guardrails_job,
-            job_id="kpi_guardrails",
-            hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
-            idempotent=True,
-        )
-        # spec-089: deterministic IST-morning window (03:00-05:30 IST =
-        # 21:30-00:00 UTC), fixed (no jitter), ordered by real data
-        # dependencies -- not the calendar order above. Jitter was removed
-        # here because it broke a real ordering guarantee: bhavcopy_price_feed
-        # (the preferred official NSE price source) must precede
-        # investment_closing_prices (Yahoo fallback), and +-60min jitter could
-        # let them race (see a025a1a, the commit that added the jitter this
-        # spec removes). 23:00 UTC is the binding floor for
-        # investment_closing_prices -- ~1h margin past the worst-case (EST)
-        # US market close settle. See docs/specs/spec-089-daily-job-schedule-ist-morning.md.
-        register_daily_job(
-            export_cleanup_job,
-            job_id="export_cleanup",
-            hour_utc=21,
-            minute_utc=30,
-        )
-        register_daily_job(
-            session_cleanup_job,
-            job_id="session_cleanup",
-            hour_utc=21,
-            minute_utc=45,
-        )
-        register_daily_job(
-            import_preview_cleanup_job,
-            job_id="import_preview_cleanup",
-            hour_utc=22,
-            minute_utc=0,
-        )
-        register_daily_job(
-            fx_rate_ingestion_job,
-            job_id="fx_rate_ingestion",
-            hour_utc=22,
-            minute_utc=15,
-        )
-        register_daily_job(
-            recurring_transactions_job,
-            job_id="recurring_transactions",
-            hour_utc=settings.RECURRING_TXN_GENERATION_HOUR,
-            minute_utc=30,
-        )
-        register_daily_job(
-            bhavcopy_price_feed_job,
-            job_id="bhavcopy_price_feed",
-            hour_utc=22,
-            minute_utc=45,
-        )
-        register_daily_job(
-            investment_closing_prices_job,
-            job_id="investment_closing_prices",
-            hour_utc=23,
-            minute_utc=0,
-        )
-        register_daily_job(
-            net_worth_snapshot_job,
-            job_id="net_worth_snapshot",
-            hour_utc=23,
-            minute_utc=15,
-        )
-        register_daily_job(
-            dashboard_insights_job,
-            job_id="dashboard_insights",
-            hour_utc=23,
-            minute_utc=30,
-        )
-        register_interval_job(
-            push_delivery_job,
-            job_id="push_delivery",
-            minutes=settings.PUSH_DELIVERY_INTERVAL_MINUTES,
-            idempotent=True,
-        )
-        register_interval_job(
-            email_delivery_job,
-            job_id="email_delivery",
-            minutes=settings.EMAIL_DELIVERY_INTERVAL_MINUTES,
-            idempotent=True,
-        )
-        register_interval_job(
-            todo_reminder_job,
-            job_id="todo_reminder",
-            minutes=settings.TODO_REMINDER_INTERVAL_MINUTES,
-            idempotent=True,
-        )
-        register_interval_job(
-            medication_reminder_job,
-            job_id="medication_reminder",
-            minutes=settings.HEALTH_REMINDER_INTERVAL_MINUTES,
-            idempotent=True,
-        )
-        scheduler.add_job(
-            weekly_summary_job,
-            "cron",
-            minute=30,
-            id="weekly_summary",
-            replace_existing=True,
-            timezone="UTC",
-            kwargs={"respect_cadence": True},
-        )
-        register_daily_job(
-            morning_briefing_job,
-            job_id="morning_briefing",
-            hour_utc=settings.BRIEFING_JOB_HOUR_UTC,
-            minute_utc=settings.BRIEFING_JOB_MINUTE_UTC,
-        )
-        # spec-089 supersedes spec-088's original 04:30 UTC digest/heartbeat
-        # times (sized around the old 02:00-07:00 UTC cluster): the whole
-        # chain above now finishes by 23:45 UTC, so digest/heartbeat move
-        # earlier too. Digest stays fixed (never jittered) and strictly last
-        # -- a jittered digest could fire before the jobs it reports on.
-        register_daily_job(
-            job_failure_digest_job,
-            job_id="job_failure_digest",
-            hour_utc=0,
-            minute_utc=0,
-        )
-        scheduler.add_job(
-            job_health_heartbeat_job,
-            "cron",
-            day_of_week="mon",
-            hour=0,
-            minute=15,
-            id="job_health_heartbeat",
-            replace_existing=True,
-            timezone="UTC",
-        )
 
-        # Update scheduler metrics
-        set_scheduler_running(True)
-        set_jobs_registered(len(scheduler.get_jobs()))
+    # Initialize scheduler if enabled
+    if settings.SCHEDULER_ENABLED:
+        _register_scheduled_jobs()
         start_scheduler()
+
     yield
+
+    # Shutdown
     if settings.SCHEDULER_ENABLED:
         shutdown_scheduler()
         set_scheduler_running(False)
+
+
+# Create MCP app outside of lifespan (needs to exist before FastAPI creation)
+_mcp_app = None
+if settings.MCP_ENABLED:
+    _mcp = create_mcp_server()
+    _mcp_app = create_mcp_asgi_app(_mcp)
+
+# Create the final lifespan that combines FastAPI + MCP
+if _mcp_app:
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        async with _combined_lifespan(_app), _mcp_app.lifespan(_app):
+            yield
+
+else:
+    lifespan = _combined_lifespan
+
+
+def _register_scheduled_jobs():
+    """Register all scheduled jobs."""
+    register_interval_job(
+        budget_guardrails_job,
+        job_id="budget_guardrails",
+        hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
+        idempotent=True,
+    )
+    register_interval_job(
+        kpi_guardrails_job,
+        job_id="kpi_guardrails",
+        hours=settings.BUDGET_GUARDRAILS_INTERVAL_HOURS,
+        idempotent=True,
+    )
+    # spec-089: deterministic IST-morning window (03:00-05:30 IST =
+    # 21:30-00:00 UTC), fixed (no jitter), ordered by real data
+    # dependencies -- not the calendar order above. Jitter was removed
+    # here because it broke a real ordering guarantee: bhavcopy_price_feed
+    # (the preferred official NSE price source) must precede
+    # investment_closing_prices (Yahoo fallback), and +-60min jitter could
+    # let them race (see a025a1a, the commit that added the jitter this
+    # spec removes). 23:00 UTC is the binding floor for
+    # investment_closing_prices -- ~1h margin past the worst-case (EST)
+    # US market close settle. See docs/specs/spec-089-daily-job-schedule-ist-morning.md.
+    register_daily_job(
+        export_cleanup_job,
+        job_id="export_cleanup",
+        hour_utc=21,
+        minute_utc=30,
+    )
+    register_daily_job(
+        session_cleanup_job,
+        job_id="session_cleanup",
+        hour_utc=21,
+        minute_utc=45,
+    )
+    register_daily_job(
+        import_preview_cleanup_job,
+        job_id="import_preview_cleanup",
+        hour_utc=22,
+        minute_utc=0,
+    )
+    register_daily_job(
+        fx_rate_ingestion_job,
+        job_id="fx_rate_ingestion",
+        hour_utc=22,
+        minute_utc=15,
+    )
+    register_daily_job(
+        recurring_transactions_job,
+        job_id="recurring_transactions",
+        hour_utc=settings.RECURRING_TXN_GENERATION_HOUR,
+        minute_utc=30,
+    )
+    register_daily_job(
+        bhavcopy_price_feed_job,
+        job_id="bhavcopy_price_feed",
+        hour_utc=22,
+        minute_utc=45,
+    )
+    register_daily_job(
+        investment_closing_prices_job,
+        job_id="investment_closing_prices",
+        hour_utc=23,
+        minute_utc=0,
+    )
+    register_daily_job(
+        net_worth_snapshot_job,
+        job_id="net_worth_snapshot",
+        hour_utc=23,
+        minute_utc=15,
+    )
+    register_daily_job(
+        dashboard_insights_job,
+        job_id="dashboard_insights",
+        hour_utc=23,
+        minute_utc=30,
+    )
+    register_interval_job(
+        push_delivery_job,
+        job_id="push_delivery",
+        minutes=settings.PUSH_DELIVERY_INTERVAL_MINUTES,
+        idempotent=True,
+    )
+    register_interval_job(
+        email_delivery_job,
+        job_id="email_delivery",
+        minutes=settings.EMAIL_DELIVERY_INTERVAL_MINUTES,
+        idempotent=True,
+    )
+    register_interval_job(
+        todo_reminder_job,
+        job_id="todo_reminder",
+        minutes=settings.TODO_REMINDER_INTERVAL_MINUTES,
+        idempotent=True,
+    )
+    register_interval_job(
+        medication_reminder_job,
+        job_id="medication_reminder",
+        minutes=settings.HEALTH_REMINDER_INTERVAL_MINUTES,
+        idempotent=True,
+    )
+    scheduler.add_job(
+        weekly_summary_job,
+        "cron",
+        minute=30,
+        id="weekly_summary",
+        replace_existing=True,
+        timezone="UTC",
+        kwargs={"respect_cadence": True},
+    )
+    register_daily_job(
+        morning_briefing_job,
+        job_id="morning_briefing",
+        hour_utc=settings.BRIEFING_JOB_HOUR_UTC,
+        minute_utc=settings.BRIEFING_JOB_MINUTE_UTC,
+    )
+    # spec-089 supersedes spec-088's original 04:30 UTC digest/heartbeat
+    # times (sized around the old 02:00-07:00 UTC cluster): the whole
+    # chain above now finishes by 23:45 UTC, so digest/heartbeat move
+    # earlier too. Digest stays fixed (never jittered) and strictly last
+    # -- a jittered digest could fire before the jobs it reports on.
+    register_daily_job(
+        job_failure_digest_job,
+        job_id="job_failure_digest",
+        hour_utc=0,
+        minute_utc=0,
+    )
+    scheduler.add_job(
+        job_health_heartbeat_job,
+        "cron",
+        day_of_week="mon",
+        hour=0,
+        minute=15,
+        id="job_health_heartbeat",
+        replace_existing=True,
+        timezone="UTC",
+    )
+
+    # Update scheduler metrics
+    set_scheduler_running(True)
+    set_jobs_registered(len(scheduler.get_jobs()))
 
 
 def create_app() -> FastAPI:
@@ -363,6 +394,10 @@ def create_app() -> FastAPI:
         _app.include_router(testing_router, prefix=settings.API_V1_STR)
 
     _app.include_router(health_router)
+
+    # Mount MCP server if enabled
+    if settings.MCP_ENABLED and _mcp_app:
+        _app.mount(settings.MCP_MOUNT_PATH, _mcp_app)
 
     return _app
 
