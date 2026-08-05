@@ -5,8 +5,9 @@ import pytest
 from starlette.requests import Request
 
 from app.auth.models import User
-from app.auth.oauth import oauth_callback
+from app.auth.oauth import oauth_callback, oauth_login
 from app.auth.service import AuthService
+from app.config import settings
 
 
 @pytest.mark.asyncio
@@ -87,6 +88,35 @@ async def test_oauth_callback_uses_provider_identity_and_sets_cookies_on_redirec
     assert any(header.startswith("refresh_token=") for header in set_cookie_headers)
     assert any(header.startswith("sid=") for header in set_cookie_headers)
     assert any(header.startswith("csrf_token=") for header in set_cookie_headers)
+
+
+@pytest.mark.asyncio
+async def test_oauth_login_uses_explicit_provider_redirect_uri():
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/v1/auth/oauth/google",
+        "headers": [(b"host", b"internal-api:8000")],
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("internal-api", 8000),
+        "client": ("127.0.0.1", 1234),
+    })
+    oauth_client = MagicMock()
+    oauth_client.authorize_redirect = AsyncMock(return_value="redirect-response")
+    original_redirect_uri = settings.GOOGLE_REDIRECT_URI
+    settings.GOOGLE_REDIRECT_URI = "https://lifestack-api.example.com/v1/auth/oauth/google/callback"
+    try:
+        with patch("app.auth.oauth._get_oauth_client", return_value=oauth_client):
+            result = await oauth_login(request, "google")
+    finally:
+        settings.GOOGLE_REDIRECT_URI = original_redirect_uri
+
+    assert result == "redirect-response"
+    oauth_client.authorize_redirect.assert_awaited_once_with(
+        request,
+        "https://lifestack-api.example.com/v1/auth/oauth/google/callback",
+    )
 
 
 def test_user_model_enforces_unique_oauth_identity():
