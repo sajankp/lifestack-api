@@ -49,12 +49,16 @@ def _get_oauth_client(provider: str):
     return oauth.create_client(provider)
 
 
+def _get_redirect_uri(request: Request, provider: str) -> str:
+    configured_uri = getattr(settings, f"{provider.upper()}_REDIRECT_URI")
+    return configured_uri or str(request.url_for("oauth_callback", provider=provider))
+
+
 @router.get("/{provider}")
 async def oauth_login(request: Request, provider: str):
     """Initiate OAuth login flow for the given provider."""
     client = _get_oauth_client(provider)
-    redirect_uri = request.url_for("oauth_callback", provider=provider)
-    return await client.authorize_redirect(request, str(redirect_uri))
+    return await client.authorize_redirect(request, _get_redirect_uri(request, provider))
 
 
 @router.get("/{provider}/callback", name="oauth_callback")

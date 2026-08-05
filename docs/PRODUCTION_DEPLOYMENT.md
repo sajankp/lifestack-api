@@ -22,6 +22,7 @@ Create a `.env.production` file on the deployment VM with the following keys:
 * `BACKEND_CORS_ORIGINS`: JSON array of allowed origins, e.g., `["https://app.lifestack.app"]`.
 * `CSRF_TRUSTED_ORIGINS`: JSON array of allowed origins for CSRF validation, e.g., `["https://app.lifestack.app"]`.
 * `COOKIE_SECURE`: Must be `True` (enforces HttpOnly, Secure session cookies).
+* `GOOGLE_REDIRECT_URI` / `GITHUB_REDIRECT_URI`: Explicit HTTPS callback URLs registered with each OAuth provider, e.g. `https://lifestack-api.example.com/v1/auth/oauth/google/callback`.
 
 ### Database & Redis
 * `DATABASE_URL`: PostgreSQL connection URI, e.g., `postgresql+asyncpg://user:pass@host:5432/lifestack`.

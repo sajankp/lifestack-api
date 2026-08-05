@@ -65,8 +65,10 @@ class Settings(BaseSettings):
     # OAuth Providers
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = ""
     GITHUB_CLIENT_ID: str = ""
     GITHUB_CLIENT_SECRET: str = ""
+    GITHUB_REDIRECT_URI: str = ""
 
     # Environment
     ENV: str = "local"  # One of: local, staging, production
@@ -426,6 +428,30 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _check_production_defaults(self) -> "Settings":
         """Fail fast when insecure defaults are used in production."""
+        for provider, client_id, client_secret, redirect_uri in (
+            (
+                "GOOGLE",
+                self.GOOGLE_CLIENT_ID,
+                self.GOOGLE_CLIENT_SECRET,
+                self.GOOGLE_REDIRECT_URI,
+            ),
+            (
+                "GITHUB",
+                self.GITHUB_CLIENT_ID,
+                self.GITHUB_CLIENT_SECRET,
+                self.GITHUB_REDIRECT_URI,
+            ),
+        ):
+            if bool(client_id) != bool(client_secret):
+                raise ValueError(
+                    f"{provider}_CLIENT_ID and {provider}_CLIENT_SECRET must be set together."
+                )
+            if client_id and self.ENV in ("production", "staging"):
+                if not redirect_uri:
+                    raise ValueError(f"{provider}_REDIRECT_URI must be configured for {self.ENV}.")
+                if not redirect_uri.startswith("https://"):
+                    raise ValueError(f"{provider}_REDIRECT_URI must use HTTPS for {self.ENV}.")
+
         if self.ENV in ("production", "staging"):
             if self.SECRET_KEY == "super-secret-key-change-in-production":
                 raise ValueError("SECRET_KEY must be changed from its default value in production.")
