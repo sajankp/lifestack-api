@@ -7,14 +7,25 @@ from sqlmodel import Field, SQLModel
 
 class User(SQLModel, table=True):
     __tablename__ = "users"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "oauth_provider",
+            "oauth_sub",
+            name="uq_users_oauth_provider_sub",
+        ),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
     email: str = Field(index=True, unique=True, max_length=255)
     username: str = Field(index=True, unique=True, max_length=50)
-    hashed_password: str
+    hashed_password: str = Field(default="")
     is_active: bool = Field(default=True)
     timezone: str | None = Field(default=None, max_length=64)
+
+    # OAuth fields
+    oauth_provider: str | None = Field(default=None, index=True, max_length=20)
+    oauth_sub: str | None = Field(default=None, index=True, max_length=128)
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

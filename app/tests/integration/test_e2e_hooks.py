@@ -245,6 +245,7 @@ def test_e2e_hooks_production_gating_settings():
         Settings(
             ENV="production",
             SECRET_KEY="production-secret-key-changed-in-production-12345",
+            SESSION_SECRET_KEY="production-session-key-changed-in-production-12345",
             METRICS_TOKEN="production-metrics-token-changed-in-production-12345",
             COOKIE_SECURE=True,
             COOKIE_DOMAIN=".sajankp.com",
@@ -259,6 +260,7 @@ def test_e2e_hooks_production_gating_settings():
         Settings(
             ENV="staging",
             SECRET_KEY="staging-secret-key-changed-in-staging-12345",
+            SESSION_SECRET_KEY="staging-session-key-changed-in-staging-12345",
             METRICS_TOKEN="staging-metrics-token-changed-in-staging-12345",
             COOKIE_SECURE=True,
             COOKIE_DOMAIN=".sajankp.com",
@@ -270,6 +272,7 @@ def test_e2e_hooks_production_gating_settings():
     prod_settings = Settings(
         ENV="production",
         SECRET_KEY="production-secret-key-changed-in-production-12345",
+        SESSION_SECRET_KEY="production-session-key-changed-in-production-12345",
         METRICS_TOKEN="production-metrics-token-changed-in-production-12345",
         COOKIE_SECURE=True,
         COOKIE_DOMAIN=".sajankp.com",

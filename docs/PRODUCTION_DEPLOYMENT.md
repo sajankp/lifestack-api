@@ -17,6 +17,7 @@ Create a `.env.production` file on the deployment VM with the following keys:
 ### Core Settings
 * `ENV`: Set to `"production"`.
 * `SECRET_KEY`: A cryptographically secure random string (minimum 32 characters, e.g., generated with `openssl rand -hex 32`). **Using default values will prevent the application from starting.**
+* `SESSION_SECRET_KEY`: A stable cryptographically secure random string of at least 32 characters used to sign OAuth state cookies. Every API replica must use the same value. **Using the default will prevent the application from starting.**
 * `METRICS_TOKEN`: A non-default secret bearer token for the metrics endpoint (e.g., generated with `openssl rand -hex 32`). **Using the `dev-`-prefixed default value will prevent the application from starting.**
 * `BACKEND_CORS_ORIGINS`: JSON array of allowed origins, e.g., `["https://app.lifestack.app"]`.
 * `CSRF_TRUSTED_ORIGINS`: JSON array of allowed origins for CSRF validation, e.g., `["https://app.lifestack.app"]`.
