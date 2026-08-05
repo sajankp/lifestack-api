@@ -180,3 +180,25 @@ class AuthService:
         # Invalidate all active sessions for this user
         if user.id is not None:
             await self.revoke_all_sessions(user.id)
+
+    async def create_oauth_user(
+        self, email: str, username: str, oauth_provider: str, oauth_sub: str
+    ) -> User:
+        """Create a new user from OAuth provider info."""
+        # Ensure unique username
+        base_username = username
+        counter = 1
+        while await self.user_repo.get_by_username(username):
+            username = f"{base_username}{counter}"
+            counter += 1
+
+        user = User(
+            email=email,
+            username=username,
+            hashed_password="",  # No password for OAuth users
+            oauth_provider=oauth_provider,
+            oauth_sub=oauth_sub,
+            is_active=True,
+            timezone="UTC",
+        )
+        return await self.user_repo.save(user)

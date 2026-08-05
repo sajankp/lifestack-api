@@ -52,9 +52,21 @@ class Settings(BaseSettings):
 
     # Auth
     SECRET_KEY: str = "super-secret-key-change-in-production"
+    SESSION_SECRET_KEY: str = Field(
+        default="session-secret-key-change-in-production",
+        min_length=32,
+        description="Stable secret used to sign OAuth state session cookies.",
+    )
+    SESSION_MAX_AGE: int = 60 * 30  # 30 minutes, matches OAuth flow timeout
     ACCESS_TOKEN_EXPIRE_SECONDS: int = 60 * 30  # 30 mins
     REFRESH_TOKEN_EXPIRE_SECONDS: int = 60 * 60 * 24 * 7  # 7 days
     FRONTEND_URL: str = "http://localhost:5173"
+
+    # OAuth Providers
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GITHUB_CLIENT_ID: str = ""
+    GITHUB_CLIENT_SECRET: str = ""
 
     # Environment
     ENV: str = "local"  # One of: local, staging, production
@@ -417,6 +429,10 @@ class Settings(BaseSettings):
         if self.ENV in ("production", "staging"):
             if self.SECRET_KEY == "super-secret-key-change-in-production":
                 raise ValueError("SECRET_KEY must be changed from its default value in production.")
+            if self.SESSION_SECRET_KEY == "session-secret-key-change-in-production":
+                raise ValueError(
+                    "SESSION_SECRET_KEY must be changed from its default value in production."
+                )
             if self.METRICS_TOKEN.startswith("dev-"):
                 raise ValueError(
                     "METRICS_TOKEN must be changed from its default value in production."

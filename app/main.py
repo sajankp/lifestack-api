@@ -12,6 +12,7 @@ from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.application.jobs import (
     bhavcopy_price_feed_job,
@@ -34,6 +35,7 @@ from app.application.jobs import (
     todo_reminder_job,
     weekly_summary_job,
 )
+from app.auth.oauth import router as oauth_router
 from app.auth.router import router as auth_router
 from app.capture.router import router as capture_router
 from app.config import settings
@@ -326,6 +328,15 @@ def create_app() -> FastAPI:
             ],
         )
 
+    # Session middleware for OAuth state storage
+    _app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.SESSION_SECRET_KEY,
+        max_age=settings.SESSION_MAX_AGE,
+        same_site="lax",
+        https_only=settings.ENV == "production",
+    )
+
     # Response compression
     _app.add_middleware(GZipMiddleware, minimum_size=500)
 
@@ -378,6 +389,7 @@ def create_app() -> FastAPI:
 
     # Include routers under /v1 prefix
     _app.include_router(auth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["auth"])
+    _app.include_router(oauth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["oauth"])
     _app.include_router(todo_router, prefix=settings.API_V1_STR)
     _app.include_router(health_module_router, prefix=settings.API_V1_STR)
     _app.include_router(spending_router, prefix=settings.API_V1_STR)
