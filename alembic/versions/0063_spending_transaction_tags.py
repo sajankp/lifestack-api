@@ -14,6 +14,15 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Composite workspace-scoped foreign keys require matching unique keys on
+    # the referenced tables.  spending_transactions predates this migration,
+    # so add its key here rather than changing an already-applied migration.
+    op.create_unique_constraint(
+        "uq_spending_transaction_id_workspace",
+        "spending_transactions",
+        ["id", "workspace_id"],
+    )
+
     op.create_table(
         "spending_tags",
         sa.Column("id", sa.Integer(), primary_key=True),
@@ -25,6 +34,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("public_id"),
+        sa.UniqueConstraint("id", "workspace_id", name="uq_spending_tag_id_workspace"),
         sa.UniqueConstraint(
             "workspace_id", "normalized_name", name="uq_spending_tag_workspace_name"
         ),
@@ -126,3 +136,8 @@ def downgrade() -> None:
     op.drop_index("ix_spending_tags_workspace_id", table_name="spending_tags")
     op.drop_index("ix_spending_tags_public_id", table_name="spending_tags")
     op.drop_table("spending_tags")
+    op.drop_constraint(
+        "uq_spending_transaction_id_workspace",
+        "spending_transactions",
+        type_="unique",
+    )
