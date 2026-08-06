@@ -16,7 +16,9 @@ from app.spending.models import (
     RecurringTransaction,
     SpendingBudget,
     SpendingCategory,
+    SpendingTag,
     SpendingTransaction,
+    SpendingTransactionTag,
     TransactionSort,
 )
 
@@ -247,6 +249,96 @@ class CategoryRepository(BaseRepository[SpendingCategory]):
         await self.session.execute(stmt)
 
 
+class TagRepository(BaseRepository[SpendingTag]):
+    async def get_all(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        search: str | None = None,
+    ) -> tuple[Sequence[SpendingTag], int]:
+        base = select(SpendingTag).where(SpendingTag.workspace_id == workspace_id)
+        if search and search.strip():
+            base = base.where(SpendingTag.name.ilike(f"%{search.strip()}%"))
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(SpendingTag.name.asc()).limit(limit).offset(offset)
+        )
+        return result.scalars().all(), total
+
+    async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> SpendingTag | None:
+        result = await self.session.execute(
+            select(SpendingTag).where(
+                SpendingTag.workspace_id == workspace_id,
+                SpendingTag.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_normalized_name(
+        self, workspace_id: int, normalized_name: str
+    ) -> SpendingTag | None:
+        result = await self.session.execute(
+            select(SpendingTag).where(
+                SpendingTag.workspace_id == workspace_id,
+                SpendingTag.normalized_name == normalized_name,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_ids(self, workspace_id: int, ids: set[int]) -> dict[int, SpendingTag]:
+        if not ids:
+            return {}
+        result = await self.session.execute(
+            select(SpendingTag).where(
+                SpendingTag.workspace_id == workspace_id,
+                SpendingTag.id.in_(ids),
+            )
+        )
+        return {tag.id: tag for tag in result.scalars().all() if tag.id is not None}
+
+    async def get_for_transactions(
+        self, workspace_id: int, transaction_ids: set[int]
+    ) -> dict[int, list[SpendingTag]]:
+        if not transaction_ids:
+            return {}
+        result = await self.session.execute(
+            select(SpendingTransactionTag.transaction_id, SpendingTag)
+            .join(SpendingTag, SpendingTag.id == SpendingTransactionTag.tag_id)
+            .where(
+                SpendingTransactionTag.workspace_id == workspace_id,
+                SpendingTransactionTag.transaction_id.in_(transaction_ids),
+            )
+            .order_by(SpendingTag.name.asc())
+        )
+        grouped: dict[int, list[SpendingTag]] = {}
+        for transaction_id, tag in result.all():
+            grouped.setdefault(transaction_id, []).append(tag)
+        return grouped
+
+    async def replace_transaction_tags(
+        self, workspace_id: int, transaction_id: int, tag_ids: set[int]
+    ) -> None:
+        await self.session.execute(
+            sa.delete(SpendingTransactionTag).where(
+                SpendingTransactionTag.workspace_id == workspace_id,
+                SpendingTransactionTag.transaction_id == transaction_id,
+            )
+        )
+        if tag_ids:
+            self.session.add_all([
+                SpendingTransactionTag(
+                    workspace_id=workspace_id,
+                    transaction_id=transaction_id,
+                    tag_id=tag_id,
+                )
+                for tag_id in tag_ids
+            ])
+        await self.session.flush()
+
+
 class TransactionRepository(BaseRepository[SpendingTransaction]):
     async def get_all(
         self,
@@ -257,6 +349,9 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         type_filter: str | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        search: str | None = None,
+        amount: Decimal | None = None,
+        tag_id: int | None = None,
         sort: TransactionSort | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
@@ -274,6 +369,40 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
             base = base.where(SpendingTransaction.occurred_at >= from_date)
         if to_date is not None:
             base = base.where(SpendingTransaction.occurred_at <= to_date)
+        if amount is not None:
+            base = base.where(SpendingTransaction.amount == amount)
+        if search and search.strip():
+            search_pattern = f"%{search.strip()}%"
+            matching_tag = (
+                select(SpendingTransactionTag.transaction_id)
+                .join(SpendingTag, SpendingTag.id == SpendingTransactionTag.tag_id)
+                .where(
+                    SpendingTransactionTag.workspace_id == workspace_id,
+                    SpendingTransactionTag.transaction_id == SpendingTransaction.id,
+                    SpendingTag.name.ilike(search_pattern),
+                )
+                .correlate(SpendingTransaction)
+                .exists()
+            )
+            base = base.where(
+                sa.or_(
+                    SpendingTransaction.description.ilike(search_pattern),
+                    SpendingTransaction.wallet_name.ilike(search_pattern),
+                    SpendingTransaction.labels.ilike(search_pattern),
+                    matching_tag,
+                )
+            )
+        if tag_id is not None:
+            base = base.where(
+                select(SpendingTransactionTag.transaction_id)
+                .where(
+                    SpendingTransactionTag.workspace_id == workspace_id,
+                    SpendingTransactionTag.transaction_id == SpendingTransaction.id,
+                    SpendingTransactionTag.tag_id == tag_id,
+                )
+                .correlate(SpendingTransaction)
+                .exists()
+            )
         total = (
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
@@ -281,6 +410,46 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
             base.order_by(*_transaction_order_by(sort)).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
+
+    async def find_same_day_duplicates(
+        self,
+        workspace_id: int,
+        *,
+        category_id: int,
+        account_id: int | None,
+        amount: Decimal,
+        from_date: datetime,
+        to_date: datetime,
+        description: str | None,
+        limit: int = 10,
+    ) -> Sequence[SpendingTransaction]:
+        """Find likely duplicate expenses within one local calendar day."""
+        where = [
+            SpendingTransaction.workspace_id == workspace_id,
+            SpendingTransaction.type == "expense",
+            SpendingTransaction.category_id == category_id,
+            SpendingTransaction.amount == amount,
+            SpendingTransaction.occurred_at >= from_date,
+            SpendingTransaction.occurred_at < to_date,
+        ]
+        if account_id is None:
+            where.append(SpendingTransaction.account_id.is_(None))
+        else:
+            where.append(SpendingTransaction.account_id == account_id)
+
+        result = await self.session.execute(
+            select(SpendingTransaction)
+            .where(*where)
+            .order_by(SpendingTransaction.occurred_at.desc(), SpendingTransaction.id.desc())
+            .limit(limit)
+        )
+        normalized_description = " ".join((description or "").strip().lower().split())
+        return [
+            transaction
+            for transaction in result.scalars().all()
+            if " ".join((transaction.description or "").strip().lower().split())
+            == normalized_description
+        ]
 
     async def get_sum_by_type(
         self,

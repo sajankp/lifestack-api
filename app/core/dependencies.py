@@ -82,6 +82,7 @@ from app.spending.repository import (
     CategoryRepository,
     KpiRepository,
     RecurringTransactionRepository,
+    TagRepository,
     TransactionRepository,
 )
 from app.spending.service import (
@@ -90,6 +91,7 @@ from app.spending.service import (
     CategoryService,
     KpiService,
     RecurringTransactionService,
+    TagService,
     TransactionService,
 )
 from app.summaries.repository import WeeklySummaryRepository, WorkspaceSummarySettingRepository
@@ -229,6 +231,12 @@ async def get_transaction_repo(
     return TransactionRepository(session)
 
 
+async def get_tag_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> TagRepository:
+    return TagRepository(session)
+
+
 async def get_budget_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> BudgetRepository:
@@ -268,10 +276,17 @@ async def get_spending_transaction_service(
     tx_repo: TransactionRepository = Depends(get_transaction_repo),
     cat_repo: CategoryRepository = Depends(get_category_repo),
     session: AsyncSession = Depends(get_db_session),
+    tag_repo: TagRepository = Depends(get_tag_repo),
 ) -> TransactionService:
     account_repo = AccountRepository(session)
     setting_repo = FinanceSettingRepository(session)
-    return TransactionService(tx_repo, cat_repo, account_repo, setting_repo)
+    return TransactionService(tx_repo, cat_repo, account_repo, setting_repo, tag_repo)
+
+
+async def get_spending_tag_service(
+    tag_repo: TagRepository = Depends(get_tag_repo),
+) -> TagService:
+    return TagService(tag_repo)
 
 
 async def get_spending_budget_service(

@@ -208,6 +208,7 @@ async def execute_agent_tool(
                 "create_todo_task": tools.create_todo_task,
                 "create_recurring_todo": tools.create_recurring_todo,
                 "log_spending_transaction": tools.log_spending_transaction,
+                "list_spending_transactions": tools.list_spending_transactions,
                 "get_investing_summary": tools.get_investing_summary,
                 "get_account_balances": tools.get_account_balances,
                 "list_todos": tools.list_todos,
@@ -548,7 +549,7 @@ async def _handle_gemini_message(
                 if (
                     dedup_ctx is not None
                     and name in WRITE_TOOLS
-                    and result.get("status", "success") != "error"
+                    and result.get("status") == "success"
                 ):
                     dedup_ctx.ledger.record(
                         workspace_id=workspace_id,

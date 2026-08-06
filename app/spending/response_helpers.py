@@ -6,6 +6,7 @@ from app.spending.models import (
     RecurringTransaction,
     SpendingBudget,
     SpendingCategory,
+    SpendingTag,
     SpendingTransaction,
 )
 from app.spending.schemas import (
@@ -90,10 +91,12 @@ def transaction_response(
     category_public_id: uuid.UUID,
     account_public_id: uuid.UUID | None = None,
     import_batch: ImportBatch | None = None,
+    tags: list[SpendingTag] | None = None,
 ) -> TransactionResponse:
     data = tx.model_dump()
     data["category_id"] = category_public_id
     data["account_id"] = account_public_id
+    data["tags"] = tags or []
     data["source_metadata"] = source_metadata_response(tx.source_type, tx.source_ref, import_batch)
     return TransactionResponse.model_validate(data)
 

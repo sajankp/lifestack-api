@@ -117,6 +117,54 @@ class SpendingCategory(SQLModel, table=True):
     )
 
 
+class SpendingTag(SQLModel, table=True):
+    __tablename__ = "spending_tags"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+
+    name: str = Field(max_length=80)
+    normalized_name: str = Field(max_length=80)
+    color: str | None = Field(default=None, max_length=20)
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "workspace_id", "normalized_name", name="uq_spending_tag_workspace_name"
+        ),
+    )
+
+
+class SpendingTransactionTag(SQLModel, table=True):
+    __tablename__ = "spending_transaction_tags"
+
+    transaction_id: int = Field(primary_key=True)
+    tag_id: int = Field(primary_key=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["transaction_id", "workspace_id"],
+            ["spending_transactions.id", "spending_transactions.workspace_id"],
+            name="fk_spending_transaction_tags_transaction_workspace",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["tag_id", "workspace_id"],
+            ["spending_tags.id", "spending_tags.workspace_id"],
+            name="fk_spending_transaction_tags_tag_workspace",
+            ondelete="CASCADE",
+        ),
+    )
+
+
 class SpendingTransaction(SQLModel, table=True):
     __tablename__ = "spending_transactions"
 

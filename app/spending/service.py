@@ -37,7 +37,9 @@ from app.spending.models import (
     RecurringTransaction,
     SpendingBudget,
     SpendingCategory,
+    SpendingTag,
     SpendingTransaction,
+    SpendingTransactionTag,
     TransactionSort,
     TransactionSourceType,
     TransactionType,
@@ -49,6 +51,7 @@ from app.spending.repository import (
     KpiRepository,
     LedgerRow,
     RecurringTransactionRepository,
+    TagRepository,
     TransactionRepository,
 )
 from app.spending.schemas import (
@@ -78,6 +81,10 @@ from app.spending.schemas import (
     SavingsRateTotals,
     SpendingTrendPoint,
     SpendingTrendResponse,
+    TagBreakdownItem,
+    TagBreakdownResponse,
+    TagCreate,
+    TagUpdate,
     TransactionCreate,
     TransactionResponse,
     TransactionUpdate,
@@ -723,6 +730,101 @@ async def resolve_create_account_id(
     )
 
 
+class TagService:
+    def __init__(self, repository: TagRepository):
+        self.repository = repository
+
+    async def list_tags(
+        self,
+        workspace_id: int,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        search: str | None = None,
+    ) -> tuple[Sequence[SpendingTag], int]:
+        return await self.repository.get_all(workspace_id, limit, offset, search)
+
+    async def get_tag(self, workspace_id: int, public_id: uuid.UUID) -> SpendingTag:
+        tag = await self.repository.get_by_public_id(workspace_id, public_id)
+        if not tag:
+            raise NotFoundError(detail=f"Tag with id {public_id} not found in this workspace")
+        return tag
+
+    async def create_tag(
+        self,
+        workspace_id: int,
+        tag_in: TagCreate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> SpendingTag:
+        name = " ".join(tag_in.name.strip().split())
+        normalized = _normalize(name)
+        existing = await self.repository.get_by_normalized_name(workspace_id, normalized)
+        if existing:
+            return existing
+        tag = await self.repository.create(
+            SpendingTag(
+                workspace_id=workspace_id,
+                name=name,
+                normalized_name=normalized,
+                color=tag_in.color,
+            )
+        )
+        if audit_logger and actor_id is not None:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="create",
+                module="spending",
+                entity_type="spending_tag",
+                entity_id=tag.id,  # type: ignore[arg-type]
+                details={"entity_public_id": str(tag.public_id), "name": tag.name},
+            )
+        return tag
+
+    async def update_tag(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        tag_in: TagUpdate,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> SpendingTag:
+        tag = await self.get_tag(workspace_id, public_id)
+        update_data = tag_in.model_dump(exclude_unset=True)
+        if "name" in update_data and update_data["name"] is not None:
+            name = " ".join(update_data["name"].strip().split())
+            normalized = _normalize(name)
+            existing = await self.repository.get_by_normalized_name(workspace_id, normalized)
+            if existing and existing.id != tag.id:
+                raise ConflictError(detail=f"A tag named '{name}' already exists")
+            tag.name = name
+            tag.normalized_name = normalized
+        if "color" in update_data:
+            tag.color = update_data["color"]
+        tag.updated_at = datetime.now(UTC)
+        return await self.repository.save(tag)
+
+    async def delete_tag(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
+        tag = await self.get_tag(workspace_id, public_id)
+        await self.repository.delete(tag)
+        if audit_logger and actor_id is not None:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="delete",
+                module="spending",
+                entity_type="spending_tag",
+                entity_id=tag.id,  # type: ignore[arg-type]
+                details={"entity_public_id": str(tag.public_id), "name": tag.name},
+            )
+
+
 class TransactionService:
     def __init__(
         self,
@@ -730,11 +832,13 @@ class TransactionService:
         category_repo: CategoryRepository,
         account_repo: AccountRepository,
         setting_repo: FinanceSettingRepository | None = None,
+        tag_repo: TagRepository | None = None,
     ):
         self.transaction_repo = transaction_repo
         self.category_repo = category_repo
         self.account_repo = account_repo
         self.setting_repo = setting_repo
+        self.tag_repo = tag_repo or TagRepository(transaction_repo.session)
 
     async def _build_category_cache(self, workspace_id: int) -> dict[int, uuid.UUID]:
         cats, _ = await self.category_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -766,6 +870,9 @@ class TransactionService:
         type_filter: TransactionType | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        search: str | None = None,
+        amount: Decimal | None = None,
+        tag_public_id: uuid.UUID | None = None,
         sort: TransactionSort | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
@@ -778,6 +885,9 @@ class TransactionService:
             type_filter=type_filter,
             from_date=from_date,
             to_date=to_date,
+            search=search,
+            amount=amount,
+            tag_public_id=tag_public_id,
             sort=sort,
             limit=limit,
             offset=offset,
@@ -785,6 +895,9 @@ class TransactionService:
         cat_cache = await self._build_category_cache(workspace_id)
         account_cache = await self._build_account_cache(workspace_id)
         import_cache = await self._build_import_batch_cache(workspace_id, txs)
+        tag_cache = await self.tag_repo.get_for_transactions(
+            workspace_id, {tx.id for tx in txs if tx.id is not None}
+        )
 
         missing_category_ids = {tx.category_id for tx in txs if tx.category_id not in cat_cache}
         if missing_category_ids:
@@ -796,6 +909,7 @@ class TransactionService:
                 cat_cache[tx.category_id],
                 account_cache.get(tx.account_id) if tx.account_id is not None else None,
                 import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None,
+                tag_cache.get(tx.id, []),
             )
             for tx in txs
         ]
@@ -808,6 +922,7 @@ class TransactionService:
         cat_cache = await self._build_category_cache(workspace_id)
         account_cache = await self._build_account_cache(workspace_id)
         import_cache = await self._build_import_batch_cache(workspace_id, [tx])
+        tag_cache = await self.tag_repo.get_for_transactions(workspace_id, {tx.id}) if tx.id else {}
 
         category_public_id = cat_cache.get(tx.category_id)
         if category_public_id is None:
@@ -818,6 +933,7 @@ class TransactionService:
             category_public_id,
             account_cache.get(tx.account_id) if tx.account_id is not None else None,
             import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None,
+            tag_cache.get(tx.id, []),
         )
 
     async def create_transaction_with_details(
@@ -836,7 +952,10 @@ class TransactionService:
                 account = await self.account_repo.get_by_id(workspace_id, tx.account_id)
                 account_public_id = account.public_id if account else None
 
-        return transaction_response(tx, tx_in.category_id, account_public_id)
+        tags = await self.tag_repo.get_for_transactions(workspace_id, {tx.id}) if tx.id else {}
+        return transaction_response(
+            tx, tx_in.category_id, account_public_id, tags=tags.get(tx.id, [])
+        )
 
     async def update_transaction_with_details(
         self,
@@ -862,12 +981,14 @@ class TransactionService:
         import_batch = (
             import_cache.get(tx.source_import_id) if tx.source_import_id is not None else None
         )
+        tag_cache = await self.tag_repo.get_for_transactions(workspace_id, {tx.id}) if tx.id else {}
 
         return transaction_response(
             tx,
             category.public_id,
             account_public_id,
             import_batch,
+            tag_cache.get(tx.id, []),
         )
 
     async def _resolve_category(
@@ -896,6 +1017,19 @@ class TransactionService:
             self.account_repo, self.setting_repo, workspace_id, account_public_id
         )
 
+    async def _resolve_tag_ids(
+        self, workspace_id: int, tag_public_ids: list[uuid.UUID]
+    ) -> set[int]:
+        if not tag_public_ids:
+            return set()
+        unique_public_ids = set(tag_public_ids)
+        tags, _ = await self.tag_repo.get_all(workspace_id, limit=10000, offset=0)
+        by_public_id = {tag.public_id: tag for tag in tags}
+        missing = unique_public_ids - set(by_public_id)
+        if missing:
+            raise NotFoundError(detail="One or more tags were not found in this workspace.")
+        return {by_public_id[tag_id].id for tag_id in unique_public_ids}  # type: ignore[misc]
+
     async def list_transactions(
         self,
         workspace_id: int,
@@ -905,6 +1039,9 @@ class TransactionService:
         type_filter: TransactionType | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
+        search: str | None = None,
+        amount: Decimal | None = None,
+        tag_public_id: uuid.UUID | None = None,
         sort: TransactionSort | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
@@ -914,6 +1051,12 @@ class TransactionService:
             cat = await self._resolve_category(workspace_id, category_public_id)
             category_id = cat.id  # type: ignore[assignment]
         account_id = await self._resolve_account_id(workspace_id, account_public_id)
+        tag_id = None
+        if tag_public_id is not None:
+            tag = await self.tag_repo.get_by_public_id(workspace_id, tag_public_id)
+            if not tag:
+                raise NotFoundError(detail="Tag not found in this workspace")
+            tag_id = tag.id
 
         return await self.transaction_repo.get_all(
             workspace_id,
@@ -923,6 +1066,9 @@ class TransactionService:
             type_filter=type_filter,
             from_date=from_date,
             to_date=to_date,
+            search=search,
+            amount=amount,
+            tag_id=tag_id,
             sort=sort,
             limit=limit,
             offset=offset,
@@ -1129,6 +1275,8 @@ class TransactionService:
             source_type=TransactionSourceType.manual,
         )
         transaction = await self.transaction_repo.create(transaction)
+        tag_ids = await self._resolve_tag_ids(workspace_id, tx_in.tag_ids)
+        await self.tag_repo.replace_transaction_tags(workspace_id, transaction.id, tag_ids)  # type: ignore[arg-type]
 
         if audit_logger:
             after_snap = _snapshot_transaction(transaction)
@@ -1160,7 +1308,8 @@ class TransactionService:
         before_snap = _snapshot_transaction(transaction)
 
         update_data = tx_in.model_dump(exclude_unset=True)
-        if not update_data:
+        requested_tag_ids = update_data.pop("tag_ids", None)
+        if not update_data and requested_tag_ids is None:
             return transaction
 
         if "category_id" in update_data:
@@ -1191,6 +1340,13 @@ class TransactionService:
             setattr(transaction, key, value)
         transaction.updated_at = datetime.now(UTC)
         transaction = await self.transaction_repo.save(transaction)
+        if requested_tag_ids is not None:
+            tag_ids = await self._resolve_tag_ids(workspace_id, requested_tag_ids)
+            await self.tag_repo.replace_transaction_tags(
+                workspace_id,
+                transaction.id,
+                tag_ids,  # type: ignore[arg-type]
+            )
 
         if is_breaking_edit and transaction.id is not None:
             # Statement matching is metadata, never mutation (spec-078
@@ -1434,6 +1590,78 @@ class TransactionService:
             total=total_amount,
             categories=items,
             other=other,
+        )
+
+    async def get_tag_breakdown(
+        self,
+        workspace_id: int,
+        from_date: date,
+        to_date: date,
+        type_filter: TransactionType,
+        limit: int = 10,
+    ) -> TagBreakdownResponse:
+        if from_date > to_date:
+            raise ValidationError(detail="from_date cannot be after to_date")
+        if (to_date - from_date).days > 24 * 31:
+            raise ValidationError(detail="Date range cannot exceed 24 months")
+
+        start_dt = datetime(from_date.year, from_date.month, from_date.day, tzinfo=UTC)
+        end_dt = datetime(to_date.year, to_date.month, to_date.day, 23, 59, 59, 999999, tzinfo=UTC)
+        session = self.transaction_repo.session
+
+        total_stmt = select(func.coalesce(func.sum(SpendingTransaction.amount), 0)).where(
+            SpendingTransaction.workspace_id == workspace_id,
+            SpendingTransaction.type == type_filter.value,
+            SpendingTransaction.occurred_at >= start_dt,
+            SpendingTransaction.occurred_at <= end_dt,
+        )
+        total_amount = Decimal(await session.scalar(total_stmt) or 0)
+
+        stmt = (
+            select(
+                SpendingTag.public_id,
+                SpendingTag.name,
+                func.coalesce(func.sum(SpendingTransaction.amount), 0).label("amount"),
+                func.count(SpendingTransaction.id).label("count"),
+            )
+            .join(
+                SpendingTransactionTag,
+                SpendingTransactionTag.tag_id == SpendingTag.id,
+            )
+            .join(
+                SpendingTransaction,
+                SpendingTransaction.id == SpendingTransactionTag.transaction_id,
+            )
+            .where(
+                SpendingTag.workspace_id == workspace_id,
+                SpendingTransactionTag.workspace_id == workspace_id,
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.type == type_filter.value,
+                SpendingTransaction.occurred_at >= start_dt,
+                SpendingTransaction.occurred_at <= end_dt,
+            )
+            .group_by(SpendingTag.id, SpendingTag.public_id, SpendingTag.name)
+            .order_by(desc(func.sum(SpendingTransaction.amount)))
+            .limit(limit)
+        )
+        rows = (await session.execute(stmt)).all()
+        return TagBreakdownResponse(
+            from_date=from_date,
+            to_date=to_date,
+            type=type_filter,
+            total=total_amount,
+            tags=[
+                TagBreakdownItem(
+                    tag_id=row.public_id,
+                    tag_name=row.name,
+                    amount=Decimal(row.amount),
+                    pct_of_total=float((Decimal(row.amount) / total_amount) * 100)
+                    if total_amount > 0
+                    else 0.0,
+                    transaction_count=int(row.count),
+                )
+                for row in rows
+            ],
         )
 
     async def get_savings_rate(

@@ -3,7 +3,7 @@ from httpx import AsyncClient
 
 from app.auth.repository import UserRepository
 from app.capture import router as capture_router
-from app.capture.router import authenticate_ws
+from app.capture.router import _effective_timezone, authenticate_ws
 from app.core.database import postgres
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.platform.models import WorkspaceRole
@@ -26,9 +26,10 @@ async def test_websocket_auth_cookie_only(client: AsyncClient):
 
     # 1. Test connection with valid cookie - should succeed
     mock_ws_valid = MockWebSocket(cookies={"access_token": token})
-    user_id, workspace_id = await authenticate_ws(mock_ws_valid)  # type: ignore
+    user_id, workspace_id, saved_timezone = await authenticate_ws(mock_ws_valid)  # type: ignore
     assert user_id > 0
     assert workspace_id > 0
+    assert saved_timezone is None
 
     # 2. Test connection with query parameter token but NO cookie - should fail (cookie-only enforced)
     mock_ws_query = MockWebSocket(query_params={"token": token})
@@ -41,6 +42,12 @@ async def test_websocket_auth_cookie_only(client: AsyncClient):
     with pytest.raises(UnauthorizedError) as exc_info:
         await authenticate_ws(mock_ws_none)  # type: ignore
     assert "Missing authorization token" in str(exc_info.value.detail)
+
+
+def test_effective_timezone_prefers_saved_valid_value():
+    assert _effective_timezone("Asia/Kolkata", "America/Los_Angeles") == "Asia/Kolkata"
+    assert _effective_timezone(None, "America/Los_Angeles") == "America/Los_Angeles"
+    assert _effective_timezone("Not/AZone", "UTC") == "UTC"
 
 
 @pytest.mark.asyncio

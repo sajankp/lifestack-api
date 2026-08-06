@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, date, datetime, time, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -31,14 +31,21 @@ from app.investing.repository import (
     PortfolioSnapshotRepository,
 )
 from app.spending.models import TransactionType
-from app.spending.repository import CategoryRepository, TransactionRepository
-from app.spending.schemas import TransactionCreate
-from app.spending.service import CategoryService, TransactionService
+from app.spending.repository import CategoryRepository, TagRepository, TransactionRepository
+from app.spending.schemas import TagCreate, TransactionCreate
+from app.spending.service import CategoryService, TagService, TransactionService
 from app.todo.repository import TodoRepository
 from app.todo.schemas import RecurringTodoRuleCreate, TodoCreate, TodoUpdate
 from app.todo.service import TodoService
 
 logger = structlog.get_logger(__name__)
+
+
+def _safe_timezone(value: str | None) -> tzinfo:
+    try:
+        return ZoneInfo(value or "UTC")
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        return UTC
 
 
 def _parse_due_datetime(value: str) -> datetime:
@@ -111,11 +118,13 @@ class AgentTools:
         self.account_repo = AccountRepository(session)
         self.tx_repo = TransactionRepository(session)
         self.cat_repo = CategoryRepository(session)
+        self.tag_repo = TagRepository(session)
         self.setting_repo = FinanceSettingRepository(session)
         self.tx_service = TransactionService(
-            self.tx_repo, self.cat_repo, self.account_repo, self.setting_repo
+            self.tx_repo, self.cat_repo, self.account_repo, self.setting_repo, self.tag_repo
         )
         self.category_service = CategoryService(self.cat_repo)
+        self.tag_service = TagService(self.tag_repo)
 
         # Investing is read-only on the voice surface (spec-059): mirror the
         # REST /investing/summary wiring so voice answers match the dashboard.
@@ -512,18 +521,23 @@ class AgentTools:
         self,
         amount: str,
         category_name: str,
-        description: str,
+        description: str | None = None,
         account_name: str | None = None,
         occurred_at: str | None = None,
+        tags: list[str] | None = None,
+        allow_duplicate: bool = False,
     ) -> dict:
         """Record/log a new spending transaction (expense).
 
         Args:
             amount: The transaction amount as a string (e.g., '14.99').
             category_name: The name of the spending category (e.g., 'food', 'utilities', 'shopping').
-            description: Description of what the money was spent on.
+            description: Optional description of what the money was spent on.
             account_name: Optional account name to attach to the transaction.
             occurred_at: Optional occurrence date (ISO date or date-time); defaults to now.
+            tags: Optional labels such as "work", "trip", or "takeaway". Multiple tags are allowed.
+            allow_duplicate: Set only when the user explicitly confirms an additional
+                identical transaction or explicitly reports multiple identical items.
         """
         try:
             amt = Decimal(amount)
@@ -617,6 +631,54 @@ class AgentTools:
                     ),
                 }
 
+        resolved_timezone = _safe_timezone(self.user_timezone)
+        local_day = resolved_occurred_at.astimezone(resolved_timezone).date()
+        local_start = datetime.combine(local_day, time.min, tzinfo=resolved_timezone)
+        next_local_start = datetime.combine(
+            local_day + timedelta(days=1), time.min, tzinfo=resolved_timezone
+        )
+        duplicate_candidates = await self.tx_repo.find_same_day_duplicates(
+            self.workspace_id,
+            category_id=category.id,  # type: ignore[arg-type]
+            account_id=account_obj.id if account_obj else None,
+            amount=amt,
+            from_date=local_start.astimezone(UTC),
+            to_date=(next_local_start - timedelta(microseconds=1)).astimezone(UTC),
+            description=description,
+        )
+        if duplicate_candidates and not allow_duplicate:
+            return {
+                "status": "error",
+                "duplicate_detected": True,
+                "local_day": local_day.isoformat(),
+                "message": (
+                    f"A matching expense is already logged for {local_day.isoformat()} "
+                    "in the user's timezone. Ask whether they want to add another identical expense."
+                ),
+                "duplicates": [
+                    {
+                        "entity_public_id": str(candidate.public_id),
+                        "amount": str(candidate.amount),
+                        "description": candidate.description,
+                        "occurred_at": candidate.occurred_at.isoformat(),
+                    }
+                    for candidate in duplicate_candidates
+                ],
+            }
+
+        resolved_tag_ids = []
+        for tag_name in tags or []:
+            cleaned_tag = " ".join(tag_name.strip().split())
+            if not cleaned_tag:
+                continue
+            tag = await self.tag_service.create_tag(
+                self.workspace_id,
+                TagCreate(name=cleaned_tag),
+                actor_id=self.user_id,
+                audit_logger=self.audit_logger,
+            )
+            resolved_tag_ids.append(tag.public_id)
+
         payload = TransactionCreate(
             category_id=category.public_id,
             account_id=account_public_id,
@@ -624,6 +686,7 @@ class AgentTools:
             type=TransactionType.expense,
             occurred_at=resolved_occurred_at,
             description=description,
+            tag_ids=resolved_tag_ids,
         )
         tx = await self.tx_service.create_transaction(
             user_id=self.user_id,
@@ -647,9 +710,114 @@ class AgentTools:
             "category": category.name,
             "category_matched": category_matched,
             "description": tx.description,
+            "tags": [
+                tag.name
+                for tag in (
+                    await self.tag_repo.get_for_transactions(self.workspace_id, {tx.id})
+                ).get(tx.id, [])
+            ],
             "account_name": resolved_account_name,
             "occurred_at": tx.occurred_at.isoformat(),
             "summary": f"Added {symbol}{tx.amount} '{tx.description}' to Spending",
+        }
+
+    async def list_spending_transactions(
+        self,
+        day: str | None = None,
+        category_name: str | None = None,
+        amount: str | None = None,
+        search: str | None = None,
+        account_name: str | None = None,
+        limit: int = 10,
+    ) -> dict:
+        """List expenses for a local calendar day in the user's timezone."""
+        timezone = _safe_timezone(self.user_timezone)
+        if day and day.strip():
+            try:
+                local_day = date.fromisoformat(day.strip())
+            except ValueError:
+                return {"status": "error", "message": "day must be an ISO date (YYYY-MM-DD)."}
+        else:
+            local_day = datetime.now(timezone).date()
+
+        local_start = datetime.combine(local_day, time.min, tzinfo=timezone)
+        next_local_start = datetime.combine(
+            local_day + timedelta(days=1), time.min, tzinfo=timezone
+        )
+        try:
+            normalized_limit = max(1, min(int(limit), 25))
+        except (TypeError, ValueError):
+            normalized_limit = 10
+
+        categories, _ = await self.category_service.list_categories(
+            self.workspace_id, limit=200, offset=0
+        )
+        category_names = {category.public_id: category.name for category in categories}
+        category_public_id = None
+        if category_name and category_name.strip():
+            normalized_category = category_name.strip().lower()
+            category = next(
+                (item for item in categories if item.name.strip().lower() == normalized_category),
+                None,
+            )
+            if category is None:
+                return {
+                    "status": "error",
+                    "message": f"No spending category named '{category_name}' was found.",
+                }
+            category_public_id = category.public_id
+
+        accounts, _ = await self.account_repo.list_workspace_accounts(
+            self.workspace_id, limit=200, offset=0
+        )
+        account_names = {account.public_id: account.name for account in accounts}
+        account_public_id = None
+        if account_name and account_name.strip():
+            account, resolution_error = await self._resolve_spending_account(account_name)
+            if resolution_error is not None or account is None:
+                return resolution_error
+            account_public_id = account.public_id
+
+        parsed_amount = None
+        if amount and amount.strip():
+            try:
+                parsed_amount = Decimal(amount.strip())
+            except Exception:
+                return {
+                    "status": "error",
+                    "message": "amount must be numeric and must not include a currency symbol.",
+                }
+
+        items, _ = await self.tx_service.list_transactions_with_details(
+            self.workspace_id,
+            category_public_id=category_public_id,
+            account_public_id=account_public_id,
+            type_filter=TransactionType.expense,
+            from_date=local_start.astimezone(UTC),
+            to_date=(next_local_start - timedelta(microseconds=1)).astimezone(UTC),
+            search=search,
+            amount=parsed_amount,
+            limit=normalized_limit,
+            offset=0,
+        )
+        return {
+            "status": "success",
+            "day": local_day.isoformat(),
+            "timezone": getattr(timezone, "key", "UTC"),
+            "transactions": [
+                {
+                    "entity_public_id": str(item.public_id),
+                    "amount": str(item.amount),
+                    "category_name": category_names.get(item.category_id, str(item.category_id)),
+                    "description": item.description,
+                    "account_name": account_names.get(item.account_id)
+                    if item.account_id is not None
+                    else None,
+                    "occurred_at": item.occurred_at.isoformat(),
+                    "tags": [tag.name for tag in item.tags],
+                }
+                for item in items
+            ],
         }
 
     async def get_investing_summary(self) -> dict:
