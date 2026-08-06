@@ -55,10 +55,18 @@ def _get_redirect_uri(request: Request, provider: str) -> str:
     return configured_uri or str(request.url_for("oauth_callback", provider=provider))
 
 
+def _safe_frontend_path(value: str | None) -> str:
+    """Accept only same-origin application paths for post-login redirects."""
+    if value and value.startswith("/") and not value.startswith("//"):
+        return value
+    return "/"
+
+
 @router.get("/{provider}")
-async def oauth_login(request: Request, provider: str):
+async def oauth_login(request: Request, provider: str, next: str | None = None):
     """Initiate OAuth login flow for the given provider."""
     client = _get_oauth_client(provider)
+    request.scope.setdefault("session", {})["oauth_next"] = _safe_frontend_path(next)
     return await client.authorize_redirect(request, _get_redirect_uri(request, provider))
 
 
@@ -191,7 +199,8 @@ async def oauth_callback(
     )
 
     frontend_url = settings.FRONTEND_URL.rstrip("/")
-    response = RedirectResponse(url=f"{frontend_url}/?auth=success")
+    next_path = _safe_frontend_path(session.pop("oauth_next", None))
+    response = RedirectResponse(url=f"{frontend_url}{next_path}")
 
     # Set cookies on the response that will actually be returned.
     cookie_kwargs = {
