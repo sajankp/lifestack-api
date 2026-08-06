@@ -100,6 +100,20 @@ class PasswordChange(BaseModel):
         return _validate_password_complexity(v)
 
 
+class PasswordSet(BaseModel):
+    new_password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        description="New password must be 8-128 characters and meet complexity requirements.",
+    )
+
+    @field_validator("new_password")
+    @classmethod
+    def new_password_complexity(cls, v: str) -> str:
+        return _validate_password_complexity(v)
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 

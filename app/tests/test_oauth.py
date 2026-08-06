@@ -15,6 +15,7 @@ async def test_create_oauth_user_saves_model_without_password_schema_conversion(
     user_repo = MagicMock()
     user_repo.get_by_username = AsyncMock(return_value=None)
     user_repo.save = AsyncMock(side_effect=lambda user: user)
+    user_repo.add_auth_identity = AsyncMock()
     service = AuthService(user_repo, MagicMock())
 
     user = await service.create_oauth_user(
@@ -61,6 +62,7 @@ async def test_oauth_callback_uses_provider_identity_and_sets_cookies_on_redirec
     )
     user_repo = MagicMock()
     user_repo.get_by_oauth_identity = AsyncMock(return_value=existing_user)
+    user_repo.get_auth_identity = AsyncMock(return_value=None)
     user_repo.get_by_email = AsyncMock()
     auth_service = MagicMock()
     auth_service.create_session = AsyncMock()

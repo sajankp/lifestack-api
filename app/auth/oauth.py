@@ -8,13 +8,14 @@ from authlib.integrations.starlette_client import OAuth
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from app.auth.repository import UserRepository
+from app.auth.repository import UserAuthIdentityStore
 from app.auth.service import AuthService
 from app.config import settings
 from app.core.auth import create_token
 from app.core.csrf import issue_csrf_token
 from app.core.dependencies import (
     get_auth_service,
+    get_current_user,
     get_user_repo,
     get_workspace_service,
 )
@@ -61,12 +62,24 @@ async def oauth_login(request: Request, provider: str):
     return await client.authorize_redirect(request, _get_redirect_uri(request, provider))
 
 
+@router.get("/{provider}/link")
+async def oauth_link(
+    request: Request,
+    provider: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Start an explicit OAuth identity-linking flow for the signed-in user."""
+    client = _get_oauth_client(provider)
+    request.session["oauth_link_user_id"] = current_user["id"]
+    return await client.authorize_redirect(request, _get_redirect_uri(request, provider))
+
+
 @router.get("/{provider}/callback", name="oauth_callback")
 async def oauth_callback(
     request: Request,
     provider: str,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
-    user_repo: Annotated[UserRepository, Depends(get_user_repo)],
+    user_repo: Annotated[UserAuthIdentityStore, Depends(get_user_repo)],
     workspace_service: Annotated[WorkspaceService, Depends(get_workspace_service)],
 ):
     """Handle OAuth callback from provider."""
@@ -98,13 +111,44 @@ async def oauth_callback(
         username = user_info["login"]
 
     # Provider identity is stable even when the provider-side email changes.
+    session = request.scope.get("session", {})
+    link_user_id = session.pop("oauth_link_user_id", None)
+    # Keep compatibility with legacy OAuth columns while preferring the new identity table
+    # for accounts that were explicitly linked.
     user = await user_repo.get_by_oauth_identity(provider, oauth_sub)
+    if user is None:
+        linked_identity = await user_repo.get_auth_identity(provider, oauth_sub)
+    else:
+        linked_identity = None
+    if linked_identity is not None:
+        if link_user_id is not None and linked_identity.user_id != int(link_user_id):
+            raise HTTPException(
+                status_code=409, detail="This OAuth identity is linked to another account"
+            )
+        user = await user_repo.get_by_id(linked_identity.user_id)
+
+    if link_user_id is not None:
+        if user is not None and user.id != int(link_user_id):
+            raise HTTPException(
+                status_code=409, detail="This OAuth identity is linked to another account"
+            )
+        if user is None:
+            user = await user_repo.get_by_id(int(link_user_id))
+            if user is None:
+                raise HTTPException(status_code=401, detail="Linking account no longer exists")
+            if await user_repo.get_auth_identity_for_user(user.id, provider):
+                raise HTTPException(
+                    status_code=409, detail="A login with this provider is already linked"
+                )
+            await user_repo.add_auth_identity(user.id, provider, oauth_sub)
+        frontend_url = settings.FRONTEND_URL.rstrip("/")
+        return RedirectResponse(url=f"{frontend_url}/settings/security?oauth=linked")
+
     if user is None:
         existing_email_user = await user_repo.get_by_email(email)
         if existing_email_user is not None:
             raise HTTPException(
-                status_code=400,
-                detail="Account exists with different login method. Use original login method.",
+                status_code=409, detail="Account exists; sign in and use Connect account"
             )
         user = await auth_service.create_oauth_user(
             email=email,

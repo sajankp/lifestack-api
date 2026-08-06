@@ -1,13 +1,32 @@
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Protocol
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.models import AuthSession, PasswordResetToken, User
+from app.auth.models import AuthSession, PasswordResetToken, User, UserAuthIdentity
 from app.auth.schemas import UserCreate
 from app.core.auth import hash_password
 from app.core.repository import BaseRepository
+
+
+class UserAuthIdentityStore(Protocol):
+    """Repository contract required by OAuth linking flows."""
+
+    async def get_by_oauth_identity(self, provider: str, subject: str) -> User | None: ...
+
+    async def get_by_id(self, user_id: int) -> User | None: ...
+
+    async def get_auth_identity(self, provider: str, subject: str) -> UserAuthIdentity | None: ...
+
+    async def get_auth_identity_for_user(
+        self, user_id: int, provider: str
+    ) -> UserAuthIdentity | None: ...
+
+    async def add_auth_identity(
+        self, user_id: int, provider: str, subject: str
+    ) -> UserAuthIdentity: ...
 
 
 class UserRepository:
@@ -31,6 +50,46 @@ class UserRepository:
         )
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def get_auth_identity(self, provider: str, subject: str) -> UserAuthIdentity | None:
+        statement = select(UserAuthIdentity).where(
+            UserAuthIdentity.provider == provider,
+            UserAuthIdentity.subject == subject,
+        )
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def get_auth_identity_for_user(
+        self, user_id: int, provider: str
+    ) -> UserAuthIdentity | None:
+        statement = select(UserAuthIdentity).where(
+            UserAuthIdentity.user_id == user_id,
+            UserAuthIdentity.provider == provider,
+        )
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def add_auth_identity(
+        self, user_id: int, provider: str, subject: str
+    ) -> UserAuthIdentity:
+        identity = UserAuthIdentity(user_id=user_id, provider=provider, subject=subject)
+        self.session.add(identity)
+        await self.session.flush()
+        await self.session.refresh(identity)
+        return identity
+
+    async def list_auth_identities(self, user_id: int) -> list[UserAuthIdentity]:
+        statement = select(UserAuthIdentity).where(UserAuthIdentity.user_id == user_id)
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
+
+    async def delete_auth_identity(self, user_id: int, provider: str) -> UserAuthIdentity | None:
+        identity = await self.get_auth_identity_for_user(user_id, provider)
+        if identity is None:
+            return None
+        await self.session.delete(identity)
+        await self.session.flush()
+        return identity
 
     async def get_by_id(self, user_id: int) -> User | None:
         statement = select(User).where(User.id == user_id)

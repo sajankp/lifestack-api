@@ -8,9 +8,11 @@ from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.application.workflows import UserRegistrationWorkflow
+from app.auth.repository import UserRepository
 from app.auth.schemas import (
     ForgotPasswordRequest,
     PasswordChange,
+    PasswordSet,
     ResetPasswordRequest,
     TokenResponse,
     UserCreate,
@@ -26,6 +28,7 @@ from app.core.dependencies import (
     get_current_user,
     get_current_user_optional,
     get_user_registration_workflow,
+    get_user_repo,
     get_workspace_service,
     limiter,
 )
@@ -55,6 +58,35 @@ async def get_me(
     if not user:
         raise NotFoundError(detail="User not found")
     return user
+
+
+@router.get("/me/auth-identities")
+async def get_auth_identities(
+    current_user: dict = Depends(get_current_user),
+    user_repo: UserRepository = Depends(get_user_repo),
+    auth_service: AuthService = Depends(get_auth_service),
+):
+    user = await auth_service.get_user_by_id(current_user["id"])
+    if not user:
+        raise NotFoundError(detail="User not found")
+    identities = await user_repo.list_auth_identities(current_user["id"])
+    providers = {identity.provider for identity in identities}
+    # Legacy OAuth columns remain supported until all deployments have migrated.
+    if user.oauth_provider:
+        providers.add(user.oauth_provider)
+    return {"has_password": bool(user.hashed_password), "providers": sorted(providers)}
+
+
+@router.delete("/me/auth-identities/{provider}")
+async def unlink_auth_identity(
+    provider: str,
+    current_user: dict = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service),
+):
+    if provider not in {"google", "github"}:
+        raise HTTPException(status_code=400, detail="Invalid OAuth provider")
+    await auth_service.unlink_auth_identity(current_user["id"], provider)
+    return {"message": f"{provider} sign-in unlinked"}
 
 
 @router.patch("/me/timezone", response_model=UserResponse)
@@ -447,6 +479,31 @@ async def change_password(
         )
     clear_csrf_token(response)
     return {"message": "Password changed successfully"}
+
+
+@router.post("/set-password")
+async def set_password(
+    response: Response,
+    data: PasswordSet,
+    current_user: dict = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service),
+):
+    await auth_service.set_password(current_user["id"], data.new_password)
+    await auth_service.revoke_all_sessions(current_user["id"])
+    for key in ("access_token", "refresh_token", "sid"):
+        response.set_cookie(
+            key=key,
+            value="",
+            httponly=True,
+            max_age=0,
+            expires=0,
+            path="/",
+            samesite=settings.COOKIE_SAMESITE,
+            domain=settings.COOKIE_DOMAIN,
+            secure=settings.COOKIE_SECURE,
+        )
+    clear_csrf_token(response)
+    return {"message": "Password configured successfully"}
 
 
 @router.post("/logout-all")
