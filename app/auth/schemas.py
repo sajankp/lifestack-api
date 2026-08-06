@@ -102,7 +102,9 @@ class PasswordChange(BaseModel):
 
 class PasswordSet(BaseModel):
     new_password: str = Field(
-        ..., min_length=8, max_length=128,
+        ...,
+        min_length=8,
+        max_length=128,
         description="New password must be 8-128 characters and meet complexity requirements.",
     )
 

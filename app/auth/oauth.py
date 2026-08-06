@@ -71,9 +71,7 @@ async def oauth_link(
     """Start an explicit OAuth identity-linking flow for the signed-in user."""
     client = _get_oauth_client(provider)
     request.session["oauth_link_user_id"] = current_user["id"]
-    return await client.authorize_redirect(
-        request, _get_redirect_uri(request, provider)
-    )
+    return await client.authorize_redirect(request, _get_redirect_uri(request, provider))
 
 
 @router.get("/{provider}/callback", name="oauth_callback")
@@ -124,18 +122,24 @@ async def oauth_callback(
         linked_identity = None
     if linked_identity is not None:
         if link_user_id is not None and linked_identity.user_id != int(link_user_id):
-            raise HTTPException(status_code=409, detail="This OAuth identity is linked to another account")
+            raise HTTPException(
+                status_code=409, detail="This OAuth identity is linked to another account"
+            )
         user = await user_repo.get_by_id(linked_identity.user_id)
 
     if link_user_id is not None:
         if user is not None and user.id != int(link_user_id):
-            raise HTTPException(status_code=409, detail="This OAuth identity is linked to another account")
+            raise HTTPException(
+                status_code=409, detail="This OAuth identity is linked to another account"
+            )
         if user is None:
             user = await user_repo.get_by_id(int(link_user_id))
             if user is None:
                 raise HTTPException(status_code=401, detail="Linking account no longer exists")
             if await user_repo.get_auth_identity_for_user(user.id, provider):
-                raise HTTPException(status_code=409, detail="A login with this provider is already linked")
+                raise HTTPException(
+                    status_code=409, detail="A login with this provider is already linked"
+                )
             await user_repo.add_auth_identity(user.id, provider, oauth_sub)
         frontend_url = settings.FRONTEND_URL.rstrip("/")
         return RedirectResponse(url=f"{frontend_url}/settings/security?oauth=linked")
@@ -143,7 +147,9 @@ async def oauth_callback(
     if user is None:
         existing_email_user = await user_repo.get_by_email(email)
         if existing_email_user is not None:
-            raise HTTPException(status_code=409, detail="Account exists; sign in and use Connect account")
+            raise HTTPException(
+                status_code=409, detail="Account exists; sign in and use Connect account"
+            )
         user = await auth_service.create_oauth_user(
             email=email,
             username=username,

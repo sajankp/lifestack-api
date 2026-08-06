@@ -491,9 +491,17 @@ async def set_password(
     await auth_service.set_password(current_user["id"], data.new_password)
     await auth_service.revoke_all_sessions(current_user["id"])
     for key in ("access_token", "refresh_token", "sid"):
-        response.set_cookie(key=key, value="", httponly=True, max_age=0, expires=0, path="/",
-                            samesite=settings.COOKIE_SAMESITE, domain=settings.COOKIE_DOMAIN,
-                            secure=settings.COOKIE_SECURE)
+        response.set_cookie(
+            key=key,
+            value="",
+            httponly=True,
+            max_age=0,
+            expires=0,
+            path="/",
+            samesite=settings.COOKIE_SAMESITE,
+            domain=settings.COOKIE_DOMAIN,
+            secure=settings.COOKIE_SECURE,
+        )
     clear_csrf_token(response)
     return {"message": "Password configured successfully"}
 
