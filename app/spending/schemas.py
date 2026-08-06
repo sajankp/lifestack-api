@@ -51,6 +51,31 @@ class CategoryMergeRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Spending tag schemas
+# ---------------------------------------------------------------------------
+
+
+class TagCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    color: str | None = Field(default=None, max_length=20)
+
+
+class TagUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    color: str | None = Field(default=None, max_length=20)
+
+
+class TagResponse(BaseModel):
+    public_id: uuid.UUID
+    name: str
+    color: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------------------------------------------------------------------
 # Category schemas
 # ---------------------------------------------------------------------------
 
@@ -95,6 +120,7 @@ class TransactionCreate(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     wallet_name: str | None = Field(default=None, max_length=120)
     labels: str | None = Field(default=None, max_length=500)
+    tag_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
 
     @field_validator("amount")
     @classmethod
@@ -114,6 +140,7 @@ class TransactionUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=500)
     wallet_name: str | None = Field(default=None, max_length=120)
     labels: str | None = Field(default=None, max_length=500)
+    tag_ids: list[uuid.UUID] | None = Field(default=None, max_length=20)
 
     @field_validator("amount")
     @classmethod
@@ -152,6 +179,7 @@ class TransactionResponse(BaseModel):
     description: str | None
     wallet_name: str | None
     labels: str | None
+    tags: list[TagResponse] = Field(default_factory=list)
     source_type: TransactionSourceType
     source_ref: str | None
     source_metadata: SourceMetadataResponse
@@ -399,6 +427,26 @@ class CategoryBreakdownResponse(BaseModel):
     total: Decimal
     categories: list[CategoryBreakdownItem]
     other: CategoryBreakdownOther | None = None
+
+    model_config = ConfigDict(populate_by_name=True, json_encoders={Decimal: str})
+
+
+class TagBreakdownItem(BaseModel):
+    tag_id: uuid.UUID
+    tag_name: str
+    amount: Decimal
+    pct_of_total: float
+    transaction_count: int
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class TagBreakdownResponse(BaseModel):
+    from_date: date = Field(serialization_alias="from")
+    to_date: date = Field(serialization_alias="to")
+    type: TransactionType
+    total: Decimal
+    tags: list[TagBreakdownItem]
 
     model_config = ConfigDict(populate_by_name=True, json_encoders={Decimal: str})
 

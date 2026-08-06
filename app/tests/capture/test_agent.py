@@ -214,6 +214,61 @@ async def test_execute_agent_tool_log_spending(seed_agent_test_data):
 
 
 @pytest.mark.asyncio
+async def test_spending_duplicate_guard_and_history_tool(seed_agent_test_data):
+    args = {
+        "amount": "25.00",
+        "category_name": "food",
+        "description": "Family dinner",
+        "account_name": "Everyday Wallet",
+        "occurred_at": "2026-07-03",
+    }
+    first = await execute_agent_tool(
+        name="log_spending_transaction",
+        args=args,
+        user_id=10,
+        workspace_id=20,
+        user_timezone="Asia/Kolkata",
+    )
+    assert first["status"] == "success"
+
+    duplicate = await execute_agent_tool(
+        name="log_spending_transaction",
+        args=args,
+        user_id=10,
+        workspace_id=20,
+        user_timezone="Asia/Kolkata",
+    )
+    assert duplicate["status"] == "error"
+    assert duplicate["duplicate_detected"] is True
+    assert duplicate["local_day"] == "2026-07-03"
+
+    intentional_repeat = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={**args, "allow_duplicate": True},
+        user_id=10,
+        workspace_id=20,
+        user_timezone="Asia/Kolkata",
+    )
+    assert intentional_repeat["status"] == "success"
+
+    history = await execute_agent_tool(
+        name="list_spending_transactions",
+        args={
+            "day": "2026-07-03",
+            "category_name": "food",
+            "amount": "25",
+            "account_name": "Everyday Wallet",
+        },
+        user_id=10,
+        workspace_id=20,
+        user_timezone="Asia/Kolkata",
+    )
+    assert history["status"] == "success"
+    assert history["day"] == "2026-07-03"
+    assert len(history["transactions"]) == 2
+
+
+@pytest.mark.asyncio
 async def test_investing_mutation_tools_removed(seed_agent_test_data):
     """spec-059: investing is read-only on voice — the mutation tools are gone
     from the dispatch and leave no rows behind."""
@@ -1144,6 +1199,9 @@ def test_spending_declaration_exposes_optional_occurred_at():
     assert "occurred_at" in spending["properties"]
     # Optional — must not be required.
     assert "occurred_at" not in spending.get("required", [])
+    assert "description" not in spending.get("required", [])
+    assert "allow_duplicate" in spending["properties"]
+    assert "list_spending_transactions" in by_name
 
 
 def test_spending_prompt_mentions_backdating_and_future_block():
@@ -1151,6 +1209,36 @@ def test_spending_prompt_mentions_backdating_and_future_block():
     system_text = setup["setup"]["systemInstruction"]["parts"][0]["text"]
     assert "occurred_at" in system_text
     assert "future" in system_text.lower()
+
+
+def test_spending_prompt_removes_category_label_from_description():
+    setup = _build_setup_message(["TEXT"])
+    system_text = setup["setup"]["systemInstruction"]["parts"][0]["text"]
+    declarations = setup["setup"]["tools"][0]["functionDeclarations"]
+    by_name = {item["name"]: item for item in declarations}
+    spending_description = by_name["log_spending_transaction"]["parameters"]["properties"][
+        "description"
+    ]["description"]
+
+    assert "not duplicated" in system_text
+    assert "family getaway 500" in system_text
+    assert "description='getaway'" in system_text
+    assert "avoid duplication" in spending_description
+
+
+def test_spending_prompt_preserves_lookup_values_and_handles_tool_errors():
+    setup = _build_setup_message(["TEXT"], user_timezone="Asia/Kolkata")
+    system_text = setup["setup"]["systemInstruction"]["parts"][0]["text"]
+    declarations = setup["setup"]["tools"][0]["functionDeclarations"]
+    by_name = {item["name"]: item for item in declarations}
+    amount_description = by_name["log_spending_transaction"]["parameters"]["properties"]["amount"][
+        "description"
+    ]
+    assert "do not translate lookup values" in system_text
+    assert "provided timezone is authoritative" in system_text
+    assert "After every tool call" in system_text
+    assert "currency symbols" in amount_description
+    assert "list_spending_transactions" in system_text
 
 
 @pytest.mark.asyncio

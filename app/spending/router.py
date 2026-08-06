@@ -14,6 +14,7 @@ from app.core.dependencies import (
     get_spending_category_service,
     get_spending_kpi_service,
     get_spending_recurring_service,
+    get_spending_tag_service,
     get_spending_transaction_service,
     require_min_role,
 )
@@ -51,6 +52,10 @@ from app.spending.schemas import (
     RecurringTransactionUpdate,
     SavingsRateResponse,
     SpendingTrendResponse,
+    TagBreakdownResponse,
+    TagCreate,
+    TagResponse,
+    TagUpdate,
     TransactionCreate,
     TransactionResponse,
     TransactionSummaryResponse,
@@ -63,10 +68,74 @@ from app.spending.service import (
     CategoryService,
     KpiService,
     RecurringTransactionService,
+    TagService,
     TransactionService,
 )
 
 router = APIRouter(prefix="/spending", tags=["spending"])
+
+
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+
+@router.get("/tags", response_model=PaginatedResponse[TagResponse])
+async def list_tags(
+    tag_service: Annotated[TagService, Depends(get_spending_tag_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+    search: str | None = Query(None, max_length=80),
+):
+    tags, total = await tag_service.list_tags(
+        workspace_id, pagination.limit, pagination.offset, search
+    )
+    return build_page(tags, total, pagination)
+
+
+@router.post("/tags", response_model=TagResponse, status_code=status.HTTP_201_CREATED)
+async def create_tag(
+    tag_in: TagCreate,
+    tag_service: Annotated[TagService, Depends(get_spending_tag_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    return await tag_service.create_tag(
+        workspace_id, tag_in, actor_id=user["id"], audit_logger=audit_logger
+    )
+
+
+@router.patch("/tags/{tag_id}", response_model=TagResponse)
+async def update_tag(
+    tag_id: uuid.UUID,
+    tag_in: TagUpdate,
+    tag_service: Annotated[TagService, Depends(get_spending_tag_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    return await tag_service.update_tag(
+        workspace_id, tag_id, tag_in, actor_id=user["id"], audit_logger=audit_logger
+    )
+
+
+@router.delete("/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_tag(
+    tag_id: uuid.UUID,
+    tag_service: Annotated[TagService, Depends(get_spending_tag_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    await tag_service.delete_tag(
+        workspace_id, tag_id, actor_id=user["id"], audit_logger=audit_logger
+    )
+
 
 # ---------------------------------------------------------------------------
 # Categories
@@ -274,6 +343,8 @@ async def list_transactions(
     type: TransactionType | None = Query(None),
     from_date: datetime | None = Query(None),
     to_date: datetime | None = Query(None),
+    search: str | None = Query(None, max_length=120),
+    tag_id: uuid.UUID | None = Query(None),
     sort: TransactionSort | None = Query(
         None,
         description=(
@@ -290,6 +361,8 @@ async def list_transactions(
         type_filter=type,
         from_date=from_date,
         to_date=to_date,
+        search=search,
+        tag_public_id=tag_id,
         sort=sort,
         limit=pagination.limit,
         offset=pagination.offset,
@@ -372,6 +445,25 @@ async def get_category_breakdown(
     limit: int = Query(default=10, ge=1, le=100),
 ):
     return await transaction_service.get_category_breakdown(
+        workspace_id=workspace_id,
+        from_date=from_date,
+        to_date=to_date,
+        type_filter=type,
+        limit=limit,
+    )
+
+
+@router.get("/analytics/tag-breakdown", response_model=TagBreakdownResponse)
+async def get_tag_breakdown(
+    transaction_service: Annotated[TransactionService, Depends(get_spending_transaction_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    from_date: date = Query(..., alias="from"),
+    to_date: date = Query(..., alias="to"),
+    type: TransactionType = Query(TransactionType.expense),
+    limit: int = Query(default=10, ge=1, le=100),
+):
+    return await transaction_service.get_tag_breakdown(
         workspace_id=workspace_id,
         from_date=from_date,
         to_date=to_date,

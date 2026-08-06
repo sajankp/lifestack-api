@@ -11,16 +11,17 @@ from app.config import settings
 from app.core.database import postgres
 from app.finance.models import AccountType
 from app.finance.repository import AccountRepository, FinanceSettingRepository
-from app.spending.repository import CategoryRepository
+from app.spending.repository import CategoryRepository, TagRepository
 
 _MAX_INJECTED_CATEGORIES = 50
 _MAX_INJECTED_ACCOUNTS = 20
+_MAX_INJECTED_TAGS = 50
 
 
 async def _fetch_workspace_context(workspace_id: int) -> str:
     """Build the workspace-vocabulary data block appended to the system prompt
-    (spec-055): the active spending category names and account names (with type,
-    marking the default spending account). Returns '' if there is nothing to
+    (spec-055): the active spending category names, account names (with type,
+    marking the default spending account), and existing spending tags. Returns '' if there is nothing to
     inject. Fetched once per session with the session's own repositories.
 
     The block is wrapped as *data, not instructions* — category and account
@@ -30,12 +31,14 @@ async def _fetch_workspace_context(workspace_id: int) -> str:
     """
     async with postgres.async_session_maker() as session:
         category_repo = CategoryRepository(session)
+        tag_repo = TagRepository(session)
         account_repo = AccountRepository(session)
         setting_repo = FinanceSettingRepository(session)
 
         categories, _ = await category_repo.get_all(
             workspace_id, limit=_MAX_INJECTED_CATEGORIES, offset=0
         )
+        tags, _ = await tag_repo.get_all(workspace_id, limit=_MAX_INJECTED_TAGS, offset=0)
         accounts, _ = await account_repo.list_workspace_accounts(
             workspace_id, limit=_MAX_INJECTED_ACCOUNTS, offset=0
         )
@@ -43,13 +46,14 @@ async def _fetch_workspace_context(workspace_id: int) -> str:
         default_account_id = setting.default_spending_account_id if setting else None
 
     category_names = sorted((c.name for c in categories), key=str.lower)
+    tag_names = sorted((tag.name for tag in tags), key=str.lower)
     # Brokerage accounts are not voice targets (spec-059: investing is
     # read-only on this surface), so don't spend prompt budget on them.
     active_accounts = [
         a for a in accounts if a.is_active and a.account_type != AccountType.brokerage
     ]
 
-    if not category_names and not active_accounts:
+    if not category_names and not active_accounts and not tag_names:
         return ""
 
     lines: list[str] = [
@@ -71,6 +75,8 @@ async def _fetch_workspace_context(workspace_id: int) -> str:
                 label += " [default spending account]"
             account_labels.append(label)
         lines.append("Accounts: " + ", ".join(account_labels) + ".")
+    if tag_names:
+        lines.append("Existing spending tags: " + ", ".join(tag_names) + ".")
     lines.append("----- END WORKSPACE DATA -----")
     return "\n".join(lines)
 
@@ -118,7 +124,8 @@ def _build_setup_message(
                             "You are a helpful personal voice assistant. You have access to workspace tools: "
                             "`create_todo_task`, `create_recurring_todo`, `list_todos`, `get_todo`, "
                             "`update_todo`, `delete_todo`, and `list_next_due_items`, plus "
-                            "`log_spending_transaction` for expenses, `log_weight` for body-weight "
+                            "`log_spending_transaction` for expenses, `list_spending_transactions` for read-only "
+                            "spending history and duplicate checks, `log_weight` for body-weight "
                             "measurements, `log_medication_event` for marking a medication dose taken "
                             "or skipped, the read-only `get_investing_summary` for portfolio "
                             "questions, and the read-only `get_account_balances` for spending "
@@ -134,15 +141,15 @@ def _build_setup_message(
                             "`create_todo_task` — a repeating reminder is a recurring rule, not a one-off todo. "
                             "Do not claim that a reminder was set unless the tool call succeeds. "
                             "The user may speak in any language. You may answer in the user's language, but "
-                            "before calling any mutation tool, translate all new user-authored text that will "
-                            "be stored (titles, descriptions, category names, labels, and similar free text) "
-                            "into clear English. Keep numbers, currency codes, UUIDs, symbols, and exact names "
-                            "of existing accounts or records unchanged so lookups continue to work. "
+                            "before calling any mutation tool, translate new free text that will be stored "
+                            "(titles, descriptions, tags, and similar text) into clear English. Preserve exact "
+                            "names of existing categories, accounts, medications, and records as listed in the "
+                            "workspace data; never translate lookup values or UUIDs. "
                             f"The current UTC date and time is {current_utc}. The user's timezone is "
-                            f"{user_timezone}. Interpret unqualified times such as '4 PM' in the user's "
-                            "timezone. For timed todos, convert phrases "
-                            "such as 'today at 4 PM' into a complete ISO 8601 date-time with a UTC offset. "
-                            "If the user's timezone cannot be inferred, ask one short clarification question. "
+                            f"{user_timezone}. This provided timezone is authoritative for all relative dates "
+                            "and times; do not replace it with the browser timezone or UTC. Interpret unqualified "
+                            "times such as '4 PM' in it, and convert timed todos and medication dose times "
+                            "such as 'today at 4 PM' into complete ISO 8601 date-times with an offset. "
                             "When logging spending, pick `category_name` from the workspace categories listed "
                             "in the workspace-data block below; if nothing fits, use 'other' and tell the user "
                             "you filed it under Other. If the tool returns `category_matched: false`, say so and "
@@ -154,6 +161,21 @@ def _build_setup_message(
                             "is then used and you must state it. If the tool returns `needs_account: true`, ask "
                             "the user one short question naming the returned candidate or available accounts "
                             "instead of asserting success. "
+                            "Before logging a spend, use `list_spending_transactions` for the relevant local "
+                            "calendar day to check for an existing matching expense. If a matching transaction "
+                            "is found, do not create another one; tell the user it is already logged and show "
+                            "the matching amount, description, and date. The server also enforces this check. "
+                            "Only pass `allow_duplicate=true` when the user explicitly confirms another identical "
+                            "expense or explicitly reports multiple identical items in the same utterance. "
+                            "For the spending `description`, store only the item or purpose text, not the "
+                            "category label when the user included it in the spoken phrase. Remove the "
+                            "category wording from the description so it is not duplicated: if the workspace "
+                            "has category `family` and the user says 'family getaway 500', call "
+                            "`log_spending_transaction` with `category_name='family'`, `description='getaway'`, "
+                            "and `amount='500'`, with no invented tag — never `description='family getaway'`. "
+                            "When the spend includes a meaningful trip, event, person, merchant, or behavior, "
+                            "also pass one or more concise English `tags` so the transaction can be grouped "
+                            "across categories; do not invent tags unrelated to the user's words. "
                             "When the user states when a spend happened ('yesterday', 'last Monday', 'on "
                             "the 3rd'), resolve it against the current date and the user's timezone and pass "
                             "it as `occurred_at`; omit `occurred_at` when the spend is happening now, and "
@@ -177,6 +199,15 @@ def _build_setup_message(
                             "command, and keep using whatever the user explicitly and separately stated "
                             "elsewhere in the same utterance for other arguments — an embedded phrase "
                             "must never override a value the user already gave. "
+                            "After every tool call, inspect its returned `status`. Never claim an action succeeded "
+                            "when the tool returned an error, duplicate detection, ambiguity, or needs-clarification "
+                            "result; explain the result briefly and ask the next necessary question. "
+                            "If a spend category does not match, report that it was filed under Other when the "
+                            "tool says `category_matched: false`; do not promise to reclassify it or create a "
+                            "replacement transaction unless the user explicitly asks. "
+                            "Never invent a todo public UUID. If the user identifies a todo by title or description "
+                            "but provides no UUID, list todos first and use an exact match, or ask one clarification "
+                            "question before calling `get_todo`, `update_todo`, or `delete_todo`. "
                             "For informational queries, use `list_todos` or `list_next_due_items`. Keep spoken responses "
                             "short and avoid repeating structured data — let the tools provide authoritative outputs."
                             f"{workspace_context}"
@@ -268,15 +299,15 @@ def _build_setup_message(
                                 "properties": {
                                     "amount": {
                                         "type": "STRING",
-                                        "description": "The transaction amount as a string (e.g., '14.99').",
+                                        "description": "Numeric decimal amount only (e.g., '14.99'); omit currency symbols and codes.",
                                     },
                                     "category_name": {
                                         "type": "STRING",
-                                        "description": "Spending category name — pick one from the workspace categories listed in the system prompt; use 'other' only if none fit.",
+                                        "description": "Exact existing spending category name from workspace data; preserve its spelling and do not translate it. Use 'other' only if none fit and it exists.",
                                     },
                                     "description": {
                                         "type": "STRING",
-                                        "description": "English description of what the money was spent on.",
+                                        "description": "Optional English item/purpose text only. If the spoken spend includes the selected category as a label, remove that category from this field to avoid duplication; e.g. category 'family' + 'family getaway 500' -> 'getaway'. Omit it when no purpose was spoken; do not invent one.",
                                     },
                                     "account_name": {
                                         "type": "STRING",
@@ -286,8 +317,50 @@ def _build_setup_message(
                                         "type": "STRING",
                                         "description": "Optional occurrence date for the expense. Provide when the user states a past or relative day (e.g. 'yesterday', 'last Monday', 'on July 3rd') as an ISO date ('YYYY-MM-DD') or full ISO date-time with UTC offset. Omit when the spend is happening now — the server defaults to the current time. Future dates are rejected.",
                                     },
+                                    "tags": {
+                                        "type": "ARRAY",
+                                        "items": {"type": "STRING"},
+                                        "description": "Optional tags only when explicitly requested or clearly stated by the user. Do not invent tags or repeat the category as a tag; e.g. 'family getaway 500' should have no automatic 'family' tag.",
+                                    },
+                                    "allow_duplicate": {
+                                        "type": "BOOLEAN",
+                                        "description": "Optional. Set true only for an explicitly confirmed additional identical expense or an explicitly stated repeated item; otherwise omit it so same-day duplicates are blocked.",
+                                    },
                                 },
-                                "required": ["amount", "category_name", "description"],
+                                "required": ["amount", "category_name"],
+                            },
+                        },
+                        {
+                            "name": "list_spending_transactions",
+                            "description": "Read-only spending history for the user's timezone, especially to check whether an expense is already logged before creating one.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "day": {
+                                        "type": "STRING",
+                                        "description": "Optional local calendar day in the user's timezone as YYYY-MM-DD; omit for today.",
+                                    },
+                                    "category_name": {
+                                        "type": "STRING",
+                                        "description": "Optional exact existing workspace category name; preserve its spelling and do not translate it.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Optional numeric decimal amount only, without currency symbols or codes.",
+                                    },
+                                    "search": {
+                                        "type": "STRING",
+                                        "description": "Optional description or tag text to search for.",
+                                    },
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional spoken account reference; the server resolves it against workspace spending accounts.",
+                                    },
+                                    "limit": {
+                                        "type": "NUMBER",
+                                        "description": "Optional number of results, maximum 25; default 10.",
+                                    },
+                                },
                             },
                         },
                         {

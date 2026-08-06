@@ -1,4 +1,5 @@
 from contextlib import suppress
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 from fastapi import APIRouter, WebSocket
@@ -21,7 +22,7 @@ router = APIRouter(
 )
 
 
-async def authenticate_ws(websocket: WebSocket) -> tuple[int, int]:
+async def authenticate_ws(websocket: WebSocket) -> tuple[int, int, str | None]:
     token = websocket.cookies.get("access_token")
 
     if not token:
@@ -83,13 +84,26 @@ async def authenticate_ws(websocket: WebSocket) -> tuple[int, int]:
         if role_rank.get(user_role, 0) < role_rank.get("member", 0):
             raise ForbiddenError(detail="Insufficient workspace permissions")
 
-        return user_id, workspace_id
+        return user_id, workspace_id, user.timezone
+
+
+def _effective_timezone(saved_timezone: str | None, requested_timezone: str | None) -> str:
+    """Prefer the persisted user setting, then a valid client fallback."""
+    for candidate in (saved_timezone, requested_timezone, "UTC"):
+        if not candidate:
+            continue
+        try:
+            ZoneInfo(candidate)
+        except (ZoneInfoNotFoundError, ValueError):
+            continue
+        return candidate
+    return "UTC"
 
 
 @router.websocket("/agent/ws")
 async def websocket_agent_endpoint(websocket: WebSocket):
     try:
-        user_id, workspace_id = await authenticate_ws(websocket)
+        user_id, workspace_id, saved_timezone = await authenticate_ws(websocket)
     except ForbiddenError as e:
         # Authorization (role) rejections are deterministic, so the client must
         # not retry. A pre-accept close never reaches the browser as its own
@@ -116,7 +130,7 @@ async def websocket_agent_endpoint(websocket: WebSocket):
         websocket,
         user_id,
         workspace_id,
-        websocket.query_params.get("timezone", "UTC"),
+        _effective_timezone(saved_timezone, websocket.query_params.get("timezone")),
         (websocket.query_params.get("resume") or "").strip() or None,
         (websocket.query_params.get("prev_session") or "").strip() or None,
     )
