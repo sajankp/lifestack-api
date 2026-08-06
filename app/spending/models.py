@@ -136,6 +136,7 @@ class SpendingTag(SQLModel, table=True):
     )
 
     __table_args__ = (
+        sa.UniqueConstraint("id", "workspace_id", name="uq_spending_tag_id_workspace"),
         sa.UniqueConstraint(
             "workspace_id", "normalized_name", name="uq_spending_tag_workspace_name"
         ),
@@ -198,6 +199,7 @@ class SpendingTransaction(SQLModel, table=True):
     )
 
     __table_args__ = (
+        sa.UniqueConstraint("id", "workspace_id", name="uq_spending_transaction_id_workspace"),
         sa.ForeignKeyConstraint(
             ["category_id", "workspace_id"],
             ["spending_categories.id", "spending_categories.workspace_id"],
