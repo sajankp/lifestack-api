@@ -201,4 +201,36 @@ class AuthService:
             is_active=True,
             timezone="UTC",
         )
-        return await self.user_repo.save(user)
+        user = await self.user_repo.save(user)
+        if user.id is not None:
+            await self.user_repo.add_auth_identity(user.id, oauth_provider, oauth_sub)
+        return user
+
+    async def set_password(self, user_id: int, new_password: str) -> None:
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            raise UnauthorizedError(detail="User not found")
+        if user.hashed_password:
+            raise UnauthorizedError(detail="Password already configured; use change password")
+        user.hashed_password = hash_password(new_password)
+        user.updated_at = datetime.now(UTC)
+        self.user_repo.session.add(user)
+        await self.user_repo.session.flush()
+
+    async def unlink_auth_identity(self, user_id: int, provider: str) -> None:
+        user = await self.get_user_by_id(user_id)
+        if not user:
+            raise UnauthorizedError(detail="User not found")
+        identities = await self.user_repo.list_auth_identities(user_id)
+        has_password = bool(user.hashed_password)
+        if not has_password and len(identities) <= 1:
+            raise UnauthorizedError(detail="Cannot remove the last sign-in method")
+        identity = await self.user_repo.delete_auth_identity(user_id, provider)
+        if identity is None:
+            raise UnauthorizedError(detail="Sign-in method is not linked")
+        if user.oauth_provider == provider and user.oauth_sub == identity.subject:
+            user.oauth_provider = None
+            user.oauth_sub = None
+            user.updated_at = datetime.now(UTC)
+            self.user_repo.session.add(user)
+            await self.user_repo.session.flush()

@@ -35,6 +35,24 @@ class User(SQLModel, table=True):
     )
 
 
+class UserAuthIdentity(SQLModel, table=True):
+    """A login identity linked to an existing Lifestack user."""
+
+    __tablename__ = "user_auth_identities"
+    __table_args__ = (
+        sa.UniqueConstraint("provider", "subject", name="uq_user_auth_identities_provider_subject"),
+        sa.UniqueConstraint("user_id", "provider", name="uq_user_auth_identities_user_provider"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    provider: str = Field(max_length=20, index=True)
+    subject: str = Field(max_length=128, index=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+
 class AuthSession(SQLModel, table=True):
     __tablename__ = "auth_sessions"
 
