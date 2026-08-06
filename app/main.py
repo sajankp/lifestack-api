@@ -134,7 +134,7 @@ async def _combined_lifespan(_app: FastAPI):
 _mcp_app = None
 if settings.MCP_ENABLED:
     _mcp = create_mcp_server()
-    _mcp_app = create_mcp_asgi_app(_mcp)
+    _mcp_app = create_mcp_asgi_app(_mcp, path=settings.MCP_MOUNT_PATH)
 
 # Create the final lifespan that combines FastAPI + MCP
 if _mcp_app:
@@ -325,7 +325,10 @@ def create_app() -> FastAPI:
                 "X-CSRF-Token",
                 "Origin",
                 "Accept",
+                "MCP-Protocol-Version",
+                "MCP-Session-Id",
             ],
+            expose_headers=["MCP-Session-Id"],
         )
 
     # Session middleware for OAuth state storage
@@ -409,7 +412,11 @@ def create_app() -> FastAPI:
 
     # Mount MCP server if enabled
     if settings.MCP_ENABLED and _mcp_app:
-        _app.mount(settings.MCP_MOUNT_PATH, _mcp_app)
+        # The MCP app owns both the operational OAuth routes and the
+        # root-level discovery routes. Mounting it at / preserves those paths
+        # while exposing the protocol endpoint at MCP_MOUNT_PATH.
+        _app.state.mcp_auth = _mcp.auth
+        _app.mount("/", _mcp_app)
 
     return _app
 

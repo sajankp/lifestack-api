@@ -3,9 +3,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
+from mcp.server.auth.provider import AuthorizeError
+from pydantic import BaseModel, Field
 
 from app.application.workflows import UserRegistrationWorkflow
 from app.auth.repository import UserRepository
@@ -36,6 +38,10 @@ from app.core.exceptions import NotFoundError, UnauthorizedError
 from app.platform.service import WorkspaceService
 
 router = APIRouter()
+
+
+class MCPAuthorizationApproval(BaseModel):
+    state: str = Field(min_length=20, max_length=256)
 
 
 @router.post("/register", response_model=bool)
@@ -75,6 +81,56 @@ async def get_auth_identities(
     if user.oauth_provider:
         providers.add(user.oauth_provider)
     return {"has_password": bool(user.hashed_password), "providers": sorted(providers)}
+
+
+@router.get("/mcp/authorize")
+async def get_mcp_authorization_request(
+    request: Request, state: str = Query(min_length=20, max_length=256)
+):
+    """Return the display-safe details for a pending MCP authorization request."""
+    provider = getattr(request.app.state, "mcp_auth", None)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="MCP authorization is disabled")
+    details = await provider.get_authorization_request(state)
+    if details is None:
+        raise HTTPException(status_code=400, detail="Authorization request expired")
+    return details
+
+
+@router.post("/mcp/authorize")
+async def approve_mcp_authorization(
+    request: Request,
+    payload: MCPAuthorizationApproval,
+    current_user: dict = Depends(get_current_user),
+):
+    """Approve an MCP OAuth request from the authenticated Lifestack web app."""
+    provider = getattr(request.app.state, "mcp_auth", None)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="MCP authorization is disabled")
+    try:
+        redirect_uri = await provider.complete_authorization(
+            payload.state, int(current_user["id"]), str(current_user["sid"])
+        )
+    except AuthorizeError as exc:
+        raise HTTPException(status_code=400, detail=exc.error_description or exc.error) from exc
+    return {"redirect_uri": redirect_uri}
+
+
+@router.post("/mcp/authorize/deny")
+async def deny_mcp_authorization(
+    request: Request,
+    payload: MCPAuthorizationApproval,
+    _current_user: dict = Depends(get_current_user),
+):
+    """Reject an MCP OAuth request from the authenticated web app."""
+    provider = getattr(request.app.state, "mcp_auth", None)
+    if provider is None:
+        raise HTTPException(status_code=404, detail="MCP authorization is disabled")
+    try:
+        redirect_uri = await provider.deny_authorization(payload.state)
+    except AuthorizeError as exc:
+        raise HTTPException(status_code=400, detail=exc.error_description or exc.error) from exc
+    return {"redirect_uri": redirect_uri}
 
 
 @router.delete("/me/auth-identities/{provider}")

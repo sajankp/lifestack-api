@@ -306,6 +306,9 @@ class Settings(BaseSettings):
     # MCP (Model Context Protocol)
     MCP_ENABLED: bool = False
     MCP_MOUNT_PATH: str = "/mcp"
+    MCP_BASE_URL: str | None = None
+    MCP_ALLOWED_HOSTS: str = ""
+    MCP_ALLOWED_ORIGINS: str = ""
 
     @field_validator("MCP_MOUNT_PATH")
     @classmethod
@@ -495,6 +498,12 @@ class Settings(BaseSettings):
                         "METRICS_TOKEN must be changed from its default value "
                         "when DATABASE_URL points to a remote host."
                     )
+
+        if self.MCP_ENABLED:
+            if not self.MCP_BASE_URL or not self.MCP_BASE_URL.startswith("https://"):
+                raise ValueError("MCP_BASE_URL must be an HTTPS URL when MCP is enabled.")
+            if not urlparse(self.MCP_BASE_URL).netloc:
+                raise ValueError("MCP_BASE_URL must include a hostname.")
         return self
 
 
