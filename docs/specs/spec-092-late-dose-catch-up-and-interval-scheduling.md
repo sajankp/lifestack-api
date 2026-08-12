@@ -1,9 +1,9 @@
 # Spec-092: Late-dose catch-up + opt-in interval-from-last-dose scheduling
 
 **Created:** 2026-07-24
-**Status:** Implemented locally, uncommitted — full api + web suites green (api 948 passed /
-84% cov; web green / 77% line cov). Commit + PRs held until 21:00 2026-07-24 per owner
-instruction; branch `feat/health-catch-up-interval-scheduling` in both repos.
+**Status:** Implemented and merged (api#202, web#218, 2026-07-24). The original local
+implementation passed the API and Web suites (API 948 passed / 84% coverage; Web green / 77%
+line coverage) before publication.
 **Scope:** multi-repo, user-facing — `lifestack-api` (schema migration, schedule
 arithmetic, new overdue endpoint) and `lifestack-web` (Health page date navigation +
 catch-up section, medication schedule-mode selector). 2 PRs (api first, then web).
