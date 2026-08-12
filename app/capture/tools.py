@@ -1,6 +1,6 @@
 import uuid
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
@@ -329,7 +329,7 @@ class AgentTools:
         """Retrieve a single todo by public_id."""
         try:
             pid = uuid.UUID(public_id)
-        except Exception:
+        except (TypeError, ValueError):
             return {"status": "error", "message": "Invalid public_id"}
 
         try:
@@ -363,7 +363,7 @@ class AgentTools:
         """Update fields on an existing todo. due_date should be ISO 8601 if provided."""
         try:
             pid = uuid.UUID(public_id)
-        except Exception:
+        except (TypeError, ValueError):
             return {"status": "error", "message": "Invalid public_id"}
 
         parsed_due = None
@@ -427,7 +427,7 @@ class AgentTools:
         """Delete a todo by public_id."""
         try:
             pid = uuid.UUID(public_id)
-        except Exception:
+        except (TypeError, ValueError):
             return {"status": "error", "message": "Invalid public_id"}
 
         # Pre-fetch the todo to obtain its title for the summary before deletion
@@ -541,7 +541,7 @@ class AgentTools:
         """
         try:
             amt = Decimal(amount)
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             return {
                 "status": "error",
                 "message": "Invalid amount format. Must be a decimal number.",
@@ -782,7 +782,7 @@ class AgentTools:
         if amount and amount.strip():
             try:
                 parsed_amount = Decimal(amount.strip())
-            except Exception:
+            except (InvalidOperation, TypeError, ValueError):
                 return {
                     "status": "error",
                     "message": "amount must be numeric and must not include a currency symbol.",
@@ -874,7 +874,7 @@ class AgentTools:
         """
         try:
             weight = Decimal(weight_kg)
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             return {
                 "status": "error",
                 "message": "Invalid weight format. Must be a decimal number.",

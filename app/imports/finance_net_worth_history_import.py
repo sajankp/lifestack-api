@@ -1,7 +1,7 @@
 """`ImportModule.finance_net_worth_history` row validation and commit adapter."""
 
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from app.finance.schemas import NetWorthHistoryImportRequest, NetWorthHistoryImportRow
 from app.finance.service import NetWorthService
@@ -28,10 +28,10 @@ def validate_finance_net_worth_history_row(
     if date_raw:
         try:
             as_of_date = date.fromisoformat(date_raw)
-        except Exception:
+        except (TypeError, ValueError):
             try:
                 as_of_date = datetime.fromisoformat(date_raw.replace("Z", "+00:00")).date()
-            except Exception:
+            except (TypeError, ValueError):
                 add_error("date", "invalid_date", "date must be YYYY-MM-DD date", date_raw)
 
         if as_of_date and as_of_date >= earliest_live_nw_date:
@@ -62,7 +62,7 @@ def validate_finance_net_worth_history_row(
     total_net_worth = None
     try:
         total_net_worth = Decimal(total_raw)
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         add_error(
             "total_net_worth",
             "invalid_decimal",
@@ -75,7 +75,7 @@ def validate_finance_net_worth_history_row(
     if holdings_raw:
         try:
             holdings = Decimal(holdings_raw)
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             add_error(
                 "holdings_value",
                 "invalid_decimal",
@@ -87,7 +87,7 @@ def validate_finance_net_worth_history_row(
     if investing_raw:
         try:
             investing = Decimal(investing_raw)
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             add_error(
                 "investing_cash",
                 "invalid_decimal",
@@ -99,7 +99,7 @@ def validate_finance_net_worth_history_row(
     if spending_raw:
         try:
             spending = Decimal(spending_raw)
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             add_error(
                 "spending_cash",
                 "invalid_decimal",
