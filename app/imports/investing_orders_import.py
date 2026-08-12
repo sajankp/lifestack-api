@@ -95,7 +95,7 @@ def validate_investing_order_row(
         quantity = Decimal(quantity_raw)
         if quantity <= 0:
             raise InvalidOperation
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         add_error(
             "quantity",
             "invalid_decimal",
@@ -108,7 +108,7 @@ def validate_investing_order_row(
         price = Decimal(price_raw)
         if price <= 0:
             raise InvalidOperation
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         add_error(
             "price_per_unit",
             "invalid_decimal",
@@ -133,7 +133,7 @@ def validate_investing_order_row(
     occurred_at = None
     try:
         occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
-    except Exception:
+    except (TypeError, ValueError):
         add_error(
             "occurred_at",
             "invalid_datetime",
@@ -147,7 +147,7 @@ def validate_investing_order_row(
             if val < 0:
                 raise InvalidOperation
             return val
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             add_error(
                 field,
                 "invalid_decimal",

@@ -84,7 +84,7 @@ def validate_investing_dividend_row(
         gross = Decimal(gross_raw)
         if gross <= 0:
             raise InvalidOperation
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         add_error("gross", "invalid_decimal", "gross must be a positive decimal", gross_raw)
 
     tax = None
@@ -92,7 +92,7 @@ def validate_investing_dividend_row(
         tax = Decimal(tax_raw)
         if tax < 0:
             raise InvalidOperation
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         add_error("tax", "invalid_decimal", "tax must be a non-negative decimal", tax_raw)
 
     if gross is not None and tax is not None and tax >= gross:
@@ -119,10 +119,10 @@ def validate_investing_dividend_row(
     if pay_date_raw:
         try:
             pay_date = date.fromisoformat(pay_date_raw)
-        except Exception:
+        except (TypeError, ValueError):
             try:
                 pay_date = datetime.fromisoformat(pay_date_raw.replace("Z", "+00:00")).date()
-            except Exception:
+            except (TypeError, ValueError):
                 add_error(
                     "pay_date", "invalid_date", "pay_date must be YYYY-MM-DD date", pay_date_raw
                 )

@@ -99,7 +99,13 @@ class LifestackTokenVerifier(OAuthProvider):
         parts = urlsplit(uri)
         query = parse_qsl(parts.query, keep_blank_values=True)
         query.extend(values.items())
-        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+        return urlunsplit((
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urlencode(query),
+            parts.fragment,
+        ))
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         raw = await self._get_redis().get(self._client_key(client_id))
@@ -253,7 +259,9 @@ class LifestackTokenVerifier(OAuthProvider):
         scopes: list[str],
     ) -> OAuthToken:
         if not set(scopes).issubset(refresh_token.scopes):
-            raise TokenError(error="invalid_scope", error_description="Scope exceeds original grant")
+            raise TokenError(
+                error="invalid_scope", error_description="Scope exceeds original grant"
+            )
         await self._get_redis().delete(self._refresh_key(refresh_token.token))
         user_id, sid = self._subject_parts(refresh_token.subject)
         access_token, expires_in = await self._issue_access_token(
@@ -358,9 +366,13 @@ class LifestackTokenVerifier(OAuthProvider):
     @staticmethod
     def _subject_parts(subject: str | None) -> tuple[int, str]:
         if not subject or ":" not in subject:
-            raise TokenError(error="invalid_grant", error_description="Invalid authorization subject")
+            raise TokenError(
+                error="invalid_grant", error_description="Invalid authorization subject"
+            )
         user_id, sid = subject.split(":", 1)
         try:
             return int(user_id), sid
         except ValueError as exc:
-            raise TokenError(error="invalid_grant", error_description="Invalid authorization subject") from exc
+            raise TokenError(
+                error="invalid_grant", error_description="Invalid authorization subject"
+            ) from exc

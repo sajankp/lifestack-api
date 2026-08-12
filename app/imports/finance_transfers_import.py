@@ -51,7 +51,7 @@ def validate_finance_transfer_row(
     occurred_at = None
     try:
         occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
-    except Exception:
+    except (TypeError, ValueError):
         add_error(
             "occurred_at",
             "invalid_datetime",
@@ -124,7 +124,7 @@ def validate_finance_transfer_row(
         gross_amount = Decimal(gross_amount_raw)
         if gross_amount < 0:
             raise InvalidOperation
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         add_error(
             "gross_amount",
             "invalid_decimal",
@@ -137,7 +137,7 @@ def validate_finance_transfer_row(
         net_amount_received = Decimal(net_amount_raw)
         if net_amount_received < 0:
             raise InvalidOperation
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         add_error(
             "net_amount_received",
             "invalid_decimal",
@@ -152,7 +152,7 @@ def validate_finance_transfer_row(
             fx_rate_used = Decimal(fx_rate_raw)
             if fx_rate_used <= 0:
                 raise InvalidOperation
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             add_error(
                 "fx_rate_used",
                 "invalid_decimal",
@@ -166,7 +166,7 @@ def validate_finance_transfer_row(
             if val < 0:
                 raise InvalidOperation
             return val
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             add_error(
                 field,
                 "invalid_decimal",

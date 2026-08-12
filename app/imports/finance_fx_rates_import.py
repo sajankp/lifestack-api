@@ -54,7 +54,7 @@ def validate_finance_fx_rate_row(
         rate = Decimal(rate_raw)
         if rate <= 0:
             raise InvalidOperation
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         add_error("rate", "invalid_decimal", "rate must be a positive decimal", rate_raw)
 
     # 4. As of date validation
@@ -62,10 +62,10 @@ def validate_finance_fx_rate_row(
     if as_of_raw:
         try:
             as_of_date = date.fromisoformat(as_of_raw)
-        except Exception:
+        except (TypeError, ValueError):
             try:
                 as_of_date = datetime.fromisoformat(as_of_raw.replace("Z", "+00:00")).date()
-            except Exception:
+            except (TypeError, ValueError):
                 add_error(
                     "as_of_date", "invalid_date", "as_of_date must be YYYY-MM-DD date", as_of_raw
                 )

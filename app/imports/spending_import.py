@@ -135,7 +135,7 @@ def validate_spending_transaction_row(
 
     try:
         occurred_at = datetime.fromisoformat(occurred_raw.replace("Z", "+00:00"))
-    except Exception:
+    except (TypeError, ValueError):
         add_error(
             "occurred_at",
             "invalid_datetime",
@@ -161,7 +161,7 @@ def validate_spending_transaction_row(
             amount = None
         if amount is not None and amount <= 0:
             raise InvalidOperation
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         add_error(
             "amount",
             "invalid_decimal",
@@ -229,7 +229,7 @@ def validate_spending_budget_row(
         month_start = datetime.fromisoformat(month_raw).date()
         if month_start.day != 1:
             raise ValueError
-    except Exception:
+    except (TypeError, ValueError):
         add_error(
             "month_start",
             "invalid_month",
@@ -246,7 +246,7 @@ def validate_spending_budget_row(
         amount = Decimal(amount_raw)
         if amount <= 0:
             raise InvalidOperation
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         add_error(
             "amount",
             "invalid_decimal",
