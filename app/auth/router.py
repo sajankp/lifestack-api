@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from mcp.server.auth.provider import AuthorizeError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.workflows import UserRegistrationWorkflow
 from app.auth.repository import UserRepository
@@ -25,6 +26,7 @@ from app.auth.service import AuthService
 from app.config import settings
 from app.core.auth import create_token, get_user_info_from_token
 from app.core.csrf import clear_csrf_token, issue_csrf_token
+from app.core.database.postgres import get_db_session
 from app.core.dependencies import (
     get_auth_service,
     get_current_user,
@@ -35,6 +37,7 @@ from app.core.dependencies import (
     limiter,
 )
 from app.core.exceptions import NotFoundError, UnauthorizedError
+from app.mcp.repository import McpGrantRepository
 from app.platform.service import WorkspaceService
 
 router = APIRouter()
@@ -42,6 +45,16 @@ router = APIRouter()
 
 class MCPAuthorizationApproval(BaseModel):
     state: str = Field(min_length=20, max_length=256)
+
+
+class McpConnectionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    public_id: uuid.UUID
+    client_name: str
+    scopes: list[str]
+    created_at: datetime
+    last_used_at: datetime | None
 
 
 @router.post("/register", response_model=bool)
@@ -131,6 +144,43 @@ async def deny_mcp_authorization(
     except AuthorizeError as exc:
         raise HTTPException(status_code=400, detail=exc.error_description or exc.error) from exc
     return {"redirect_uri": redirect_uri}
+
+
+@router.get("/mcp/connections")
+async def list_mcp_connections(
+    current_user: dict = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    grants = await McpGrantRepository(session).list_active_for_user(current_user["id"])
+    return {
+        "items": [McpConnectionResponse.model_validate(grant).model_dump(mode="json") for grant in grants],
+        "total": len(grants),
+    }
+
+
+@router.delete("/mcp/connections")
+async def revoke_all_mcp_connections(
+    current_user: dict = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    count = await McpGrantRepository(session).revoke_all_for_user(current_user["id"])
+    await session.commit()
+    return {"message": "MCP connections revoked", "count": count}
+
+
+@router.delete("/mcp/connections/{grant_id}")
+async def revoke_mcp_connection(
+    grant_id: uuid.UUID,
+    current_user: dict = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    repository = McpGrantRepository(session)
+    grant = await repository.get_active_by_public_id(current_user["id"], grant_id)
+    if grant is None:
+        raise HTTPException(status_code=404, detail="MCP connection not found")
+    await repository.revoke(grant)
+    await session.commit()
+    return {"message": "MCP connection revoked"}
 
 
 @router.delete("/me/auth-identities/{provider}")

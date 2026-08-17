@@ -1,3 +1,4 @@
+import uuid
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -6,6 +7,7 @@ from mcp.shared.auth import OAuthClientInformationFull
 
 from app.config import settings
 from app.mcp.auth import LifestackTokenVerifier
+from app.mcp.repository import McpGrantRepository
 
 
 class FakeRedis:
@@ -32,6 +34,12 @@ async def test_mcp_oauth_client_and_authorization_code_are_durable_shapes(monkey
     monkeypatch.setattr(settings, "FRONTEND_URL", "https://app.example.test")
     provider = LifestackTokenVerifier()
     provider._redis = FakeRedis()
+    grant_id = uuid.uuid4()
+
+    async def fake_upsert(self, user_id, client_id, client_name, scopes):
+        return type('Grant', (), {'public_id': grant_id})()
+
+    monkeypatch.setattr(McpGrantRepository, 'upsert', fake_upsert)
     provider.get_routes("/mcp")
     client = OAuthClientInformationFull(
         client_id="client-1",
@@ -66,7 +74,7 @@ async def test_mcp_oauth_client_and_authorization_code_are_durable_shapes(monkey
     code = parse_qs(urlparse(callback_url).query)["code"][0]
     authorization_code = await provider.load_authorization_code(client, code)
     assert authorization_code is not None
-    assert authorization_code.subject == "42:session-1"
+    assert authorization_code.subject == f"42:session-1:{grant_id}"
     assert await provider.load_authorization_code(client, code) is None
 
 
