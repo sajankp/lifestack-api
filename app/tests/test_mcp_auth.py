@@ -37,9 +37,9 @@ async def test_mcp_oauth_client_and_authorization_code_are_durable_shapes(monkey
     grant_id = uuid.uuid4()
 
     async def fake_upsert(self, user_id, client_id, client_name, scopes):
-        return type('Grant', (), {'public_id': grant_id})()
+        return type("Grant", (), {"public_id": grant_id})()
 
-    monkeypatch.setattr(McpGrantRepository, 'upsert', fake_upsert)
+    monkeypatch.setattr(McpGrantRepository, "upsert", fake_upsert)
     provider.get_routes("/mcp")
     client = OAuthClientInformationFull(
         client_id="client-1",

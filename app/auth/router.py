@@ -153,7 +153,9 @@ async def list_mcp_connections(
 ):
     grants = await McpGrantRepository(session).list_active_for_user(current_user["id"])
     return {
-        "items": [McpConnectionResponse.model_validate(grant).model_dump(mode="json") for grant in grants],
+        "items": [
+            McpConnectionResponse.model_validate(grant).model_dump(mode="json") for grant in grants
+        ],
         "total": len(grants),
     }
 
