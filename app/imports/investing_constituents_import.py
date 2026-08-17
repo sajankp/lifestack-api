@@ -188,7 +188,7 @@ def validate_investing_constituent_row(
         weight = Decimal(weight_raw)
         if not (Decimal("0.00000001") <= weight <= Decimal("1.0")):
             raise InvalidOperation
-    except Exception:
+    except (InvalidOperation, TypeError, ValueError):
         add_error(
             "weight",
             "invalid_decimal",
@@ -199,7 +199,7 @@ def validate_investing_constituent_row(
 
     try:
         as_of_date = datetime.strptime(as_of_date_raw, "%Y-%m-%d").date()
-    except Exception:
+    except (TypeError, ValueError):
         add_error(
             "as_of_date",
             "invalid_date",
@@ -349,7 +349,7 @@ async def commit_constituents_chunk(
             try:
                 dt = datetime.strptime(p["as_of_date"], "%Y-%m-%d").date()
                 keys.append((int(p["instrument_id"]), company.id, dt))
-            except Exception:
+            except (TypeError, ValueError):
                 pass
 
     existing_consts = {}

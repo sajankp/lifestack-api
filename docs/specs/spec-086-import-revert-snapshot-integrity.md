@@ -1,9 +1,9 @@
 # Spec-086: Import-Revert Snapshot Integrity & Post-Snapshot Data-Change Provenance (api#183 item 2)
 
 **Created:** 2026-07-18
-**Status:** Implemented (api side, all 3 layers, this PR). A follow-up `lifestack-web` PR renders `data_revised_after_snapshot` (weekly summary) and `data_revised` (net-worth history) — not yet built. **Snapshot *restatement* evaluated and rejected as unsound — see "Why restatement is not viable" below.**
+**Status:** Implemented (API + Web). The API implements all three layers, and the Web follow-up renders `data_revised_after_snapshot` (weekly summary) and `data_revised` (net-worth history). **Snapshot *restatement* was evaluated and rejected as unsound — see "Why restatement is not viable" below.**
 **Depends on:** spec-072 (net-worth backfill / snapshot model), spec-076 (weekly summaries), spec-085 (weekly-summary status reconciliation — the sibling api#183 work)
-**Scope:** `lifestack-api` (Layer 1 + 2 + 3); a follow-up `lifestack-web` PR renders the Layer 2 warning and Layer 3 asterisk (separate repo, merged after api per one-PR-per-repo).
+**Scope:** `lifestack-api` (Layer 1 + 2 + 3) and the follow-up `lifestack-web` rendering of the Layer 2 warning and Layer 3 asterisk (separate repo, merged after API per one-PR-per-repo).
 
 ## Root cause (confirmed — this is the api#183 item 2 mechanism spec-085 could not reproduce)
 

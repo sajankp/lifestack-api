@@ -104,7 +104,7 @@ def validate_finance_account_statement_row(
     if date_raw:
         try:
             occurred_at = datetime.strptime(date_raw, ALLOWED_DATE_FORMATS[date_format]).date()
-        except Exception:
+        except (TypeError, ValueError):
             add_error(
                 "date",
                 "invalid_date",
@@ -123,14 +123,14 @@ def validate_finance_account_statement_row(
             debit = Decimal(debit_raw)
             if debit <= 0:
                 raise InvalidOperation
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             add_error("debit", "invalid_decimal", "debit must be a positive decimal", debit_raw)
     if credit_raw:
         try:
             credit = Decimal(credit_raw)
             if credit <= 0:
                 raise InvalidOperation
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             add_error("credit", "invalid_decimal", "credit must be a positive decimal", credit_raw)
 
     amount = None
@@ -152,7 +152,7 @@ def validate_finance_account_statement_row(
     if balance_raw:
         try:
             balance = Decimal(balance_raw)
-        except Exception:
+        except (InvalidOperation, TypeError, ValueError):
             add_error("balance", "invalid_decimal", "balance must be a decimal", balance_raw)
 
     external_ref = None

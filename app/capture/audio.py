@@ -36,14 +36,14 @@ class AudioDecoder:
             try:
                 self.process.stdin.write(chunk)
                 await self.process.stdin.drain()
-            except Exception:
+            except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError):
                 pass
 
     async def read_pcm_chunk(self, size: int = 1024) -> bytes:
         if self.process and self.process.stdout:
             try:
                 return await self.process.stdout.read(size)
-            except Exception:
+            except (asyncio.IncompleteReadError, ConnectionResetError, OSError, RuntimeError):
                 return b""
         return b""
 
@@ -53,7 +53,7 @@ class AudioDecoder:
                 if self.process.stdin:
                     self.process.stdin.close()
                     await self.process.stdin.wait_closed()
-            except Exception:
+            except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError):
                 pass
             try:
                 self.process.terminate()
@@ -64,5 +64,5 @@ class AudioDecoder:
                 except TimeoutError:
                     self.process.kill()
                     await self.process.wait()
-            except Exception:
+            except (ProcessLookupError, OSError, RuntimeError, TimeoutError):
                 pass

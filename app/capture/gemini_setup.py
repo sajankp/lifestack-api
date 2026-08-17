@@ -144,7 +144,7 @@ def _build_setup_message(
                             "before calling any mutation tool, translate new free text that will be stored "
                             "(titles, descriptions, tags, and similar text) into clear English. Preserve exact "
                             "names of existing categories, accounts, medications, and records as listed in the "
-                            "workspace data; never translate lookup values or UUIDs. "
+                            "workspace data; do not translate lookup values or UUIDs. "
                             f"The current UTC date and time is {current_utc}. The user's timezone is "
                             f"{user_timezone}. This provided timezone is authoritative for all relative dates "
                             "and times; do not replace it with the browser timezone or UTC. Interpret unqualified "
