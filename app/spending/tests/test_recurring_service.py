@@ -17,7 +17,7 @@ from app.core.exceptions import NotFoundError, ValidationError
 from app.core.recurrence import advance_due_date
 from app.finance.models import Account, AccountType
 from app.spending.models import RecurringTransaction, SpendingCategory, TransactionType
-from app.spending.schemas import RecurringTransactionCreate
+from app.spending.schemas import RecurringTransactionCreate, RecurringTransactionUpdate
 from app.spending.service import RecurringTransactionService
 
 
@@ -263,6 +263,46 @@ async def test_deactivate_recurring(recurring_service, mock_recurring_repo):
 
     assert existing.is_active is False
     assert existing.updated_at is not None
+    mock_recurring_repo.save.assert_called_once_with(existing)
+
+
+@pytest.mark.asyncio
+async def test_update_recurring_schedule_recomputes_next_due_date(
+    recurring_service, mock_recurring_repo
+):
+    public_id = uuid.uuid4()
+    existing = RecurringTransaction(
+        id=1,
+        public_id=public_id,
+        workspace_id=1,
+        user_id=10,
+        category_id=5,
+        amount=Decimal("100.00"),
+        type=TransactionType.expense,
+        frequency="monthly",
+        interval=1,
+        anchor_date=date(2026, 8, 1),
+        next_due_date=date(2026, 8, 1),
+        monthly_mode="day_of_month",
+        is_active=True,
+    )
+    mock_recurring_repo.get_by_public_id.return_value = existing
+    mock_recurring_repo.save.side_effect = lambda item: item
+
+    result = await recurring_service.update_recurring(
+        1,
+        public_id,
+        RecurringTransactionUpdate(
+            monthly_mode="nth_weekday",
+            by_weekday=4,
+            by_ordinal=1,
+        ),
+    )
+
+    assert result.next_due_date >= datetime.now(UTC).date()
+    assert result.monthly_mode == "nth_weekday"
+    assert result.by_weekday == 4
+    assert result.by_ordinal == 1
     mock_recurring_repo.save.assert_called_once_with(existing)
 
 

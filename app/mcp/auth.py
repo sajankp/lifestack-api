@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -31,6 +32,7 @@ from app.auth.repository import AuthSessionRepository, UserRepository
 from app.config import settings
 from app.core.auth import create_token
 from app.core.database import postgres
+from app.mcp.repository import McpGrantRepository
 
 
 class LifestackTokenVerifier(OAuthProvider):
@@ -178,6 +180,14 @@ class LifestackTokenVerifier(OAuthProvider):
         if client is None:
             raise AuthorizeError(error="unauthorized_client", error_description="Unknown client")
 
+        async with postgres.async_session_maker() as session, session.begin():
+            grant = await McpGrantRepository(session).upsert(
+                user_id,
+                str(payload["client_id"]),
+                client.client_name or "MCP client",
+                list(payload["scopes"]),
+            )
+
         code = secrets.token_urlsafe(32)
         authorization_code = AuthorizationCode(
             code=code,
@@ -188,7 +198,7 @@ class LifestackTokenVerifier(OAuthProvider):
             redirect_uri=payload["redirect_uri"],
             redirect_uri_provided_explicitly=payload["redirect_uri_provided_explicitly"],
             resource=payload["resource"],
-            subject=f"{user_id}:{sid}",
+            subject=f"{user_id}:{sid}:{grant.public_id}",
         )
         await self._get_redis().set(
             self._code_key(code),
@@ -226,9 +236,9 @@ class LifestackTokenVerifier(OAuthProvider):
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
-        user_id, sid = self._subject_parts(authorization_code.subject)
+        user_id, sid, grant_id = self._subject_parts(authorization_code.subject)
         access_token, expires_in = await self._issue_access_token(
-            client.client_id or "", user_id, sid, authorization_code.scopes
+            client.client_id or "", user_id, sid, authorization_code.scopes, grant_id
         )
         refresh = await self._issue_refresh_token(
             client.client_id or "", authorization_code.scopes, authorization_code.subject
@@ -263,9 +273,9 @@ class LifestackTokenVerifier(OAuthProvider):
                 error="invalid_scope", error_description="Scope exceeds original grant"
             )
         await self._get_redis().delete(self._refresh_key(refresh_token.token))
-        user_id, sid = self._subject_parts(refresh_token.subject)
+        user_id, sid, grant_id = self._subject_parts(refresh_token.subject)
         access_token, expires_in = await self._issue_access_token(
-            client.client_id or "", user_id, sid, scopes
+            client.client_id or "", user_id, sid, scopes, grant_id
         )
         replacement = await self._issue_refresh_token(
             client.client_id or "", scopes, refresh_token.subject
@@ -285,20 +295,31 @@ class LifestackTokenVerifier(OAuthProvider):
                 algorithms=["HS256"],
                 audience=self.resource_url,
                 issuer=str(self.issuer_url),
-                options={"require": ["exp", "aud", "iss", "sub", "sid"]},
+                options={"require": ["exp", "aud", "iss", "sub", "sid", "grant_id"]},
             )
             if claims.get("token_type") != "mcp_access":
                 return None
             user_id = int(claims["sub"])
             sid = str(claims["sid"])
+            grant_id = uuid.UUID(str(claims["grant_id"]))
             scopes = str(claims.get("scope", "")).split()
         except (jwt.InvalidTokenError, KeyError, TypeError, ValueError):
             return None
 
-        async with postgres.async_session_maker() as session:
+        async with postgres.async_session_maker() as session, session.begin():
             auth_session = await AuthSessionRepository(session).get_active_by_sid(sid, user_id)
             user = await UserRepository(session).get_by_id(user_id)
-        if auth_session is None or user is None or not user.is_active:
+            grant = await McpGrantRepository(session).get_active_by_public_id_unscoped(grant_id)
+            if grant is not None:
+                await McpGrantRepository(session).touch(grant)
+        if (
+            auth_session is None
+            or user is None
+            or not user.is_active
+            or grant is None
+            or grant.user_id != user_id
+            or grant.client_id != str(claims.get("client_id", ""))
+        ):
             return None
         return AccessToken(
             token=token,
@@ -307,28 +328,34 @@ class LifestackTokenVerifier(OAuthProvider):
             scopes=scopes,
             expires_at=int(claims["exp"]),
             resource=self.resource_url,
-            claims={"user_id": user_id, "sid": sid, **claims},
+            claims={"user_id": user_id, "sid": sid, "grant_id": str(grant_id), **claims},
         )
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         if isinstance(token, RefreshToken):
             await self._get_redis().delete(self._refresh_key(token.token))
+            _, _, grant_id = self._subject_parts(token.subject)
+            if grant_id:
+                async with postgres.async_session_maker() as session, session.begin():
+                    grant = await McpGrantRepository(session).get_active_by_public_id_unscoped(
+                        uuid.UUID(grant_id)
+                    )
+                    if grant is not None:
+                        await McpGrantRepository(session).revoke(grant)
             return
         claims = token.claims or {}
-        sid = claims.get("sid")
-        user_id = claims.get("user_id")
-        if not sid or user_id is None:
+        grant_id = claims.get("grant_id")
+        if not grant_id:
             return
         async with postgres.async_session_maker() as session, session.begin():
-            auth_session = await AuthSessionRepository(session).get_active_by_sid(
-                str(sid), int(user_id)
+            grant = await McpGrantRepository(session).get_active_by_public_id_unscoped(
+                uuid.UUID(str(grant_id))
             )
-            if auth_session is not None:
-                auth_session.revoked_at = datetime.now(UTC)
-                session.add(auth_session)
+            if grant is not None:
+                await McpGrantRepository(session).revoke(grant)
 
     async def _issue_access_token(
-        self, client_id: str, user_id: int, sid: str, scopes: list[str]
+        self, client_id: str, user_id: int, sid: str, scopes: list[str], grant_id: str | None
     ) -> tuple[str, int]:
         expires_in = settings.ACCESS_TOKEN_EXPIRE_SECONDS
         token = create_token(
@@ -338,6 +365,7 @@ class LifestackTokenVerifier(OAuthProvider):
                 "iss": str(self.issuer_url),
                 "scope": " ".join(scopes),
                 "client_id": client_id,
+                "grant_id": grant_id,
             },
             expires_delta=timedelta(seconds=expires_in),
             sid=sid,
@@ -364,14 +392,14 @@ class LifestackTokenVerifier(OAuthProvider):
         return refresh
 
     @staticmethod
-    def _subject_parts(subject: str | None) -> tuple[int, str]:
+    def _subject_parts(subject: str | None) -> tuple[int, str, str | None]:
         if not subject or ":" not in subject:
             raise TokenError(
                 error="invalid_grant", error_description="Invalid authorization subject"
             )
-        user_id, sid = subject.split(":", 1)
+        user_id, sid, *grant_parts = subject.split(":", 2)
         try:
-            return int(user_id), sid
+            return int(user_id), sid, grant_parts[0] if grant_parts else None
         except ValueError as exc:
             raise TokenError(
                 error="invalid_grant", error_description="Invalid authorization subject"

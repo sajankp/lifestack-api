@@ -2493,6 +2493,10 @@ class RecurringTransactionService:
         new_end = update_data.get("end_date", recurring.end_date)
         if new_end and new_end < recurring.anchor_date:
             raise ValidationError(detail="end_date cannot be before anchor_date")
+        schedule_changed = any(
+            key in update_data
+            for key in ("frequency", "interval", "monthly_mode", "by_weekday", "by_ordinal")
+        )
         for key, value in update_data.items():
             setattr(recurring, key, value)
         try:
@@ -2504,6 +2508,18 @@ class RecurringTransactionService:
             )
         except ValueError as exc:
             raise ValidationError(detail=str(exc)) from exc
+        if schedule_changed:
+            recurring.next_due_date = first_due_date(
+                recurring.anchor_date,
+                datetime.now(UTC).date(),
+                recurring.frequency,
+                recurring.interval,
+                monthly_mode=recurring.monthly_mode,
+                by_weekday=recurring.by_weekday,
+                by_ordinal=recurring.by_ordinal,
+            )
+            if recurring.end_date and recurring.next_due_date > recurring.end_date:
+                recurring.is_active = False
         recurring.updated_at = datetime.now(UTC)
         return await self.recurring_repo.save(recurring)
 
