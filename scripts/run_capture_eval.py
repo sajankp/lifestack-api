@@ -9,6 +9,7 @@ live, billable calls to the Gemini API: one short session per fixture case.
 Usage:
     uv run python scripts/run_capture_eval.py
     uv run python scripts/run_capture_eval.py --fixture app/tests/capture/eval/utterances.json --out /tmp/eval-run.json
+    uv run python scripts/run_capture_eval.py --model models/gemini-3.1-flash-live-preview
 
 Per spec-079 resolved question 3, the "experimental" label comes off only
 after this is run twice, a week apart, both at >=90% (skipped cases
@@ -138,7 +139,15 @@ def main() -> None:
         default=Path("app/tests/capture/eval/utterances.json"),
     )
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Override settings.GEMINI_MODEL for an A/B run without editing .env",
+    )
     args = parser.parse_args()
+
+    if args.model:
+        settings.GEMINI_MODEL = args.model
 
     summary = asyncio.run(run_eval(args.fixture))
 
