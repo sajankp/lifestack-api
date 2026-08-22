@@ -1491,14 +1491,20 @@ class ConstituentService:
         return await self.constituent_repo.create_many(rows)
 
     async def get_constituents(
-        self, workspace_id: int, instrument_public_id: uuid.UUID, as_of: date
+        self,
+        workspace_id: int,
+        instrument_public_id: uuid.UUID,
+        as_of: date,
+        source: str | None = None,
     ) -> list[InstrumentConstituentResponse]:
         instrument = await self.instrument_repo.get_by_public_id(workspace_id, instrument_public_id)
         if instrument is None:
             raise NotFoundError(detail=f"Instrument '{instrument_public_id}' not found")
-        rows = await self.constituent_repo.list_snapshot(instrument.id, as_of)  # type: ignore[arg-type]
+        rows = await self.constituent_repo.list_snapshot(instrument.id, as_of, source=source)  # type: ignore[arg-type]
         if not rows:
-            rows = await self.constituent_repo.get_latest_on_or_before(instrument.id, as_of)  # type: ignore[arg-type]
+            rows = await self.constituent_repo.get_latest_on_or_before(
+                instrument.id, as_of, source=source
+            )  # type: ignore[arg-type]
 
         companies_by_id = await self.company_repo.get_by_ids([
             row.constituent_company_id for row in rows
@@ -1519,6 +1525,31 @@ class ConstituentService:
                 )
             )
         return out
+
+    async def delete_snapshot(
+        self,
+        workspace_id: int,
+        instrument_public_id: uuid.UUID,
+        as_of: date,
+        source: str,
+    ) -> int:
+        """Delete one complete sourced constituent snapshot."""
+        instrument = await self.instrument_repo.get_by_public_id(workspace_id, instrument_public_id)
+        if instrument is None:
+            raise NotFoundError(detail=f"Instrument '{instrument_public_id}' not found")
+        deleted = await self.constituent_repo.delete_snapshot(
+            instrument.id,
+            as_of,
+            source,  # type: ignore[arg-type]
+        )
+        if deleted == 0:
+            raise NotFoundError(
+                detail=(
+                    f"No constituent snapshot found for instrument '{instrument_public_id}', "
+                    f"date {as_of}, source '{source}'"
+                )
+            )
+        return deleted
 
 
 class ExposureAnalyticsService:

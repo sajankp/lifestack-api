@@ -1,17 +1,21 @@
 """Authenticated MCP tools and resources for Lifestack."""
 
 import json
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import urlparse
 
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_access_token
+from pydantic import ValidationError as PydanticValidationError
 
 from app.auth.models import User
 from app.capture.tools import AgentTools
 from app.config import settings
+from app.core.audit import AuditLogger
 from app.core.database import postgres
+from app.core.exceptions import APIError
 from app.finance.models import AccountType
 from app.finance.repository import (
     AccountRepository,
@@ -25,10 +29,21 @@ from app.health.repository import MedicationRepository
 from app.investing.performance_service import InvestingSummaryService
 from app.investing.repository import (
     CashBalanceRepository,
+    CompanyRepository,
+    DividendRepository,
     HoldingPriceRepository,
     HoldingRepository,
+    InstrumentConstituentRepository,
+    InstrumentRepository,
+    InvestingOrderRepository,
     PortfolioSnapshotRepository,
 )
+from app.investing.schemas import (
+    DividendCreate,
+    DividendResponse,
+    InstrumentConstituentUpsert,
+)
+from app.investing.service import ConstituentService, DividendService, HoldingService
 from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.security import authorize_user, authorize_workspace, validate_page
 from app.platform.repository import MembershipRepository, WorkspaceRepository
@@ -71,6 +86,57 @@ async def _run_capture_tool(
         else:
             await session.rollback()
         return result
+
+
+def _holding_service(session: Any) -> HoldingService:
+    """Build the investing holding service with the same repositories as REST."""
+    return HoldingService(
+        HoldingRepository(session),
+        InstrumentRepository(session),
+        CompanyRepository(session),
+        AccountRepository(session),
+        CurrencyRepository(session),
+        HoldingPriceRepository(session),
+        InvestingOrderRepository(session),
+    )
+
+
+def _constituent_service(session: Any) -> ConstituentService:
+    return ConstituentService(
+        InstrumentRepository(session),
+        CompanyRepository(session),
+        InstrumentConstituentRepository(session),
+    )
+
+
+def _dividend_service(session: Any) -> DividendService:
+    return DividendService(
+        DividendRepository(session),
+        CashBalanceRepository(session),
+        AccountRepository(session),
+        HoldingRepository(session),
+        CurrencyRepository(session),
+    )
+
+
+def _dividend_response(dividend: Any, account: Any) -> dict[str, Any]:
+    return DividendResponse.model_validate({
+        "public_id": dividend.public_id,
+        "account_id": account.public_id,
+        "account_name": account.name,
+        "holding_id": None,
+        "symbol": dividend.symbol,
+        "income_type": dividend.income_type,
+        "gross_amount": dividend.gross_amount,
+        "tax_withheld": dividend.tax_withheld,
+        "net_amount": dividend.net_amount,
+        "currency": dividend.currency,
+        "pay_date": dividend.pay_date,
+        "external_ref": dividend.external_ref,
+        "notes": dividend.notes,
+        "created_at": dividend.created_at,
+        "updated_at": dividend.updated_at,
+    }).model_dump(mode="json")
 
 
 async def _load_workspace_reference_data(
@@ -322,6 +388,336 @@ def create_mcp_server() -> FastMCP:
             )
             data = await _load_workspace_reference_data(session, workspace_id, user_id)
             return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+    @mcp.tool
+    async def list_investment_holdings(
+        workspace_id: int, limit: int = 25, offset: int = 0
+    ) -> dict[str, Any]:
+        """List bounded investment holdings with valuation and instrument identity."""
+        validate_page(limit, offset)
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:read",
+                tool="list_investment_holdings",
+            )
+            service = _holding_service(session)
+            raw_holdings, total = await HoldingRepository(session).get_all(
+                workspace_id, limit=limit, offset=offset
+            )
+            detailed_items, _ = await service.list_holdings_with_details(
+                workspace_id, limit=limit, offset=offset
+            )
+            instruments = await InstrumentRepository(session).get_by_ids([
+                holding.instrument_id
+                for holding in raw_holdings
+                if holding.instrument_id is not None
+            ])
+            raw_by_public_id = {holding.public_id: holding for holding in raw_holdings}
+            items = []
+            for item in detailed_items:
+                data = item.model_dump(mode="json")
+                raw = raw_by_public_id.get(item.public_id)
+                instrument = instruments.get(raw.instrument_id) if raw else None
+                data.update({
+                    "instrument_public_id": str(instrument.public_id) if instrument else None,
+                    "instrument_name": instrument.name if instrument else None,
+                    "isin": instrument.isin if instrument else None,
+                    "exchange": instrument.exchange if instrument else None,
+                })
+                items.append(data)
+            return {
+                "status": "success",
+                "workspace_id": workspace_id,
+                "items": items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+
+    @mcp.tool
+    async def get_investment_constituents(
+        workspace_id: int,
+        instrument_public_id: str,
+        as_of_date: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        """Read the latest sourced ETF or mutual-fund constituent snapshot."""
+        try:
+            instrument_id = uuid.UUID(instrument_public_id)
+            as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid instrument_public_id or as_of_date."}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:read",
+                tool="get_investment_constituents",
+            )
+            items = await _constituent_service(session).get_constituents(
+                workspace_id, instrument_id, as_of, source=source
+            )
+            return {
+                "status": "success",
+                "workspace_id": workspace_id,
+                "instrument_public_id": instrument_public_id,
+                "as_of_date": as_of.isoformat(),
+                "source": source,
+                "items": [item.model_dump(mode="json") for item in items],
+                "total": len(items),
+            }
+
+    @mcp.tool
+    async def write_investment_constituent_snapshot(
+        workspace_id: int,
+        instrument_public_id: str,
+        as_of_date: str,
+        source: str,
+        fetched_at: str,
+        constituents: list[dict[str, Any]],
+        renormalise: bool = False,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Replace one sourced ETF or mutual-fund constituent snapshot.
+
+        Requires the dedicated mcp:research grant and explicit confirmation.
+        Each constituent must include a ticker or ISIN and a decimal weight.
+        """
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": (
+                    "This will replace the complete constituent snapshot for "
+                    f"{instrument_public_id} on {as_of_date} from {source}. Confirm to continue."
+                ),
+                "instrument_public_id": instrument_public_id,
+                "as_of_date": as_of_date,
+                "source": source,
+                "constituent_count": len(constituents),
+            }
+        if not 1 <= len(constituents) <= 500:
+            return {
+                "status": "error",
+                "message": "constituents must contain between 1 and 500 rows.",
+            }
+
+        try:
+            instrument_id = uuid.UUID(instrument_public_id)
+            payload = InstrumentConstituentUpsert.model_validate({
+                "as_of_date": as_of_date,
+                "source": source,
+                "fetched_at": fetched_at,
+                "constituents": constituents,
+                "renormalise": renormalise,
+            })
+        except (TypeError, ValueError, PydanticValidationError) as exc:
+            return {"status": "error", "message": f"Invalid constituent snapshot: {exc}"}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:research",
+                tool="write_investment_constituent_snapshot",
+            )
+            try:
+                service = _constituent_service(session)
+                await service.upsert_constituents(workspace_id, instrument_id, payload)
+                items = await service.get_constituents(
+                    workspace_id,
+                    instrument_id,
+                    payload.as_of_date,
+                    source=payload.source,
+                )
+                await session.commit()
+            except (APIError, ValueError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+            return {
+                "status": "success",
+                "entity_type": "investment_constituent_snapshot",
+                "instrument_public_id": instrument_public_id,
+                "as_of_date": payload.as_of_date.isoformat(),
+                "source": payload.source,
+                "fetched_at": payload.fetched_at.isoformat(),
+                "items": [item.model_dump(mode="json") for item in items],
+                "total": len(items),
+                "summary": f"Saved {len(items)} constituent rows from {payload.source}.",
+            }
+
+    @mcp.tool
+    async def delete_investment_constituent_snapshot(
+        workspace_id: int,
+        instrument_public_id: str,
+        as_of_date: str,
+        source: str,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Delete one complete sourced constituent snapshot after confirmation."""
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": (
+                    "This will delete the complete constituent snapshot for "
+                    f"{instrument_public_id} on {as_of_date} from {source}. Confirm to continue."
+                ),
+            }
+        try:
+            instrument_id = uuid.UUID(instrument_public_id)
+            snapshot_date = date.fromisoformat(as_of_date)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid instrument_public_id or as_of_date."}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:research",
+                tool="delete_investment_constituent_snapshot",
+            )
+            try:
+                deleted = await _constituent_service(session).delete_snapshot(
+                    workspace_id, instrument_id, snapshot_date, source
+                )
+                await session.commit()
+            except (APIError, ValueError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+            return {
+                "status": "success",
+                "entity_type": "investment_constituent_snapshot",
+                "instrument_public_id": instrument_public_id,
+                "as_of_date": as_of_date,
+                "source": source,
+                "deleted_rows": deleted,
+                "summary": f"Deleted the {source} constituent snapshot.",
+            }
+
+    @mcp.tool
+    async def list_investment_dividends(
+        workspace_id: int,
+        symbol: str | None = None,
+        account_id: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """List bounded dividend, interest, and coupon events."""
+        validate_page(limit, offset)
+        try:
+            account_public_id = uuid.UUID(account_id) if account_id else None
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid account_id."}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:read",
+                tool="list_investment_dividends",
+            )
+            rows, total, accounts = await _dividend_service(session).list_dividends(
+                workspace_id,
+                limit,
+                offset,
+                account_id=account_public_id,
+                symbol=symbol,
+            )
+            items = [
+                _dividend_response(row, accounts[row.account_id])
+                for row in rows
+                if row.account_id in accounts
+            ]
+            return {
+                "status": "success",
+                "workspace_id": workspace_id,
+                "items": items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+
+    @mcp.tool
+    async def create_investment_dividend(
+        workspace_id: int,
+        account_id: str,
+        gross_amount: str,
+        currency: str,
+        pay_date: str,
+        symbol: str | None = None,
+        income_type: str = "dividend",
+        tax_withheld: str = "0",
+        external_ref: str | None = None,
+        notes: str | None = None,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Create a confirmed dividend or investment-income event.
+
+        This credits the linked brokerage cash balance through the existing
+        DividendService and never accepts bank or wallet accounts.
+        """
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": (
+                    f"Record {income_type} income of {gross_amount} {currency} for "
+                    f"{symbol or 'the brokerage account'} on {pay_date}? Confirm to continue."
+                ),
+                "account_id": account_id,
+                "symbol": symbol,
+                "income_type": income_type,
+                "gross_amount": gross_amount,
+                "tax_withheld": tax_withheld,
+                "currency": currency,
+                "pay_date": pay_date,
+            }
+
+        try:
+            payload = DividendCreate(
+                account_id=uuid.UUID(account_id),
+                symbol=symbol,
+                income_type=income_type,
+                gross_amount=gross_amount,
+                tax_withheld=tax_withheld,
+                currency=currency,
+                pay_date=pay_date,
+                external_ref=external_ref,
+                notes=notes,
+            )
+        except (TypeError, ValueError, PydanticValidationError) as exc:
+            return {"status": "error", "message": f"Invalid dividend: {exc}"}
+
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:write",
+                tool="create_investment_dividend",
+            )
+            try:
+                dividend, account = await _dividend_service(session).create_dividend(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    dividend_in=payload,
+                    audit_logger=AuditLogger(session),
+                )
+                await session.commit()
+            except (APIError, ValueError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+            item = _dividend_response(dividend, account)
+            return {
+                "status": "success",
+                "entity_type": "investment_dividend",
+                "entity_public_id": item["public_id"],
+                "item": item,
+                "summary": f"Recorded {payload.income_type} income of {payload.net_amount} {payload.currency}.",
+            }
 
     @mcp.tool
     async def find_spending_transactions(

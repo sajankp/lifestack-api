@@ -600,7 +600,7 @@ class InstrumentConstituentRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def delete_snapshot(self, instrument_id: int, as_of_date: date, source: str) -> None:
+    async def delete_snapshot(self, instrument_id: int, as_of_date: date, source: str) -> int:
         result = await self.session.execute(
             select(InstrumentConstituent).where(
                 InstrumentConstituent.instrument_id == instrument_id,
@@ -608,9 +608,11 @@ class InstrumentConstituentRepository:
                 InstrumentConstituent.source == source,
             )
         )
-        for row in result.scalars().all():
+        rows = result.scalars().all()
+        for row in rows:
             await self.session.delete(row)
         await self.session.flush()
+        return len(rows)
 
     async def create_many(self, rows: list[InstrumentConstituent]) -> list[InstrumentConstituent]:
         self.session.add_all(rows)
@@ -618,30 +620,34 @@ class InstrumentConstituentRepository:
         return rows
 
     async def list_snapshot(
-        self, instrument_id: int, as_of_date: date
+        self, instrument_id: int, as_of_date: date, source: str | None = None
     ) -> Sequence[InstrumentConstituent]:
-        result = await self.session.execute(
-            select(InstrumentConstituent).where(
-                InstrumentConstituent.instrument_id == instrument_id,
-                InstrumentConstituent.as_of_date == as_of_date,
-            )
-        )
+        conditions = [
+            InstrumentConstituent.instrument_id == instrument_id,
+            InstrumentConstituent.as_of_date == as_of_date,
+        ]
+        if source is not None:
+            conditions.append(InstrumentConstituent.source == source)
+        result = await self.session.execute(select(InstrumentConstituent).where(*conditions))
         return result.scalars().all()
 
     async def get_latest_on_or_before(
-        self, instrument_id: int, as_of_date: date
+        self, instrument_id: int, as_of_date: date, source: str | None = None
     ) -> Sequence[InstrumentConstituent]:
+        conditions = [
+            InstrumentConstituent.instrument_id == instrument_id,
+            InstrumentConstituent.as_of_date <= as_of_date,
+        ]
+        if source is not None:
+            conditions.append(InstrumentConstituent.source == source)
         latest_date = (
             await self.session.execute(
-                select(func.max(InstrumentConstituent.as_of_date)).where(
-                    InstrumentConstituent.instrument_id == instrument_id,
-                    InstrumentConstituent.as_of_date <= as_of_date,
-                )
+                select(func.max(InstrumentConstituent.as_of_date)).where(*conditions)
             )
         ).scalar_one_or_none()
         if latest_date is None:
             return []
-        return await self.list_snapshot(instrument_id, latest_date)
+        return await self.list_snapshot(instrument_id, latest_date, source=source)
 
     async def get_latest_on_or_before_many(
         self, instrument_ids: Sequence[int], as_of_date: date

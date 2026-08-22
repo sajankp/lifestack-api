@@ -35,6 +35,7 @@ async def test_mcp_oauth_client_and_authorization_code_are_durable_shapes(monkey
     monkeypatch.setattr(settings, "FRONTEND_URL", "https://app.example.test")
     provider = LifestackTokenVerifier()
     provider._redis = FakeRedis()
+    assert "mcp:research" in provider.client_registration_options.valid_scopes
     grant_id = uuid.uuid4()
 
     async def fake_upsert(self, user_id, client_id, client_name, scopes):
@@ -129,10 +130,19 @@ async def test_mcp_exposes_voice_transaction_correction_tools(monkeypatch):
         "get_account_balances",
         "get_workspace_reference_data",
         "list_workspaces",
+        "list_investment_holdings",
+        "get_investment_constituents",
+        "write_investment_constituent_snapshot",
+        "delete_investment_constituent_snapshot",
+        "list_investment_dividends",
+        "create_investment_dividend",
     }.issubset(tools)
     assert "workspace_id" in tools["find_spending_transactions"].parameters["properties"]
     assert "workspace_id" in tools["update_spending_transaction"].parameters["properties"]
     assert "confirmed" in tools["delete_spending_transaction"].parameters["properties"]
+    assert "confirmed" in tools["write_investment_constituent_snapshot"].parameters["properties"]
+    assert "confirmed" in tools["delete_investment_constituent_snapshot"].parameters["properties"]
+    assert "confirmed" in tools["create_investment_dividend"].parameters["properties"]
 
     resources = await server.list_resource_templates()
     resource_templates = {resource.uri_template for resource in resources}
