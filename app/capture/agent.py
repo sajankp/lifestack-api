@@ -95,6 +95,7 @@ def _log_capture_turn(
     workspace_id: int,
     session_id: str | None = None,
     call_id: str | None = None,
+    error_code: str | None = None,
 ) -> None:
     """Record one voice tool-call turn (`kind='tool_call'`): tool name, args, and
     outcome. The user's utterance is not on this row — with input transcription
@@ -109,6 +110,7 @@ def _log_capture_turn(
         "tool": tool_name,
         "args": args,
         "status": status,
+        "error_code": error_code,
         "user_id": user_id,
         "workspace_id": workspace_id,
     })
@@ -209,6 +211,9 @@ async def execute_agent_tool(
                 "create_recurring_todo": tools.create_recurring_todo,
                 "log_spending_transaction": tools.log_spending_transaction,
                 "list_spending_transactions": tools.list_spending_transactions,
+                "find_spending_transactions": tools.find_spending_transactions,
+                "update_spending_transaction": tools.update_spending_transaction,
+                "delete_spending_transaction": tools.delete_spending_transaction,
                 "get_investing_summary": tools.get_investing_summary,
                 "get_account_balances": tools.get_account_balances,
                 "list_todos": tools.list_todos,
@@ -567,6 +572,19 @@ async def _handle_gemini_message(
                 workspace_id=workspace_id,
                 session_id=session_id,
                 call_id=call_id,
+                error_code=(
+                    "confirmation_required"
+                    if result.get("needs_confirmation")
+                    else "account_required"
+                    if result.get("needs_account")
+                    else "filter_required"
+                    if result.get("needs_filter")
+                    else "duplicate_detected"
+                    if result.get("duplicate_detected")
+                    else "tool_error"
+                    if result.get("status") != "success"
+                    else None
+                ),
             )
 
             await client_ws.send_json({

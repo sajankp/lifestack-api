@@ -26,14 +26,24 @@ async def authorize_workspace(
 ) -> int:
     if workspace_id <= 0:
         raise ValidationError(detail="workspace_id must be a positive integer")
-    user_id, _ = principal()
     token = get_access_token()
     if token is None or required_scope not in token.scopes:
         raise ForbiddenError(detail="MCP token does not grant this operation")
+    user_id, _ = principal()
     membership = await MembershipRepository(session).get_membership(workspace_id, user_id)
     if membership is None:
         raise ForbiddenError(detail="You do not have access to this workspace")
     logger.info("mcp_tool_authorized", tool=tool, user_id=user_id, workspace_id=workspace_id)
+    return user_id
+
+
+def authorize_user(*, required_scope: str, tool: str) -> int:
+    """Authorize an MCP operation that is not scoped to one workspace yet."""
+    token = get_access_token()
+    if token is None or required_scope not in token.scopes:
+        raise ForbiddenError(detail="MCP token does not grant this operation")
+    user_id, _ = principal()
+    logger.info("mcp_tool_authorized", tool=tool, user_id=user_id)
     return user_id
 
 

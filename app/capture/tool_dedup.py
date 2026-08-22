@@ -32,6 +32,8 @@ WRITE_TOOLS = frozenset({
     "log_medication_event",
     "update_todo",
     "delete_todo",
+    "update_spending_transaction",
+    "delete_spending_transaction",
 })
 
 # Per-tool fuzzy key fields — the args that survived replay drift in the

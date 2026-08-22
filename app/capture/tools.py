@@ -32,7 +32,7 @@ from app.investing.repository import (
 )
 from app.spending.models import TransactionType
 from app.spending.repository import CategoryRepository, TagRepository, TransactionRepository
-from app.spending.schemas import TagCreate, TransactionCreate
+from app.spending.schemas import TagCreate, TransactionCreate, TransactionUpdate
 from app.spending.service import CategoryService, TagService, TransactionService
 from app.todo.repository import TodoRepository
 from app.todo.schemas import RecurringTodoRuleCreate, TodoCreate, TodoUpdate
@@ -818,6 +818,309 @@ class AgentTools:
                 }
                 for item in items
             ],
+        }
+
+    @staticmethod
+    def _transaction_candidate(item, category_names: dict, account_names: dict) -> dict:
+        return {
+            "entity_public_id": str(item.public_id),
+            "amount": str(item.amount),
+            "category_name": category_names.get(item.category_id, str(item.category_id)),
+            "description": item.description,
+            "account_name": account_names.get(item.account_id)
+            if item.account_id is not None
+            else None,
+            "occurred_at": item.occurred_at.isoformat(),
+            "tags": [tag.name for tag in item.tags],
+            "source_type": item.source_type,
+        }
+
+    async def find_spending_transactions(
+        self,
+        from_day: str | None = None,
+        to_day: str | None = None,
+        category_name: str | None = None,
+        amount: str | None = None,
+        search: str | None = None,
+        account_name: str | None = None,
+        limit: int = 10,
+    ) -> dict:
+        """Find bounded expense candidates for a correction or deletion.
+
+        At least one meaningful clue is required so a conversational correction
+        cannot accidentally select an arbitrary workspace transaction.
+        Dates are local calendar days in the user's persisted timezone.
+        """
+        clues = (from_day, to_day, category_name, amount, search, account_name)
+        if not any(value and value.strip() for value in clues if isinstance(value, str)):
+            return {
+                "status": "error",
+                "needs_filter": True,
+                "message": (
+                    "Provide a date, amount, description, category, or account so I can "
+                    "identify the transaction safely."
+                ),
+            }
+
+        timezone = _safe_timezone(self.user_timezone)
+        today = datetime.now(timezone).date()
+        try:
+            start_day = (
+                date.fromisoformat(from_day.strip()) if from_day and from_day.strip() else None
+            )
+            end_day = date.fromisoformat(to_day.strip()) if to_day and to_day.strip() else None
+        except ValueError:
+            return {"status": "error", "message": "Dates must use YYYY-MM-DD format."}
+        if start_day is None:
+            start_day = end_day or today
+        if end_day is None:
+            end_day = start_day
+        if end_day < start_day:
+            return {"status": "error", "message": "to_day must not be before from_day."}
+        if (end_day - start_day).days > 31:
+            return {
+                "status": "error",
+                "needs_filter": True,
+                "message": "Use a date range of 31 days or less when finding a transaction.",
+            }
+
+        try:
+            normalized_limit = max(1, min(int(limit), 25))
+        except (TypeError, ValueError):
+            normalized_limit = 10
+
+        categories, _ = await self.category_service.list_categories(
+            self.workspace_id, limit=200, offset=0
+        )
+        category_names = {category.public_id: category.name for category in categories}
+        category_public_id = None
+        if category_name and category_name.strip():
+            normalized_category = category_name.strip().lower()
+            category = next(
+                (item for item in categories if item.name.strip().lower() == normalized_category),
+                None,
+            )
+            if category is None:
+                return {
+                    "status": "error",
+                    "message": f"No spending category named '{category_name}' was found.",
+                }
+            category_public_id = category.public_id
+
+        accounts, _ = await self.account_repo.list_workspace_accounts(
+            self.workspace_id, limit=200, offset=0
+        )
+        account_names = {account.public_id: account.name for account in accounts}
+        account_public_id = None
+        if account_name and account_name.strip():
+            account, resolution_error = await self._resolve_spending_account(account_name)
+            if resolution_error is not None or account is None:
+                return resolution_error
+            account_public_id = account.public_id
+
+        parsed_amount = None
+        if amount and amount.strip():
+            try:
+                parsed_amount = Decimal(amount.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "amount must be numeric."}
+
+        local_start = datetime.combine(start_day, time.min, tzinfo=timezone)
+        next_local_start = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=timezone)
+        items, total = await self.tx_service.list_transactions_with_details(
+            self.workspace_id,
+            category_public_id=category_public_id,
+            account_public_id=account_public_id,
+            type_filter=TransactionType.expense,
+            from_date=local_start.astimezone(UTC),
+            to_date=next_local_start.astimezone(UTC),
+            search=search.strip() if search and search.strip() else None,
+            amount=parsed_amount,
+            limit=normalized_limit,
+            offset=0,
+        )
+        if total > normalized_limit:
+            return {
+                "status": "error",
+                "needs_filter": True,
+                "total": total,
+                "message": (
+                    f"I found {total} matching transactions. Add a more specific date, "
+                    "amount, description, category, or account."
+                ),
+            }
+        return {
+            "status": "success",
+            "from_day": start_day.isoformat(),
+            "to_day": end_day.isoformat(),
+            "timezone": getattr(timezone, "key", "UTC"),
+            "total": total,
+            "transactions": [
+                self._transaction_candidate(item, category_names, account_names) for item in items
+            ],
+        }
+
+    async def update_spending_transaction(
+        self,
+        public_id: str,
+        amount: str | None = None,
+        category_name: str | None = None,
+        description: str | None = None,
+        account_name: str | None = None,
+        occurred_at: str | None = None,
+        tags: list[str] | None = None,
+        confirmed: bool = False,
+    ) -> dict:
+        """Correct one expense after the user has confirmed the proposed change."""
+        try:
+            transaction_id = uuid.UUID(public_id)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid transaction public_id."}
+
+        try:
+            current = await self.tx_service.get_transaction_with_details(
+                self.workspace_id, transaction_id
+            )
+        except NotFoundError:
+            return {"status": "error", "message": "Transaction not found."}
+
+        if not confirmed:
+            return {
+                "status": "error",
+                "needs_confirmation": True,
+                "entity_public_id": public_id,
+                "current": current.model_dump(mode="json"),
+                "message": "Read back the proposed transaction change and ask for confirmation.",
+            }
+
+        update_fields = {}
+        changed_labels = []
+        if amount is not None:
+            try:
+                update_fields["amount"] = Decimal(amount)
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "Invalid amount format."}
+            changed_labels.append("amount")
+
+        if category_name and category_name.strip():
+            categories, _ = await self.category_service.list_categories(
+                self.workspace_id, limit=200, offset=0
+            )
+            category = next(
+                (
+                    item
+                    for item in categories
+                    if item.name.strip().lower() == category_name.strip().lower()
+                ),
+                None,
+            )
+            if category is None:
+                return {
+                    "status": "error",
+                    "message": f"No spending category named '{category_name}' was found.",
+                }
+            update_fields["category_id"] = category.public_id
+            changed_labels.append("category")
+
+        if account_name and account_name.strip():
+            account, resolution_error = await self._resolve_spending_account(account_name)
+            if resolution_error is not None or account is None:
+                return resolution_error
+            update_fields["account_id"] = account.public_id
+            changed_labels.append("account")
+
+        if description is not None:
+            update_fields["description"] = description
+            changed_labels.append("description")
+
+        if occurred_at and occurred_at.strip():
+            try:
+                update_fields["occurred_at"] = _parse_occurred_at(occurred_at, self.user_timezone)
+            except ValueError:
+                return {"status": "error", "message": "Invalid occurred_at date."}
+            changed_labels.append("occurred_at")
+
+        if tags is not None:
+            resolved_tag_ids = []
+            for tag_name in tags:
+                cleaned_tag = " ".join(tag_name.strip().split())
+                if not cleaned_tag:
+                    continue
+                tag = await self.tag_service.create_tag(
+                    self.workspace_id,
+                    TagCreate(name=cleaned_tag),
+                    actor_id=self.user_id,
+                    audit_logger=self.audit_logger,
+                )
+                resolved_tag_ids.append(tag.public_id)
+            update_fields["tag_ids"] = resolved_tag_ids
+            changed_labels.append("tags")
+
+        if not update_fields:
+            return {"status": "error", "message": "No transaction changes were provided."}
+
+        try:
+            updated = await self.tx_service.update_transaction_with_details(
+                self.workspace_id,
+                transaction_id,
+                TransactionUpdate.model_validate(update_fields),
+                actor_id=self.user_id,
+                audit_logger=self.audit_logger,
+            )
+        except (PydanticValidationError, APIError, ValueError) as exc:
+            await self.session.rollback()
+            detail = getattr(exc, "detail", None) or str(exc)
+            return {"status": "error", "message": detail or "Invalid transaction update."}
+
+        return {
+            "status": "success",
+            "entity_public_id": str(updated.public_id),
+            "entity_type": "transaction",
+            "amount": str(updated.amount),
+            "occurred_at": updated.occurred_at.isoformat(),
+            "changed_fields": changed_labels,
+            "summary": f"Updated spending transaction {updated.public_id}",
+        }
+
+    async def delete_spending_transaction(self, public_id: str, confirmed: bool = False) -> dict:
+        """Delete one expense after explicit confirmation."""
+        try:
+            transaction_id = uuid.UUID(public_id)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid transaction public_id."}
+
+        try:
+            current = await self.tx_service.get_transaction_with_details(
+                self.workspace_id, transaction_id
+            )
+        except NotFoundError:
+            return {"status": "error", "message": "Transaction not found."}
+
+        if not confirmed:
+            return {
+                "status": "error",
+                "needs_confirmation": True,
+                "entity_public_id": public_id,
+                "current": current.model_dump(mode="json"),
+                "message": "Read back the transaction and ask for explicit deletion confirmation.",
+            }
+
+        try:
+            await self.tx_service.delete_transaction(
+                self.workspace_id,
+                transaction_id,
+                actor_id=self.user_id,
+                audit_logger=self.audit_logger,
+            )
+        except (APIError, ValueError) as exc:
+            await self.session.rollback()
+            detail = getattr(exc, "detail", None) or str(exc)
+            return {"status": "error", "message": detail or "Unable to delete transaction."}
+        return {
+            "status": "success",
+            "entity_public_id": public_id,
+            "entity_type": "transaction",
+            "summary": "Deleted the spending transaction after confirmation.",
         }
 
     async def get_investing_summary(self) -> dict:
