@@ -81,3 +81,18 @@ jobs:
             bandit-report.json
           if-no-files-found: warn
           retention-days: 30
+
+  trigger-e2e:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Trigger E2E pipeline
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.E2E_DISPATCH_TOKEN }}
+          repository: sajankp/lifestack-e2e
+          event-type: api-web-merge
+          client-payload: '{"ref": "${{ github.sha }}", "repo": "${{ github.repository }}"}'
