@@ -27,7 +27,12 @@ the relevant services, but these operations are not exposed through MCP.
 ### Read-only (`mcp:read`)
 
 - `list_investment_holdings`: bounded holdings with stable public identifiers,
-  instrument metadata, account, valuation, and source metadata.
+  instrument metadata, account, valuation, and source metadata. It supports
+  `quantity_state` (`nonzero`, `zero`, or `all`), symbol/account/currency and
+  instrument-type filters, deterministic sorting, and an optional
+  `valuation_currency` such as INR. Native values remain in the holding's
+  currency; reporting values include price/FX freshness and an explicit status
+  when market price or FX data is unavailable.
 - `get_investment_constituents`: latest snapshot on or before a requested date,
   optionally filtered by source.
 - `list_investment_dividends`: bounded dividend and income-event history, with

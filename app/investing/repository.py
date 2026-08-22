@@ -38,14 +38,60 @@ def normalize_company_name(name: str) -> str:
 
 class HoldingRepository(BaseRepository[Holding]):
     async def get_all(
-        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+        self,
+        workspace_id: int,
+        limit: int | None = DEFAULT_LIMIT,
+        offset: int = 0,
+        *,
+        quantity_state: str = "all",
+        symbol: str | None = None,
+        account_id: int | None = None,
+        currency: str | None = None,
+        instrument_type: str | None = None,
+        sort_by: str = "created_at",
+        sort_direction: str = "desc",
     ) -> tuple[Sequence[Holding], int]:
         base = select(Holding).where(Holding.workspace_id == workspace_id)
+        if quantity_state == "nonzero":
+            base = base.where(Holding.quantity != 0)
+        elif quantity_state == "zero":
+            base = base.where(Holding.quantity == 0)
+        elif quantity_state != "all":
+            raise ValueError("quantity_state must be one of: all, nonzero, zero")
+        if symbol:
+            base = base.where(Holding.symbol == symbol.upper().strip())
+        if account_id is not None:
+            base = base.where(Holding.account_id == account_id)
+        if currency:
+            base = base.where(Holding.currency == currency.upper().strip())
+        if instrument_type:
+            base = base.where(
+                Holding.instrument_id.in_(
+                    select(Instrument.id).where(Instrument.instrument_type == instrument_type)
+                )
+            )
+
+        sort_columns = {
+            "symbol": Holding.symbol,
+            "quantity": Holding.quantity,
+            "book_value": Holding.quantity * Holding.avg_cost,
+            "created_at": Holding.created_at,
+            "updated_at": Holding.updated_at,
+        }
+        if sort_by not in sort_columns:
+            raise ValueError(
+                "sort_by must be one of: symbol, quantity, book_value, created_at, updated_at"
+            )
+        if sort_direction not in {"asc", "desc"}:
+            raise ValueError("sort_direction must be either asc or desc")
+
         total = (
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
+        sort_column = sort_columns[sort_by]
+        order_by = sort_column.asc() if sort_direction == "asc" else sort_column.desc()
         result = await self.session.execute(
-            base.order_by(Holding.created_at.desc()).limit(limit).offset(offset)
+            base.order_by(order_by, Holding.public_id.asc()).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
 
