@@ -652,9 +652,7 @@ def create_mcp_server() -> FastMCP:
                     }
 
             used_currencies = sorted({
-                holding.currency.upper()
-                for holding in raw_holdings
-                if holding.quantity != 0
+                holding.currency.upper() for holding in raw_holdings if holding.quantity != 0
             })
             if reporting_currency is None and len(used_currencies) == 1:
                 reporting_currency = used_currencies[0]

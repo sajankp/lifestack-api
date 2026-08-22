@@ -91,9 +91,7 @@ class HoldingRepository(BaseRepository[Holding]):
         sort_column = sort_columns[sort_by]
         order_by = sort_column.asc() if sort_direction == "asc" else sort_column.desc()
         result = await self.session.execute(
-            base.order_by(order_by, Holding.public_id.asc())
-            .limit(limit)
-            .offset(offset)
+            base.order_by(order_by, Holding.public_id.asc()).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
 

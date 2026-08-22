@@ -171,9 +171,7 @@ async def test_mcp_exposes_voice_transaction_correction_tools(monkeypatch):
 
 def test_mcp_holding_reporting_valuation_uses_persisted_price_and_fx():
     data: dict = {}
-    holding = SimpleNamespace(
-        quantity=Decimal("2"), avg_cost=Decimal("100"), currency="USD"
-    )
+    holding = SimpleNamespace(quantity=Decimal("2"), avg_cost=Decimal("100"), currency="USD")
     price = SimpleNamespace(
         unit_price=Decimal("110"), price_date=date(2026, 8, 21), source="bhavcopy"
     )
