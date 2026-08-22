@@ -59,7 +59,7 @@ class LifestackTokenVerifier(OAuthProvider):
             required_scopes=[],
             client_registration_options=ClientRegistrationOptions(
                 enabled=True,
-                valid_scopes=["mcp:read", "mcp:write"],
+                valid_scopes=["mcp:read", "mcp:write", "mcp:research"],
                 default_scopes=["mcp:read"],
                 require_software_id=False,
                 require_software_version=False,
