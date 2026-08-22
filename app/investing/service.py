@@ -237,10 +237,29 @@ class HoldingService:
     async def list_holdings_with_details(
         self,
         workspace_id: int,
-        limit: int = DEFAULT_LIMIT,
+        limit: int | None = DEFAULT_LIMIT,
         offset: int = 0,
+        *,
+        quantity_state: str = "all",
+        symbol: str | None = None,
+        account_id: int | None = None,
+        currency: str | None = None,
+        instrument_type: str | None = None,
+        sort_by: str = "created_at",
+        sort_direction: str = "desc",
     ) -> tuple[list[HoldingResponse], int]:
-        holdings, total = await self.list_holdings(workspace_id, limit, offset)
+        holdings, total = await self.list_holdings(
+            workspace_id,
+            limit,
+            offset,
+            quantity_state=quantity_state,
+            symbol=symbol,
+            account_id=account_id,
+            currency=currency,
+            instrument_type=instrument_type,
+            sort_by=sort_by,
+            sort_direction=sort_direction,
+        )
         if not holdings:
             return [], total
 
@@ -325,9 +344,9 @@ class HoldingService:
         return HoldingResponse.model_validate(data)
 
     async def list_holdings(
-        self, workspace_id: int, limit: int = DEFAULT_LIMIT, offset: int = 0
+        self, workspace_id: int, limit: int | None = DEFAULT_LIMIT, offset: int = 0, **filters
     ) -> tuple[Sequence[Holding], int]:
-        return await self.repository.get_all(workspace_id, limit, offset)
+        return await self.repository.get_all(workspace_id, limit, offset, **filters)
 
     async def get_holding(self, workspace_id: int, public_id: uuid.UUID) -> Holding:
         holding = await self.repository.get_by_public_id(workspace_id, public_id)

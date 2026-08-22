@@ -1,4 +1,7 @@
 import uuid
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -8,7 +11,11 @@ from mcp.shared.auth import OAuthClientInformationFull
 from app.config import settings
 from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.repository import McpGrantRepository
-from app.mcp.server import create_mcp_server
+from app.mcp.server import (
+    _add_holding_reporting_valuation,
+    _sort_holding_items,
+    create_mcp_server,
+)
 
 
 class FakeRedis:
@@ -138,6 +145,17 @@ async def test_mcp_exposes_voice_transaction_correction_tools(monkeypatch):
         "create_investment_dividend",
     }.issubset(tools)
     assert "workspace_id" in tools["find_spending_transactions"].parameters["properties"]
+    holdings_properties = tools["list_investment_holdings"].parameters["properties"]
+    assert {
+        "quantity_state",
+        "symbol",
+        "account_id",
+        "currency",
+        "instrument_type",
+        "sort_by",
+        "sort_direction",
+        "valuation_currency",
+    }.issubset(holdings_properties)
     assert "workspace_id" in tools["update_spending_transaction"].parameters["properties"]
     assert "confirmed" in tools["delete_spending_transaction"].parameters["properties"]
     assert "confirmed" in tools["write_investment_constituent_snapshot"].parameters["properties"]
@@ -149,3 +167,42 @@ async def test_mcp_exposes_voice_transaction_correction_tools(monkeypatch):
     assert "lifestack://workspaces/{workspace_id}/reference-data" in resource_templates
     resources = await server.list_resources()
     assert any(str(resource.uri) == "lifestack://me/workspaces" for resource in resources)
+
+
+def test_mcp_holding_reporting_valuation_uses_persisted_price_and_fx():
+    data: dict = {}
+    holding = SimpleNamespace(
+        quantity=Decimal("2"), avg_cost=Decimal("100"), currency="USD"
+    )
+    price = SimpleNamespace(
+        unit_price=Decimal("110"), price_date=date(2026, 8, 21), source="bhavcopy"
+    )
+    fx = {("USD", "INR"): SimpleNamespace(rate=Decimal("80"))}
+
+    _add_holding_reporting_valuation(
+        data,
+        holding,
+        price,
+        "INR",
+        fx,
+        datetime(2026, 8, 22, tzinfo=UTC),
+    )
+
+    assert data["reporting_current_value"] == "17600"
+    assert data["reporting_book_value"] == "16000"
+    assert data["reporting_gain_loss"] == "1600"
+    assert data["valuation_status"] == "current"
+    assert data["price_as_of"] == "2026-08-21"
+    assert data["price_source"] == "bhavcopy"
+
+
+def test_mcp_holding_sort_keeps_missing_values_last_and_sorts_numeric_values():
+    items = [
+        {"public_id": "b", "reporting_current_value": "900"},
+        {"public_id": "a", "reporting_current_value": None},
+        {"public_id": "c", "reporting_current_value": "1000"},
+    ]
+
+    sorted_items = _sort_holding_items(items, "current_value", "desc", True)
+
+    assert [item["public_id"] for item in sorted_items] == ["c", "b", "a"]

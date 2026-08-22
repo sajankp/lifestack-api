@@ -3,6 +3,7 @@
 import json
 import uuid
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlparse
 
@@ -14,6 +15,12 @@ from app.auth.models import User
 from app.capture.tools import AgentTools
 from app.config import settings
 from app.core.audit import AuditLogger
+from app.core.currency import (
+    build_required_pairs,
+    convert_amount,
+    effective_display_as_of,
+    fx_rates_used,
+)
 from app.core.database import postgres
 from app.core.exceptions import APIError
 from app.finance.models import AccountType
@@ -57,6 +64,25 @@ from app.spending.service import BudgetService
 from app.todo.repository import TodoRepository
 from app.todo.schemas import TodoCreate, TodoResponse
 from app.todo.service import TodoService
+
+_HOLDINGS_QUANTITY_STATES = {"all", "nonzero", "zero"}
+_HOLDINGS_SORT_FIELDS = {
+    "symbol",
+    "quantity",
+    "current_value",
+    "book_value",
+    "gain_loss",
+    "gain_loss_pct",
+    "created_at",
+    "updated_at",
+}
+_HOLDINGS_VALUE_SORT_FIELDS = {
+    "current_value",
+    "book_value",
+    "gain_loss",
+    "gain_loss_pct",
+}
+_HOLDINGS_INSTRUMENT_TYPES = {"stock", "etf", "mutual_fund"}
 
 
 async def _run_capture_tool(
@@ -117,6 +143,113 @@ def _dividend_service(session: Any) -> DividendService:
         HoldingRepository(session),
         CurrencyRepository(session),
     )
+
+
+def _decimal_string(value: Decimal | None) -> str | None:
+    return str(value) if value is not None else None
+
+
+def _add_holding_reporting_valuation(
+    data: dict[str, Any],
+    holding: Any,
+    price_row: Any,
+    reporting_currency: str | None,
+    fx_lookup: dict[tuple[str, str], Any],
+    fx_as_of: datetime | None,
+) -> None:
+    """Add explicit reporting-currency values without changing REST fields."""
+    quantity = Decimal(str(holding.quantity))
+    avg_cost = Decimal(str(holding.avg_cost))
+    native_currency = holding.currency.upper()
+    book_value = quantity * avg_cost
+    market_value = quantity * Decimal(str(price_row.unit_price)) if price_row else None
+
+    data["price_available"] = price_row is not None
+    data["price_as_of"] = price_row.price_date.isoformat() if price_row else None
+    data["price_source"] = price_row.source if price_row else None
+    data["reporting_currency"] = reporting_currency
+    data["fx_as_of"] = fx_as_of.isoformat() if fx_as_of else None
+
+    if quantity == 0:
+        data.update({
+            "reporting_current_value": "0",
+            "reporting_book_value": "0",
+            "reporting_gain_loss": "0",
+            "reporting_gain_loss_pct": "0",
+            "valuation_status": "zero_quantity",
+        })
+        return
+
+    if reporting_currency is None:
+        data.update({
+            "reporting_current_value": None,
+            "reporting_book_value": None,
+            "reporting_gain_loss": None,
+            "reporting_gain_loss_pct": None,
+            "valuation_status": "reporting_currency_required",
+        })
+        return
+
+    converted_book = convert_amount(book_value, native_currency, reporting_currency, fx_lookup)
+    converted_market = (
+        convert_amount(market_value, native_currency, reporting_currency, fx_lookup)
+        if market_value is not None
+        else None
+    )
+    if converted_book is None:
+        status = "missing_fx"
+    elif converted_market is None:
+        status = "missing_price"
+    else:
+        status = "current"
+
+    converted_gain_loss = (
+        converted_market - converted_book
+        if converted_market is not None and converted_book is not None
+        else None
+    )
+    gain_loss_pct = (
+        converted_gain_loss / converted_book * Decimal("100")
+        if converted_gain_loss is not None and converted_book
+        else (Decimal("0") if converted_gain_loss == 0 else None)
+    )
+    data.update({
+        "reporting_current_value": _decimal_string(converted_market),
+        "reporting_book_value": _decimal_string(converted_book),
+        "reporting_gain_loss": _decimal_string(converted_gain_loss),
+        "reporting_gain_loss_pct": _decimal_string(gain_loss_pct),
+        "valuation_status": status,
+    })
+
+
+def _sort_holding_items(
+    items: list[dict[str, Any]],
+    sort_by: str,
+    sort_direction: str,
+    use_reporting_values: bool,
+) -> list[dict[str, Any]]:
+    reporting_fields = {
+        "current_value": "reporting_current_value",
+        "book_value": "reporting_book_value",
+        "gain_loss": "reporting_gain_loss",
+        "gain_loss_pct": "reporting_gain_loss_pct",
+    }
+    field = reporting_fields.get(sort_by, sort_by) if use_reporting_values else sort_by
+
+    def value(item: dict[str, Any]) -> Decimal | str | None:
+        raw = item.get(field)
+        if raw is None:
+            return None
+        if sort_by in _HOLDINGS_VALUE_SORT_FIELDS:
+            return Decimal(str(raw))
+        return str(raw)
+
+    present = [item for item in items if value(item) is not None]
+    missing = [item for item in items if value(item) is None]
+    present.sort(key=lambda item: str(item["public_id"]))
+    present.sort(key=lambda item: value(item), reverse=sort_direction == "desc")  # type: ignore[arg-type]
+    missing.sort(key=lambda item: str(item["public_id"]))
+    return present + missing
 
 
 def _dividend_response(dividend: Any, account: Any) -> dict[str, Any]:
@@ -391,10 +524,58 @@ def create_mcp_server() -> FastMCP:
 
     @mcp.tool
     async def list_investment_holdings(
-        workspace_id: int, limit: int = 25, offset: int = 0
+        workspace_id: int,
+        limit: int = 25,
+        offset: int = 0,
+        quantity_state: str = "nonzero",
+        symbol: str | None = None,
+        account_id: str | None = None,
+        currency: str | None = None,
+        instrument_type: str | None = None,
+        sort_by: str = "current_value",
+        sort_direction: str = "desc",
+        valuation_currency: str | None = None,
     ) -> dict[str, Any]:
-        """List bounded investment holdings with valuation and instrument identity."""
+        """List investment holdings with filters, sorting, and reporting valuation.
+
+        Native valuation fields remain in each holding's own currency. Reporting
+        values use ``valuation_currency`` when supplied, otherwise the workspace
+        reporting currency, or the sole holding currency when unambiguous.
+        """
         validate_page(limit, offset)
+        if quantity_state not in _HOLDINGS_QUANTITY_STATES:
+            return {
+                "status": "error",
+                "message": "quantity_state must be one of: all, nonzero, zero.",
+            }
+        if sort_by not in _HOLDINGS_SORT_FIELDS:
+            return {
+                "status": "error",
+                "message": (
+                    "sort_by must be one of: symbol, quantity, current_value, book_value, "
+                    "gain_loss, gain_loss_pct, created_at, updated_at."
+                ),
+            }
+        if sort_direction not in {"asc", "desc"}:
+            return {"status": "error", "message": "sort_direction must be asc or desc."}
+        if instrument_type and instrument_type not in _HOLDINGS_INSTRUMENT_TYPES:
+            return {
+                "status": "error",
+                "message": "instrument_type must be one of: stock, etf, mutual_fund.",
+            }
+        if currency:
+            currency = currency.strip().upper()
+        if symbol:
+            symbol = symbol.strip().upper()
+        if valuation_currency:
+            valuation_currency = valuation_currency.strip().upper()
+            if len(valuation_currency) > 10 or not valuation_currency:
+                return {"status": "error", "message": "Invalid valuation_currency."}
+        try:
+            account_public_id = uuid.UUID(account_id) if account_id else None
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid account_id."}
+
         async with postgres.async_session_maker() as session:
             await authorize_workspace(
                 session,
@@ -402,12 +583,45 @@ def create_mcp_server() -> FastMCP:
                 required_scope="mcp:read",
                 tool="list_investment_holdings",
             )
+
+            account_filter_id = None
+            if account_public_id is not None:
+                account = await AccountRepository(session).get_by_public_id(
+                    workspace_id, account_public_id
+                )
+                if account is None or account.id is None:
+                    return {"status": "error", "message": "Account not found in this workspace."}
+                account_filter_id = account.id
+
             service = _holding_service(session)
+            requires_value_sort = sort_by in _HOLDINGS_VALUE_SORT_FIELDS
+            query_limit = None if requires_value_sort else limit
+            query_offset = 0 if requires_value_sort else offset
+            query_sort_by = "symbol" if requires_value_sort else sort_by
+            query_sort_direction = "asc" if requires_value_sort else sort_direction
             raw_holdings, total = await HoldingRepository(session).get_all(
-                workspace_id, limit=limit, offset=offset
+                workspace_id,
+                limit=query_limit,
+                offset=query_offset,
+                quantity_state=quantity_state,
+                symbol=symbol,
+                account_id=account_filter_id,
+                currency=currency,
+                instrument_type=instrument_type,
+                sort_by=query_sort_by,
+                sort_direction=query_sort_direction,
             )
             detailed_items, _ = await service.list_holdings_with_details(
-                workspace_id, limit=limit, offset=offset
+                workspace_id,
+                limit=query_limit,
+                offset=query_offset,
+                quantity_state=quantity_state,
+                symbol=symbol,
+                account_id=account_filter_id,
+                currency=currency,
+                instrument_type=instrument_type,
+                sort_by=query_sort_by,
+                sort_direction=query_sort_direction,
             )
             instruments = await InstrumentRepository(session).get_by_ids([
                 holding.instrument_id
@@ -415,6 +629,46 @@ def create_mcp_server() -> FastMCP:
                 if holding.instrument_id is not None
             ])
             raw_by_public_id = {holding.public_id: holding for holding in raw_holdings}
+            price_rows = await HoldingPriceRepository(session).latest_prices_on_or_before_bulk(
+                workspace_id,
+                [holding.id for holding in raw_holdings if holding.id is not None],
+                datetime.now(UTC).date(),
+            )
+
+            finance_settings = await FinanceSettingRepository(session).get_by_workspace(
+                workspace_id
+            )
+            reporting_currency = valuation_currency or (
+                finance_settings.reporting_currency_code.upper()
+                if finance_settings and finance_settings.reporting_currency_code
+                else None
+            )
+            if valuation_currency:
+                currency_row = await CurrencyRepository(session).get_by_code(valuation_currency)
+                if currency_row is None or not currency_row.is_active:
+                    return {
+                        "status": "error",
+                        "message": f"Unsupported valuation_currency '{valuation_currency}'.",
+                    }
+
+            used_currencies = sorted({
+                holding.currency.upper()
+                for holding in raw_holdings
+                if holding.quantity != 0
+            })
+            if reporting_currency is None and len(used_currencies) == 1:
+                reporting_currency = used_currencies[0]
+            fx_lookup: dict[tuple[str, str], Any] = {}
+            fx_as_of = None
+            if reporting_currency and any(
+                currency_code != reporting_currency for currency_code in used_currencies
+            ):
+                fx_as_of = effective_display_as_of()
+                fx_lookup = await FxRateRepository(session).get_latest_rates_for_pairs(
+                    list(build_required_pairs(used_currencies, reporting_currency)),
+                    as_of=fx_as_of,
+                )
+
             items = []
             for item in detailed_items:
                 data = item.model_dump(mode="json")
@@ -426,14 +680,49 @@ def create_mcp_server() -> FastMCP:
                     "isin": instrument.isin if instrument else None,
                     "exchange": instrument.exchange if instrument else None,
                 })
+                if raw is not None:
+                    _add_holding_reporting_valuation(
+                        data,
+                        raw,
+                        price_rows.get(raw.id) if raw.id is not None else None,
+                        reporting_currency,
+                        fx_lookup,
+                        fx_as_of,
+                    )
                 items.append(data)
+
+            if requires_value_sort:
+                items = _sort_holding_items(
+                    items,
+                    sort_by,
+                    sort_direction,
+                    use_reporting_values=reporting_currency is not None,
+                )
+            else:
+                # The repository already applied this ordering. Keep the
+                # explicit slice here only for the value-sort path's shared
+                # response construction.
+                items = items[:limit]
+            page_total = total
+            if requires_value_sort:
+                items = items[offset : offset + limit]
             return {
                 "status": "success",
                 "workspace_id": workspace_id,
                 "items": items,
-                "total": total,
+                "total": page_total,
                 "limit": limit,
                 "offset": offset,
+                "quantity_state": quantity_state,
+                "sort_by": sort_by,
+                "sort_direction": sort_direction,
+                "valuation_currency": reporting_currency,
+                "fx_as_of": fx_as_of.isoformat() if fx_as_of else None,
+                "fx_rates_used": (
+                    fx_rates_used(used_currencies, reporting_currency, fx_lookup)
+                    if reporting_currency
+                    else {}
+                ),
             }
 
     @mcp.tool
