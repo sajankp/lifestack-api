@@ -11,11 +11,13 @@ from app.config import settings
 from app.core.database import postgres
 from app.finance.models import AccountType
 from app.finance.repository import AccountRepository, FinanceSettingRepository
+from app.health.repository import MedicationRepository
 from app.spending.repository import CategoryRepository, TagRepository
 
 _MAX_INJECTED_CATEGORIES = 50
 _MAX_INJECTED_ACCOUNTS = 20
 _MAX_INJECTED_TAGS = 50
+_MAX_INJECTED_MEDICATIONS = 30
 
 
 async def _fetch_workspace_context(workspace_id: int) -> str:
@@ -34,6 +36,7 @@ async def _fetch_workspace_context(workspace_id: int) -> str:
         tag_repo = TagRepository(session)
         account_repo = AccountRepository(session)
         setting_repo = FinanceSettingRepository(session)
+        medication_repo = MedicationRepository(session)
 
         categories, _ = await category_repo.get_all(
             workspace_id, limit=_MAX_INJECTED_CATEGORIES, offset=0
@@ -42,18 +45,23 @@ async def _fetch_workspace_context(workspace_id: int) -> str:
         accounts, _ = await account_repo.list_workspace_accounts(
             workspace_id, limit=_MAX_INJECTED_ACCOUNTS, offset=0
         )
+        medications = await medication_repo.get_active(workspace_id)
         setting = await setting_repo.get_by_workspace(workspace_id)
         default_account_id = setting.default_spending_account_id if setting else None
 
     category_names = sorted((c.name for c in categories), key=str.lower)
     tag_names = sorted((tag.name for tag in tags), key=str.lower)
+    medication_names = sorted(
+        (medication.name for medication in medications[:_MAX_INJECTED_MEDICATIONS]),
+        key=str.lower,
+    )
     # Brokerage accounts are not voice targets (spec-059: investing is
     # read-only on this surface), so don't spend prompt budget on them.
     active_accounts = [
         a for a in accounts if a.is_active and a.account_type != AccountType.brokerage
     ]
 
-    if not category_names and not active_accounts and not tag_names:
+    if not category_names and not active_accounts and not tag_names and not medication_names:
         return ""
 
     lines: list[str] = [
@@ -77,6 +85,8 @@ async def _fetch_workspace_context(workspace_id: int) -> str:
         lines.append("Accounts: " + ", ".join(account_labels) + ".")
     if tag_names:
         lines.append("Existing spending tags: " + ", ".join(tag_names) + ".")
+    if medication_names:
+        lines.append("Active medications: " + ", ".join(medication_names) + ".")
     lines.append("----- END WORKSPACE DATA -----")
     return "\n".join(lines)
 
@@ -125,6 +135,8 @@ def _build_setup_message(
                             "`create_todo_task`, `create_recurring_todo`, `list_todos`, `get_todo`, "
                             "`update_todo`, `delete_todo`, and `list_next_due_items`, plus "
                             "`log_spending_transaction` for expenses, `list_spending_transactions` for read-only "
+                            "history, and `find_spending_transactions`, `update_spending_transaction`, and "
+                            "`delete_spending_transaction` for safe transaction corrections, "
                             "spending history and duplicate checks, `log_weight` for body-weight "
                             "measurements, `log_medication_event` for marking a medication dose taken "
                             "or skipped, the read-only `get_investing_summary` for portfolio "
@@ -167,6 +179,12 @@ def _build_setup_message(
                             "the matching amount, description, and date. The server also enforces this check. "
                             "Only pass `allow_duplicate=true` when the user explicitly confirms another identical "
                             "expense or explicitly reports multiple identical items in the same utterance. "
+                            "When correcting a transaction, use `find_spending_transactions` first unless the user "
+                            "provides a real public ID. Never invent a transaction UUID. Read back the matched "
+                            "transaction and proposed amount, category, account, date, or deletion, then ask for "
+                            "clear confirmation before calling `update_spending_transaction` or "
+                            "`delete_spending_transaction` with `confirmed=true`. If either tool returns "
+                            "`needs_confirmation`, do not retry the mutation; ask the user for confirmation. "
                             "For the spending `description`, store only the item or purpose text, not the "
                             "category label when the user included it in the spoken phrase. Remove the "
                             "category wording from the description so it is not duplicated: if the workspace "
@@ -361,6 +379,104 @@ def _build_setup_message(
                                         "description": "Optional number of results, maximum 25; default 10.",
                                     },
                                 },
+                            },
+                        },
+                        {
+                            "name": "find_spending_transactions",
+                            "description": "Find a bounded set of expense candidates before correcting or deleting a transaction. At least one clue is required; dates use the user's local timezone.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "from_day": {
+                                        "type": "STRING",
+                                        "description": "Optional local start day as YYYY-MM-DD; defaults to today or to_day.",
+                                    },
+                                    "to_day": {
+                                        "type": "STRING",
+                                        "description": "Optional local end day as YYYY-MM-DD; maximum range is 31 days.",
+                                    },
+                                    "category_name": {
+                                        "type": "STRING",
+                                        "description": "Optional existing workspace category name; preserve it exactly.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Optional numeric amount without currency symbols.",
+                                    },
+                                    "search": {
+                                        "type": "STRING",
+                                        "description": "Optional description or tag text to search for.",
+                                    },
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional spoken account reference resolved by the server.",
+                                    },
+                                    "limit": {
+                                        "type": "NUMBER",
+                                        "description": "Optional maximum number of candidates, up to 25; default 10.",
+                                    },
+                                },
+                            },
+                        },
+                        {
+                            "name": "update_spending_transaction",
+                            "description": "Update one expense after explicit user confirmation. Never invent the public ID or skip the find-and-confirm flow.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "public_id": {
+                                        "type": "STRING",
+                                        "description": "The public UUID returned by find_spending_transactions or a prior tool result.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Optional new numeric amount without currency symbols.",
+                                    },
+                                    "category_name": {
+                                        "type": "STRING",
+                                        "description": "Optional existing workspace category name; preserve it exactly.",
+                                    },
+                                    "description": {
+                                        "type": "STRING",
+                                        "description": "Optional new English description.",
+                                    },
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional spoken account reference resolved by the server.",
+                                    },
+                                    "occurred_at": {
+                                        "type": "STRING",
+                                        "description": "Optional ISO date or date-time interpreted in the user's timezone.",
+                                    },
+                                    "tags": {
+                                        "type": "ARRAY",
+                                        "items": {"type": "STRING"},
+                                        "description": "Optional replacement tag list.",
+                                    },
+                                    "confirmed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Required true only after the user clearly confirms the proposed change.",
+                                    },
+                                },
+                                "required": ["public_id"],
+                            },
+                        },
+                        {
+                            "name": "delete_spending_transaction",
+                            "description": "Delete one expense only after explicit user confirmation.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "public_id": {
+                                        "type": "STRING",
+                                        "description": "The public UUID returned by find_spending_transactions or a prior tool result.",
+                                    },
+                                    "confirmed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Required true only after the user clearly confirms deletion.",
+                                    },
+                                },
+                                "required": ["public_id"],
                             },
                         },
                         {

@@ -52,6 +52,8 @@ def test_write_tools_cover_all_mutating_capture_tools():
             "log_medication_event",
             "update_todo",
             "delete_todo",
+            "update_spending_transaction",
+            "delete_spending_transaction",
         })
         == WRITE_TOOLS
     )

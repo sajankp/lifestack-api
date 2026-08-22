@@ -8,6 +8,7 @@ from mcp.shared.auth import OAuthClientInformationFull
 from app.config import settings
 from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.repository import McpGrantRepository
+from app.mcp.server import create_mcp_server
 
 
 class FakeRedis:
@@ -101,3 +102,40 @@ async def test_mcp_oauth_rejects_wrong_resource(monkeypatch):
             ),
         )
     assert exc_info.value.error_description == "resource must identify this MCP server"
+
+
+@pytest.mark.anyio
+async def test_mcp_exposes_voice_transaction_correction_tools(monkeypatch):
+    monkeypatch.setattr(settings, "MCP_BASE_URL", "https://api.example.test")
+    server = create_mcp_server()
+    tools = {tool.name: tool for tool in await server.list_tools()}
+
+    assert {
+        "create_todo_task",
+        "create_recurring_todo",
+        "list_todos",
+        "get_todo",
+        "update_todo",
+        "delete_todo",
+        "list_next_due_items",
+        "log_spending_transaction",
+        "list_spending_transactions",
+        "find_spending_transactions",
+        "update_spending_transaction",
+        "delete_spending_transaction",
+        "log_weight",
+        "log_medication_event",
+        "get_investing_summary",
+        "get_account_balances",
+        "get_workspace_reference_data",
+        "list_workspaces",
+    }.issubset(tools)
+    assert "workspace_id" in tools["find_spending_transactions"].parameters["properties"]
+    assert "workspace_id" in tools["update_spending_transaction"].parameters["properties"]
+    assert "confirmed" in tools["delete_spending_transaction"].parameters["properties"]
+
+    resources = await server.list_resource_templates()
+    resource_templates = {resource.uri_template for resource in resources}
+    assert "lifestack://workspaces/{workspace_id}/reference-data" in resource_templates
+    resources = await server.list_resources()
+    assert any(str(resource.uri) == "lifestack://me/workspaces" for resource in resources)

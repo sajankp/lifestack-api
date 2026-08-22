@@ -122,7 +122,10 @@ async def approve_mcp_authorization(
         raise HTTPException(status_code=404, detail="MCP authorization is disabled")
     try:
         redirect_uri = await provider.complete_authorization(
-            payload.state, int(current_user["id"]), str(current_user["sid"])
+            payload.state,
+            int(current_user["id"]),
+            str(current_user["sid"]),
+            current_user.get("default_workspace_id"),
         )
     except AuthorizeError as exc:
         raise HTTPException(status_code=400, detail=exc.error_description or exc.error) from exc

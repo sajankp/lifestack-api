@@ -170,7 +170,13 @@ class LifestackTokenVerifier(OAuthProvider):
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             return None
 
-    async def complete_authorization(self, state: str, user_id: int, sid: str) -> str:
+    async def complete_authorization(
+        self,
+        state: str,
+        user_id: int,
+        sid: str,
+        default_workspace_id: int | None = None,
+    ) -> str:
         """Consume browser authorization state and issue a one-use code."""
         raw = await self._get_redis().getdel(self._state_key(state))
         if raw is None:
@@ -189,6 +195,9 @@ class LifestackTokenVerifier(OAuthProvider):
             )
 
         code = secrets.token_urlsafe(32)
+        subject = f"{user_id}:{sid}:{grant.public_id}"
+        if default_workspace_id is not None:
+            subject += f":{default_workspace_id}"
         authorization_code = AuthorizationCode(
             code=code,
             scopes=payload["scopes"],
@@ -198,7 +207,7 @@ class LifestackTokenVerifier(OAuthProvider):
             redirect_uri=payload["redirect_uri"],
             redirect_uri_provided_explicitly=payload["redirect_uri_provided_explicitly"],
             resource=payload["resource"],
-            subject=f"{user_id}:{sid}:{grant.public_id}",
+            subject=subject,
         )
         await self._get_redis().set(
             self._code_key(code),
@@ -236,9 +245,16 @@ class LifestackTokenVerifier(OAuthProvider):
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthToken:
-        user_id, sid, grant_id = self._subject_parts(authorization_code.subject)
+        user_id, sid, grant_id, default_workspace_id = self._subject_parts(
+            authorization_code.subject
+        )
         access_token, expires_in = await self._issue_access_token(
-            client.client_id or "", user_id, sid, authorization_code.scopes, grant_id
+            client.client_id or "",
+            user_id,
+            sid,
+            authorization_code.scopes,
+            grant_id,
+            default_workspace_id,
         )
         refresh = await self._issue_refresh_token(
             client.client_id or "", authorization_code.scopes, authorization_code.subject
@@ -273,9 +289,14 @@ class LifestackTokenVerifier(OAuthProvider):
                 error="invalid_scope", error_description="Scope exceeds original grant"
             )
         await self._get_redis().delete(self._refresh_key(refresh_token.token))
-        user_id, sid, grant_id = self._subject_parts(refresh_token.subject)
+        user_id, sid, grant_id, default_workspace_id = self._subject_parts(refresh_token.subject)
         access_token, expires_in = await self._issue_access_token(
-            client.client_id or "", user_id, sid, scopes, grant_id
+            client.client_id or "",
+            user_id,
+            sid,
+            scopes,
+            grant_id,
+            default_workspace_id,
         )
         replacement = await self._issue_refresh_token(
             client.client_id or "", scopes, refresh_token.subject
@@ -334,7 +355,7 @@ class LifestackTokenVerifier(OAuthProvider):
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         if isinstance(token, RefreshToken):
             await self._get_redis().delete(self._refresh_key(token.token))
-            _, _, grant_id = self._subject_parts(token.subject)
+            _, _, grant_id, _ = self._subject_parts(token.subject)
             if grant_id:
                 async with postgres.async_session_maker() as session, session.begin():
                     grant = await McpGrantRepository(session).get_active_by_public_id_unscoped(
@@ -355,18 +376,27 @@ class LifestackTokenVerifier(OAuthProvider):
                 await McpGrantRepository(session).revoke(grant)
 
     async def _issue_access_token(
-        self, client_id: str, user_id: int, sid: str, scopes: list[str], grant_id: str | None
+        self,
+        client_id: str,
+        user_id: int,
+        sid: str,
+        scopes: list[str],
+        grant_id: str | None,
+        default_workspace_id: int | None = None,
     ) -> tuple[str, int]:
         expires_in = settings.ACCESS_TOKEN_EXPIRE_SECONDS
+        data = {
+            "sub": str(user_id),
+            "aud": self.resource_url,
+            "iss": str(self.issuer_url),
+            "scope": " ".join(scopes),
+            "client_id": client_id,
+            "grant_id": grant_id,
+        }
+        if default_workspace_id is not None:
+            data["default_workspace_id"] = default_workspace_id
         token = create_token(
-            data={
-                "sub": str(user_id),
-                "aud": self.resource_url,
-                "iss": str(self.issuer_url),
-                "scope": " ".join(scopes),
-                "client_id": client_id,
-                "grant_id": grant_id,
-            },
+            data=data,
             expires_delta=timedelta(seconds=expires_in),
             sid=sid,
             token_type="mcp_access",
@@ -392,15 +422,17 @@ class LifestackTokenVerifier(OAuthProvider):
         return refresh
 
     @staticmethod
-    def _subject_parts(subject: str | None) -> tuple[int, str, str | None]:
+    def _subject_parts(subject: str | None) -> tuple[int, str, str | None, int | None]:
         if not subject or ":" not in subject:
             raise TokenError(
                 error="invalid_grant", error_description="Invalid authorization subject"
             )
-        user_id, sid, *grant_parts = subject.split(":", 2)
+        user_id, sid, *parts = subject.split(":", 3)
         try:
-            return int(user_id), sid, grant_parts[0] if grant_parts else None
-        except ValueError as exc:
+            grant_id = parts[0] if parts else None
+            workspace_id = int(parts[1]) if len(parts) > 1 and parts[1] else None
+            return int(user_id), sid, grant_id, workspace_id
+        except (TypeError, ValueError) as exc:
             raise TokenError(
                 error="invalid_grant", error_description="Invalid authorization subject"
             ) from exc

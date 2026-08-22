@@ -269,6 +269,135 @@ async def test_spending_duplicate_guard_and_history_tool(seed_agent_test_data):
 
 
 @pytest.mark.asyncio
+async def test_voice_transaction_find_update_and_delete_flow(seed_agent_test_data):
+    created = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "25.00",
+            "category_name": "food",
+            "description": "Family dinner",
+            "account_name": "Everyday Wallet",
+            "occurred_at": "2026-07-03",
+        },
+        user_id=10,
+        workspace_id=20,
+        user_timezone="Asia/Kolkata",
+    )
+    assert created["status"] == "success"
+    public_id = created["entity_public_id"]
+
+    found = await execute_agent_tool(
+        name="find_spending_transactions",
+        args={"from_day": "2026-07-03", "to_day": "2026-07-03", "search": "family dinner"},
+        user_id=10,
+        workspace_id=20,
+        user_timezone="Asia/Kolkata",
+    )
+    assert found["status"] == "success"
+    assert found["total"] == 1
+    assert found["transactions"][0]["entity_public_id"] == public_id
+
+    unconfirmed = await execute_agent_tool(
+        name="update_spending_transaction",
+        args={"public_id": public_id, "amount": "30.00"},
+        user_id=10,
+        workspace_id=20,
+        user_timezone="Asia/Kolkata",
+    )
+    assert unconfirmed["status"] == "error"
+    assert unconfirmed["needs_confirmation"] is True
+
+    updated = await execute_agent_tool(
+        name="update_spending_transaction",
+        args={
+            "public_id": public_id,
+            "amount": "30.00",
+            "category_name": "other",
+            "description": "Family dinner corrected",
+            "occurred_at": "2026-07-04",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+        user_timezone="Asia/Kolkata",
+    )
+    assert updated["status"] == "success"
+    assert updated["entity_public_id"] == public_id
+    assert set(updated["changed_fields"]) >= {"amount", "category", "description", "occurred_at"}
+
+    deleted_without_confirmation = await execute_agent_tool(
+        name="delete_spending_transaction",
+        args={"public_id": public_id},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert deleted_without_confirmation["status"] == "error"
+    assert deleted_without_confirmation["needs_confirmation"] is True
+
+    deleted = await execute_agent_tool(
+        name="delete_spending_transaction",
+        args={"public_id": public_id, "confirmed": True},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert deleted["status"] == "success"
+    assert deleted["entity_public_id"] == public_id
+
+    async with postgres.async_session_maker() as session:
+        assert (
+            await session.execute(
+                select(SpendingTransaction).where(SpendingTransaction.public_id == public_id)
+            )
+        ).scalar_one_or_none() is None
+        actions = (
+            (
+                await session.execute(
+                    select(AuditLog).where(AuditLog.workspace_id == 20).order_by(AuditLog.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [item.action for item in actions] == ["create", "update", "delete"]
+
+
+@pytest.mark.asyncio
+async def test_voice_transaction_lookup_requires_a_bounded_clue(seed_agent_test_data):
+    res = await execute_agent_tool(
+        name="find_spending_transactions",
+        args={},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert res["status"] == "error"
+    assert res["needs_filter"] is True
+
+
+@pytest.mark.asyncio
+async def test_voice_transaction_correction_is_workspace_scoped(seed_agent_test_data):
+    created = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={"amount": "10.00", "category_name": "food", "description": "Private lunch"},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert created["status"] == "success"
+
+    res = await execute_agent_tool(
+        name="update_spending_transaction",
+        args={
+            "public_id": created["entity_public_id"],
+            "amount": "99.00",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=999,
+    )
+    assert res["status"] == "error"
+    assert "not found" in res["message"].lower()
+
+
+@pytest.mark.asyncio
 async def test_investing_mutation_tools_removed(seed_agent_test_data):
     """spec-059: investing is read-only on voice — the mutation tools are gone
     from the dispatch and leave no rows behind."""
@@ -514,6 +643,12 @@ def test_voice_agent_declares_timed_todos_and_spending_accounts():
     # never declared to the model — voice couldn't reach them.
     assert "log_weight" in by_name
     assert "log_medication_event" in by_name
+    assert {
+        "find_spending_transactions",
+        "update_spending_transaction",
+        "delete_spending_transaction",
+    }.issubset(by_name)
+    assert "confirmation" in setup["setup"]["systemInstruction"]["parts"][0]["text"].lower()
 
 
 def test_system_prompt_hardens_against_embedded_instruction_injection():
