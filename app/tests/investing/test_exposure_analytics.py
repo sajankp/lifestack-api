@@ -7,6 +7,7 @@ from httpx import AsyncClient
 from app.tests.integration.test_investing import (
     _create_holding_via_order,
     _register_and_login,
+    _submit_holding_price,
 )
 
 
@@ -23,12 +24,13 @@ async def test_exposure_coverage_is_value_weighted_not_count_weighted(client: As
         username="exposurecoverage",
         password="TestPass123!",
     )
-    # Large, fully-resolvable stock position: 100 * 100 = 10,000.
-    await _create_holding_via_order(
+    # Large, fully-resolvable stock position: 100 * 125 = 12,500 market value.
+    stock_holding_id = await _create_holding_via_order(
         client, account_map["brokerage"], "AAPL", "100.00000000", "100.00"
     )
+    await _submit_holding_price(client, stock_holding_id, "125.00")
     # Small fund position with no constituent snapshot ingested: 1 * 10 = 10.
-    await _create_holding_via_order(
+    fund_holding_id = await _create_holding_via_order(
         client,
         account_map["brokerage"],
         "TESTFUND",
@@ -37,6 +39,7 @@ async def test_exposure_coverage_is_value_weighted_not_count_weighted(client: As
         instrument_type="mutual_fund",
         instrument_name="Test Fund With No Constituents",
     )
+    await _submit_holding_price(client, fund_holding_id, "10.00")
 
     res = await client.get(
         "/v1/investing/analytics/exposure", params={"as_of": date.today().isoformat()}
@@ -52,8 +55,8 @@ async def test_exposure_coverage_is_value_weighted_not_count_weighted(client: As
         "looks count-weighted (0 of 1 funds decomposed)"
     )
     assert data["analysis_status"] == "partial"
-    assert any("No constituent snapshot" in w for w in data["warnings"])
+    assert any("No constituent snapshot" in w for w in data["warnings"]), data["warnings"]
     # The stock's direct exposure is still fully present in the response,
     # matching what the chart renders -- coverage near-zero here would have
     # read as an internal contradiction against this real data.
-    assert Decimal(str(data["total_direct_exposure"])) == Decimal("10000")
+    assert Decimal(str(data["total_direct_exposure"])) == Decimal("12500")

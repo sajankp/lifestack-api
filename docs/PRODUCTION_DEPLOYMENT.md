@@ -96,10 +96,99 @@ Required backup environment variables:
 ## 4. Launching the Stack
 
 `docker-compose.prod.yml` is an override file (it uses `!override`/`!reset` merge tags on the
-`migrate`/`api` services), so it cannot run standalone — it must be layered on top of the base
-`docker-compose.yml`, which also owns the `postgres`/`redis` services:
+`migrate`/`api` services), so it cannot run standalone. It must be layered on top of
+`docker-compose.yml`.
+
+Production uses the external PostgreSQL and Redis instances configured by `.env.production`; do
+not enable the base file's `local` profile in a production deployment. The production override
+removes the base `postgres`/`redis` `depends_on` entries from `migrate` and `api`. Without that
+override, Compose excludes the profile services and reports `depends on undefined service`.
+
+The recommended deployment entry point is the checked-in script below. It validates the merged
+Compose configuration, prevents concurrent deployments, archives existing logs, recreates the
+stack, waits for the API health check, and captures startup logs on success or failure:
 
 ```bash
-docker compose --profile local --env-file .env.production \
-  -f docker-compose.yml -f docker-compose.prod.yml up -d --build --force-recreate
+./scripts/deploy-production.sh
 ```
+
+Optional operator settings can be supplied without editing the script:
+
+```bash
+DEPLOY_HEALTH_TIMEOUT_SECONDS=300 \
+DEPLOY_LOG_DIR=/var/log/lifestack/deploy \
+./scripts/deploy-production.sh
+```
+
+Validate the merged configuration before changing containers:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+```
+
+The `--env-file` flag is required here because values in `.env.production` are used both as
+container environment and for Compose interpolation, including `CLOUDFLARE_TUNNEL_TOKEN`.
+
+If the script is unavailable, archive the current container output before recreation. Docker's
+default container stdout logs are tied to the container ID and are not available after `down` or
+`--force-recreate`:
+
+```bash
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p logs/deploy
+chmod 700 logs/deploy
+
+docker compose --env-file .env.production \
+  -f docker-compose.yml -f docker-compose.prod.yml \
+  logs --timestamps --no-color api migrate cloudflared database-backup \
+  > "logs/deploy/predeploy-${stamp}.log" || true
+```
+
+Start or recreate the stack:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.yml -f docker-compose.prod.yml \
+  up -d --build --force-recreate --remove-orphans
+```
+
+`down` is not required for a normal deployment. If a full stop is necessary, archive logs first
+and omit `-v` so named data volumes are not removed:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.yml -f docker-compose.prod.yml down --remove-orphans
+```
+
+Verify startup and retain the first post-deploy evidence:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.yml -f docker-compose.prod.yml ps
+
+docker compose --env-file .env.production \
+  -f docker-compose.yml -f docker-compose.prod.yml \
+  logs --since 10m --timestamps --no-color api migrate cloudflared database-backup
+```
+
+## 5. Log Retention and Incident Evidence
+
+The API writes structured production logs to stdout. The default Docker `json-file` driver is
+useful for live inspection with `docker compose logs`, but its history is removed with the
+container. The `logs/deploy` archive above is a deployment safety net, not a long-term log store.
+
+Configure the deployment host to use a persistent logging destination such as Docker's `journald`
+driver or a remote collector (Vector/Loki, an OpenTelemetry backend, or an equivalent service),
+with an explicit retention and disk-usage policy. Journald or a remote collector should be the
+system of record for API, migration, tunnel, and backup logs; do not rely on container IDs for
+incident history.
+
+The optional `CAPTURE_TURN_LOG_PATH=/app/logs/capture/turns.jsonl` is separate: the Compose bind
+mount preserves voice tool-call records under `./logs/capture` across container recreation. It does
+not preserve general API stdout logs. Database audit records remain in PostgreSQL and should be
+used alongside request logs when investigating financial or agent mutations.
+
+Protect `logs/deploy` and `logs/capture` because operational output can contain identifiers and
+request context. Rotate or export them through the same retention policy used by the host logging
+system.

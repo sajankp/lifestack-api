@@ -370,6 +370,7 @@ class ExposureCompanyRow(BaseModel):
 class ExposureAnalyticsResponse(BaseModel):
     as_of_date: date
     analysis_status: str
+    valuation_basis: str = "market_value"
     currency: str | None = None
     fx_as_of: datetime | None = None
     fx_rates_used: dict[str, Decimal] = Field(default_factory=dict)
@@ -398,6 +399,7 @@ class OverlapRow(BaseModel):
 class OverlapAnalyticsResponse(BaseModel):
     as_of_date: date
     analysis_status: str
+    valuation_basis: str = "market_value"
     currency: str | None = None
     fx_as_of: datetime | None = None
     fx_rates_used: dict[str, Decimal] = Field(default_factory=dict)

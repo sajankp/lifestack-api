@@ -1578,6 +1578,7 @@ class ExposureAnalyticsService:
         instrument_repo: InstrumentRepository,
         company_repo: CompanyRepository,
         constituent_repo: InstrumentConstituentRepository,
+        holding_price_repo: HoldingPriceRepository | None = None,
         finance_setting_repo: FinanceSettingRepository | None = None,
         fx_rate_repo: FxRateRepository | None = None,
         staleness_window_days: int = 30,
@@ -1586,6 +1587,7 @@ class ExposureAnalyticsService:
         self.instrument_repo = instrument_repo
         self.company_repo = company_repo
         self.constituent_repo = constituent_repo
+        self.holding_price_repo = holding_price_repo
         self.finance_setting_repo = finance_setting_repo
         self.fx_rate_repo = fx_rate_repo
         self.staleness_window_days = staleness_window_days
@@ -1670,6 +1672,15 @@ class ExposureAnalyticsService:
         constituents_by_instrument = await self.constituent_repo.get_latest_on_or_before_many(
             pooled_instrument_ids, as_of
         )
+        price_rows = (
+            await self.holding_price_repo.latest_prices_on_or_before_bulk(
+                workspace_id,
+                [h.id for h in holdings if h.id is not None],
+                as_of,
+            )
+            if self.holding_price_repo is not None
+            else {}
+        )
 
         for h in holdings:
             instrument = None
@@ -1684,7 +1695,19 @@ class ExposureAnalyticsService:
                 warnings.append(f"Instrument missing for symbol {display_name}")
                 continue
 
-            native_value = h.quantity * h.avg_cost
+            price_row = price_rows.get(h.id) if h.id is not None else None
+            if price_row is None:
+                warnings.append(
+                    f"No market price for {display_name} on or before {as_of.isoformat()}"
+                )
+                continue
+
+            # Look-through concentration is a current-exposure analysis. Use
+            # market value as the common native amount, then convert it once
+            # into the workspace reporting currency below. Do not fall back to
+            # cost basis here: that would make the chart look complete while
+            # misrepresenting the portfolio's current exposure.
+            native_value = h.quantity * price_row.unit_price
             value = (
                 _convert_amount(
                     native_value,
