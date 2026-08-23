@@ -500,6 +500,7 @@ async def get_investing_analytics_service(
     instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
     company_repo: CompanyRepository = Depends(get_investing_company_repo),
     constituent_repo: InstrumentConstituentRepository = Depends(get_investing_constituent_repo),
+    holding_price_repo: HoldingPriceRepository = Depends(get_investing_holding_price_repo),
     finance_setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
     fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
 ) -> ExposureAnalyticsService:
@@ -508,6 +509,7 @@ async def get_investing_analytics_service(
         instrument_repo,
         company_repo,
         constituent_repo,
+        holding_price_repo,
         finance_setting_repo,
         fx_rate_repo,
     )

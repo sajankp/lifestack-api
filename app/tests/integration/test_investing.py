@@ -120,6 +120,24 @@ async def _create_holding_via_order(
     return holding["public_id"]
 
 
+async def _submit_holding_price(
+    client: AsyncClient,
+    holding_public_id: str,
+    unit_price: str,
+    price_date: str | None = None,
+) -> None:
+    response = await client.post(
+        "/v1/investing/prices",
+        json={
+            "price_date": price_date or datetime.now(UTC).date().isoformat(),
+            "prices": [
+                {"holding_public_id": holding_public_id, "unit_price": unit_price}
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+
+
 @pytest.mark.asyncio
 async def test_investing_crud_summary_and_audit(client: AsyncClient):
     account_map = await _register_and_login(
@@ -913,23 +931,31 @@ async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
     assert constituent_res.status_code == 201
     assert len(constituent_res.json()) == 2
 
-    await _create_holding_via_order(
+    vti_holding_id = await _create_holding_via_order(
         client, account_map["brokerage"], "VTI", "10.00000000", "100.00", "USD", "etf"
     )
-    await _create_holding_via_order(
+    aapl_holding_id = await _create_holding_via_order(
         client, account_map["wallet"], "AAPL", "2.00000000", "150.00", "USD"
     )
+    await _submit_holding_price(client, vti_holding_id, "120.00", today)
+    await _submit_holding_price(client, aapl_holding_id, "200.00", today)
 
     exposure_res = await client.get("/v1/investing/analytics/exposure", params={"as_of": today})
     assert exposure_res.status_code == 200
     exposure = exposure_res.json()
     assert exposure["analysis_status"] == "complete"
+    assert exposure["valuation_basis"] == "market_value"
     assert exposure["snapshot_coverage"] == "1"
-    assert Decimal(exposure["total_lookthrough_exposure"]) > Decimal("0")
+    assert Decimal(exposure["total_direct_exposure"]) == Decimal("400")
+    assert Decimal(exposure["total_lookthrough_exposure"]) == Decimal("1600")
     assert len(exposure["exposure"]) >= 2
 
     aapl_row = next((row for row in exposure["exposure"] if row["company_ticker"] == "AAPL"), None)
     assert aapl_row is not None
+    # The direct AAPL lot and the ETF's AAPL constituent may resolve through
+    # distinct catalog identities; the portfolio total remains the invariant
+    # that proves current market value is being used for both positions.
+    assert Decimal(aapl_row["lookthrough_exposure"]) >= Decimal("720")
     assert Decimal(aapl_row["lookthrough_exposure"]) > Decimal(aapl_row["direct_exposure"])
 
     overlap_res = await client.get("/v1/investing/analytics/overlap", params={"as_of": today})
@@ -941,14 +967,14 @@ async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
 
     threshold_res = await client.patch(
         "/v1/finance/settings",
-        json={"lookthrough_min_weight_pct": "25"},
+        json={"lookthrough_min_weight_pct": "30"},
     )
     assert threshold_res.status_code == 200
 
     filtered_res = await client.get("/v1/investing/analytics/exposure", params={"as_of": today})
     assert filtered_res.status_code == 200
     filtered = filtered_res.json()
-    assert filtered["display_threshold_pct"] == "25.0000"
+    assert filtered["display_threshold_pct"] == "30.0000"
     assert filtered["hidden_exposure_count"] > 0
     assert len(filtered["exposure"]) + filtered["hidden_exposure_count"] == len(
         exposure["exposure"]
@@ -977,7 +1003,7 @@ async def test_investing_lookthrough_converts_holdings_to_reporting_currency(cli
     )
     settings_res = await client.patch(
         "/v1/finance/settings",
-        json={"reporting_currency_code": "USD"},
+        json={"reporting_currency_code": "INR"},
     )
     assert settings_res.status_code == 200
 
@@ -1007,20 +1033,32 @@ async def test_investing_lookthrough_converts_holdings_to_reporting_currency(cli
 
     # One account, one currency (spec-050): the GBP holding needs its own account.
     gbp_broker_id = await _create_brokerage_account(client, "GBP Brokerage", "GBP")
-    await _create_holding_via_order(
+    vti_holding_id = await _create_holding_via_order(
         client, gbp_broker_id, "VTI", "10.00000000", "100.00", "GBP", "etf"
     )
-    await _create_holding_via_order(
+    aapl_holding_id = await _create_holding_via_order(
         client, account_map["wallet"], "AAPL", "2.00000000", "150.00", "USD"
     )
+    await _submit_holding_price(client, vti_holding_id, "120.00", today.isoformat())
+    await _submit_holding_price(client, aapl_holding_id, "200.00", today.isoformat())
 
     async with postgres.async_session_maker() as session:
         session.add(
             FxRate(
                 base_currency_code="GBP",
-                quote_currency_code="USD",
-                rate=Decimal("1.25"),
+                quote_currency_code="INR",
+                rate=Decimal("100"),
                 # spec-075: display conversion uses the previous day's close.
+                as_of=datetime.now(UTC) - timedelta(days=1),
+                fetched_at=datetime.now(UTC),
+                source="test",
+            )
+        )
+        session.add(
+            FxRate(
+                base_currency_code="USD",
+                quote_currency_code="INR",
+                rate=Decimal("80"),
                 as_of=datetime.now(UTC) - timedelta(days=1),
                 fetched_at=datetime.now(UTC),
                 source="test",
@@ -1033,18 +1071,19 @@ async def test_investing_lookthrough_converts_holdings_to_reporting_currency(cli
     )
     assert exposure_res.status_code == 200
     exposure = exposure_res.json()
-    assert exposure["currency"] == "USD"
-    assert Decimal(exposure["total_direct_exposure"]) == Decimal("300")
-    assert Decimal(exposure["total_lookthrough_exposure"]) == Decimal("1550")
-    assert Decimal(exposure["fx_rates_used"]["GBP"]) == Decimal("1.25")
+    assert exposure["currency"] == "INR"
+    assert Decimal(exposure["total_direct_exposure"]) == Decimal("32000")
+    assert Decimal(exposure["total_lookthrough_exposure"]) == Decimal("152000")
+    assert Decimal(exposure["fx_rates_used"]["GBP"]) == Decimal("100")
+    assert Decimal(exposure["fx_rates_used"]["USD"]) == Decimal("80")
 
     overlap_res = await client.get(
         "/v1/investing/analytics/overlap", params={"as_of": today.isoformat()}
     )
     assert overlap_res.status_code == 200
     overlap = overlap_res.json()
-    assert overlap["currency"] == "USD"
-    assert sum(Decimal(row["overlap_exposure"]) for row in overlap["overlaps"]) == Decimal("1550")
+    assert overlap["currency"] == "INR"
+    assert sum(Decimal(row["overlap_exposure"]) for row in overlap["overlaps"]) == Decimal("152000")
 
 
 @pytest.mark.asyncio
@@ -1117,9 +1156,10 @@ async def test_investing_lookthrough_ignores_fully_sold_positions(client: AsyncC
     )
     assert sell_res.status_code == 201, sell_res.text
 
-    await _create_holding_via_order(
+    aapl_holding_id = await _create_holding_via_order(
         client, account_map["wallet"], "AAPL", "2.00000000", "150.00", "USD"
     )
+    await _submit_holding_price(client, aapl_holding_id, "200.00")
 
     today = datetime.now(UTC).date().isoformat()
     exposure_res = await client.get("/v1/investing/analytics/exposure", params={"as_of": today})
@@ -1142,7 +1182,7 @@ async def test_investing_lookthrough_closed_position_currency_does_not_block_rep
     # One account, one currency (spec-050): the GBP holding needs its own account.
     gbp_broker_id = await _create_brokerage_account(client, "GBP Brokerage", "GBP")
 
-    await _create_holding_via_order(
+    aapl_holding_id = await _create_holding_via_order(
         client, account_map["brokerage"], "AAPL", "1.00000000", "100.00", "USD"
     )
     await _create_holding_via_order(client, gbp_broker_id, "VOD", "1.00000000", "100.00", "GBP")
@@ -1159,6 +1199,7 @@ async def test_investing_lookthrough_closed_position_currency_does_not_block_rep
         },
     )
     assert sell_res.status_code == 201, sell_res.text
+    await _submit_holding_price(client, aapl_holding_id, "120.00")
 
     # The GBP position is fully closed now — with no *open* multi-currency
     # exposure remaining, analytics should resolve USD automatically instead
