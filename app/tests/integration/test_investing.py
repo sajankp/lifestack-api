@@ -130,9 +130,7 @@ async def _submit_holding_price(
         "/v1/investing/prices",
         json={
             "price_date": price_date or datetime.now(UTC).date().isoformat(),
-            "prices": [
-                {"holding_public_id": holding_public_id, "unit_price": unit_price}
-            ],
+            "prices": [{"holding_public_id": holding_public_id, "unit_price": unit_price}],
         },
     )
     assert response.status_code == 201, response.text
