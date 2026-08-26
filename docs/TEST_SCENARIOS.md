@@ -1,6 +1,6 @@
 # LifeStack Test Scenarios
 
-Last verified: 2026-06-28
+Last verified: 2026-08-24
 
 This document is the current test coverage and missing-test backlog for the
 LifeStack workspace. It is based on the live test files in:
@@ -51,14 +51,19 @@ workflows. E2E specs should use those hooks instead of shelling into containers.
 The weekly-summary hook returns the generated summary id and week range so tests
 can assert the exact workflow result instead of treating the hook as fire-and-forget.
 
+Current validation note (2026-08-24): E2E discovery and Compose configuration
+passed. The Web Vitest run reproduced three `ImportsPage` failures (missing MSW
+handler for finance display settings plus multipart parsing) and later stalled,
+so a current full-green Web result is not claimed here.
+
 ### Backend
 
 From `lifestack-api/`:
 
 ```bash
-pytest
-ruff check .
-ruff format --check .
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
 ```
 
 ### Frontend
@@ -75,13 +80,15 @@ npm run security:audit
 
 ## Current Full-Stack E2E Coverage
 
-The Playwright suite currently has 38 tests across 18 spec files.
+`npx playwright test --list` currently discovers **60 tests across 28 spec
+files**. The table records the product behavior by file; use Playwright discovery
+for the exact test-level inventory.
 
 | Spec | Current coverage |
 |---|---|
 | `app-shell-responsive.spec.ts` | Tablet-width app shell behavior: mobile drawer navigation, header notifications, profile menu, and logout. |
 | `auth.spec.ts` | Register, login, dashboard access, logout, and logged-out protected-route redirect. |
-| `capture.spec.ts` | Verify viewer role is blocked from connecting, member receives provider unavailable alert when API key is missing, and mock WebSocket session handles user text, agent transcript, tool executions, and client errors correctly. |
+| `capture.spec.ts` | Viewer blocking, provider-unavailable behavior, mock success/error events, and find -> confirm -> update spending transaction persistence (spec-093). |
 | `keyboard-accessibility.spec.ts` | Verify keyboard-only sidebar navigation into Todo, Todo creation via Enter, Todo completion via Space on the row control, and Spending category modal creation by keyboard. |
 | `todo-smoke.spec.ts` | Create and complete a todo. |
 | `transfer-flow.spec.ts` | Create same-currency and cross-currency account transfers through the UI, verify account/module/gross/net/FX metadata in transfer history, and verify invalid transfer arithmetic is rejected by the API. |
@@ -91,12 +98,22 @@ The Playwright suite currently has 38 tests across 18 spec files.
 | `spending-guardrails.spec.ts` | Create category, create budget, log threshold-breaching transaction, trigger guardrail hook over HTTP, verify warning todo, create a wallet/account, log spending against it, and verify transaction-row account context. |
 | `spending-recurring.spec.ts` | Create/edit recurring spending rule, trigger recurring generation hook over HTTP, verify generated transaction, and deactivate rule. |
 | `investing-fx.spec.ts` | Create GBP/USD brokerage accounts, add holdings, verify unconverted multi-currency state before reporting currency setup, switch reporting currency, verify displayed FX-rate metadata, valuation, and look-through analytics. |
-| `investing-orders.spec.ts` | Place a buy order and verify holding creation, place a second buy and verify cost basis, place a sell and verify realized gain/loss, reject a buy on insufficient cash, delete an order and recompute the holding, show per-holding trade history, and verify a transfer-triggered brokerage cash balance entry. ⚠️ Needs review against spec-044 (FIFO lots replaced weighted avg_cost) and spec-048 (Orders now lives under the unified Cash tab). |
+| `investing-orders.spec.ts` | Buy/sell, fee-aware holding creation, FIFO lot consumption, realized gain/loss, insufficient-cash rejection, replay after deletion, trade history, and transfer cash provenance. |
 | `finance-display-settings.spec.ts` | Verify workspace display settings and user override precedence on dashboard totals. |
 | `notifications-summaries.spec.ts` | Trigger a weekly summary through the E2E hook, assert the generated summary id/week response, verify the generated unread notification and header badge, mark notifications read, verify the Weekly Summaries page renders the generated summary, and verify notifications/summaries stay isolated when switching between personal and shared workspaces. |
 | `runtime-header-master-config.spec.ts` | Verify global header controls and Master Configuration account/category edit actions. |
 | `rbac.spec.ts` | Verify viewer mutation rejection, member todo CRUD, viewer finance-settings rejection, and owner finance-settings update. |
 | `workspace-isolation.spec.ts` | Verify an invited user can switch between personal and shared workspaces, sees workspace-specific Todo, spending transaction, and investing holding data in the UI, and cannot API-fetch/mutate Todo, spending, investing, import, or export records from a non-active workspace. |
+| `health.spec.ts` | Medication creation, missed/pending dose resolution, dose and weight logging, and briefing integration. |
+| `investing-analytics.spec.ts` | Asset-allocation analytics plus warning deduplication. |
+| `investing-dividends-corporate-actions.spec.ts` | Dividend/cash side effects and stock-split create/delete flows. |
+| `investing-return-metrics-historical-data.spec.ts` | Open/exited return metrics and net-worth backfill import/delete. |
+| `performance-caching.spec.ts` | ETag/304 behavior, transfer pagination limits, and optimistic cache removal. |
+| `pwa-offline.spec.ts` | Manifest contract and authenticated offline banner behavior. |
+| `spending-analytics.spec.ts` | Category palette and savings-rate analytics rendering. |
+| `spending-kpis.spec.ts` | KPI create, breach, dashboard surfacing, and delete. |
+| `statement-reconciliation.spec.ts` | Statement CSV import and metadata-only matching to a transaction. |
+| `weekly-summaries.spec.ts` | Generated summary cards, stale status, and movement bounds. |
 
 ### Smoke Tier
 

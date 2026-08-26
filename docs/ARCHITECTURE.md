@@ -18,14 +18,14 @@ The key architectural decision is to optimize for:
 - workspace-scoped data
 - a single database
 - one deployable backend
-- adapters like AI chat and MCP on top of the core services, not inside them
+- adapters like capture and authenticated MCP on top of the core services, not inside them
 
 ---
 
 ## Architecture Principles
 
 ### 1. Personal OS first
-Stage 1 should feel complete and useful without AI, MCP, billing, or message infrastructure.
+The core product should remain complete and useful when optional capture/MCP providers are unavailable.
 
 ### 2. Modular monolith
 One FastAPI app and one PostgreSQL database are enough for this product for a long time.
@@ -74,7 +74,7 @@ The monorepo contains `lifestack-api` (FastAPI backend), `lifestack-web` (React/
 | Observability | OpenTelemetry + Prometheus + Jaeger + Loki + Grafana |
 | Scheduler | APScheduler |
 | Background work | In-process jobs first, DB-backed outbox later if needed |
-| MCP | Optional stage 2 adapter |
+| MCP | Implemented optional authenticated adapter; workspace-scoped grants and read/research/write scopes |
 | Testing | pytest |
 | Linting | Ruff |
 | CI | GitHub Actions |
@@ -374,13 +374,13 @@ For stage 1, the active workspace may be the user's default workspace. The impor
 
 ### Stage 2
 
-If MCP or external API clients are added, introduce a separate auth surface for them:
+MCP and external API clients use a separate auth surface:
 - personal access tokens, or
 - OAuth / integration tokens
 
-Do not imply that web JWT auth automatically solves MCP auth. Treat MCP as a later adapter with its own documented auth flow.
+Web JWT auth does not automatically solve MCP auth. MCP uses its own OAuth/token verification, persisted grants, scopes, Host/Origin policy, and authorization UI.
 
-That is why the README should not advertise MCP integration until it is real and tested.
+The README may describe the implemented MCP contract, while preserving the specs 093/094 deployment-validation qualifier.
 
 ---
 
@@ -539,8 +539,9 @@ This means:
 
 The README should say:
 - AI chat is planned for stage 2
-- MCP tools are planned for stage 2
-- auth details for MCP are intentionally omitted until finalized
+- MCP tools are implemented in `app/mcp/server.py` and reuse domain services
+- auth lives in `app/mcp/auth.py`/`security.py`; grants are persisted and revocable
+- `mcp:read`, `mcp:research`, and `mcp:write` remain separate capabilities
 
 That removes confusion for readers and makes the project look more disciplined.
 
@@ -865,8 +866,8 @@ This balances developer velocity (fast push feedback) with release confidence (f
 - design AI adapter architecture (provider-agnostic)
 - add chat UI
 - add usage tracking and rate limits
-- add MCP as an optional adapter
-- document MCP auth only when implemented
+- expand MCP only through scoped, audited service adapters
+- keep MCP Host/Origin policy dedicated from API CORS/CSRF
 
 ### Phase 3 - SaaS Expansion
 - extend workspaces with multi-user memberships, roles, and team features
@@ -919,7 +920,7 @@ These points should stay explicit across README and architecture docs:
 - what works today vs what is planned
 - personal OS first, SaaS later
 - JWT cookie auth is intentional because it comes from the existing todo app
-- MCP is not part of the core architecture yet
+- MCP is an optional authenticated adapter over the core architecture
 - scheduler and direct workflows are the default coordination model
 - Pub/Sub is optional, not foundational
 - `workspace_id` is the migration path to SaaS
@@ -939,7 +940,7 @@ For this project, the right architecture is:
 - security middleware (OWASP headers, rate limiting, CSRF) from day one
 - API versioning (`/v1/`) and RFC 7807 error responses from day one
 - CI gates (unit on push, integration on PR, E2E on merge) from day one
-- AI and MCP added later as stage 2 adapters with proper architecture review
+- capture and MCP remain optional adapters; deeper AI automation requires explicit architecture review
 - SaaS features added by extending workspace and platform layers, not by breaking the monolith apart too early
 
 That gives you a credible personal product now and a realistic path to a platform later.
