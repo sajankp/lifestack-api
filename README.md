@@ -41,8 +41,9 @@ ingress via Cloudflare Tunnel · encrypted nightly DB backups to S3/R2
 - **Production-grade auth** — JWT in HttpOnly cookies, refresh-token rotation with replay detection, CSRF double-submit, Argon2id, concurrent-session limits.
 - **Operability** — append-only PII-redacted audit logging, structlog + OpenTelemetry + Prometheus, scheduled jobs guarded by Postgres advisory locks.
 - **Lot-accurate cost basis** — FIFO lot engine with corporate-action handling (splits, reverse splits, bonus issues), golden-tested against broker-statement numbers; Indian market ingestion via CAMS CAS PDF import and the NSE bhavcopy price feed.
-- **Quality gates** — 80% backend / 70% frontend coverage thresholds, 19 Playwright E2E specs, and `pip-audit` + Bandit + TruffleHog in CI.
-- **Spec-driven** — 82 specs under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
+- **Permissioned AI adapters** — Gemini Live capture and authenticated MCP reuse domain services, persisted user timezone, workspace membership, grants, and explicit read/research/write scopes.
+- **Quality gates** — 80% backend / 70% frontend coverage thresholds, 60 full-stack Playwright tests across 28 E2E files, and `pip-audit` + Bandit + TruffleHog in CI.
+- **Spec-driven** — implementation contracts run through spec 094 under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
 
 ---
 
@@ -122,7 +123,10 @@ A fast task manager with priorities, due dates, and a clean service-layer archit
 Track transactions, budgets, and monthly spending patterns.
 
 ### Investment Tracker
-Track account-backed holdings, cash balances, FX conversion, performance snapshots, and portfolio-level changes over time. Transaction-based buy/sell **orders** against brokerage accounts automatically update brokerage cash balances, compute weighted average cost, and record realized gain/loss, with bulk order import and per-holding trade history.
+Track account-backed holdings, cash balances, FX conversion, performance snapshots, and portfolio-level changes over time. Transaction-based buy/sell **orders** automatically update brokerage cash, maintain fee-inclusive FIFO lots, and record realized gain/loss. Corporate actions replay through the same history; holdings and look-through analytics use reporting-currency market value with explicit missing price/FX states.
+
+### Health Memory V1
+Medication schedules, reminders, adherence logging, late-dose catch-up, interval-from-last-dose scheduling, and weight trends are implemented and feed briefings, summaries, notifications, and exports. Sleep, workouts, vitals, labs, symptoms, and health sync remain staged.
 
 ### Capture, Notifications, Summaries, Imports, and Exports
 Capture todo and spending intents, receive in-app notifications, review weekly summaries, import CSV data, and export workspace data.
@@ -133,8 +137,8 @@ The differentiator is not just having three modules. It is making them work toge
 - a rebalance check can surface on the dashboard
 - weekly summaries can combine productivity and finance data
 
-### AI Chat and MCP
-These are planned interface layers, not the foundation of the product. The core app should be useful without them. Chat and voice should act through existing services; MCP should expose permissioned personal context to trusted external agents without making any one model vendor the source of truth.
+### Voice Capture and MCP
+Voice/text capture is an experimental Gemini Live adapter over existing services. It can create and correct spending transactions with confirmation, use persisted user timezone, and suppress resumed-session write replays. Authenticated MCP is implemented with workspace discovery, revocable grants, scoped todo/spending/health/finance tools, valued holdings, constituent research operations, and dividends. Specs 093/094 remain marked pending deployment validation; neither adapter is required for the core product to work.
 
 ---
 
@@ -202,7 +206,8 @@ Calendar/time, goals/routines, projects, people/relationships, mood/energy, and 
 - APScheduler for reminders, recurring checks, and scheduled summaries
 - Alembic for schema migrations
 - Audit logging and data export
-- Optional later additions: health, documents, journal/memory, AI layer, MCP tools, outbox/background workers
+- Current adapters: capture/voice, authenticated MCP, observability
+- Optional later additions: documents, journal/memory, mobile sync, outbox/background workers
 
 **Frontend (`lifestack-web`)**
 - React 19 + TypeScript + Vite
@@ -221,7 +226,7 @@ lifestack-web (React)
       +-- /todo
       +-- /spending
       +-- /investing
-      +-- /health      -> later stage
+      +-- /health
       +-- /documents   -> later stage
       +-- /journal     -> later stage
       `-- /login, /register
@@ -234,7 +239,8 @@ lifestack-web (React)
                +-- /spending
                +-- /investing
                +-- /dashboard
-               +-- /health      -> later stage
+               +-- /health
+               +-- /mcp         -> authenticated adapter
                +-- /documents   -> later stage
                +-- /memory      -> later stage
                |
@@ -246,9 +252,11 @@ lifestack-web (React)
                |
                `-- PostgreSQL
 
+current optional adapters:
+- Gemini Live capture
+- authenticated MCP
+
 optional later:
-- AI provider layer
-- MCP adapter
 - mobile companion app
 - background jobs / outbox worker
 - multi-workspace SaaS features
@@ -294,15 +302,16 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Data import/export lifecycle controls | ✅ Gate 0 foundation |
 | Structured source metadata for spending transactions, budgets, and holdings | ✅ Gate 0 foundation |
 | Safe deterministic demo reset | ✅ Gate 0 foundation |
-| Voice-first capture for todos, spending, and investing cash balance tools | Stage 2 / partial |
+| Voice-first capture with transaction correction and timezone-aware tools | Experimental; Stages A/B shipped |
 | AI assistant over existing modules | Stage 3 / planned |
 | Mobile companion app | Stage 4 / planned |
 | Health-app sync via mobile | Stage 4-5 / planned |
-| Health metrics, medications, and workouts | Stage 5 / planned |
+| Medication schedules/adherence and weight tracking | ✅ Health Memory V1 |
+| Sleep, workouts, vitals, labs, symptoms, and health sync | Stage 5 / planned |
 | Document ingestion and extraction | Stage 6 / planned |
 | RAG-backed documents and second-brain memory | Stage 7 / planned |
 | Personal coach over structured life data | Stage 7+ / planned |
-| MCP tools | Later-stage interface layer |
+| Authenticated MCP tools, grants, investment research, and valuation | ✅ Implemented; deployment validation pending for specs 093/094 |
 | BYOK and provider abstraction | Later-stage AI infrastructure |
 | Multi-workspace / SaaS platform layer | Stage 8 |
 
@@ -313,7 +322,7 @@ The core rule is: business logic lives in services, cross-module orchestration l
 Based on architectural reviews and implementation, the following items are tracked:
 
 1. **Scheduler: Running Deploy Window:** Advisory locks still do not provide strict exactly-once delivery semantics. As a hard guardrail, non-idempotent scheduler jobs are now blocked unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly set.
-2. **Cross-repo full-stack E2E test harness:** FE and BE are separate repos, and the dedicated `lifestack-e2e` repo now hosts the real UI+API+DB suite with stack orchestration scripts.
+2. **Cross-repo full-stack E2E test harness:** the dedicated repo hosts 60 tests across 28 files. API CI has an `api-web-merge` sender, but the E2E workflow currently lacks a `repository_dispatch` receiver and Web has no sender, so nightly/manual runs remain the reliable cross-repo backstop.
 3. **Gate 0 hardening work:** Investing account identity, finance correctness, deterministic demo/reset data, and richer import/source lifecycle coverage have been implemented for the public-demo path. Production config policy now fails closed for invalid `ENV`, default secrets, insecure cookies, disabled rate limiting, and in-memory production rate-limit storage. Finance `NUMERIC` models now keep Decimal annotations through FX rates and capital transfers instead of casting through floats. Import artifact storage keys are generated from workspace/import IDs rather than user-supplied filenames. API CI now runs dependency audit, Bandit static analysis, and verified-secret scanning. Source metadata now exposes a structured response contract for manual and imported transactions, including import batch references and completed import rollback support across spending transactions, spending budgets, and investing holdings. FX rates are globally scoped read-only market data for users, with writes owned by scheduled ingestion/service code. Broader maintainability work remains in module decomposition and E2E harness cleanup.
 
 ### Source Metadata Contract
@@ -345,14 +354,15 @@ Fixture version `2026-06-10` seeds:
 ## Running Locally
 
 ```bash
-# Clone both repos
+# Clone the product repos side by side (or use the coordination repo's setup.sh)
 git clone https://github.com/sajankp/lifestack-api
 git clone https://github.com/sajankp/lifestack-web
 
 # Backend
 cd lifestack-api
 cp .env.example .env
-docker-compose up
+docker compose --profile local up -d postgres redis
+uv run uvicorn app.main:app --reload --port 8000
 
 # Frontend
 cd ../lifestack-web
@@ -366,7 +376,11 @@ API docs: `http://localhost:8000/docs`
 
 For deploying Lifestack to production or staging environments using Docker Compose, Cloudflare Tunnels, and encrypted automated backups, see the [Production Deployment Guide](docs/PRODUCTION_DEPLOYMENT.md).
 
-MCP integration is intentionally not documented here until its auth and usage flow are finalized.
+Normal production deployment uses `./scripts/deploy-production.sh`, which validates
+the Compose overlay, prevents concurrent deploys, preserves logs, recreates without
+an explicit `down`, and waits for API health. MCP is off by default; enable only
+with a public HTTPS `MCP_BASE_URL` and dedicated allowed hosts/origins as documented
+in `.env.example` and the deployment guide.
 
 ## Voice Capture Runtime Limits
 
@@ -440,7 +454,7 @@ The goal is to build a real personal system in public, show the architecture dec
 
 | Repo | Description |
 |---|---|
-| [lifestack-api](https://github.com/sajankp/lifestack-api) | FastAPI backend for auth, todo, spending, investing, dashboard, and future AI adapters |
+| [lifestack-api](https://github.com/sajankp/lifestack-api) | FastAPI backend for domain services, auth, jobs, capture, and MCP adapters |
 | [lifestack-web](https://github.com/sajankp/lifestack-web) | React frontend for the personal OS experience |
 | [lifestack-e2e](https://github.com/sajankp/lifestack-e2e) | Standalone full-stack Playwright suite for API, Web, Postgres, and Redis |
 

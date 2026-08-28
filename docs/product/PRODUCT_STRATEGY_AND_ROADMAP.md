@@ -1,11 +1,21 @@
 # Product Strategy and Roadmap
 
 Date: 2026-06-03
-Last updated: 2026-07-12
+Last updated: 2026-08-24
 
 Scope: current product positioning, implementation status, post-Gate 0 backlog, and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
 
 ## Changelog
+
+- **2026-08-24 — current-state reconciliation through spec 094.** Weekly-summary
+  enhancements (076), identity/reference-data hardening (083), recurring account
+  rules (084), summary/import/cache/job/schedule guards (085–092), voice transaction
+  correction (093), and MCP investment research (094) are implemented. Authenticated
+  MCP is no longer a future-only track: workspace discovery, grants, scoped domain
+  tools, investment research, and reporting-currency holdings valuation are in code.
+  Specs 093/094 still await deployment validation. Full-stack E2E now discovers 60
+  tests across 28 files. Current priority is release evidence, demo/case-study quality,
+  and closing the incomplete API/Web-to-E2E dispatch contract—not another broad domain.
 
 - **2026-07-12 (same day, fourth pass) — sequence items 2/4/5 shipped; §4 numbered list caught up.** Currency display polish (spec-075, api#155/web#113), custom financial KPIs (spec-077, api#156/web#114), and wallet ledger reconciliation (spec-078, api#159/web#115) are all merged. spec-078 shipped statement import + deterministic ±3-day match engine + reconciliation view + break-on-edit-clears-match; the spec's transfer-detail both-legs timeline is a deferred, unspecced fast-follow (no existing transfer-detail view to extend). spec-076 (weekly summaries) remains Approved but deliberately skipped this pass. spec-079
 (voice/capture hardening) is **in progress, not shipped**: Stage A (measure-first, api#158,
@@ -51,11 +61,17 @@ That workflow should feel like a calm operating briefing, not a chat transcript 
 
 The current product already has a strong foundation:
 
-- Auth, workspace scoping, todos, spending, investing, dashboard, notifications, summaries, imports, exports, recurring workflows, and the Phase 1 voice/tool-calling capture surface.
+- Auth/OAuth identity linking, persisted user timezone, workspace scoping, todos,
+  spending, investing, Health Memory V1, dashboard, notifications, summaries,
+  imports, exports, recurring workflows, experimental voice correction, and
+  authenticated MCP.
 - A scheduler and notification model that can later support medication reminders and health follow-ups.
 - A service-layer architecture that gives future AI/mobile/document adapters a stable place to call into existing product capabilities.
 
-The main risk is sequencing. Health, documents, and memory are high-trust domains. They should be planned now but implemented only after the product has stronger reliability, security, mobile ergonomics, and E2E coverage.
+The main risk is now breadth and proof quality. Medication/weight Health Memory V1
+is already shipped; documents, deeper health, mobile sync, and memory remain high-
+trust staged domains. New breadth should wait until cross-repo release evidence,
+production validation, and the reviewer-facing demo are strong.
 
 ### Current Product Definition
 
@@ -118,13 +134,18 @@ This roadmap is the living home for product sequencing. Specs remain the source 
 | Implemented 2026-07-08 wave | [`062`](../specs/spec-062-category-delete-and-merge.md), [`064`](../specs/spec-064-category-group-budgets.md), [`065`](../specs/spec-065-net-worth-over-time.md) | Category delete/merge and category-group recurring budgets (api#131, web#86), and net-worth-over-time daily snapshots + history graph (api#132, web#87) are implemented and merged. spec-065's snapshot job was fixed pre-merge to compute live via `InvestingSummaryService` instead of depending on the on-demand `portfolio_snapshots` table, and its APScheduler registration was added post-merge. |
 | Implemented 2026-07-08→11 wave | [`066`](../specs/spec-066-capture-consolidation.md), [`067`](../specs/spec-067-morning-briefing.md), [`068`](../specs/spec-068-todo-organization.md), [`069`](../specs/spec-069-health-memory-v1.md), [`070`](../specs/spec-070-export-completeness-and-roundtrip.md), [`071`](../specs/spec-071-investment-return-metrics.md), [`072`](../specs/spec-072-historical-data-ingestion.md), [`073`](../specs/spec-073-dividend-income-tracking.md), [`074`](../specs/spec-074-consolidate-bulk-paste-imports.md) | Capture consolidation (api#137/139, web#91); deterministic morning briefing (api#138/140, web#93); todo subtasks + Clear completed (api#144, web#102); **Health Memory V1** — medications + weight, Track 1's first slice (api#145, web#103); export completeness across finance/health/orders (api#148, web#107); investment return metrics + historical FX/net-worth ingestion + dividend income tracking (api#150, web#110); consolidation of the dividend/FX/net-worth bulk-paste flows into the shared imports framework (api#151, web#111). All implemented and merged; e2e suite gated in CI in the same window (lifestack-e2e, merged 2026-07-09) and demo-path UX hardening P0/P1/P2 landed (web#90, #94, #95). |
 | Implemented 2026-07-12 wave | [`075`](../specs/spec-075-currency-display-consistency.md), [`077`](../specs/spec-077-custom-financial-kpis.md), [`078`](../specs/spec-078-wallet-ledger-reconciliation.md) | Currency display polish — explicit locale/decimal profile, one FX rate per calendar day (api#155, web#113); custom financial KPIs — `spend_total`/`income_total`/`net_cash_flow` v1, guardrail breach notifications, dashboard card (api#156, web#114); wallet ledger reconciliation — `account_statements`/`statement_lines`, `finance-account-statement` import module, deterministic ±3-day suggest-only match engine, reconciliation view, break-on-edit-clears-match (api#159, web#115). All implemented and merged same day. spec-078's transfer-detail both-legs timeline is a deferred, unspecced fast-follow. spec-076 (weekly summaries) remains Approved, not started. spec-079 (voice/capture hardening) is **in progress**: Stage A landed (api#158) — tool-wiring fix, disconnect instrumentation, eval harness — but the recalibrated accuracy run is 84.2%, below the 90% bar gating Stages B/C; see `docs/specs/spec-079-voice-capture-production-hardening.md` §"Stage A progress" for the full breakdown. |
+| Implemented 2026-07→08 wave | [`076`](../specs/spec-076-weekly-summaries-enhancements.md), [`083`](../specs/spec-083-security-identity-and-reference-data.md)–[`094`](../specs/spec-094-mcp-investment-research-tools.md) | Weekly-summary cadence/regeneration, reference identity, recurring-account rules, correctness/cache/job/health guards, voice transaction correction, and authenticated MCP investment research. Specs 093/094 are implemented but still pending deployment validation. |
 ## 4) Near-Term Roadmap
 
 This is the Post-Gate 0 roadmap backlog, promoted near the top because it contains the next practical product slices. These items should deepen the current finance-led product before Lifestack expands into new life domains.
 
 ### Immediate Focus
 
-**2026-07-12 — this entire list is now cleared.** All seven items below are done. Replaced by an owner-decided sequence (below the list) — spec drafting for that sequence is pending, not yet assigned to an agent.
+**Current priority (2026-08-24):** close the release-proof gaps before selecting
+another feature: complete API/Web -> E2E dispatch, record deployed validation for
+specs 093/094, run a backup restore drill, and produce one deterministic five-minute
+portfolio demo plus correctness/MCP/operations case studies. The July lists below
+are retained as historical sequencing.
 
 1. ~~Merge api#130, then implement spec-065 net-worth-over-time~~ — done 2026-07-08 (api#132, web#87). Daily history now accumulates via the `net_worth_snapshot` scheduler job (07:00 UTC) plus an opportunistic upsert on every `GET /finance/net-worth` read.
 2. ~~Spending model wave: spec-062 category delete & merge, then spec-064 recurring date-ranged budgets + category groups~~ — done 2026-07-08 (api#131, web#86).
@@ -166,8 +187,8 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 | Daily-work surface polish (Implemented) | Overdue todo indicators, recurring status badges, and dashboard cues. | Implemented under feat/spending-analytics branch. |
 | Notifications (Parked 2026-07-12) | Push delivery already ships (spec-052); the only meaningful remaining scope is email delivery, explicitly out of scope for now. | Deprioritized below the current sequence — don't scope real-time transport/grouping/digest variants without a concrete driver. |
 | Currency display (Sequence #2 — Done) | Explicit locale/decimal profile, one FX rate per calendar day (previous close) applied uniformly. | Shipped 2026-07-12, spec-075, api#155/web#113. |
-| Voice/capture (Sequence #6 — In progress) | WebRTC-grade production transport, broader capture domains, multi-item capture, AI-assisted routing, and ADK migration planning. | spec-079 Stage A shipped api#158 (2026-07-12): tool-wiring fix, disconnect instrumentation, eval harness. Recalibrated accuracy 84.2%, below the 90% bar — Stages B (transport)/C (multi-item) stay gated. ADK evaluation and voice-first migration guide documented in [spec-039-adk-evaluation-and-migration-guide.md](../specs/spec-039-adk-evaluation-and-migration-guide.md) for Phase 2. |
-| Weekly summaries (Sequence #3 — Deferred) | Configurable summary cadence, regeneration/admin correction flows, and expanded insight surfaces. | spec-076 Approved 2026-07-12, deliberately skipped this pass in favor of spec-077/078; not started. |
+| Voice/capture (Sequence #6 — Stages A/B shipped) | Production hardening, transaction correction, and a gated multi-item future. | Transport resilience and correction are implemented; Stage C and removal of the experimental label remain gated by two >=90% eval runs at least a week apart. |
+| Weekly summaries (Sequence #3 — Done) | Configurable cadence, regeneration/admin correction flows, and expanded insight surfaces. | spec-076 shipped (api#177, web#126). |
 | Custom financial KPIs (Sequence #4 — Done) | `spend_total`/`income_total`/`net_cash_flow` v1, guardrail breach notifications, dashboard card. | Shipped 2026-07-12, spec-077, api#156/web#114. |
 | Wallet ledger reconciliation (Sequence #5 — Done) | Statement matching (metadata-only), deterministic ±3-day match engine, reconciliation view. | Shipped 2026-07-12, spec-078, api#159/web#115. Transfer-detail both-legs timeline is a deferred, unspecced fast-follow — no existing transfer-detail view to extend. |
 | JWT library maintenance (Done) | ~~Migrate from `python-jose` to `PyJWT` or `joserfc`.~~ Completed in commit `2c939ee` (audit §11.18) — `pyjwt[crypto]` in `pyproject.toml`, no `python-jose` anywhere. Marked done 2026-07-12 when the sequence was specced; the open item was roadmap drift. | — |
@@ -179,7 +200,7 @@ This is the Post-Gate 0 roadmap backlog, promoted near the top because it contai
 | Area | Roadmap Item | Why It Belongs Here |
 |---|---|---|
 | Investing performance | Richer return math, deeper visualization, benchmark comparison, dividend/total-return views, and scheduled/background price-refresh cadence. | On-demand automated price refresh is implemented; deeper performance analytics and scheduled pricing should be scoped as explicit product slices. |
-| Investing summary valuation | Query latest price data from `HoldingPrice` table instead of using cost basis. | Resolves misleading investing overview totals when asset values fluctuate. |
+| Investing summary valuation | **Implemented.** Holdings and INR look-through exposure use latest market price with reporting-currency FX conversion; MCP exposes price/FX freshness and missing-data statuses. | Cost basis remains separate from current exposure (API #219 / Web #238; MCP PR #218). |
 | Hybrid instrument catalog | **Implemented** ([`Spec 033`](../specs/spec-033-hybrid-instrument-catalog.md), migration `0032_hybrid_instrument_catalog.py`, 2026-06-24 — corrected 2026-07-12, doc previously mismarked deferred): global public instruments/companies with workspace-scoped tenant overrides. | Reduces duplicate public securities and redundant provider calls; global-first resolution is live in `app/investing/service.py`. |
 | Look-through analytics | UX alerts, quality scoring, company identity normalization, derivative look-through, and deeper constituent-provider coverage. | Look-through analytics and automated ETF/MF constituent ingestion are implemented; these are advanced accuracy, scale, and UX tracks after V1 correctness. |
 | Corporate actions (stock splits) | **Implemented ([`spec-051`](../specs/spec-051-corporate-actions-splits.md), api#102, merged 2026-07-04):** splits, reverse splits, and bonus issues are first-class replayed events, golden-tested. | Closes the un-applied-split risk (understated share counts, distorted FIFO cost basis, e.g. NVDA 10:1, GOOGL 20:1 in imported IND Money data); manual order edits are no longer the workaround. |
@@ -343,6 +364,12 @@ Non-goals:
 - Uncited claims for sensitive domains.
 
 ### Track 6: MCP and Agent Access
+
+**Status: foundation shipped 2026-08.** Authenticated MCP now provides workspace
+discovery, persisted grants/revocation, scoped domain tools, investment holdings and
+valuation, constituent research writes, and dividends. Specs 093/094 remain pending
+deployment validation. Future expansion must keep explicit scopes, confirmation,
+provenance, and service reuse.
 
 Goal: make Lifestack the durable personal context source for trusted external AI agents.
 

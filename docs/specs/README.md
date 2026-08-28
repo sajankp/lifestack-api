@@ -1,6 +1,6 @@
 # Spec Index
 
-Last updated: 2026-07-16
+Last updated: 2026-08-24
 
 This index lists the current spec set and its roadmap status. The product roadmap is the living home
 for future sequencing; individual specs are implementation contracts or historical records.
@@ -133,6 +133,8 @@ Corporate actions, web push, CAS PDF ingestion (CAMS/NSDL/CDSL), NSE bhavcopy pr
 | [Spec 090: Voice Session Clearing & Tool Idempotency](./spec-090-voice-capture-session-clearing-and-tool-idempotency.md) | Implemented (api#174, web#214) | Explicit session clearing and resumed-session write-tool replay suppression. |
 | [Spec 091: Partial Net-Worth & Summary Guards](./spec-091-partial-net-worth-and-summary-baseline-guards.md) | Implemented | Honest partial totals and guarded summary baseline rendering. |
 | [Spec 092: Late-Dose Catch-Up & Interval Scheduling](./spec-092-late-dose-catch-up-and-interval-scheduling.md) | Implemented (api#202, web#218) | Health day navigation, late-dose catch-up, and opt-in interval-from-last-dose scheduling. |
+| [Spec 093: Voice Transaction Correction](./spec-093-voice-transaction-correction.md) | Implemented; pending deployment validation | Bounded transaction lookup plus confirmation-gated update/delete, persisted-user-timezone interpretation, audit/reconciliation reuse, replay suppression, MCP parity, and capture E2E. |
+| [Spec 094: MCP Investment Research Tools](./spec-094-mcp-investment-research-tools.md) | Implemented; pending deployment validation | Scoped holdings/valuation, constituent snapshot research reads/writes, and dividend operations. PR #218 later added holdings filters, deterministic sorting, and reporting-currency price/FX valuation. |
 
 ## Roadmap Alignment
 

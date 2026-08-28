@@ -14,7 +14,7 @@
 
 ## Quick Commands
 
-- Run dev server: `uv run fastapi dev`
+- Run dev server: `uv run uvicorn app.main:app --reload --port 8000`
 - Run all tests: `uv run pytest --cov=app --cov-report=term-missing -q`
 - Run single test file: `uv run pytest app/tests/<name>.py -v`
 - Run single test: `uv run pytest app/tests/<name>.py::test_function_name -v`
@@ -38,7 +38,7 @@ Use these prefixes for all commits:
 
 Follow this sequence for all feature work and architectural changes:
 
-1. **Specification** — Create `docs/specs/NNN-*.md`. Get explicit user approval before coding. Add an ADR if the architectural choice is non-obvious.
+1. **Specification** — Create `docs/specs/spec-NNN-*.md`. Get explicit user approval before coding. Add an ADR if the architectural choice is non-obvious.
 2. **Test-First (Red)** — Create feature branch. Write failing tests FIRST. Confirm they fail before writing any implementation.
 3. **Implementation (Green)** — Write minimal code to make tests pass. Follow the approved spec exactly. Pause and ask if spec is ambiguous.
 4. **Verify** — Run full test suite with coverage. Mark spec as `Implemented`.
@@ -144,3 +144,5 @@ PR ready for review.
 - Protected main blocks push → Push feature branch and open PR instead
 - Local env mismatch → Use `uv` and pinned version requirements
 - Pre-commit failure → Fix hooks, recommit, re-verify with `git status`
+- Full-stack confidence → API/Web green is insufficient. Verify the E2E workflow receiver and a fresh composed run; API currently has a dispatch sender, but E2E has no `repository_dispatch` trigger.
+- Production deployment → Use `./scripts/deploy-production.sh`; it validates Compose, locks concurrent deploys, captures logs, and waits for API health.
