@@ -838,6 +838,13 @@ class DividendService:
         account = await self._validate_account_and_currency(
             workspace_id, dividend_in.account_id, dividend_in.currency
         )
+        if dividend_in.external_ref:
+            existing = await self.repository.get_by_external_ref(
+                workspace_id, account.id, dividend_in.external_ref
+            )
+            if existing is not None:
+                return existing, account
+
         holding_id = await self._resolve_holding(workspace_id, account.id, dividend_in.symbol)
         net_amount = (dividend_in.gross_amount - dividend_in.tax_withheld).quantize(MONEY_QUANT)
         dividend = Dividend(

@@ -64,6 +64,20 @@ def source_metadata_response(
             origin="external_sync",
             label="External sync",
         )
+    if source_type == "voice_agent":
+        return SourceMetadataResponse(
+            source_type=source_type,
+            source_ref=source_ref,
+            origin="assistant_action",
+            label="Voice agent",
+        )
+    if source_type == "mcp_agent":
+        return SourceMetadataResponse(
+            source_type=source_type,
+            source_ref=source_ref,
+            origin="assistant_action",
+            label="MCP agent",
+        )
     if source_type == "assistant":
         return SourceMetadataResponse(
             source_type=source_type,

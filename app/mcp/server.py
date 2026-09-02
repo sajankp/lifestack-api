@@ -105,6 +105,7 @@ async def _run_capture_tool(
             user_id=user_id,
             workspace_id=workspace_id,
             user_timezone=(user.timezone if user and user.timezone else "UTC"),
+            source_channel="mcp_agent",
         )
         result = await getattr(agent_tools, tool_name)(**kwargs)
         if result.get("status") == "success":
@@ -947,17 +948,24 @@ def create_mcp_server() -> FastMCP:
         This credits the linked brokerage cash balance through the existing
         DividendService and never accepts bank or wallet accounts.
         """
+        norm_type = income_type.strip().lower() if income_type else "dividend"
+        if norm_type not in ("dividend", "interest", "coupon"):
+            return {
+                "status": "error",
+                "message": "income_type must be one of 'dividend', 'interest', 'coupon'.",
+            }
+
         if not confirmed:
             return {
                 "status": "needs_confirmation",
                 "needs_confirmation": True,
                 "message": (
-                    f"Record {income_type} income of {gross_amount} {currency} for "
+                    f"Record {norm_type} income of {gross_amount} {currency} for "
                     f"{symbol or 'the brokerage account'} on {pay_date}? Confirm to continue."
                 ),
                 "account_id": account_id,
                 "symbol": symbol,
-                "income_type": income_type,
+                "income_type": norm_type,
                 "gross_amount": gross_amount,
                 "tax_withheld": tax_withheld,
                 "currency": currency,
@@ -968,7 +976,7 @@ def create_mcp_server() -> FastMCP:
             payload = DividendCreate(
                 account_id=uuid.UUID(account_id),
                 symbol=symbol,
-                income_type=income_type,
+                income_type=norm_type,
                 gross_amount=gross_amount,
                 tax_withheld=tax_withheld,
                 currency=currency,
@@ -1015,9 +1023,10 @@ def create_mcp_server() -> FastMCP:
         amount: str | None = None,
         search: str | None = None,
         account_name: str | None = None,
+        transaction_type: str | None = "expense",
         limit: int = 10,
     ) -> dict[str, Any]:
-        """Find bounded expense candidates in an authorized workspace."""
+        """Find bounded transaction candidates in an authorized workspace."""
         return await _run_capture_tool(
             workspace_id,
             "mcp:read",
@@ -1029,6 +1038,7 @@ def create_mcp_server() -> FastMCP:
                 "amount": amount,
                 "search": search,
                 "account_name": account_name,
+                "transaction_type": transaction_type,
                 "limit": limit,
             },
         )
@@ -1071,6 +1081,136 @@ def create_mcp_server() -> FastMCP:
             workspace_id,
             "mcp:write",
             "delete_spending_transaction",
+            {"public_id": public_id, "confirmed": confirmed},
+        )
+
+    @mcp.tool
+    async def list_transfers(
+        workspace_id: int,
+        day: str | None = None,
+        from_day: str | None = None,
+        to_day: str | None = None,
+        account_name: str | None = None,
+        amount: str | None = None,
+        search: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """List capital transfers for a day or date range in an authorized workspace."""
+        return await _run_capture_tool(
+            workspace_id,
+            "mcp:read",
+            "list_transfers",
+            {
+                "day": day,
+                "from_day": from_day,
+                "to_day": to_day,
+                "account_name": account_name,
+                "amount": amount,
+                "search": search,
+                "limit": limit,
+            },
+        )
+
+    @mcp.tool
+    async def find_transfers(
+        workspace_id: int,
+        from_day: str | None = None,
+        to_day: str | None = None,
+        account_name: str | None = None,
+        amount: str | None = None,
+        search: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Find bounded transfer candidates for a correction or deletion."""
+        return await _run_capture_tool(
+            workspace_id,
+            "mcp:read",
+            "find_transfers",
+            {
+                "from_day": from_day,
+                "to_day": to_day,
+                "account_name": account_name,
+                "amount": amount,
+                "search": search,
+                "limit": limit,
+            },
+        )
+
+    @mcp.tool
+    async def create_transfer(
+        workspace_id: int,
+        from_account_name: str,
+        to_account_name: str,
+        amount: str,
+        fx_rate: str | None = None,
+        fees: str | None = None,
+        net_amount: str | None = None,
+        occurred_at: str | None = None,
+        notes: str | None = None,
+        source_ref: str | None = None,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Create a capital transfer between accounts in an authorized workspace."""
+        return await _run_capture_tool(
+            workspace_id,
+            "mcp:write",
+            "create_transfer",
+            {
+                "from_account_name": from_account_name,
+                "to_account_name": to_account_name,
+                "amount": amount,
+                "fx_rate": fx_rate,
+                "fees": fees,
+                "net_amount": net_amount,
+                "occurred_at": occurred_at,
+                "notes": notes,
+                "source_ref": source_ref,
+                "confirmed": confirmed,
+            },
+        )
+
+    @mcp.tool
+    async def update_transfer(
+        workspace_id: int,
+        public_id: str,
+        from_account_name: str | None = None,
+        to_account_name: str | None = None,
+        amount: str | None = None,
+        fx_rate: str | None = None,
+        fees: str | None = None,
+        net_amount: str | None = None,
+        occurred_at: str | None = None,
+        notes: str | None = None,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Update an existing capital transfer in an authorized workspace."""
+        return await _run_capture_tool(
+            workspace_id,
+            "mcp:write",
+            "update_transfer",
+            {
+                "public_id": public_id,
+                "from_account_name": from_account_name,
+                "to_account_name": to_account_name,
+                "amount": amount,
+                "fx_rate": fx_rate,
+                "fees": fees,
+                "net_amount": net_amount,
+                "occurred_at": occurred_at,
+                "notes": notes,
+                "confirmed": confirmed,
+            },
+        )
+
+    @mcp.tool
+    async def delete_transfer(
+        workspace_id: int, public_id: str, confirmed: bool = False
+    ) -> dict[str, Any]:
+        """Delete an existing capital transfer in an authorized workspace."""
+        return await _run_capture_tool(
+            workspace_id,
+            "mcp:write",
+            "delete_transfer",
             {"public_id": public_id, "confirmed": confirmed},
         )
 
@@ -1178,8 +1318,9 @@ def create_mcp_server() -> FastMCP:
         occurred_at: str | None = None,
         tags: list[str] | None = None,
         allow_duplicate: bool = False,
+        transaction_type: str = "expense",
     ) -> dict[str, Any]:
-        """Create an expense in an authorized workspace."""
+        """Create a transaction (expense or income) in an authorized workspace."""
         return await _run_capture_tool(
             workspace_id,
             "mcp:write",
@@ -1192,6 +1333,7 @@ def create_mcp_server() -> FastMCP:
                 "occurred_at": occurred_at,
                 "tags": tags,
                 "allow_duplicate": allow_duplicate,
+                "transaction_type": transaction_type,
             },
         )
 
@@ -1203,9 +1345,10 @@ def create_mcp_server() -> FastMCP:
         amount: str | None = None,
         search: str | None = None,
         account_name: str | None = None,
+        transaction_type: str | None = "expense",
         limit: int = 10,
     ) -> dict[str, Any]:
-        """List expenses for one local calendar day in an authorized workspace."""
+        """List transactions for one local calendar day in an authorized workspace."""
         return await _run_capture_tool(
             workspace_id,
             "mcp:read",
@@ -1216,6 +1359,7 @@ def create_mcp_server() -> FastMCP:
                 "amount": amount,
                 "search": search,
                 "account_name": account_name,
+                "transaction_type": transaction_type,
                 "limit": limit,
             },
         )

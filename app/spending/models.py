@@ -34,6 +34,8 @@ class TransactionSourceType(StrEnum):
     synced = "synced"
     assistant = "assistant"
     order = "order"
+    voice_agent = "voice_agent"
+    mcp_agent = "mcp_agent"
 
 
 class KpiMetricType(StrEnum):

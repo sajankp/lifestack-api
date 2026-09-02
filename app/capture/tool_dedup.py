@@ -34,6 +34,10 @@ WRITE_TOOLS = frozenset({
     "delete_todo",
     "update_spending_transaction",
     "delete_spending_transaction",
+    "create_transfer",
+    "update_transfer",
+    "delete_transfer",
+    "create_investment_dividend",
 })
 
 # Per-tool fuzzy key fields — the args that survived replay drift in the
@@ -41,7 +45,7 @@ WRITE_TOOLS = frozenset({
 # account_name appeared; amount and date held). Tools not listed key on their
 # full canonical args, i.e. exact-match only.
 _FUZZY_KEY_FIELDS: dict[str, tuple[str, ...]] = {
-    "log_spending_transaction": ("amount", "occurred_at"),
+    "log_spending_transaction": ("amount", "occurred_at", "transaction_type"),
 }
 
 
@@ -66,6 +70,14 @@ def _normalize_occurred_at(value, user_timezone: str, now: float) -> str:
     return datetime.fromtimestamp(now, tz).date().isoformat()
 
 
+def _normalize_transaction_type(value) -> str:
+    """Default omitted or unspecified transaction_type to 'expense'."""
+    if not value:
+        return "expense"
+    normalized = str(value).strip().lower()
+    return "income" if normalized == "income" else "expense"
+
+
 def _dedup_key(
     workspace_id: int,
     user_id: int,
@@ -84,6 +96,10 @@ def _dedup_key(
             parts.append(_normalize_amount(args.get("amount")))
         elif name == "occurred_at":
             parts.append(_normalize_occurred_at(args.get("occurred_at"), user_timezone, now))
+        elif name in ("transaction_type", "type"):
+            parts.append(
+                _normalize_transaction_type(args.get("transaction_type") or args.get("type"))
+            )
         else:
             parts.append(str(args.get(name)))
     return (workspace_id, user_id, tool, tuple(parts))

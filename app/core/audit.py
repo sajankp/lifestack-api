@@ -1,5 +1,7 @@
 import uuid
 from datetime import UTC, date, datetime
+from decimal import Decimal
+from enum import Enum
 from typing import Any
 
 import sqlalchemy as sa
@@ -49,11 +51,12 @@ SENSITIVE_KEYS = {
 
 
 def redact_details(data: Any) -> Any:
-    """Recursively redact sensitive keys from dictionaries/lists case-insensitively."""
+    """Recursively redact sensitive keys from dictionaries/lists and convert
+    non-JSON primitives (UUID, Decimal, datetime, date, Enum) to serializable types."""
     if isinstance(data, dict):
         redacted = {}
         for key, value in data.items():
-            key_lower = key.lower()
+            key_lower = str(key).lower()
             if key_lower in SENSITIVE_KEYS:
                 redacted[key] = "[REDACTED]"
             else:
@@ -61,6 +64,12 @@ def redact_details(data: Any) -> Any:
         return redacted
     elif isinstance(data, list):
         return [redact_details(item) for item in data]
+    elif isinstance(data, (uuid.UUID, Decimal)):
+        return str(data)
+    elif isinstance(data, (datetime, date)):
+        return data.isoformat()
+    elif isinstance(data, Enum) or hasattr(data, "value"):
+        return getattr(data, "value", str(data))
     return data
 
 

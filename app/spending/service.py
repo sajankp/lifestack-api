@@ -942,8 +942,12 @@ class TransactionService:
         workspace_id: int,
         tx_in: TransactionCreate,
         audit_logger: AuditLogger | None = None,
+        source_type: TransactionSourceType = TransactionSourceType.manual,
+        source_ref: str | None = None,
     ) -> TransactionResponse:
-        tx = await self.create_transaction(actor_id, workspace_id, tx_in, audit_logger)
+        tx = await self.create_transaction(
+            actor_id, workspace_id, tx_in, audit_logger, source_type=source_type, source_ref=source_ref
+        )
         account_public_id = None
         if tx.account_id is not None:
             if tx_in.account_id is not None:
@@ -1258,7 +1262,15 @@ class TransactionService:
         workspace_id: int,
         tx_in: TransactionCreate,
         audit_logger: AuditLogger | None = None,
+        source_type: TransactionSourceType = TransactionSourceType.manual,
+        source_ref: str | None = None,
     ) -> SpendingTransaction:
+        if source_ref:
+            st_val = source_type.value if hasattr(source_type, "value") else str(source_type)
+            existing = await self.transaction_repo.get_by_source_ref(workspace_id, st_val, source_ref)
+            if existing is not None:
+                return existing
+
         category = await self._resolve_category(workspace_id, tx_in.category_id)
         account_id = await self._resolve_create_account_id(workspace_id, tx_in.account_id)
         transaction = SpendingTransaction(
@@ -1272,7 +1284,8 @@ class TransactionService:
             description=tx_in.description,
             wallet_name=tx_in.wallet_name,
             labels=tx_in.labels,
-            source_type=TransactionSourceType.manual,
+            source_type=source_type,
+            source_ref=source_ref,
         )
         transaction = await self.transaction_repo.create(transaction)
         tag_ids = await self._resolve_tag_ids(workspace_id, tx_in.tag_ids)

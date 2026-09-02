@@ -1,10 +1,12 @@
 import asyncio
 import json
+import uuid
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from structlog.testing import capture_logs
 
 from app.auth.models import User
@@ -26,9 +28,9 @@ from app.capture.tool_dedup import CaptureToolDedupLedger, SessionDedupContext
 from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
-from app.finance.models import Account, AccountType, WorkspaceFinanceSetting
+from app.finance.models import Account, AccountType, CapitalTransfer, WorkspaceFinanceSetting
 from app.health.models import Medication
-from app.investing.models import CashBalance
+from app.investing.models import CashBalance, Dividend
 from app.platform.models import Workspace, WorkspaceMembership
 from app.spending.models import SpendingCategory, SpendingTransaction
 from app.todo.models import RecurringTodoRule, Todo
@@ -2100,3 +2102,582 @@ async def test_session_info_sent_to_client_before_provider_connect(monkeypatch):
 
     session_infos = [m for m in client_ws.sent_json if m.get("type") == "session_info"]
     assert session_infos and session_infos[0]["session_id"]
+
+
+# ---------------------------------------------------------------------------
+# Spec-095: Financial Agent Operations tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spec095_income_and_expense_type_handling_and_duplicates(seed_agent_test_data):
+    """Spec-095: Ordinary income and expense are type-aware; duplicate detection
+    and provenance distinguish income from expense and set source_type=voice_agent."""
+    # 1. Log expense (default type)
+    res_exp = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "75.00",
+            "category_name": "food",
+            "description": "Team lunch",
+            "account_name": "Everyday Wallet",
+            "transaction_type": "expense",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert res_exp["status"] == "success"
+    exp_public_id = uuid.UUID(res_exp["entity_public_id"])
+
+    # 2. Log income with identical amount, category, account, description
+    res_inc = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "75.00",
+            "category_name": "food",
+            "description": "Team lunch",
+            "account_name": "Everyday Wallet",
+            "transaction_type": "income",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert res_inc["status"] == "success", f"Income collided with expense: {res_inc}"
+    inc_public_id = uuid.UUID(res_inc["entity_public_id"])
+    assert exp_public_id != inc_public_id
+
+    # 3. Attempt duplicate income without allow_duplicate -> must be blocked
+    res_dup = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "75.00",
+            "category_name": "food",
+            "description": "Team lunch",
+            "account_name": "Everyday Wallet",
+            "transaction_type": "income",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert res_dup["status"] == "error"
+    assert res_dup.get("duplicate_detected") is True
+
+    # 4. Verify in DB that source_type is voice_agent and types are distinct
+    async with postgres.async_session_maker() as session:
+        exp_row = (
+            await session.execute(
+                select(SpendingTransaction).where(SpendingTransaction.public_id == exp_public_id)
+            )
+        ).scalar_one()
+        inc_row = (
+            await session.execute(
+                select(SpendingTransaction).where(SpendingTransaction.public_id == inc_public_id)
+            )
+        ).scalar_one()
+        assert exp_row.type == "expense"
+        assert exp_row.source_type == "voice_agent"
+        assert inc_row.type == "income"
+        assert inc_row.source_type == "voice_agent"
+
+    # 5. List and find transactions with type filter
+    list_inc = await execute_agent_tool(
+        name="list_spending_transactions",
+        args={"transaction_type": "income"},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert list_inc["status"] == "success"
+    assert any(t["entity_public_id"] == str(inc_public_id) for t in list_inc["transactions"])
+    assert not any(t["entity_public_id"] == str(exp_public_id) for t in list_inc["transactions"])
+
+    find_inc = await execute_agent_tool(
+        name="find_spending_transactions",
+        args={"search": "Team lunch", "transaction_type": "income"},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert find_inc["status"] == "success"
+    assert find_inc["total"] == 1
+    assert find_inc["transactions"][0]["entity_public_id"] == str(inc_public_id)
+    assert find_inc["transactions"][0].get("type") == "income"
+
+
+@pytest.mark.asyncio
+async def test_spec095_transfer_tool_family_preview_and_mutation(seed_agent_test_data):
+    """Spec-095: Transfer family supports list, find, create, update, delete with
+    confirmation preview, account resolution across all types, derived modules/currencies,
+    brokerage snapshot updates, and audit logging."""
+    # 1. Preview create_transfer (confirmed=False)
+    preview = await execute_agent_tool(
+        name="create_transfer",
+        args={
+            "from_account_name": "Everyday Wallet",
+            "to_account_name": "Chase Brokerage",
+            "amount": "200.00",
+            "notes": "Monthly investing top-up",
+            "confirmed": False,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert preview["status"] == "error"
+    assert preview["needs_confirmation"] is True
+    assert preview["preview"]["from_account_name"] == "Everyday Wallet"
+    assert preview["preview"]["to_account_name"] == "Chase Brokerage"
+    assert preview["preview"]["from_module"] == "spending"
+    assert preview["preview"]["to_module"] == "investing"
+    assert preview["preview"]["gross_amount"] == "200.00"
+    assert preview["preview"]["net_amount_received"] == "200.00"
+
+    # Confirm NO transfer was written to DB during preview
+    async with postgres.async_session_maker() as session:
+        t_count = (
+            await session.execute(
+                select(func.count(CapitalTransfer.id)).where(CapitalTransfer.workspace_id == 20)
+            )
+        ).scalar()
+        assert t_count == 0
+
+    # 2. Execute confirmed create_transfer
+    created = await execute_agent_tool(
+        name="create_transfer",
+        args={
+            "from_account_name": "Everyday Wallet",
+            "to_account_name": "Chase Brokerage",
+            "amount": "200.00",
+            "notes": "Monthly investing top-up",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert created["status"] == "success"
+    transfer_pid = uuid.UUID(created["entity_public_id"])
+    assert created["entity_type"] == "capital_transfer"
+
+    # Verify DB transfer row and cash snapshot
+    async with postgres.async_session_maker() as session:
+        tx_row = (
+            await session.execute(
+                select(CapitalTransfer).where(CapitalTransfer.public_id == transfer_pid)
+            )
+        ).scalar_one()
+        assert tx_row.from_module == "spending"
+        assert tx_row.to_module == "investing"
+        assert tx_row.source_type == "voice_agent"
+
+        # Verify brokerage cash balance was updated
+        cash_row = (
+            await session.execute(
+                select(CashBalance).where(
+                    CashBalance.workspace_id == 20,
+                    CashBalance.trigger_ref == transfer_pid,
+                )
+            )
+        ).scalar_one_or_none()
+        assert cash_row is not None
+        assert cash_row.balance == Decimal("200.00")
+
+    # 3. List transfers
+    t_list = await execute_agent_tool(
+        name="list_transfers",
+        args={},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert t_list["status"] == "success"
+    assert any(t["entity_public_id"] == str(transfer_pid) for t in t_list["transfers"])
+
+    # 4. Find transfers with clue
+    t_find = await execute_agent_tool(
+        name="find_transfers",
+        args={"search": "investing top-up"},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert t_find["status"] == "success"
+    assert t_find["total"] == 1
+    assert t_find["transfers"][0]["entity_public_id"] == str(transfer_pid)
+
+    # 5. Update transfer (preview then confirm)
+    unconf_up = await execute_agent_tool(
+        name="update_transfer",
+        args={"public_id": str(transfer_pid), "notes": "Updated note", "confirmed": False},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert unconf_up["status"] == "error"
+    assert unconf_up["needs_confirmation"] is True
+
+    conf_up = await execute_agent_tool(
+        name="update_transfer",
+        args={"public_id": str(transfer_pid), "notes": "Updated note", "confirmed": True},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert conf_up["status"] == "success"
+
+    # 6. Delete transfer (preview then confirm)
+    unconf_del = await execute_agent_tool(
+        name="delete_transfer",
+        args={"public_id": str(transfer_pid), "confirmed": False},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert unconf_del["status"] == "error"
+    assert unconf_del["needs_confirmation"] is True
+
+    conf_del = await execute_agent_tool(
+        name="delete_transfer",
+        args={"public_id": str(transfer_pid), "confirmed": True},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert conf_del["status"] == "success"
+
+    async with postgres.async_session_maker() as session:
+        del_check = (
+            await session.execute(
+                select(CapitalTransfer).where(CapitalTransfer.public_id == transfer_pid)
+            )
+        ).scalar_one_or_none()
+        assert del_check is None
+
+
+@pytest.mark.asyncio
+async def test_spec095_create_investment_dividend(seed_agent_test_data):
+    """Spec-095: Dividend creation voice tool records investment income with confirmation."""
+    # 1. Preview (confirmed=False)
+    preview = await execute_agent_tool(
+        name="create_investment_dividend",
+        args={
+            "account_name": "Chase Brokerage",
+            "amount": "150.00",
+            "income_type": "dividend",
+            "symbol": "AAPL",
+            "tax_withheld": "22.50",
+            "confirmed": False,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert preview["status"] == "error"
+    assert preview["needs_confirmation"] is True
+    assert preview["preview"]["gross_amount"] == "150.00"
+    assert preview["preview"]["tax_withheld"] == "22.50"
+    assert preview["preview"]["symbol"] == "AAPL"
+
+    # 2. Execute (confirmed=True)
+    created = await execute_agent_tool(
+        name="create_investment_dividend",
+        args={
+            "account_name": "Chase Brokerage",
+            "amount": "150.00",
+            "income_type": "dividend",
+            "symbol": "AAPL",
+            "tax_withheld": "22.50",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert created["status"] == "success"
+    div_pid = uuid.UUID(created["entity_public_id"])
+    assert created["entity_type"] == "investment_dividend"
+
+    async with postgres.async_session_maker() as session:
+        div_row = (
+            await session.execute(
+                select(Dividend).where(Dividend.public_id == div_pid)
+            )
+        ).scalar_one_or_none()
+        assert div_row is not None
+        assert div_row.gross_amount == Decimal("150.00")
+        assert div_row.tax_withheld == Decimal("22.50")
+        assert div_row.net_amount == Decimal("127.50")
+        assert div_row.symbol == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_spec095_transfer_validations_and_fee_arithmetic(seed_agent_test_data):
+    """Spec-095: Transfer arithmetic, fee components, same-currency FX rate,
+    and cross-currency requirement are strictly validated."""
+    # 1. Same-currency with fx_rate != 1.0 -> rejected
+    same_curr_bad_rate = await execute_agent_tool(
+        name="create_transfer",
+        args={
+            "from_account_name": "Everyday Wallet",
+            "to_account_name": "Chase Brokerage",
+            "amount": "100.00",
+            "fx_rate": "1.25",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert same_curr_bad_rate["status"] == "error"
+    assert "FX rate must be 1.0" in same_curr_bad_rate["message"]
+
+    # 2. Non-positive amount -> rejected
+    zero_amt = await execute_agent_tool(
+        name="create_transfer",
+        args={
+            "from_account_name": "Everyday Wallet",
+            "to_account_name": "Chase Brokerage",
+            "amount": "0.00",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert zero_amt["status"] == "error"
+    assert "greater than zero" in zero_amt["message"]
+
+    # 3. Create transfer with separate fee fields
+    created = await execute_agent_tool(
+        name="create_transfer",
+        args={
+            "from_account_name": "Everyday Wallet",
+            "to_account_name": "Chase Brokerage",
+            "amount": "100.00",
+            "fx_fee_amount": "2.50",
+            "platform_fee_amount": "1.50",
+            "tax_amount": "1.00",
+            "notes": "Transfer with separate fees",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert created["status"] == "success"
+    transfer_pid = uuid.UUID(created["entity_public_id"])
+
+    async with postgres.async_session_maker() as session:
+        t_row = (
+            await session.execute(
+                select(CapitalTransfer).where(CapitalTransfer.public_id == transfer_pid)
+            )
+        ).scalar_one()
+        assert t_row.gross_amount == Decimal("100.00")
+        assert t_row.fx_fee_amount == Decimal("2.50")
+        assert t_row.platform_fee_amount == Decimal("1.50")
+        assert t_row.tax_amount == Decimal("1.00")
+        # 100 - (2.50 + 1.50 + 1.00) = 95.00
+        assert t_row.net_amount_received == Decimal("95.00")
+
+    # 4. Update transfer with invalid gross amount -> rejected without mutating ORM
+    bad_update = await execute_agent_tool(
+        name="update_transfer",
+        args={
+            "public_id": str(transfer_pid),
+            "amount": "-50.00",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert bad_update["status"] == "error"
+
+    # Verify DB transfer row is unchanged
+    async with postgres.async_session_maker() as session:
+        t_row_after = (
+            await session.execute(
+                select(CapitalTransfer).where(CapitalTransfer.public_id == transfer_pid)
+            )
+        ).scalar_one()
+        assert t_row_after.gross_amount == Decimal("100.00")
+
+
+@pytest.mark.asyncio
+async def test_spec095_idempotency_and_provenance(seed_agent_test_data):
+    """Spec-095: source_ref / external_ref prevents duplicate creation and duplicate side-effects."""
+    # 1. Idempotent Transfer
+    t1 = await execute_agent_tool(
+        name="create_transfer",
+        args={
+            "from_account_name": "Everyday Wallet",
+            "to_account_name": "Chase Brokerage",
+            "amount": "50.00",
+            "source_ref": "voice-trans-12345",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert t1["status"] == "success"
+    pid1 = t1["entity_public_id"]
+
+    t2 = await execute_agent_tool(
+        name="create_transfer",
+        args={
+            "from_account_name": "Everyday Wallet",
+            "to_account_name": "Chase Brokerage",
+            "amount": "50.00",
+            "source_ref": "voice-trans-12345",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert t2["status"] == "success"
+    assert t2["entity_public_id"] == pid1
+
+    async with postgres.async_session_maker() as session:
+        t_count = (
+            await session.execute(
+                select(func.count(CapitalTransfer.id)).where(
+                    CapitalTransfer.workspace_id == 20,
+                    CapitalTransfer.source_ref == "voice-trans-12345",
+                )
+            )
+        ).scalar()
+        assert t_count == 1
+
+        # Only 1 cash balance snapshot created for this transfer
+        cash_count = (
+            await session.execute(
+                select(func.count(CashBalance.id)).where(
+                    CashBalance.workspace_id == 20,
+                    CashBalance.trigger_ref == uuid.UUID(pid1),
+                )
+            )
+        ).scalar()
+        assert cash_count == 1
+
+    # 2. Idempotent Transaction
+    tx1 = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "12.00",
+            "category_name": "food",
+            "description": "Snack",
+            "account_name": "Everyday Wallet",
+            "source_ref": "voice-tx-999",
+            "allow_duplicate": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert tx1["status"] == "success"
+    tx_pid1 = tx1["entity_public_id"]
+
+    tx2 = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "12.00",
+            "category_name": "food",
+            "description": "Snack",
+            "account_name": "Everyday Wallet",
+            "source_ref": "voice-tx-999",
+            "allow_duplicate": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert tx2["status"] == "success"
+    assert tx2["entity_public_id"] == tx_pid1
+
+    async with postgres.async_session_maker() as session:
+        tx_count = (
+            await session.execute(
+                select(func.count(SpendingTransaction.id)).where(
+                    SpendingTransaction.workspace_id == 20,
+                    SpendingTransaction.source_ref == "voice-tx-999",
+                )
+            )
+        ).scalar()
+        assert tx_count == 1
+
+    # 3. Idempotent Dividend
+    div1 = await execute_agent_tool(
+        name="create_investment_dividend",
+        args={
+            "account_name": "Chase Brokerage",
+            "amount": "80.00",
+            "income_type": "dividend",
+            "symbol": "MSFT",
+            "external_ref": "div-ref-456",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert div1["status"] == "success"
+    div_pid1 = div1["entity_public_id"]
+
+    div2 = await execute_agent_tool(
+        name="create_investment_dividend",
+        args={
+            "account_name": "Chase Brokerage",
+            "amount": "80.00",
+            "income_type": "dividend",
+            "symbol": "MSFT",
+            "external_ref": "div-ref-456",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert div2["status"] == "success"
+    assert div2["entity_public_id"] == div_pid1
+
+    async with postgres.async_session_maker() as session:
+        div_count = (
+            await session.execute(
+                select(func.count(Dividend.id)).where(
+                    Dividend.workspace_id == 20,
+                    Dividend.external_ref == "div-ref-456",
+                )
+            )
+        ).scalar()
+        assert div_count == 1
+
+
+@pytest.mark.asyncio
+async def test_spec095_dividend_boundary_and_income_type_validation(seed_agent_test_data):
+    """Spec-095: Dividend income is rejected on non-brokerage accounts and requires valid income_type."""
+    # 1. Rejected on wallet / bank account
+    on_wallet = await execute_agent_tool(
+        name="create_investment_dividend",
+        args={
+            "account_name": "Everyday Wallet",
+            "amount": "100.00",
+            "income_type": "dividend",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert on_wallet["status"] == "error"
+    assert "brokerage accounts" in on_wallet["message"]
+
+    # 2. Invalid income type -> rejected
+    bad_type = await execute_agent_tool(
+        name="create_investment_dividend",
+        args={
+            "account_name": "Chase Brokerage",
+            "amount": "100.00",
+            "income_type": "salary",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert bad_type["status"] == "error"
+    assert "income_type must be one of" in bad_type["message"]
+
+    # 3. Tax withheld >= gross amount -> rejected
+    bad_tax = await execute_agent_tool(
+        name="create_investment_dividend",
+        args={
+            "account_name": "Chase Brokerage",
+            "amount": "50.00",
+            "income_type": "interest",
+            "tax_withheld": "50.00",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert bad_tax["status"] == "error"
+    assert "tax_withheld cannot exceed" in bad_tax["message"]

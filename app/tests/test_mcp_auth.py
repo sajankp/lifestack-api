@@ -7,15 +7,23 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from mcp.server.auth.provider import AuthorizationParams
 from mcp.shared.auth import OAuthClientInformationFull
+from sqlalchemy import select
 
+from app.auth.models import User
 from app.config import settings
+from app.core.database import postgres
+from app.core.exceptions import ForbiddenError
+from app.finance.models import Account, AccountType, CapitalTransfer
+from app.investing.models import Dividend
 from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.repository import McpGrantRepository
 from app.mcp.server import (
     _add_holding_reporting_valuation,
+    _run_capture_tool,
     _sort_holding_items,
     create_mcp_server,
 )
+from app.platform.models import Workspace, WorkspaceMembership
 
 
 class FakeRedis:
@@ -143,8 +151,18 @@ async def test_mcp_exposes_voice_transaction_correction_tools(monkeypatch):
         "delete_investment_constituent_snapshot",
         "list_investment_dividends",
         "create_investment_dividend",
+        "list_transfers",
+        "find_transfers",
+        "create_transfer",
+        "update_transfer",
+        "delete_transfer",
     }.issubset(tools)
     assert "workspace_id" in tools["find_spending_transactions"].parameters["properties"]
+    assert "transaction_type" in tools["log_spending_transaction"].parameters["properties"]
+    assert "transaction_type" in tools["list_spending_transactions"].parameters["properties"]
+    assert "confirmed" in tools["create_transfer"].parameters["properties"]
+    assert "confirmed" in tools["update_transfer"].parameters["properties"]
+    assert "confirmed" in tools["delete_transfer"].parameters["properties"]
     holdings_properties = tools["list_investment_holdings"].parameters["properties"]
     assert {
         "quantity_state",
@@ -204,3 +222,145 @@ def test_mcp_holding_sort_keeps_missing_values_last_and_sorts_numeric_values():
     sorted_items = _sort_holding_items(items, "current_value", "desc", True)
 
     assert [item["public_id"] for item in sorted_items] == ["c", "b", "a"]
+
+
+@pytest.mark.asyncio
+async def test_spec095_mcp_transfer_and_dividend_tools(override_database_url, monkeypatch):
+    """Spec-095: MCP tools enforce scope permissions, confirmation preview,
+    and provenance tagging with source_type=mcp_agent."""
+    # 1. Seed test workspace and accounts
+    async with postgres.async_session_maker() as session:
+        user = User(
+            id=101,
+            email="mcp_user@example.com",
+            username="mcp_user",
+            hashed_password="hashed_password_here",
+        )
+        session.add(user)
+        ws = Workspace(id=202, name="MCP Workspace")
+        session.add(ws)
+        await session.flush()
+
+        membership = WorkspaceMembership(workspace_id=202, user_id=101, role="owner")
+        session.add(membership)
+
+        acc_bank = Account(
+            workspace_id=202,
+            name="Bank Checking",
+            default_currency_code="USD",
+            account_type=AccountType.bank,
+        )
+        acc_brok = Account(
+            workspace_id=202,
+            name="Brokerage Account",
+            default_currency_code="USD",
+            account_type=AccountType.brokerage,
+        )
+        session.add(acc_bank)
+        session.add(acc_brok)
+        await session.commit()
+
+    # 2. Mock MCP access token with read/write scopes
+    fake_token = SimpleNamespace(
+        scopes={"mcp:read", "mcp:write"},
+        claims={"user_id": 101},
+        client_id="mcp-client-1",
+    )
+    monkeypatch.setattr("app.mcp.security.get_access_token", lambda: fake_token)
+
+    # 3. Scope refusal: test that lacking required scope raises ForbiddenError
+    read_only_token = SimpleNamespace(
+        scopes={"mcp:read"},
+        claims={"user_id": 101},
+        client_id="mcp-client-1",
+    )
+    monkeypatch.setattr("app.mcp.security.get_access_token", lambda: read_only_token)
+    with pytest.raises(ForbiddenError):
+        await _run_capture_tool(
+            workspace_id=202,
+            required_scope="mcp:write",
+            tool_name="create_transfer",
+            kwargs={
+                "from_account_name": "Bank Checking",
+                "to_account_name": "Brokerage Account",
+                "amount": "100.00",
+                "confirmed": True,
+            },
+        )
+
+    # Restore read/write token
+    monkeypatch.setattr("app.mcp.security.get_access_token", lambda: fake_token)
+
+    # 4. Preview transfer (confirmed=False)
+    preview = await _run_capture_tool(
+        workspace_id=202,
+        required_scope="mcp:write",
+        tool_name="create_transfer",
+        kwargs={
+            "from_account_name": "Bank Checking",
+            "to_account_name": "Brokerage Account",
+            "amount": "100.00",
+            "confirmed": False,
+        },
+    )
+    assert preview["status"] == "error"
+    assert preview["needs_confirmation"] is True
+    assert preview["preview"]["gross_amount"] == "100.00"
+
+    # Confirm no DB write occurred on preview
+    async with postgres.async_session_maker() as session:
+        t_rows = (
+            await session.execute(
+                select(CapitalTransfer).where(CapitalTransfer.workspace_id == 202)
+            )
+        ).scalars().all()
+        assert len(t_rows) == 0
+
+    # 5. Confirmed transfer -> source_type must be mcp_agent
+    created = await _run_capture_tool(
+        workspace_id=202,
+        required_scope="mcp:write",
+        tool_name="create_transfer",
+        kwargs={
+            "from_account_name": "Bank Checking",
+            "to_account_name": "Brokerage Account",
+            "amount": "100.00",
+            "confirmed": True,
+        },
+    )
+    assert created["status"] == "success"
+    transfer_pid = uuid.UUID(created["entity_public_id"])
+
+    async with postgres.async_session_maker() as session:
+        t_row = (
+            await session.execute(
+                select(CapitalTransfer).where(CapitalTransfer.public_id == transfer_pid)
+            )
+        ).scalar_one()
+        assert t_row.source_type == "mcp_agent"
+        assert t_row.gross_amount == Decimal("100.00")
+
+    # 6. Dividend creation via MCP tool
+    div_created = await _run_capture_tool(
+        workspace_id=202,
+        required_scope="mcp:write",
+        tool_name="create_investment_dividend",
+        kwargs={
+            "account_name": "Brokerage Account",
+            "amount": "60.00",
+            "income_type": "dividend",
+            "symbol": "GOOGL",
+            "confirmed": True,
+        },
+    )
+    assert div_created["status"] == "success"
+    div_pid = uuid.UUID(div_created["entity_public_id"])
+
+    async with postgres.async_session_maker() as session:
+        div_row = (
+            await session.execute(
+                select(Dividend).where(Dividend.public_id == div_pid)
+            )
+        ).scalar_one()
+        assert div_row.gross_amount == Decimal("60.00")
+        assert div_row.symbol == "GOOGL"

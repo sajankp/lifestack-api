@@ -411,6 +411,18 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         )
         return result.scalars().all(), total
 
+    async def get_by_source_ref(
+        self, workspace_id: int, source_type: str, source_ref: str
+    ) -> SpendingTransaction | None:
+        result = await self.session.execute(
+            select(SpendingTransaction).where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.source_type == source_type,
+                SpendingTransaction.source_ref == source_ref,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def find_same_day_duplicates(
         self,
         workspace_id: int,
@@ -421,12 +433,13 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         from_date: datetime,
         to_date: datetime,
         description: str | None,
+        transaction_type: str = "expense",
         limit: int = 10,
     ) -> Sequence[SpendingTransaction]:
-        """Find likely duplicate expenses within one local calendar day."""
+        """Find likely duplicate transactions within one local calendar day."""
         where = [
             SpendingTransaction.workspace_id == workspace_id,
-            SpendingTransaction.type == "expense",
+            SpendingTransaction.type == transaction_type,
             SpendingTransaction.category_id == category_id,
             SpendingTransaction.amount == amount,
             SpendingTransaction.occurred_at >= from_date,

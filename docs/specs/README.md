@@ -135,6 +135,7 @@ Corporate actions, web push, CAS PDF ingestion (CAMS/NSDL/CDSL), NSE bhavcopy pr
 | [Spec 092: Late-Dose Catch-Up & Interval Scheduling](./spec-092-late-dose-catch-up-and-interval-scheduling.md) | Implemented (api#202, web#218) | Health day navigation, late-dose catch-up, and opt-in interval-from-last-dose scheduling. |
 | [Spec 093: Voice Transaction Correction](./spec-093-voice-transaction-correction.md) | Implemented; pending deployment validation | Bounded transaction lookup plus confirmation-gated update/delete, persisted-user-timezone interpretation, audit/reconciliation reuse, replay suppression, MCP parity, and capture E2E. |
 | [Spec 094: MCP Investment Research Tools](./spec-094-mcp-investment-research-tools.md) | Implemented; pending deployment validation | Scoped holdings/valuation, constituent snapshot research reads/writes, and dividend operations. PR #218 later added holdings filters, deterministic sorting, and reporting-currency price/FX valuation. |
+| [Spec 095: Financial Agent Operations](./spec-095-financial-agent-operations.md) | Implemented; pending deployment validation | Type-aware ordinary transactions, transfer tool family across voice and MCP with preview/confirmation, source provenance tagging, and account-activity category display. |
 
 ## Roadmap Alignment
 

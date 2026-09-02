@@ -205,6 +205,7 @@ async def execute_agent_tool(
                 user_id=user_id,
                 workspace_id=workspace_id,
                 user_timezone=user_timezone,
+                source_channel="voice_agent",
             )
             dispatch = {
                 "create_todo_task": tools.create_todo_task,
@@ -214,6 +215,12 @@ async def execute_agent_tool(
                 "find_spending_transactions": tools.find_spending_transactions,
                 "update_spending_transaction": tools.update_spending_transaction,
                 "delete_spending_transaction": tools.delete_spending_transaction,
+                "list_transfers": tools.list_transfers,
+                "find_transfers": tools.find_transfers,
+                "create_transfer": tools.create_transfer,
+                "update_transfer": tools.update_transfer,
+                "delete_transfer": tools.delete_transfer,
+                "create_investment_dividend": tools.create_investment_dividend,
                 "get_investing_summary": tools.get_investing_summary,
                 "get_account_balances": tools.get_account_balances,
                 "list_todos": tools.list_todos,
@@ -236,7 +243,10 @@ async def execute_agent_tool(
             else:
                 res = {"status": "error", "message": f"Unknown function: {name}"}
 
-            await session.commit()
+            if isinstance(res, dict) and res.get("status") == "success":
+                await session.commit()
+            else:
+                await session.rollback()
             return res
         except Exception as e:
             await session.rollback()

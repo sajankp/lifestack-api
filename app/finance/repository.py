@@ -844,11 +844,64 @@ class CapitalTransferRepository(BaseRepository[CapitalTransfer]):
         )
         return result.scalars().all(), total
 
+    async def find_transfers(
+        self,
+        workspace_id: int,
+        *,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+        account_id: int | None = None,
+        amount: Decimal | None = None,
+        search: str | None = None,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Sequence[CapitalTransfer], int]:
+        where = [CapitalTransfer.workspace_id == workspace_id]
+        if from_date is not None:
+            where.append(CapitalTransfer.occurred_at >= from_date)
+        if to_date is not None:
+            where.append(CapitalTransfer.occurred_at <= to_date)
+        if account_id is not None:
+            where.append(
+                (CapitalTransfer.from_account_id == account_id)
+                | (CapitalTransfer.to_account_id == account_id)
+            )
+        if amount is not None:
+            where.append(
+                (CapitalTransfer.gross_amount == amount)
+                | (CapitalTransfer.net_amount_received == amount)
+            )
+        if search and search.strip():
+            where.append(CapitalTransfer.notes.ilike(f"%{search.strip()}%"))
+
+        base = select(CapitalTransfer).where(*where)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base.order_by(CapitalTransfer.occurred_at.desc(), CapitalTransfer.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return result.scalars().all(), total
+
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> CapitalTransfer | None:
         result = await self.session.execute(
             select(CapitalTransfer).where(
                 CapitalTransfer.workspace_id == workspace_id,
                 CapitalTransfer.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_source_ref(
+        self, workspace_id: int, source_type: str, source_ref: str
+    ) -> CapitalTransfer | None:
+        result = await self.session.execute(
+            select(CapitalTransfer).where(
+                CapitalTransfer.workspace_id == workspace_id,
+                CapitalTransfer.source_type == source_type,
+                CapitalTransfer.source_ref == source_ref,
             )
         )
         return result.scalar_one_or_none()
