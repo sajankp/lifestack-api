@@ -86,12 +86,14 @@ async def test_ledger_pagination_running_balance_continuity(client: AsyncClient)
     res = await client.post(
         "/v1/finance/transfers",
         json={
+            "from_module": "spending",
+            "to_module": "spending",
             "from_account_id": acc1_id,
             "to_account_id": acc2_id,
             "gross_amount": "300.00",
             "net_amount_received": "300.00",
-            "from_currency": "USD",
-            "to_currency": "USD",
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
             "occurred_at": "2026-08-02T12:00:00Z",
             "notes": "Savings transfer",
         },
@@ -116,12 +118,14 @@ async def test_ledger_pagination_running_balance_continuity(client: AsyncClient)
     res = await client.post(
         "/v1/finance/transfers",
         json={
+            "from_module": "spending",
+            "to_module": "spending",
             "from_account_id": acc2_id,
             "to_account_id": acc1_id,
             "gross_amount": "150.00",
             "net_amount_received": "150.00",
-            "from_currency": "USD",
-            "to_currency": "USD",
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
             "occurred_at": "2026-08-04T15:00:00Z",
             "notes": "Return savings",
         },
