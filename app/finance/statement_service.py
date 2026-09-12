@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import Account, CapitalTransfer
 from app.finance.statement_models import AccountStatement, StatementLine, StatementLineMatchLeg
-from app.spending.models import SpendingTransaction, TransactionType
+from app.spending.models import SpendingCategory, SpendingTransaction, TransactionType
 
 MATCH_WINDOW_DAYS = 3  # ±3 days default (owner decision, spec-078)
 
@@ -164,25 +164,49 @@ class StatementService:
 
     async def line_to_dict(self, line: StatementLine) -> dict:
         """Resolve a StatementLine's internal `matched_*_id` FKs (int) to the
-        public UUIDs the API surfaces — never expose internal ids."""
+        public UUIDs and metadata the API surfaces — never expose internal ids."""
         matched_transaction_public_id = None
+        matched_description = None
+        matched_category_id = None
+        matched_category_name = None
+        matched_category_color = None
+        matched_category_icon = None
         if line.matched_transaction_id is not None:
-            matched_transaction_public_id = (
+            tx = (
                 await self.session.execute(
-                    select(SpendingTransaction.public_id).where(
+                    select(SpendingTransaction).where(
                         SpendingTransaction.id == line.matched_transaction_id
                     )
                 )
             ).scalar_one_or_none()
+            if tx is not None:
+                matched_transaction_public_id = tx.public_id
+                matched_description = tx.description
+                if tx.category_id is not None:
+                    cat = (
+                        await self.session.execute(
+                            select(SpendingCategory).where(
+                                SpendingCategory.id == tx.category_id
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if cat is not None:
+                        matched_category_id = cat.public_id
+                        matched_category_name = cat.name
+                        matched_category_color = cat.color
+                        matched_category_icon = cat.icon
         matched_transfer_public_id = None
         if line.matched_transfer_id is not None:
-            matched_transfer_public_id = (
+            transfer = (
                 await self.session.execute(
-                    select(CapitalTransfer.public_id).where(
+                    select(CapitalTransfer).where(
                         CapitalTransfer.id == line.matched_transfer_id
                     )
                 )
             ).scalar_one_or_none()
+            if transfer is not None:
+                matched_transfer_public_id = transfer.public_id
+                matched_description = transfer.notes
         return {
             "public_id": line.public_id,
             "occurred_at": line.occurred_at,
@@ -193,6 +217,11 @@ class StatementService:
             "matched_transfer_id": matched_transfer_public_id,
             "matched_transfer_leg": line.matched_transfer_leg,
             "matched_at": line.matched_at,
+            "matched_description": matched_description,
+            "matched_category_id": matched_category_id,
+            "matched_category_name": matched_category_name,
+            "matched_category_color": matched_category_color,
+            "matched_category_icon": matched_category_icon,
         }
 
     async def get_reconciliation_view(
@@ -247,38 +276,35 @@ class StatementService:
             for line in lines
             if line.matched_transaction_id or line.matched_transfer_id
         ]
-        unmatched_lines_out = []
+
+        # Collect candidate events for unmatched lines
+        unmatched_lines_candidates: list[
+            tuple[StatementLine, list[SpendingTransaction], list[tuple[CapitalTransfer, StatementLineMatchLeg]]]
+        ] = []
+        referenced_category_ids: set[int] = set()
+
         for line in lines:
             if line.matched_transaction_id or line.matched_transfer_id:
                 continue
-            candidates = []
-            for tx in await self._candidate_transactions(
-                workspace_id, account.id, line.occurred_at, line.amount
-            ):
-                if tx.id in already_matched_tx_ids:
-                    continue
-                candidates.append({
-                    "kind": "transaction",
-                    "id": tx.public_id,
-                    "occurred_at": tx.occurred_at.astimezone(UTC).date(),
-                    "amount": _signed_transaction_amount(tx),
-                    "description": tx.description or "",
-                    "leg": None,
-                })
-            for transfer, leg in await self._candidate_transfers(
-                workspace_id, account.id, line.occurred_at, line.amount
-            ):
-                if (transfer.id, leg) in already_matched_transfer_legs:
-                    continue
-                candidates.append({
-                    "kind": "transfer",
-                    "id": transfer.public_id,
-                    "occurred_at": transfer.occurred_at.astimezone(UTC).date(),
-                    "amount": _signed_transfer_amount(transfer, leg),
-                    "description": transfer.notes or "",
-                    "leg": leg,
-                })
-            unmatched_lines_out.append({"line": line, "candidates": candidates})
+            line_tx_cands = [
+                tx
+                for tx in await self._candidate_transactions(
+                    workspace_id, account.id, line.occurred_at, line.amount
+                )
+                if tx.id not in already_matched_tx_ids
+            ]
+            for tx in line_tx_cands:
+                if tx.category_id is not None:
+                    referenced_category_ids.add(tx.category_id)
+
+            line_transfer_cands = [
+                (transfer, leg)
+                for transfer, leg in await self._candidate_transfers(
+                    workspace_id, account.id, line.occurred_at, line.amount
+                )
+                if (transfer.id, leg) not in already_matched_transfer_legs
+            ]
+            unmatched_lines_candidates.append((line, line_tx_cands, line_transfer_cands))
 
         # Unmatched ledger rows in the period: events that could plausibly
         # appear on a statement but no statement line references them.
@@ -300,18 +326,73 @@ class StatementService:
             .scalars()
             .all()
         )
-        unmatched_ledger_rows = [
-            {
-                "kind": "transaction",
-                "id": tx.public_id,
-                "occurred_at": tx.occurred_at.astimezone(UTC).date(),
-                "amount": _signed_transaction_amount(tx),
-                "description": tx.description or "",
-                "leg": None,
-            }
-            for tx in tx_rows
-            if tx.id not in already_matched_tx_ids
-        ]
+        for tx in tx_rows:
+            if tx.id not in already_matched_tx_ids and tx.category_id is not None:
+                referenced_category_ids.add(tx.category_id)
+
+        # Batch-resolve all category IDs in a single query
+        cat_map: dict[int, SpendingCategory] = {}
+        if referenced_category_ids:
+            cat_rows = (
+                await self.session.execute(
+                    select(SpendingCategory).where(
+                        SpendingCategory.workspace_id == workspace_id,
+                        SpendingCategory.id.in_(referenced_category_ids),
+                    )
+                )
+            ).scalars().all()
+            for cat in cat_rows:
+                cat_map[cat.id] = cat
+
+        unmatched_lines_out = []
+        for line, line_tx_cands, line_transfer_cands in unmatched_lines_candidates:
+            candidates = []
+            for tx in line_tx_cands:
+                cat = cat_map.get(tx.category_id) if tx.category_id else None
+                candidates.append({
+                    "kind": "transaction",
+                    "id": tx.public_id,
+                    "occurred_at": tx.occurred_at.astimezone(UTC).date(),
+                    "amount": _signed_transaction_amount(tx),
+                    "description": tx.description or "",
+                    "leg": None,
+                    "category_id": cat.public_id if cat else None,
+                    "category_name": cat.name if cat else None,
+                    "category_color": cat.color if cat else None,
+                    "category_icon": cat.icon if cat else None,
+                })
+            for transfer, leg in line_transfer_cands:
+                candidates.append({
+                    "kind": "transfer",
+                    "id": transfer.public_id,
+                    "occurred_at": transfer.occurred_at.astimezone(UTC).date(),
+                    "amount": _signed_transfer_amount(transfer, leg),
+                    "description": transfer.notes or "",
+                    "leg": leg,
+                    "category_id": None,
+                    "category_name": None,
+                    "category_color": None,
+                    "category_icon": None,
+                })
+            unmatched_lines_out.append({"line": line, "candidates": candidates})
+
+        unmatched_ledger_rows = []
+        for tx in tx_rows:
+            if tx.id not in already_matched_tx_ids:
+                cat = cat_map.get(tx.category_id) if tx.category_id else None
+                unmatched_ledger_rows.append({
+                    "kind": "transaction",
+                    "id": tx.public_id,
+                    "occurred_at": tx.occurred_at.astimezone(UTC).date(),
+                    "amount": _signed_transaction_amount(tx),
+                    "description": tx.description or "",
+                    "leg": None,
+                    "category_id": cat.public_id if cat else None,
+                    "category_name": cat.name if cat else None,
+                    "category_color": cat.color if cat else None,
+                    "category_icon": cat.icon if cat else None,
+                })
+
         transfer_rows = (
             (
                 await self.session.execute(
@@ -340,6 +421,10 @@ class StatementService:
                     "amount": _signed_transfer_amount(transfer, StatementLineMatchLeg.from_leg),
                     "description": transfer.notes or "",
                     "leg": StatementLineMatchLeg.from_leg,
+                    "category_id": None,
+                    "category_name": None,
+                    "category_color": None,
+                    "category_icon": None,
                 })
             if (
                 transfer.to_account_id == account.id
@@ -352,6 +437,10 @@ class StatementService:
                     "amount": _signed_transfer_amount(transfer, StatementLineMatchLeg.to_leg),
                     "description": transfer.notes or "",
                     "leg": StatementLineMatchLeg.to_leg,
+                    "category_id": None,
+                    "category_name": None,
+                    "category_color": None,
+                    "category_icon": None,
                 })
 
         return {
