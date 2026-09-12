@@ -169,12 +169,12 @@ class CapitalTransferCreate(BaseModel):
     to_account_id: uuid.UUID
     from_currency_code: str = Field(..., min_length=1, max_length=10)
     to_currency_code: str = Field(..., min_length=1, max_length=10)
-    gross_amount: Decimal = Field(..., ge=0, decimal_places=2)
+    gross_amount: Decimal = Field(..., gt=0, decimal_places=2)
     fx_rate_used: Decimal | None = Field(default=None, gt=0, decimal_places=10)
     fx_fee_amount: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
     platform_fee_amount: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
     tax_amount: Decimal = Field(default=Decimal("0"), ge=0, decimal_places=2)
-    net_amount_received: Decimal = Field(..., ge=0, decimal_places=2)
+    net_amount_received: Decimal = Field(..., gt=0, decimal_places=2)
     occurred_at: datetime
     notes: str | None = Field(default=None, max_length=500)
 
@@ -189,12 +189,12 @@ class CapitalTransferUpdate(BaseModel):
     to_account_id: uuid.UUID | None = None
     from_currency_code: str | None = Field(default=None, min_length=1, max_length=10)
     to_currency_code: str | None = Field(default=None, min_length=1, max_length=10)
-    gross_amount: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    gross_amount: Decimal | None = Field(default=None, gt=0, decimal_places=2)
     fx_rate_used: Decimal | None = Field(default=None, gt=0, decimal_places=10)
     fx_fee_amount: Decimal | None = Field(default=None, ge=0, decimal_places=2)
     platform_fee_amount: Decimal | None = Field(default=None, ge=0, decimal_places=2)
     tax_amount: Decimal | None = Field(default=None, ge=0, decimal_places=2)
-    net_amount_received: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    net_amount_received: Decimal | None = Field(default=None, gt=0, decimal_places=2)
     occurred_at: datetime | None = None
     notes: str | None = Field(default=None, max_length=500)
 
@@ -226,6 +226,8 @@ class CapitalTransferResponse(BaseModel):
     net_amount_received: Decimal
     occurred_at: datetime
     notes: str | None
+    source_type: str = "manual"
+    source_ref: str | None = None
     created_at: datetime
     updated_at: datetime
 

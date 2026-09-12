@@ -1,6 +1,7 @@
 import uuid
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from decimal import Decimal, InvalidOperation
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
@@ -8,14 +9,17 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditLogger
-from app.core.exceptions import APIError, NotFoundError
-from app.finance.models import Account, AccountType
+from app.core.exceptions import APIError, ConflictError, NotFoundError
+from app.finance.models import Account, AccountType, TransferModule
 from app.finance.repository import (
     AccountRepository,
+    CapitalTransferRepository,
     CurrencyRepository,
     FinanceSettingRepository,
     FxRateRepository,
 )
+from app.finance.schemas import CapitalTransferCreate, CapitalTransferUpdate
+from app.finance.service import CapitalTransferService, FxRateService
 from app.health.repository import (
     MedicationEventRepository,
     MedicationRepository,
@@ -26,11 +30,14 @@ from app.health.service import HealthService
 from app.investing.performance_service import InvestingSummaryService
 from app.investing.repository import (
     CashBalanceRepository,
+    DividendRepository,
     HoldingPriceRepository,
     HoldingRepository,
     PortfolioSnapshotRepository,
 )
-from app.spending.models import TransactionType
+from app.investing.schemas import DividendCreate
+from app.investing.service import DividendService
+from app.spending.models import TransactionSourceType, TransactionType
 from app.spending.repository import CategoryRepository, TagRepository, TransactionRepository
 from app.spending.schemas import TagCreate, TransactionCreate, TransactionUpdate
 from app.spending.service import CategoryService, TagService, TransactionService
@@ -98,6 +105,15 @@ def _normalize_name(value: str) -> str:
     return " ".join(value.strip().lower().split())
 
 
+def _tool_error_message(
+    exc: Exception, fallback: str = "The requested operation was rejected."
+) -> str:
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, str) and detail:
+        return detail
+    return str(exc) or fallback
+
+
 class AgentTools:
     def __init__(
         self,
@@ -105,11 +121,13 @@ class AgentTools:
         user_id: int,
         workspace_id: int,
         user_timezone: str = "UTC",
+        source_channel: str = "voice_agent",
     ):
         self.session = session
         self.user_id = user_id
         self.workspace_id = workspace_id
         self.user_timezone = user_timezone
+        self.source_channel = source_channel
 
         # Instantiate repositories and services directly with session
         self.todo_repo = TodoRepository(session)
@@ -120,21 +138,45 @@ class AgentTools:
         self.cat_repo = CategoryRepository(session)
         self.tag_repo = TagRepository(session)
         self.setting_repo = FinanceSettingRepository(session)
+        self.currency_repo = CurrencyRepository(session)
+        self.fx_rate_repo = FxRateRepository(session)
+        self.fx_service = FxRateService(self.fx_rate_repo, self.currency_repo)
+
         self.tx_service = TransactionService(
             self.tx_repo, self.cat_repo, self.account_repo, self.setting_repo, self.tag_repo
         )
         self.category_service = CategoryService(self.cat_repo)
         self.tag_service = TagService(self.tag_repo)
 
-        # Investing is read-only on the voice surface (spec-059): mirror the
-        # REST /investing/summary wiring so voice answers match the dashboard.
+        self.holding_repo = HoldingRepository(session)
+        self.cash_balance_repo = CashBalanceRepository(session)
+        self.holding_price_repo = HoldingPriceRepository(session)
+        self.snapshot_repo = PortfolioSnapshotRepository(session)
+        self.dividend_repo = DividendRepository(session)
+
+        self.transfer_repo = CapitalTransferRepository(session)
+        self.transfer_service = CapitalTransferService(
+            self.transfer_repo,
+            self.account_repo,
+            self.currency_repo,
+            self.cash_balance_repo,
+        )
+        self.dividend_service = DividendService(
+            self.dividend_repo,
+            self.cash_balance_repo,
+            self.account_repo,
+            self.holding_repo,
+            self.currency_repo,
+        )
+
+        # Investing summary service
         self.summary_service = InvestingSummaryService(
-            HoldingRepository(session),
-            CashBalanceRepository(session),
+            self.holding_repo,
+            self.cash_balance_repo,
             self.setting_repo,
-            FxRateRepository(session),
-            HoldingPriceRepository(session),
-            PortfolioSnapshotRepository(session),
+            self.fx_rate_repo,
+            self.holding_price_repo,
+            self.snapshot_repo,
             self.account_repo,
         )
 
@@ -517,6 +559,79 @@ class AgentTools:
             ),
         }
 
+    async def _resolve_any_account(self, account_name: str) -> tuple[Account | None, dict | None]:
+        """Resolve a spoken/written account reference against ALL active accounts in
+        the workspace, including brokerage (used by transfer and dividend tools)."""
+        accounts, _ = await self.account_repo.list_workspace_accounts(
+            self.workspace_id, limit=200, offset=0
+        )
+        candidates = [a for a in accounts if a.is_active]
+        names = sorted(a.name for a in candidates)
+        query = _normalize_name(account_name)
+        if not query:
+            return None, {
+                "status": "error",
+                "needs_account": True,
+                "available_accounts": names,
+                "message": (
+                    f"Name an account to use. Available accounts: {', '.join(names) or '(none)'}."
+                ),
+            }
+
+        # 1. Exact name match
+        exact = [a for a in candidates if _normalize_name(a.name) == query]
+        if len(exact) == 1:
+            return exact[0], None
+        if len(exact) > 1:
+            matched_names = sorted(a.name for a in exact)
+            return None, {
+                "status": "error",
+                "needs_account": True,
+                "candidates": matched_names,
+                "message": (
+                    f"Multiple accounts match '{account_name}': {', '.join(matched_names)}. "
+                    "Ask the user to pick one."
+                ),
+            }
+
+        # 2. Substring / containment match
+        matched = [
+            a
+            for a in candidates
+            if query in _normalize_name(a.name) or _normalize_name(a.name) in query
+        ]
+        if not matched:
+            # Type word match
+            tokens = set(query.split())
+            type_matches = {t for t in AccountType if t.value.replace("_", " ") == query}
+            if not type_matches:
+                type_matches = {t for t in AccountType if t.value in tokens}
+            matched = [a for a in candidates if a.account_type in type_matches]
+
+        if len(matched) == 1:
+            return matched[0], None
+        if matched:
+            matched_names = sorted(a.name for a in matched)
+            return None, {
+                "status": "error",
+                "needs_account": True,
+                "candidates": matched_names,
+                "message": (
+                    f"Multiple accounts match '{account_name}': {', '.join(matched_names)}. "
+                    "Ask the user to pick one."
+                ),
+            }
+
+        return None, {
+            "status": "error",
+            "needs_account": True,
+            "available_accounts": names,
+            "message": (
+                f"No account matches '{account_name}'. "
+                f"Ask the user to pick one of: {', '.join(names) or '(no accounts exist)'}."
+            ),
+        }
+
     async def log_spending_transaction(
         self,
         amount: str,
@@ -526,18 +641,21 @@ class AgentTools:
         occurred_at: str | None = None,
         tags: list[str] | None = None,
         allow_duplicate: bool = False,
+        transaction_type: str = "expense",
+        source_ref: str | None = None,
     ) -> dict:
-        """Record/log a new spending transaction (expense).
+        """Record/log a new spending transaction (expense or income).
 
         Args:
             amount: The transaction amount as a string (e.g., '14.99').
-            category_name: The name of the spending category (e.g., 'food', 'utilities', 'shopping').
-            description: Optional description of what the money was spent on.
+            category_name: The name of the spending category (e.g., 'food', 'utilities', 'salary').
+            description: Optional description of the transaction.
             account_name: Optional account name to attach to the transaction.
             occurred_at: Optional occurrence date (ISO date or date-time); defaults to now.
             tags: Optional labels such as "work", "trip", or "takeaway". Multiple tags are allowed.
             allow_duplicate: Set only when the user explicitly confirms an additional
                 identical transaction or explicitly reports multiple identical items.
+            transaction_type: 'expense' (default) or 'income'.
         """
         try:
             amt = Decimal(amount)
@@ -547,10 +665,16 @@ class AgentTools:
                 "message": "Invalid amount format. Must be a decimal number.",
             }
 
-        # Resolve the occurrence date (spec-061). Omitted → now. A bare date is
-        # anchored to noon in the user's timezone; future *days* are refused,
-        # while a same-day future instant clamps to now so "log X today" never
-        # errors on a morning-vs-noon-local skew.
+        tx_type_normalized = (transaction_type or "expense").strip().lower()
+        if tx_type_normalized not in ("expense", "income"):
+            return {
+                "status": "error",
+                "message": "transaction_type must be either 'expense' or 'income'.",
+            }
+        tx_type = (
+            TransactionType.income if tx_type_normalized == "income" else TransactionType.expense
+        )
+
         now = datetime.now(UTC)
         if occurred_at and occurred_at.strip():
             try:
@@ -574,11 +698,6 @@ class AgentTools:
         else:
             resolved_occurred_at = now
 
-        # Resolve category — exact case/whitespace-insensitive match against the
-        # workspace's real categories (which are now injected into the system
-        # prompt, so the agent can pick a real name). A miss falls back to
-        # "other" but is reported via category_matched=False so the agent can
-        # confirm rather than silently mislabel (spec-055).
         cats, _ = await self.category_service.list_categories(
             self.workspace_id, limit=200, offset=0
         )
@@ -593,15 +712,9 @@ class AgentTools:
                 "message": "No suitable spending category found in this workspace.",
             }
 
-        # Resolve account in spec-054 order: named account → workspace default →
-        # ask the user. A missing account is a structured `needs_account` error,
-        # not a silently account-less row. Named references match fuzzily
-        # against spending-eligible accounts (spec-059).
         account_public_id = None
         resolved_account_name = None
         account_obj = None
-        # Whitespace-only names count as omitted — an empty normalized query
-        # would containment-match every account into a bogus ambiguity error.
         if account_name and account_name.strip():
             account, resolution_error = await self._resolve_spending_account(account_name)
             if resolution_error is not None or account is None:
@@ -645,15 +758,17 @@ class AgentTools:
             from_date=local_start.astimezone(UTC),
             to_date=(next_local_start - timedelta(microseconds=1)).astimezone(UTC),
             description=description,
+            transaction_type=tx_type.value,
         )
         if duplicate_candidates and not allow_duplicate:
+            kind_label = "income" if tx_type == TransactionType.income else "expense"
             return {
                 "status": "error",
                 "duplicate_detected": True,
                 "local_day": local_day.isoformat(),
                 "message": (
-                    f"A matching expense is already logged for {local_day.isoformat()} "
-                    "in the user's timezone. Ask whether they want to add another identical expense."
+                    f"A matching {kind_label} is already logged for {local_day.isoformat()} "
+                    f"in the user's timezone. Ask whether they want to add another identical {kind_label}."
                 ),
                 "duplicates": [
                     {
@@ -679,11 +794,16 @@ class AgentTools:
             )
             resolved_tag_ids.append(tag.public_id)
 
+        source_type = (
+            TransactionSourceType.mcp_agent
+            if self.source_channel == "mcp_agent"
+            else TransactionSourceType.voice_agent
+        )
         payload = TransactionCreate(
             category_id=category.public_id,
             account_id=account_public_id,
             amount=amt,
-            type=TransactionType.expense,
+            type=tx_type,
             occurred_at=resolved_occurred_at,
             description=description,
             tag_ids=resolved_tag_ids,
@@ -693,12 +813,13 @@ class AgentTools:
             workspace_id=self.workspace_id,
             tx_in=payload,
             audit_logger=self.audit_logger,
+            source_type=source_type,
+            source_ref=source_ref,
         )
 
         # Resolve currency symbol for the transaction summary
         symbol = account_obj.default_currency_code
-        currency_repo = CurrencyRepository(self.session)
-        currency = await currency_repo.get_by_code(account_obj.default_currency_code)
+        currency = await self.currency_repo.get_by_code(account_obj.default_currency_code)
         if currency and currency.symbol:
             symbol = currency.symbol
 
@@ -706,6 +827,7 @@ class AgentTools:
             "status": "success",
             "entity_public_id": str(tx.public_id),
             "entity_type": "transaction",
+            "type": tx.type.value if hasattr(tx.type, "value") else str(tx.type),
             "amount": str(tx.amount),
             "category": category.name,
             "category_matched": category_matched,
@@ -728,9 +850,10 @@ class AgentTools:
         amount: str | None = None,
         search: str | None = None,
         account_name: str | None = None,
+        transaction_type: str | None = "expense",
         limit: int = 10,
     ) -> dict:
-        """List expenses for a local calendar day in the user's timezone."""
+        """List transactions (expense or income) for a local calendar day in the user's timezone."""
         timezone = _safe_timezone(self.user_timezone)
         if day and day.strip():
             try:
@@ -748,6 +871,21 @@ class AgentTools:
             normalized_limit = max(1, min(int(limit), 25))
         except (TypeError, ValueError):
             normalized_limit = 10
+
+        type_filter = None
+        if transaction_type and transaction_type.strip():
+            norm_type = transaction_type.strip().lower()
+            if norm_type == "income":
+                type_filter = TransactionType.income
+            elif norm_type == "expense":
+                type_filter = TransactionType.expense
+            else:
+                return {
+                    "status": "error",
+                    "message": "transaction_type must be either 'expense' or 'income'.",
+                }
+        else:
+            type_filter = TransactionType.expense
 
         categories, _ = await self.category_service.list_categories(
             self.workspace_id, limit=200, offset=0
@@ -792,7 +930,7 @@ class AgentTools:
             self.workspace_id,
             category_public_id=category_public_id,
             account_public_id=account_public_id,
-            type_filter=TransactionType.expense,
+            type_filter=type_filter,
             from_date=local_start.astimezone(UTC),
             to_date=(next_local_start - timedelta(microseconds=1)).astimezone(UTC),
             search=search,
@@ -807,6 +945,7 @@ class AgentTools:
             "transactions": [
                 {
                     "entity_public_id": str(item.public_id),
+                    "type": item.type.value if hasattr(item.type, "value") else str(item.type),
                     "amount": str(item.amount),
                     "category_name": category_names.get(item.category_id, str(item.category_id)),
                     "description": item.description,
@@ -824,6 +963,7 @@ class AgentTools:
     def _transaction_candidate(item, category_names: dict, account_names: dict) -> dict:
         return {
             "entity_public_id": str(item.public_id),
+            "type": item.type.value if hasattr(item.type, "value") else str(item.type),
             "amount": str(item.amount),
             "category_name": category_names.get(item.category_id, str(item.category_id)),
             "description": item.description,
@@ -843,9 +983,10 @@ class AgentTools:
         amount: str | None = None,
         search: str | None = None,
         account_name: str | None = None,
+        transaction_type: str | None = "expense",
         limit: int = 10,
     ) -> dict:
-        """Find bounded expense candidates for a correction or deletion.
+        """Find bounded transaction candidates for a correction or deletion.
 
         At least one meaningful clue is required so a conversational correction
         cannot accidentally select an arbitrary workspace transaction.
@@ -889,6 +1030,21 @@ class AgentTools:
         except (TypeError, ValueError):
             normalized_limit = 10
 
+        type_filter = None
+        if transaction_type and transaction_type.strip():
+            norm_type = transaction_type.strip().lower()
+            if norm_type == "income":
+                type_filter = TransactionType.income
+            elif norm_type == "expense":
+                type_filter = TransactionType.expense
+            else:
+                return {
+                    "status": "error",
+                    "message": "transaction_type must be either 'expense' or 'income'.",
+                }
+        else:
+            type_filter = TransactionType.expense
+
         categories, _ = await self.category_service.list_categories(
             self.workspace_id, limit=200, offset=0
         )
@@ -931,7 +1087,7 @@ class AgentTools:
             self.workspace_id,
             category_public_id=category_public_id,
             account_public_id=account_public_id,
-            type_filter=TransactionType.expense,
+            type_filter=type_filter,
             from_date=local_start.astimezone(UTC),
             to_date=next_local_start.astimezone(UTC),
             search=search.strip() if search and search.strip() else None,
@@ -1278,4 +1434,856 @@ class AgentTools:
             "medication_name": medication.name,
             "status_logged": event.status,
             "summary": f"Logged {medication.name} as {event.status}",
+        }
+
+    # -----------------------------------------------------------------------
+    # Spec-095: Transfer & Investment Income Tools
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _transfer_candidate(item: dict[str, Any]) -> dict:
+        return {
+            "entity_public_id": str(item["public_id"]),
+            "from_account_name": item.get("from_account_name"),
+            "to_account_name": item.get("to_account_name"),
+            "from_account_type": (
+                item["from_account_type"].value
+                if hasattr(item.get("from_account_type"), "value")
+                else str(item.get("from_account_type"))
+            ),
+            "to_account_type": (
+                item["to_account_type"].value
+                if hasattr(item.get("to_account_type"), "value")
+                else str(item.get("to_account_type"))
+            ),
+            "from_module": (
+                item["from_module"].value
+                if hasattr(item.get("from_module"), "value")
+                else str(item.get("from_module"))
+            ),
+            "to_module": (
+                item["to_module"].value
+                if hasattr(item.get("to_module"), "value")
+                else str(item.get("to_module"))
+            ),
+            "from_currency_code": item.get("from_currency_code"),
+            "to_currency_code": item.get("to_currency_code"),
+            "gross_amount": str(item.get("gross_amount")),
+            "fx_rate_used": str(item.get("fx_rate_used"))
+            if item.get("fx_rate_used") is not None
+            else None,
+            "fx_fee_amount": str(item.get("fx_fee_amount")),
+            "platform_fee_amount": str(item.get("platform_fee_amount")),
+            "tax_amount": str(item.get("tax_amount")),
+            "net_amount_received": str(item.get("net_amount_received")),
+            "occurred_at": (
+                item["occurred_at"].isoformat()
+                if hasattr(item.get("occurred_at"), "isoformat")
+                else str(item.get("occurred_at"))
+            ),
+            "notes": item.get("notes"),
+            "source_type": item.get("source_type"),
+        }
+
+    async def list_transfers(
+        self,
+        day: str | None = None,
+        from_day: str | None = None,
+        to_day: str | None = None,
+        account_name: str | None = None,
+        amount: str | None = None,
+        search: str | None = None,
+        limit: int = 10,
+    ) -> dict:
+        """List capital transfers for a day or date range in the user's timezone."""
+        timezone = _safe_timezone(self.user_timezone)
+
+        if day and day.strip():
+            try:
+                start_day = date.fromisoformat(day.strip())
+                end_day = start_day
+            except ValueError:
+                return {"status": "error", "message": "day must be an ISO date (YYYY-MM-DD)."}
+        else:
+            try:
+                start_day = (
+                    date.fromisoformat(from_day.strip()) if from_day and from_day.strip() else None
+                )
+                end_day = date.fromisoformat(to_day.strip()) if to_day and to_day.strip() else None
+            except ValueError:
+                return {"status": "error", "message": "Dates must use YYYY-MM-DD format."}
+
+        account_id = None
+        if account_name and account_name.strip():
+            account, resolution_error = await self._resolve_any_account(account_name)
+            if resolution_error is not None or account is None:
+                return resolution_error
+            account_id = account.id
+
+        parsed_amount = None
+        if amount and amount.strip():
+            try:
+                parsed_amount = Decimal(amount.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "amount must be numeric."}
+
+        try:
+            normalized_limit = max(1, min(int(limit), 25))
+        except (TypeError, ValueError):
+            normalized_limit = 10
+
+        from_date = None
+        to_date = None
+        if start_day is not None:
+            local_start = datetime.combine(start_day, time.min, tzinfo=timezone)
+            from_date = local_start.astimezone(UTC)
+        if end_day is not None:
+            next_local_start = datetime.combine(
+                end_day + timedelta(days=1), time.min, tzinfo=timezone
+            )
+            to_date = (next_local_start - timedelta(microseconds=1)).astimezone(UTC)
+
+        items, total = await self.transfer_service.find_transfers(
+            self.workspace_id,
+            from_date=from_date,
+            to_date=to_date,
+            account_id=account_id,
+            amount=parsed_amount,
+            search=search.strip() if search and search.strip() else None,
+            limit=normalized_limit,
+            offset=0,
+        )
+
+        return {
+            "status": "success",
+            "transfers": [self._transfer_candidate(t) for t in items],
+            "total": total,
+        }
+
+    async def find_transfers(
+        self,
+        from_day: str | None = None,
+        to_day: str | None = None,
+        account_name: str | None = None,
+        amount: str | None = None,
+        search: str | None = None,
+        limit: int = 10,
+    ) -> dict:
+        """Find bounded transfer candidates for a correction or deletion. Requires
+        at least one clue and caps search window to 31 days."""
+        clues = (from_day, to_day, account_name, amount, search)
+        if not any(value and value.strip() for value in clues if isinstance(value, str)):
+            return {
+                "status": "error",
+                "needs_filter": True,
+                "message": (
+                    "Provide a date, account name, amount, or notes search term so I can "
+                    "identify the transfer safely."
+                ),
+            }
+
+        timezone = _safe_timezone(self.user_timezone)
+        try:
+            start_day = (
+                date.fromisoformat(from_day.strip()) if from_day and from_day.strip() else None
+            )
+            end_day = date.fromisoformat(to_day.strip()) if to_day and to_day.strip() else None
+        except ValueError:
+            return {"status": "error", "message": "Dates must use YYYY-MM-DD format."}
+
+        if start_day is None and end_day is not None:
+            start_day = end_day
+        elif end_day is None and start_day is not None:
+            end_day = start_day
+
+        if start_day is not None and end_day is not None:
+            if end_day < start_day:
+                return {"status": "error", "message": "to_day must not be before from_day."}
+            if (end_day - start_day).days > 31:
+                return {
+                    "status": "error",
+                    "needs_filter": True,
+                    "message": "Use a date range of 31 days or less when finding a transfer.",
+                }
+
+        account_id = None
+        if account_name and account_name.strip():
+            account, resolution_error = await self._resolve_any_account(account_name)
+            if resolution_error is not None or account is None:
+                return resolution_error
+            account_id = account.id
+
+        parsed_amount = None
+        if amount and amount.strip():
+            try:
+                parsed_amount = Decimal(amount.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "amount must be numeric."}
+
+        try:
+            normalized_limit = max(1, min(int(limit), 25))
+        except (TypeError, ValueError):
+            normalized_limit = 10
+
+        from_date = None
+        to_date = None
+        if start_day is not None:
+            local_start = datetime.combine(start_day, time.min, tzinfo=timezone)
+            from_date = local_start.astimezone(UTC)
+        if end_day is not None:
+            next_local_start = datetime.combine(
+                end_day + timedelta(days=1), time.min, tzinfo=timezone
+            )
+            to_date = (next_local_start - timedelta(microseconds=1)).astimezone(UTC)
+
+        items, total = await self.transfer_service.find_transfers(
+            self.workspace_id,
+            from_date=from_date,
+            to_date=to_date,
+            account_id=account_id,
+            amount=parsed_amount,
+            search=search.strip() if search and search.strip() else None,
+            limit=normalized_limit,
+            offset=0,
+        )
+
+        if total > normalized_limit:
+            return {
+                "status": "error",
+                "needs_filter": True,
+                "total": total,
+                "message": (
+                    f"I found {total} matching transfers. Add a more specific date, "
+                    "account, amount, or notes to narrow them down."
+                ),
+            }
+
+        return {
+            "status": "success",
+            "transfers": [self._transfer_candidate(t) for t in items],
+            "total": total,
+        }
+
+    async def create_transfer(
+        self,
+        from_account_name: str,
+        to_account_name: str,
+        amount: str,
+        fx_rate: str | None = None,
+        fees: str | None = None,
+        fx_fee_amount: str | None = None,
+        platform_fee_amount: str | None = None,
+        tax_amount: str | None = None,
+        net_amount: str | None = None,
+        occurred_at: str | None = None,
+        notes: str | None = None,
+        source_ref: str | None = None,
+        confirmed: bool = False,
+    ) -> dict:
+        """Create a new capital transfer between accounts. Preview with confirmed=False,
+        mutate with confirmed=True."""
+        from_account, err_from = await self._resolve_any_account(from_account_name)
+        if err_from is not None or from_account is None:
+            return err_from or {"status": "error", "message": "Invalid source account."}
+
+        to_account, err_to = await self._resolve_any_account(to_account_name)
+        if err_to is not None or to_account is None:
+            return err_to or {"status": "error", "message": "Invalid destination account."}
+
+        if from_account.id == to_account.id:
+            return {
+                "status": "error",
+                "message": "Source and destination accounts must be different.",
+            }
+
+        try:
+            gross_amount = Decimal(amount.strip())
+        except (InvalidOperation, TypeError, ValueError):
+            return {"status": "error", "message": "amount must be a valid decimal number."}
+
+        if gross_amount <= Decimal("0"):
+            return {"status": "error", "message": "amount must be greater than zero."}
+
+        parsed_fx_fee = Decimal("0")
+        if fx_fee_amount and fx_fee_amount.strip():
+            try:
+                parsed_fx_fee = Decimal(fx_fee_amount.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "fx_fee_amount must be numeric."}
+        elif fees and fees.strip():
+            try:
+                parsed_fx_fee = Decimal(fees.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "fees must be numeric."}
+
+        parsed_platform_fee = Decimal("0")
+        if platform_fee_amount and platform_fee_amount.strip():
+            try:
+                parsed_platform_fee = Decimal(platform_fee_amount.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "platform_fee_amount must be numeric."}
+
+        parsed_tax_fee = Decimal("0")
+        if tax_amount and tax_amount.strip():
+            try:
+                parsed_tax_fee = Decimal(tax_amount.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "tax_amount must be numeric."}
+
+        if (
+            parsed_fx_fee < Decimal("0")
+            or parsed_platform_fee < Decimal("0")
+            or parsed_tax_fee < Decimal("0")
+        ):
+            return {"status": "error", "message": "fees cannot be negative."}
+
+        total_fees_amount = parsed_fx_fee + parsed_platform_fee + parsed_tax_fee
+
+        from_is_brokerage = (
+            from_account.account_type.value
+            if hasattr(from_account.account_type, "value")
+            else str(from_account.account_type)
+        ) == "brokerage"
+        to_is_brokerage = (
+            to_account.account_type.value
+            if hasattr(to_account.account_type, "value")
+            else str(to_account.account_type)
+        ) == "brokerage"
+
+        from_module = TransferModule.investing if from_is_brokerage else TransferModule.spending
+        to_module = TransferModule.investing if to_is_brokerage else TransferModule.spending
+        from_currency_code = from_account.default_currency_code.upper()
+        to_currency_code = to_account.default_currency_code.upper()
+
+        if from_currency_code == to_currency_code:
+            if fx_rate and fx_rate.strip():
+                try:
+                    passed_rate = Decimal(fx_rate.strip())
+                except (InvalidOperation, TypeError, ValueError):
+                    return {"status": "error", "message": "fx_rate must be numeric."}
+                if passed_rate != Decimal("1.0") and passed_rate != Decimal("1"):
+                    return {
+                        "status": "error",
+                        "message": "FX rate must be 1.0 when transferring between the same currency.",
+                    }
+            fx_rate_used = Decimal("1.0")
+            if net_amount and net_amount.strip():
+                try:
+                    net_received = Decimal(net_amount.strip())
+                except (InvalidOperation, TypeError, ValueError):
+                    return {"status": "error", "message": "net_amount must be numeric."}
+            else:
+                net_received = gross_amount - total_fees_amount
+        else:
+            if not fx_rate or not fx_rate.strip():
+                return {
+                    "status": "error",
+                    "message": (
+                        f"FX rate is required for cross-currency transfer from "
+                        f"{from_currency_code} to {to_currency_code}."
+                    ),
+                }
+            try:
+                fx_rate_used = Decimal(fx_rate.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "fx_rate must be numeric."}
+
+            if fx_rate_used <= Decimal("0"):
+                return {"status": "error", "message": "fx_rate must be greater than zero."}
+
+            if net_amount and net_amount.strip():
+                try:
+                    net_received = Decimal(net_amount.strip())
+                except (InvalidOperation, TypeError, ValueError):
+                    return {"status": "error", "message": "net_amount must be numeric."}
+            else:
+                net_received = (gross_amount * fx_rate_used) - total_fees_amount
+
+        if net_received <= Decimal("0"):
+            return {"status": "error", "message": "net_amount must be greater than zero."}
+
+        now = datetime.now(UTC)
+        if occurred_at and occurred_at.strip():
+            try:
+                resolved_occurred_at = _parse_occurred_at(occurred_at, self.user_timezone)
+            except ValueError:
+                return {
+                    "status": "error",
+                    "message": "Invalid date. Use a day like 'yesterday' or an ISO date.",
+                }
+            try:
+                tz: tzinfo = ZoneInfo(self.user_timezone) if self.user_timezone else UTC
+            except (ZoneInfoNotFoundError, ValueError, TypeError):
+                tz = UTC
+            if resolved_occurred_at.astimezone(tz).date() > now.astimezone(tz).date():
+                return {
+                    "status": "error",
+                    "message": "I can't log a transfer for a future date.",
+                }
+            if resolved_occurred_at > now:
+                resolved_occurred_at = now
+        else:
+            resolved_occurred_at = now
+
+        from_type_str = (
+            from_account.account_type.value
+            if hasattr(from_account.account_type, "value")
+            else str(from_account.account_type)
+        )
+        to_type_str = (
+            to_account.account_type.value
+            if hasattr(to_account.account_type, "value")
+            else str(to_account.account_type)
+        )
+        from_mod_str = from_module.value if hasattr(from_module, "value") else str(from_module)
+        to_mod_str = to_module.value if hasattr(to_module, "value") else str(to_module)
+
+        preview_data = {
+            "from_account_name": from_account.name,
+            "to_account_name": to_account.name,
+            "from_account_type": from_type_str,
+            "to_account_type": to_type_str,
+            "from_module": from_mod_str,
+            "to_module": to_mod_str,
+            "from_currency_code": from_currency_code,
+            "to_currency_code": to_currency_code,
+            "gross_amount": str(gross_amount),
+            "fx_rate_used": str(fx_rate_used) if fx_rate_used is not None else None,
+            "fx_fee_amount": str(parsed_fx_fee),
+            "platform_fee_amount": str(parsed_platform_fee),
+            "tax_amount": str(parsed_tax_fee),
+            "net_amount_received": str(net_received),
+            "occurred_at": resolved_occurred_at.isoformat(),
+            "notes": notes,
+        }
+
+        if not confirmed:
+            return {
+                "status": "error",
+                "needs_confirmation": True,
+                "preview": preview_data,
+                "message": (
+                    f"Transfer {gross_amount} {from_currency_code} from {from_account.name} to "
+                    f"{to_account.name} (receiving {net_received} {to_currency_code}) on "
+                    f"{resolved_occurred_at.date().isoformat()}? Confirm to execute."
+                ),
+            }
+
+        payload = CapitalTransferCreate(
+            from_module=from_module,
+            to_module=to_module,
+            from_account_id=from_account.public_id,
+            to_account_id=to_account.public_id,
+            from_currency_code=from_currency_code,
+            to_currency_code=to_currency_code,
+            gross_amount=gross_amount,
+            fx_rate_used=fx_rate_used,
+            fx_fee_amount=parsed_fx_fee,
+            platform_fee_amount=parsed_platform_fee,
+            tax_amount=parsed_tax_fee,
+            net_amount_received=net_received,
+            occurred_at=resolved_occurred_at,
+            notes=notes,
+        )
+
+        try:
+            res = await self.transfer_service.create_transfer(
+                self.workspace_id,
+                self.user_id,
+                payload,
+                audit_logger=self.audit_logger,
+                source_type=self.source_channel,
+                source_ref=source_ref,
+            )
+        except (APIError, ValueError) as exc:
+            return {"status": "error", "message": _tool_error_message(exc)}
+
+        return {
+            "status": "success",
+            "entity_public_id": str(res["public_id"]),
+            "entity_type": "capital_transfer",
+            "transfer": self._transfer_candidate(res),
+            "summary": f"Transferred {gross_amount} {from_currency_code} from {from_account.name} to {to_account.name}",
+        }
+
+    async def update_transfer(
+        self,
+        public_id: str,
+        from_account_name: str | None = None,
+        to_account_name: str | None = None,
+        amount: str | None = None,
+        fx_rate: str | None = None,
+        fees: str | None = None,
+        fx_fee_amount: str | None = None,
+        platform_fee_amount: str | None = None,
+        tax_amount: str | None = None,
+        net_amount: str | None = None,
+        occurred_at: str | None = None,
+        notes: str | None = None,
+        confirmed: bool = False,
+    ) -> dict:
+        """Update a capital transfer by public ID. Requires confirmation."""
+        try:
+            pid = uuid.UUID(public_id.strip())
+        except (ValueError, TypeError):
+            return {"status": "error", "message": "Invalid transfer public_id format."}
+
+        try:
+            current = await self.transfer_service.get_transfer(self.workspace_id, pid)
+        except NotFoundError:
+            return {"status": "error", "message": f"Transfer with id {public_id} not found."}
+
+        from_account_id = None
+        from_curr = current["from_currency_code"]
+        if from_account_name and from_account_name.strip():
+            account, err = await self._resolve_any_account(from_account_name)
+            if err is not None or account is None:
+                return err or {"status": "error", "message": "Invalid from_account."}
+            from_account_id = account.public_id
+            from_curr = account.default_currency_code.upper()
+
+        to_account_id = None
+        to_curr = current["to_currency_code"]
+        if to_account_name and to_account_name.strip():
+            account, err = await self._resolve_any_account(to_account_name)
+            if err is not None or account is None:
+                return err or {"status": "error", "message": "Invalid to_account."}
+            to_account_id = account.public_id
+            to_curr = account.default_currency_code.upper()
+
+        parsed_gross = None
+        if amount and amount.strip():
+            try:
+                parsed_gross = Decimal(amount.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "amount must be numeric."}
+            if parsed_gross <= Decimal("0"):
+                return {"status": "error", "message": "amount must be greater than zero."}
+
+        parsed_fx_rate = None
+        if fx_rate and fx_rate.strip():
+            try:
+                parsed_fx_rate = Decimal(fx_rate.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "fx_rate must be numeric."}
+            if parsed_fx_rate <= Decimal("0"):
+                return {"status": "error", "message": "fx_rate must be greater than zero."}
+
+        parsed_fx_fee = None
+        if fx_fee_amount and fx_fee_amount.strip():
+            try:
+                parsed_fx_fee = Decimal(fx_fee_amount.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "fx_fee_amount must be numeric."}
+        elif fees and fees.strip():
+            try:
+                parsed_fx_fee = Decimal(fees.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "fees must be numeric."}
+
+        parsed_platform_fee = None
+        if platform_fee_amount and platform_fee_amount.strip():
+            try:
+                parsed_platform_fee = Decimal(platform_fee_amount.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "platform_fee_amount must be numeric."}
+
+        parsed_tax_fee = None
+        if tax_amount and tax_amount.strip():
+            try:
+                parsed_tax_fee = Decimal(tax_amount.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "tax_amount must be numeric."}
+
+        if (
+            (parsed_fx_fee is not None and parsed_fx_fee < Decimal("0"))
+            or (parsed_platform_fee is not None and parsed_platform_fee < Decimal("0"))
+            or (parsed_tax_fee is not None and parsed_tax_fee < Decimal("0"))
+        ):
+            return {"status": "error", "message": "fees cannot be negative."}
+
+        parsed_net = None
+        if net_amount and net_amount.strip():
+            try:
+                parsed_net = Decimal(net_amount.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "net_amount must be numeric."}
+            if parsed_net <= Decimal("0"):
+                return {"status": "error", "message": "net_amount must be greater than zero."}
+
+        parsed_occurred_at = None
+        if occurred_at and occurred_at.strip():
+            try:
+                parsed_occurred_at = _parse_occurred_at(occurred_at, self.user_timezone)
+            except ValueError:
+                return {"status": "error", "message": "Invalid date format."}
+
+        gross_val = parsed_gross if parsed_gross is not None else current["gross_amount"]
+        fx_fee_val = parsed_fx_fee if parsed_fx_fee is not None else current["fx_fee_amount"]
+        platform_fee_val = (
+            parsed_platform_fee
+            if parsed_platform_fee is not None
+            else current["platform_fee_amount"]
+        )
+        tax_val = parsed_tax_fee if parsed_tax_fee is not None else current["tax_amount"]
+        total_fees_val = fx_fee_val + platform_fee_val + tax_val
+
+        if from_curr == to_curr:
+            if (
+                parsed_fx_rate is not None
+                and parsed_fx_rate != Decimal("1.0")
+                and parsed_fx_rate != Decimal("1")
+            ):
+                return {
+                    "status": "error",
+                    "message": "FX rate must be 1.0 when transferring between the same currency.",
+                }
+            rate_val = Decimal("1.0")
+        else:
+            rate_val = parsed_fx_rate if parsed_fx_rate is not None else current["fx_rate_used"]
+            if rate_val is None:
+                return {
+                    "status": "error",
+                    "message": f"FX rate is required for cross-currency transfer from {from_curr} to {to_curr}.",
+                }
+
+        net_val = (gross_val * rate_val) - total_fees_val if parsed_net is None else parsed_net
+
+        if net_val <= Decimal("0"):
+            return {"status": "error", "message": "net_amount must be greater than zero."}
+
+        update_payload = CapitalTransferUpdate(
+            from_account_id=from_account_id,
+            to_account_id=to_account_id,
+            from_currency_code=from_curr if from_account_id else None,
+            to_currency_code=to_curr if to_account_id else None,
+            gross_amount=parsed_gross,
+            fx_rate_used=parsed_fx_rate if from_curr != to_curr else Decimal("1.0"),
+            fx_fee_amount=parsed_fx_fee,
+            platform_fee_amount=parsed_platform_fee,
+            tax_amount=parsed_tax_fee,
+            net_amount_received=net_val
+            if parsed_net is not None
+            or any(
+                x is not None
+                for x in [
+                    parsed_gross,
+                    parsed_fx_rate,
+                    parsed_fx_fee,
+                    parsed_platform_fee,
+                    parsed_tax_fee,
+                    from_account_id,
+                    to_account_id,
+                ]
+            )
+            else None,
+            occurred_at=parsed_occurred_at,
+            notes=notes,
+        )
+
+        proposed_preview = {
+            "from_account_name": from_account_name or current["from_account_name"],
+            "to_account_name": to_account_name or current["to_account_name"],
+            "gross_amount": str(gross_val),
+            "fx_rate_used": str(rate_val) if rate_val is not None else None,
+            "fx_fee_amount": str(fx_fee_val),
+            "platform_fee_amount": str(platform_fee_val),
+            "tax_amount": str(tax_val),
+            "net_amount_received": str(net_val),
+            "occurred_at": (
+                parsed_occurred_at.isoformat()
+                if parsed_occurred_at
+                else current["occurred_at"].isoformat()
+            ),
+            "notes": notes if notes is not None else current["notes"],
+        }
+
+        if not confirmed:
+            return {
+                "status": "error",
+                "needs_confirmation": True,
+                "current": self._transfer_candidate(current),
+                "preview": proposed_preview,
+                "message": f"Update transfer {public_id}? Confirm to execute.",
+            }
+
+        try:
+            updated = await self.transfer_service.update_transfer(
+                self.workspace_id,
+                self.user_id,
+                pid,
+                update_payload,
+                audit_logger=self.audit_logger,
+            )
+        except (APIError, ConflictError, ValueError) as exc:
+            return {"status": "error", "message": _tool_error_message(exc)}
+
+        return {
+            "status": "success",
+            "entity_public_id": str(pid),
+            "entity_type": "capital_transfer",
+            "transfer": self._transfer_candidate(updated),
+            "summary": f"Updated transfer {public_id}",
+        }
+
+    async def delete_transfer(self, public_id: str, confirmed: bool = False) -> dict:
+        """Delete a capital transfer by public ID. Requires confirmation."""
+        try:
+            pid = uuid.UUID(public_id.strip())
+        except (ValueError, TypeError):
+            return {"status": "error", "message": "Invalid transfer public_id format."}
+
+        try:
+            current = await self.transfer_service.get_transfer(self.workspace_id, pid)
+        except NotFoundError:
+            return {"status": "error", "message": f"Transfer with id {public_id} not found."}
+
+        if not confirmed:
+            return {
+                "status": "error",
+                "needs_confirmation": True,
+                "transfer": self._transfer_candidate(current),
+                "message": (
+                    f"Delete transfer of {current['gross_amount']} {current['from_currency_code']} "
+                    f"from {current['from_account_name']} to {current['to_account_name']} on "
+                    f"{current['occurred_at']}? Confirm to delete."
+                ),
+            }
+
+        try:
+            await self.transfer_service.delete_transfer(
+                self.workspace_id,
+                pid,
+                actor_id=self.user_id,
+                audit_logger=self.audit_logger,
+            )
+        except (APIError, ConflictError, ValueError) as exc:
+            return {"status": "error", "message": _tool_error_message(exc)}
+
+        return {
+            "status": "success",
+            "entity_public_id": str(pid),
+            "entity_type": "capital_transfer",
+            "summary": f"Deleted transfer {public_id}",
+        }
+
+    async def create_investment_dividend(
+        self,
+        account_name: str,
+        amount: str,
+        income_type: str = "dividend",
+        symbol: str | None = None,
+        tax_withheld: str | None = None,
+        pay_date: str | None = None,
+        notes: str | None = None,
+        external_ref: str | None = None,
+        confirmed: bool = False,
+    ) -> dict:
+        """Record dividend/interest/coupon income on a brokerage account (spec-073).
+        Preserves strict investment boundary and credits investing cash balances directly."""
+        norm_income_type = income_type.strip().lower() if income_type else "dividend"
+        if norm_income_type not in ("dividend", "interest", "coupon"):
+            return {
+                "status": "error",
+                "message": "income_type must be one of 'dividend', 'interest', 'coupon'.",
+            }
+
+        account, err = await self._resolve_any_account(account_name)
+        if err is not None or account is None:
+            return err or {"status": "error", "message": "Invalid account."}
+
+        acct_type_str = (
+            account.account_type.value
+            if hasattr(account.account_type, "value")
+            else str(account.account_type)
+        )
+        if acct_type_str != "brokerage":
+            return {
+                "status": "error",
+                "message": (
+                    f"Investment income can only be recorded on brokerage accounts. "
+                    f"'{account.name}' is a {acct_type_str} account."
+                ),
+            }
+
+        try:
+            gross_amount = Decimal(amount.strip())
+        except (InvalidOperation, TypeError, ValueError):
+            return {"status": "error", "message": "amount must be numeric."}
+
+        if gross_amount <= Decimal("0"):
+            return {"status": "error", "message": "amount must be greater than zero."}
+
+        tax_amount = Decimal("0")
+        if tax_withheld and tax_withheld.strip():
+            try:
+                tax_amount = Decimal(tax_withheld.strip())
+            except (InvalidOperation, TypeError, ValueError):
+                return {"status": "error", "message": "tax_withheld must be numeric."}
+
+        if tax_amount < Decimal("0"):
+            return {"status": "error", "message": "tax_withheld cannot be negative."}
+
+        if tax_amount >= gross_amount:
+            return {
+                "status": "error",
+                "message": "tax_withheld cannot exceed or equal gross amount.",
+            }
+
+        currency = account.default_currency_code.upper()
+        timezone = _safe_timezone(self.user_timezone)
+        if pay_date and pay_date.strip():
+            try:
+                resolved_pay_date = date.fromisoformat(pay_date.strip())
+            except ValueError:
+                return {"status": "error", "message": "pay_date must be an ISO date (YYYY-MM-DD)."}
+        else:
+            resolved_pay_date = datetime.now(timezone).date()
+
+        if not confirmed:
+            return {
+                "status": "error",
+                "needs_confirmation": True,
+                "preview": {
+                    "account_name": account.name,
+                    "symbol": symbol,
+                    "income_type": norm_income_type,
+                    "gross_amount": str(gross_amount),
+                    "tax_withheld": str(tax_amount),
+                    "currency": currency,
+                    "pay_date": resolved_pay_date.isoformat(),
+                    "notes": notes,
+                },
+                "message": (
+                    f"Record {norm_income_type} income of {gross_amount} {currency} for "
+                    f"{symbol or account.name} on {resolved_pay_date.isoformat()}? Confirm to execute."
+                ),
+            }
+
+        try:
+            payload = DividendCreate(
+                account_id=account.public_id,
+                symbol=symbol,
+                income_type=norm_income_type,
+                gross_amount=gross_amount,
+                tax_withheld=tax_amount,
+                currency=currency,
+                pay_date=resolved_pay_date,
+                external_ref=external_ref,
+                notes=notes,
+            )
+            dividend, _ = await self.dividend_service.create_dividend(
+                workspace_id=self.workspace_id,
+                user_id=self.user_id,
+                dividend_in=payload,
+                audit_logger=self.audit_logger,
+            )
+        except (APIError, ValueError, PydanticValidationError) as exc:
+            return {"status": "error", "message": _tool_error_message(exc)}
+
+        return {
+            "status": "success",
+            "entity_public_id": str(dividend.public_id),
+            "entity_type": "investment_dividend",
+            "summary": f"Recorded {income_type} income of {dividend.net_amount} {dividend.currency} for {account.name}.",
         }

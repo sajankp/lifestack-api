@@ -684,6 +684,8 @@ class CapitalTransferService:
             "net_amount_received": transfer.net_amount_received,
             "occurred_at": transfer.occurred_at,
             "notes": transfer.notes,
+            "source_type": transfer.source_type,
+            "source_ref": transfer.source_ref,
             "created_at": transfer.created_at,
             "updated_at": transfer.updated_at,
         }
@@ -700,20 +702,33 @@ class CapitalTransferService:
         tax_amount: Decimal | None,
         net_amount_received: Decimal,
     ) -> None:
-        """Validate FX-rate/currency consistency and gross/net arithmetic for
-        a transfer. Shared by create_transfer and update_transfer, which both
-        run this same check against the transfer's final (post-merge) values
-        before persisting."""
-        if (
-            from_currency_code == to_currency_code
-            and fx_rate_used is not None
-            and fx_rate_used != Decimal("1")
-        ):
-            raise ValidationError(
-                detail="FX rate must be 1.0 when transferring between the same currency"
-            )
+        """Validate FX-rate/currency consistency, positive amounts, and gross/net
+        arithmetic for a transfer. Shared by create_transfer and update_transfer,
+        which both run this check before persisting."""
+        if gross_amount <= Decimal("0"):
+            raise ValidationError(detail="gross_amount must be greater than zero")
+        if net_amount_received <= Decimal("0"):
+            raise ValidationError(detail="net_amount_received must be greater than zero")
+        if (fx_fee_amount or Decimal("0")) < Decimal("0"):
+            raise ValidationError(detail="fx_fee_amount cannot be negative")
+        if (platform_fee_amount or Decimal("0")) < Decimal("0"):
+            raise ValidationError(detail="platform_fee_amount cannot be negative")
+        if (tax_amount or Decimal("0")) < Decimal("0"):
+            raise ValidationError(detail="tax_amount cannot be negative")
 
-        fx_rate = fx_rate_used if fx_rate_used is not None else Decimal("1")
+        if from_currency_code == to_currency_code:
+            if fx_rate_used is not None and fx_rate_used != Decimal("1"):
+                raise ValidationError(
+                    detail="FX rate must be 1.0 when transferring between the same currency"
+                )
+            fx_rate = Decimal("1")
+        else:
+            if fx_rate_used is None:
+                raise ValidationError(detail="FX rate is required for cross-currency transfers")
+            if fx_rate_used <= Decimal("0"):
+                raise ValidationError(detail="fx_rate_used must be greater than zero")
+            fx_rate = fx_rate_used
+
         converted_gross = gross_amount * fx_rate
         total_fees = (
             (fx_fee_amount or Decimal("0"))
@@ -753,6 +768,45 @@ class CapitalTransferService:
         ]
         return items, total
 
+    async def find_transfers(
+        self,
+        workspace_id: int,
+        *,
+        from_date: datetime | None = None,
+        to_date: datetime | None = None,
+        account_id: int | None = None,
+        amount: Decimal | None = None,
+        search: str | None = None,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Sequence[dict[str, Any]], int]:
+        transfers, total = await self.transfer_repository.find_transfers(
+            workspace_id,
+            from_date=from_date,
+            to_date=to_date,
+            account_id=account_id,
+            amount=amount,
+            search=search,
+            limit=limit,
+            offset=offset,
+        )
+        account_ids = [
+            *[transfer.from_account_id for transfer in transfers],
+            *[transfer.to_account_id for transfer in transfers],
+        ]
+        accounts = await self.account_repository.list_by_ids(workspace_id, account_ids)
+        account_by_id = {account.id: account for account in accounts}
+
+        items = [
+            self._serialize_transfer(
+                transfer,
+                account_by_id.get(transfer.from_account_id),
+                account_by_id.get(transfer.to_account_id),
+            )
+            for transfer in transfers
+        ]
+        return items, total
+
     async def get_transfer(self, workspace_id: int, public_id: uuid.UUID) -> dict[str, Any]:
         transfer = await self.transfer_repository.get_by_public_id(workspace_id, public_id)
         if not transfer:
@@ -769,6 +823,9 @@ class CapitalTransferService:
         actor_id: int,
         transfer_in: CapitalTransferCreate,
         audit_logger: AuditLogger | None = None,
+        *,
+        source_type: str = "manual",
+        source_ref: str | None = None,
     ) -> dict[str, Any]:
         from_account = await self.account_repository.get_by_public_id(
             workspace_id, transfer_in.from_account_id
@@ -780,6 +837,45 @@ class CapitalTransferService:
         )
         if not to_account:
             raise ValidationError(detail="to_account_id is invalid for this workspace")
+        if from_account.id == to_account.id:
+            raise ValidationError(detail="Source and destination accounts must be different")
+
+        # Idempotency check: a repeated operation reference may return the
+        # original transfer, but it must never silently accept a changed payload.
+        if source_ref:
+            existing = await self.transfer_repository.get_by_source_ref(
+                workspace_id, source_type, source_ref
+            )
+            if existing is not None:
+                same_payload = (
+                    existing.from_account_id == from_account.id
+                    and existing.to_account_id == to_account.id
+                    and existing.from_module == transfer_in.from_module
+                    and existing.to_module == transfer_in.to_module
+                    and existing.from_currency_code == transfer_in.from_currency_code
+                    and existing.to_currency_code == transfer_in.to_currency_code
+                    and existing.gross_amount == transfer_in.gross_amount
+                    and existing.fx_rate_used == transfer_in.fx_rate_used
+                    and existing.fx_fee_amount == transfer_in.fx_fee_amount
+                    and existing.platform_fee_amount == transfer_in.platform_fee_amount
+                    and existing.tax_amount == transfer_in.tax_amount
+                    and existing.net_amount_received == transfer_in.net_amount_received
+                    and existing.notes == transfer_in.notes
+                )
+                if same_payload:
+                    from_acc = await self.account_repository.get_by_id(
+                        workspace_id, existing.from_account_id
+                    )
+                    to_acc = await self.account_repository.get_by_id(
+                        workspace_id, existing.to_account_id
+                    )
+                    return self._serialize_transfer(existing, from_acc, to_acc)
+                raise ConflictError(
+                    detail=(
+                        f"source_ref '{source_ref}' is already used for a different "
+                        "transfer payload"
+                    )
+                )
 
         await self.currency_repository.ensure_workspace_defaults(workspace_id)
         for code in [transfer_in.from_currency_code, transfer_in.to_currency_code]:
@@ -807,6 +903,18 @@ class CapitalTransferService:
                 )
             )
 
+        # Validate arithmetic consistency with Decimal precision before persistence.
+        self._validate_transfer_amounts(
+            from_currency_code=transfer_in.from_currency_code,
+            to_currency_code=transfer_in.to_currency_code,
+            gross_amount=transfer_in.gross_amount,
+            fx_rate_used=transfer_in.fx_rate_used,
+            fx_fee_amount=transfer_in.fx_fee_amount,
+            platform_fee_amount=transfer_in.platform_fee_amount,
+            tax_amount=transfer_in.tax_amount,
+            net_amount_received=transfer_in.net_amount_received,
+        )
+
         transfer = CapitalTransfer(
             workspace_id=workspace_id,
             actor_id=actor_id,
@@ -824,18 +932,8 @@ class CapitalTransferService:
             net_amount_received=transfer_in.net_amount_received,
             occurred_at=transfer_in.occurred_at,
             notes=transfer_in.notes,
-        )
-
-        # Validate arithmetic consistency with Decimal precision before persistence.
-        self._validate_transfer_amounts(
-            from_currency_code=transfer_in.from_currency_code,
-            to_currency_code=transfer_in.to_currency_code,
-            gross_amount=transfer_in.gross_amount,
-            fx_rate_used=transfer_in.fx_rate_used,
-            fx_fee_amount=transfer_in.fx_fee_amount,
-            platform_fee_amount=transfer_in.platform_fee_amount,
-            tax_amount=transfer_in.tax_amount,
-            net_amount_received=transfer_in.net_amount_received,
+            source_type=source_type,
+            source_ref=source_ref,
         )
         transfer = await self.transfer_repository.create(transfer)
 
@@ -982,10 +1080,22 @@ class CapitalTransferService:
                 )
             )
 
-    async def delete_transfer(self, workspace_id: int, public_id: uuid.UUID) -> None:
+    async def delete_transfer(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        actor_id: int | None = None,
+        audit_logger: AuditLogger | None = None,
+    ) -> None:
         transfer = await self.transfer_repository.get_by_public_id(workspace_id, public_id)
         if not transfer:
             raise NotFoundError(detail=f"Transfer with id {public_id} not found in this workspace")
+
+        from_account = await self.account_repository.get_by_id(
+            workspace_id, transfer.from_account_id
+        )
+        to_account = await self.account_repository.get_by_id(workspace_id, transfer.to_account_id)
+        before_snap = self._serialize_transfer(transfer, from_account, to_account)
 
         to_linked = None
         from_linked = None
@@ -1014,6 +1124,22 @@ class CapitalTransferService:
                 workspace_id, transfer.id
             )
 
+        if audit_logger:
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="delete",
+                module="finance",
+                entity_type="capital_transfer",
+                entity_id=transfer.id,
+                details={
+                    "entity_public_id": str(transfer.public_id),
+                    "before": before_snap,
+                    "after": None,
+                    "changed_fields": list(before_snap.keys()),
+                },
+            )
+
         await self.transfer_repository.delete(transfer)
 
     async def update_transfer(
@@ -1022,10 +1148,19 @@ class CapitalTransferService:
         actor_id: int,
         public_id: uuid.UUID,
         transfer_in: CapitalTransferUpdate,
+        audit_logger: AuditLogger | None = None,
     ) -> dict[str, Any]:
         transfer = await self.transfer_repository.get_by_public_id(workspace_id, public_id)
         if not transfer:
             raise NotFoundError(detail=f"Transfer with id {public_id} not found in this workspace")
+
+        from_account_orig = await self.account_repository.get_by_id(
+            workspace_id, transfer.from_account_id
+        )
+        to_account_orig = await self.account_repository.get_by_id(
+            workspace_id, transfer.to_account_id
+        )
+        before_snap = self._serialize_transfer(transfer, from_account_orig, to_account_orig)
 
         # Resolve accounts (use provided or fall back to existing)
         if transfer_in.from_account_id is not None:
@@ -1157,6 +1292,58 @@ class CapitalTransferService:
                             new_from_currency,  # type: ignore[arg-type]
                         )
 
+        # Calculate proposed values for validation before mutating ORM object
+        proposed_from_currency = (
+            transfer_in.from_currency_code
+            if transfer_in.from_currency_code is not None
+            else transfer.from_currency_code
+        )
+        proposed_to_currency = (
+            transfer_in.to_currency_code
+            if transfer_in.to_currency_code is not None
+            else transfer.to_currency_code
+        )
+        proposed_gross = (
+            transfer_in.gross_amount
+            if transfer_in.gross_amount is not None
+            else transfer.gross_amount
+        )
+        proposed_fx_rate = (
+            transfer_in.fx_rate_used
+            if transfer_in.fx_rate_used is not None
+            else transfer.fx_rate_used
+        )
+        proposed_fx_fee = (
+            transfer_in.fx_fee_amount
+            if transfer_in.fx_fee_amount is not None
+            else transfer.fx_fee_amount
+        )
+        proposed_platform_fee = (
+            transfer_in.platform_fee_amount
+            if transfer_in.platform_fee_amount is not None
+            else transfer.platform_fee_amount
+        )
+        proposed_tax = (
+            transfer_in.tax_amount if transfer_in.tax_amount is not None else transfer.tax_amount
+        )
+        proposed_net = (
+            transfer_in.net_amount_received
+            if transfer_in.net_amount_received is not None
+            else transfer.net_amount_received
+        )
+
+        # Arithmetic consistency check (validate BEFORE mutating ORM state)
+        self._validate_transfer_amounts(
+            from_currency_code=proposed_from_currency,
+            to_currency_code=proposed_to_currency,
+            gross_amount=proposed_gross,
+            fx_rate_used=proposed_fx_rate,
+            fx_fee_amount=proposed_fx_fee,
+            platform_fee_amount=proposed_platform_fee,
+            tax_amount=proposed_tax,
+            net_amount_received=proposed_net,
+        )
+
         # Apply field updates to transfer record
         if from_account:
             transfer.from_account_id = from_account.id  # type: ignore[assignment]
@@ -1182,18 +1369,6 @@ class CapitalTransferService:
             transfer.occurred_at = transfer_in.occurred_at
         if transfer_in.notes is not None:
             transfer.notes = transfer_in.notes
-
-        # Arithmetic consistency check (same rule as create_transfer)
-        self._validate_transfer_amounts(
-            from_currency_code=transfer.from_currency_code,
-            to_currency_code=transfer.to_currency_code,
-            gross_amount=transfer.gross_amount,
-            fx_rate_used=transfer.fx_rate_used,
-            fx_fee_amount=transfer.fx_fee_amount,
-            platform_fee_amount=transfer.platform_fee_amount,
-            tax_amount=transfer.tax_amount,
-            net_amount_received=transfer.net_amount_received,
-        )
 
         transfer = await self.transfer_repository.save(transfer)
 
@@ -1288,7 +1463,25 @@ class CapitalTransferService:
                     from_linked.balance = from_linked.balance + old_gross - new_gross
                     await self.cash_balance_repository.save(from_linked)
 
-        return self._serialize_transfer(transfer, from_account, to_account)
+        after_snap = self._serialize_transfer(transfer, from_account, to_account)
+        if audit_logger:
+            changed = [k for k, v in after_snap.items() if before_snap.get(k) != v]
+            await audit_logger.log(
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                action="update",
+                module="finance",
+                entity_type="capital_transfer",
+                entity_id=transfer.id,
+                details={
+                    "entity_public_id": str(transfer.public_id),
+                    "before": before_snap,
+                    "after": after_snap,
+                    "changed_fields": changed,
+                },
+            )
+
+        return after_snap
 
 
 class NetWorthService:

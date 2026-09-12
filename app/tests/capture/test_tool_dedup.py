@@ -54,9 +54,34 @@ def test_write_tools_cover_all_mutating_capture_tools():
             "delete_todo",
             "update_spending_transaction",
             "delete_spending_transaction",
+            "create_transfer",
+            "update_transfer",
+            "delete_transfer",
+            "create_investment_dividend",
         })
         == WRITE_TOOLS
     )
+
+
+def test_income_and_expense_do_not_share_fuzzy_key():
+    """Spec-095: An expense and income with identical amount and date must not
+    collide in the replay dedup ledger; legacy omitted transaction_type defaults
+    to expense."""
+    ledger = CaptureToolDedupLedger(window_seconds=2700)
+    args_exp = {"amount": "100.00", "occurred_at": "2026-07-15", "transaction_type": "expense"}
+    args_inc = {"amount": "100.00", "occurred_at": "2026-07-15", "transaction_type": "income"}
+    args_legacy_exp = {"amount": "100.00", "occurred_at": "2026-07-15"}
+
+    _record_spend(
+        ledger, args_exp, now=1000.0, result={"status": "success", "entity_public_id": "exp-1"}
+    )
+
+    # Checking income must NOT be suppressed by the prior expense
+    assert _check_spend(ledger, args_inc, now=1010.0) is None
+
+    # Checking legacy omitted-type call MUST match the expense
+    matched = _check_spend(ledger, args_legacy_exp, now=1020.0)
+    assert matched == {"status": "success", "entity_public_id": "exp-1"}
 
 
 def test_exact_replay_within_window_is_suppressed_with_original_result():

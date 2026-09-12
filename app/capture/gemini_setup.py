@@ -141,9 +141,15 @@ def _build_setup_message(
                             "measurements, `log_medication_event` for marking a medication dose taken "
                             "or skipped, the read-only `get_investing_summary` for portfolio "
                             "questions, and the read-only `get_account_balances` for spending "
-                            "account balances (wallet, bank, card, gift card). You cannot create or modify "
-                            "investing data (orders, cash balances) — if asked, say so and offer the summary "
-                            "instead. When a user asks to manage todos, prefer "
+                            "account balances (wallet, bank, card, gift card). You cannot place or modify "
+                            "investing stock orders (trades) — if asked to trade or place orders, say so and offer the "
+                            "investing summary instead. You CAN record confirmed capital transfers (between bank, "
+                            "wallet, card, or brokerage accounts) using `create_transfer`, and confirmed investment "
+                            "income (dividend, interest, coupon) on brokerage accounts using `create_investment_dividend`. "
+                            "For any transfer or investment income mutation, you must present the complete preview first "
+                            "and only execute after the user explicitly confirms (`confirmed=true`). For investment income, "
+                            "valid income_type values are strictly 'dividend', 'interest', or 'coupon' (never route "
+                            "brokerage dividends through spending transactions). When a user asks to manage todos, prefer "
                             "the todo functions and return concise, factual results. Always call the matching "
                             "function when the user requests an action (creating, listing, retrieving, updating, or deleting a todo). "
                             "Treat reminders and todos as the same persisted concept: whenever the user asks "
@@ -311,7 +317,7 @@ def _build_setup_message(
                         },
                         {
                             "name": "log_spending_transaction",
-                            "description": "Record/log a new spending transaction (expense), storing user-authored text in English.",
+                            "description": "Record/log a new spending transaction (expense or income), storing user-authored text in English.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
@@ -333,7 +339,7 @@ def _build_setup_message(
                                     },
                                     "occurred_at": {
                                         "type": "STRING",
-                                        "description": "Optional occurrence date for the expense. Provide when the user states a past or relative day (e.g. 'yesterday', 'last Monday', 'on July 3rd') as an ISO date ('YYYY-MM-DD') or full ISO date-time with UTC offset. Omit when the spend is happening now — the server defaults to the current time. Future dates are rejected.",
+                                        "description": "Optional occurrence date for the transaction. Provide when the user states a past or relative day (e.g. 'yesterday', 'last Monday', 'on July 3rd') as an ISO date ('YYYY-MM-DD') or full ISO date-time with UTC offset. Omit when the spend is happening now — the server defaults to the current time. Future dates are rejected.",
                                     },
                                     "tags": {
                                         "type": "ARRAY",
@@ -342,7 +348,11 @@ def _build_setup_message(
                                     },
                                     "allow_duplicate": {
                                         "type": "BOOLEAN",
-                                        "description": "Optional. Set true only for an explicitly confirmed additional identical expense or an explicitly stated repeated item; otherwise omit it so same-day duplicates are blocked.",
+                                        "description": "Optional. Set true only for an explicitly confirmed additional identical transaction or an explicitly stated repeated item; otherwise omit it so same-day duplicates are blocked.",
+                                    },
+                                    "transaction_type": {
+                                        "type": "STRING",
+                                        "description": "Optional transaction type: 'expense' (default) or 'income'.",
                                     },
                                 },
                                 "required": ["amount", "category_name"],
@@ -350,7 +360,7 @@ def _build_setup_message(
                         },
                         {
                             "name": "list_spending_transactions",
-                            "description": "Read-only spending history for the user's timezone, especially to check whether an expense is already logged before creating one.",
+                            "description": "Read-only transaction history for the user's timezone, especially to check whether an expense or income is already logged before creating one.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
@@ -374,6 +384,10 @@ def _build_setup_message(
                                         "type": "STRING",
                                         "description": "Optional spoken account reference; the server resolves it against workspace spending accounts.",
                                     },
+                                    "transaction_type": {
+                                        "type": "STRING",
+                                        "description": "Optional transaction type filter: 'expense' (default) or 'income'.",
+                                    },
                                     "limit": {
                                         "type": "NUMBER",
                                         "description": "Optional number of results, maximum 25; default 10.",
@@ -383,7 +397,7 @@ def _build_setup_message(
                         },
                         {
                             "name": "find_spending_transactions",
-                            "description": "Find a bounded set of expense candidates before correcting or deleting a transaction. At least one clue is required; dates use the user's local timezone.",
+                            "description": "Find a bounded set of transaction candidates before correcting or deleting a transaction. At least one clue is required; dates use the user's local timezone.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
@@ -411,6 +425,10 @@ def _build_setup_message(
                                         "type": "STRING",
                                         "description": "Optional spoken account reference resolved by the server.",
                                     },
+                                    "transaction_type": {
+                                        "type": "STRING",
+                                        "description": "Optional transaction type filter: 'expense' (default) or 'income'.",
+                                    },
                                     "limit": {
                                         "type": "NUMBER",
                                         "description": "Optional maximum number of candidates, up to 25; default 10.",
@@ -420,7 +438,7 @@ def _build_setup_message(
                         },
                         {
                             "name": "update_spending_transaction",
-                            "description": "Update one expense after explicit user confirmation. Never invent the public ID or skip the find-and-confirm flow.",
+                            "description": "Update one transaction after explicit user confirmation. Never invent the public ID or skip the find-and-confirm flow.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
@@ -463,7 +481,7 @@ def _build_setup_message(
                         },
                         {
                             "name": "delete_spending_transaction",
-                            "description": "Delete one expense only after explicit user confirmation.",
+                            "description": "Delete one transaction only after explicit user confirmation.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
@@ -477,6 +495,253 @@ def _build_setup_message(
                                     },
                                 },
                                 "required": ["public_id"],
+                            },
+                        },
+                        {
+                            "name": "list_transfers",
+                            "description": "List capital transfers between accounts for a day or date range in the user's timezone.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "day": {
+                                        "type": "STRING",
+                                        "description": "Optional ISO date (YYYY-MM-DD).",
+                                    },
+                                    "from_day": {
+                                        "type": "STRING",
+                                        "description": "Optional start date (YYYY-MM-DD).",
+                                    },
+                                    "to_day": {
+                                        "type": "STRING",
+                                        "description": "Optional end date (YYYY-MM-DD).",
+                                    },
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional account name.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Optional transfer amount.",
+                                    },
+                                    "search": {
+                                        "type": "STRING",
+                                        "description": "Optional notes search query.",
+                                    },
+                                    "limit": {
+                                        "type": "NUMBER",
+                                        "description": "Optional result limit up to 25; default 10.",
+                                    },
+                                },
+                            },
+                        },
+                        {
+                            "name": "find_transfers",
+                            "description": "Find bounded transfer candidates for a correction or deletion. Requires at least one clue (date, account, amount, notes).",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "from_day": {
+                                        "type": "STRING",
+                                        "description": "Optional start date (YYYY-MM-DD).",
+                                    },
+                                    "to_day": {
+                                        "type": "STRING",
+                                        "description": "Optional end date (YYYY-MM-DD).",
+                                    },
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional account name.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Optional transfer amount.",
+                                    },
+                                    "search": {
+                                        "type": "STRING",
+                                        "description": "Optional notes search query.",
+                                    },
+                                    "limit": {
+                                        "type": "NUMBER",
+                                        "description": "Optional candidate limit up to 25; default 10.",
+                                    },
+                                },
+                            },
+                        },
+                        {
+                            "name": "create_transfer",
+                            "description": "Transfer capital between accounts (bank, wallet, card, brokerage). Requires confirmation before mutating.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "from_account_name": {
+                                        "type": "STRING",
+                                        "description": "Source account name as spoken by user.",
+                                    },
+                                    "to_account_name": {
+                                        "type": "STRING",
+                                        "description": "Destination account name as spoken by user.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Gross amount transferred in source account currency.",
+                                    },
+                                    "fx_rate": {
+                                        "type": "STRING",
+                                        "description": "Optional FX rate for cross-currency transfers.",
+                                    },
+                                    "fees": {
+                                        "type": "STRING",
+                                        "description": "Legacy alias for total fees; prefer the separate fee fields below.",
+                                    },
+                                    "fx_fee_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional FX fee in the source/converted transfer arithmetic.",
+                                    },
+                                    "platform_fee_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional platform fee.",
+                                    },
+                                    "tax_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional tax amount.",
+                                    },
+                                    "net_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional net amount received in destination account currency.",
+                                    },
+                                    "occurred_at": {
+                                        "type": "STRING",
+                                        "description": "Optional ISO date or date-time; defaults to now.",
+                                    },
+                                    "notes": {
+                                        "type": "STRING",
+                                        "description": "Optional notes describing the transfer.",
+                                    },
+                                    "confirmed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Set true only after user explicitly confirms preview.",
+                                    },
+                                },
+                                "required": ["from_account_name", "to_account_name", "amount"],
+                            },
+                        },
+                        {
+                            "name": "update_transfer",
+                            "description": "Update an existing capital transfer after explicit user confirmation.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "public_id": {
+                                        "type": "STRING",
+                                        "description": "Transfer public UUID.",
+                                    },
+                                    "from_account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional new source account name.",
+                                    },
+                                    "to_account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional new destination account name.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Optional new gross amount.",
+                                    },
+                                    "fx_rate": {
+                                        "type": "STRING",
+                                        "description": "Optional new FX rate.",
+                                    },
+                                    "fees": {
+                                        "type": "STRING",
+                                        "description": "Legacy alias for total fees; prefer the separate fee fields below.",
+                                    },
+                                    "fx_fee_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional new FX fee.",
+                                    },
+                                    "platform_fee_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional new platform fee.",
+                                    },
+                                    "tax_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional new tax amount.",
+                                    },
+                                    "net_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional new net amount received.",
+                                    },
+                                    "occurred_at": {
+                                        "type": "STRING",
+                                        "description": "Optional new date.",
+                                    },
+                                    "notes": {
+                                        "type": "STRING",
+                                        "description": "Optional new notes.",
+                                    },
+                                    "confirmed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Set true only after user explicitly confirms.",
+                                    },
+                                },
+                                "required": ["public_id"],
+                            },
+                        },
+                        {
+                            "name": "delete_transfer",
+                            "description": "Delete an existing capital transfer after explicit user confirmation.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "public_id": {
+                                        "type": "STRING",
+                                        "description": "Transfer public UUID.",
+                                    },
+                                    "confirmed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Set true only after user explicitly confirms deletion.",
+                                    },
+                                },
+                                "required": ["public_id"],
+                            },
+                        },
+                        {
+                            "name": "create_investment_dividend",
+                            "description": "Record confirmed dividend, interest, or coupon income on a brokerage account with confirmation.",
+                            "parameters": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "Brokerage account name.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Gross dividend/income amount.",
+                                    },
+                                    "income_type": {
+                                        "type": "STRING",
+                                        "description": "One of 'dividend', 'interest', 'coupon'.",
+                                    },
+                                    "symbol": {
+                                        "type": "STRING",
+                                        "description": "Optional stock or asset ticker symbol.",
+                                    },
+                                    "tax_withheld": {
+                                        "type": "STRING",
+                                        "description": "Optional tax withheld amount.",
+                                    },
+                                    "pay_date": {
+                                        "type": "STRING",
+                                        "description": "Optional ISO date (YYYY-MM-DD); defaults to today.",
+                                    },
+                                    "notes": {"type": "STRING", "description": "Optional notes."},
+                                    "confirmed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Set true only after user explicitly confirms.",
+                                    },
+                                },
+                                "required": ["account_name", "amount"],
                             },
                         },
                         {
