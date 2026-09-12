@@ -118,23 +118,26 @@ def validate_finance_account_statement_row(
         add_error("description", "required", "description is required", description_raw)
 
     debit = credit = None
-    if debit_raw:
+    if debit_raw and debit_raw not in {"-", "0", "0.0", "0.00"}:
         try:
-            debit = Decimal(debit_raw)
-            if debit <= 0:
-                raise InvalidOperation
+            cleaned_debit = debit_raw.replace(",", "").strip()
+            val = Decimal(cleaned_debit)
+            if val != 0:
+                debit = abs(val)
         except (InvalidOperation, TypeError, ValueError):
             add_error("debit", "invalid_decimal", "debit must be a positive decimal", debit_raw)
-    if credit_raw:
+
+    if credit_raw and credit_raw not in {"-", "0", "0.0", "0.00"}:
         try:
-            credit = Decimal(credit_raw)
-            if credit <= 0:
-                raise InvalidOperation
+            cleaned_credit = credit_raw.replace(",", "").strip()
+            val = Decimal(cleaned_credit)
+            if val != 0:
+                credit = abs(val)
         except (InvalidOperation, TypeError, ValueError):
             add_error("credit", "invalid_decimal", "credit must be a positive decimal", credit_raw)
 
     amount = None
-    if debit_raw and credit_raw:
+    if debit is not None and credit is not None:
         add_error(
             "debit",
             "both_debit_and_credit",
@@ -145,13 +148,18 @@ def validate_finance_account_statement_row(
         amount = -debit
     elif credit is not None:
         amount = credit
-    elif not debit_raw and not credit_raw:
+    elif (
+        not debit_raw
+        and not credit_raw
+        or (debit_raw in {"-", "0", "0.0", "0.00"} and credit_raw in {"-", "0", "0.0", "0.00"})
+    ):
         add_error("debit", "required", "one of debit/credit is required", None)
 
     balance = None
-    if balance_raw:
+    if balance_raw and balance_raw not in {"-", ""}:
         try:
-            balance = Decimal(balance_raw)
+            cleaned_balance = balance_raw.replace(",", "").strip()
+            balance = Decimal(cleaned_balance)
         except (InvalidOperation, TypeError, ValueError):
             add_error("balance", "invalid_decimal", "balance must be a decimal", balance_raw)
 

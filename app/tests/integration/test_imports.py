@@ -1303,3 +1303,50 @@ async def test_historical_transfer_import_after_orders_updates_cash_balance(
         f"Expected completed/committing, got: {result['import_batch']['status']} — "
         f"error: {result['import_batch'].get('commit_error')}"
     )
+
+
+@pytest.mark.asyncio
+async def test_import_finance_account_statement_fuzzy_headers_and_parsing(client: AsyncClient):
+    creds = await _register_and_login(client, uuid.uuid4().hex[:8])
+
+    bank = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "HDFC Checking", "account_type": "bank", "default_currency_code": "INR"},
+        cookies=creds["cookies"],
+    )
+    assert bank.status_code == 201
+    account_id = bank.json()["public_id"]
+
+    # CSV with real-world bank columns: Txn Date, Narration, Withdrawal, Deposit, Closing Balance
+    # Values have commas, inactive row dash '-', and 0.00
+    csv_content = (
+        "Txn Date,Narration,Withdrawal,Deposit,Closing Balance\n"
+        '2026-03-01,Salary Credit,-,"50,000.00","1,50,000.00"\n'
+        '2026-03-02,Grocery Store,"1,250.50",0.00,"1,48,749.50"\n'
+    )
+    files = {"file": ("statement.csv", io.BytesIO(csv_content.encode("utf-8")), "text/csv")}
+    validate = await client.post(
+        "/v1/imports",
+        data={
+            "module": "finance-account-statement",
+            "target_account_id": account_id,
+            "date_format": "yyyy-MM-dd",
+        },
+        files=files,
+        cookies=creds["cookies"],
+    )
+    assert validate.status_code == 200, validate.text
+    payload = validate.json()
+    assert payload["import_batch"]["status"] == "validated"
+    assert payload["error_summary"]["total_errors"] == 0
+    assert len(payload["preview_rows"]) == 2
+
+    row0 = payload["preview_rows"][0]["payload_json"]
+    assert row0["amount"] == "50000.00"
+    assert row0["balance"] == "150000.00"
+    assert row0["description"] == "Salary Credit"
+
+    row1 = payload["preview_rows"][1]["payload_json"]
+    assert row1["amount"] == "-1250.50"
+    assert row1["balance"] == "148749.50"
+    assert row1["description"] == "Grocery Store"
