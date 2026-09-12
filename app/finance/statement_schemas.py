@@ -30,6 +30,11 @@ class StatementLineResponse(BaseModel):
     matched_transfer_id: uuid.UUID | None = None
     matched_transfer_leg: StatementLineMatchLeg | None = None
     matched_at: datetime | None = None
+    matched_description: str | None = None
+    matched_category_id: uuid.UUID | None = None
+    matched_category_name: str | None = None
+    matched_category_color: str | None = None
+    matched_category_icon: str | None = None
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
 
@@ -44,6 +49,10 @@ class MatchCandidate(BaseModel):
     amount: Decimal
     description: str
     leg: StatementLineMatchLeg | None = None
+    category_id: uuid.UUID | None = None
+    category_name: str | None = None
+    category_color: str | None = None
+    category_icon: str | None = None
 
     model_config = ConfigDict(json_encoders={Decimal: str})
 
@@ -60,6 +69,10 @@ class UnmatchedLedgerRow(BaseModel):
     amount: Decimal
     description: str
     leg: StatementLineMatchLeg | None = None
+    category_id: uuid.UUID | None = None
+    category_name: str | None = None
+    category_color: str | None = None
+    category_icon: str | None = None
 
     model_config = ConfigDict(json_encoders={Decimal: str})
 
