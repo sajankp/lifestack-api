@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.cli.run import main
+from app.cli.run import JOBS, main
 
 
 @pytest.mark.asyncio
@@ -179,3 +179,60 @@ async def test_cli_runner_non_monday_week_start():
             await main()
         assert exc_info.value.code == 1
         mock_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cli_runner_job_health_heartbeat():
+    mock_job = AsyncMock()
+    with (
+        patch("app.cli.run.JOBS", {"job_health_heartbeat": mock_job}),
+        patch.object(sys, "argv", ["run.py", "job_health_heartbeat"]),
+    ):
+        await main()
+        mock_job.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_cli_runner_job_failure_digest():
+    mock_job = AsyncMock()
+    with (
+        patch("app.cli.run.JOBS", {"job_failure_digest": mock_job}),
+        patch.object(sys, "argv", ["run.py", "job_failure_digest"]),
+    ):
+        await main()
+        mock_job.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_cli_runner_investment_closing_prices_with_workspace_id():
+    mock_job = AsyncMock()
+    with (
+        patch.dict("app.cli.run.JOBS", {"investment_closing_prices": mock_job}),
+        patch.object(
+            sys,
+            "argv",
+            ["run.py", "investment_closing_prices", "--workspace-id", "789"],
+        ),
+    ):
+        await main()
+        mock_job.assert_called_once_with(workspace_id=789)
+
+
+@pytest.mark.asyncio
+async def test_cli_runner_todo_reminder():
+    mock_job = AsyncMock()
+    with (
+        patch.dict("app.cli.run.JOBS", {"todo_reminder": mock_job}),
+        patch.object(
+            sys,
+            "argv",
+            ["run.py", "todo_reminder", "--workspace-id", "101"],
+        ),
+    ):
+        await main()
+        mock_job.assert_called_once_with(workspace_id=101)
+
+
+def test_all_registered_jobs_are_callable():
+    for name, func in JOBS.items():
+        assert callable(func), f"Job {name} is not callable"
