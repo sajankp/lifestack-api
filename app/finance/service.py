@@ -837,20 +837,45 @@ class CapitalTransferService:
         )
         if not to_account:
             raise ValidationError(detail="to_account_id is invalid for this workspace")
+        if from_account.id == to_account.id:
+            raise ValidationError(detail="Source and destination accounts must be different")
 
-        # Idempotency check: if source_ref is provided and matches an existing transfer, return it.
+        # Idempotency check: a repeated operation reference may return the
+        # original transfer, but it must never silently accept a changed payload.
         if source_ref:
             existing = await self.transfer_repository.get_by_source_ref(
                 workspace_id, source_type, source_ref
             )
             if existing is not None:
-                from_acc = await self.account_repository.get_by_id(
-                    workspace_id, existing.from_account_id
+                same_payload = (
+                    existing.from_account_id == from_account.id
+                    and existing.to_account_id == to_account.id
+                    and existing.from_module == transfer_in.from_module
+                    and existing.to_module == transfer_in.to_module
+                    and existing.from_currency_code == transfer_in.from_currency_code
+                    and existing.to_currency_code == transfer_in.to_currency_code
+                    and existing.gross_amount == transfer_in.gross_amount
+                    and existing.fx_rate_used == transfer_in.fx_rate_used
+                    and existing.fx_fee_amount == transfer_in.fx_fee_amount
+                    and existing.platform_fee_amount == transfer_in.platform_fee_amount
+                    and existing.tax_amount == transfer_in.tax_amount
+                    and existing.net_amount_received == transfer_in.net_amount_received
+                    and existing.notes == transfer_in.notes
                 )
-                to_acc = await self.account_repository.get_by_id(
-                    workspace_id, existing.to_account_id
+                if same_payload:
+                    from_acc = await self.account_repository.get_by_id(
+                        workspace_id, existing.from_account_id
+                    )
+                    to_acc = await self.account_repository.get_by_id(
+                        workspace_id, existing.to_account_id
+                    )
+                    return self._serialize_transfer(existing, from_acc, to_acc)
+                raise ConflictError(
+                    detail=(
+                        f"source_ref '{source_ref}' is already used for a different "
+                        "transfer payload"
+                    )
                 )
-                return self._serialize_transfer(existing, from_acc, to_acc)
 
         await self.currency_repository.ensure_workspace_defaults(workspace_id)
         for code in [transfer_in.from_currency_code, transfer_in.to_currency_code]:
@@ -1299,9 +1324,7 @@ class CapitalTransferService:
             else transfer.platform_fee_amount
         )
         proposed_tax = (
-            transfer_in.tax_amount
-            if transfer_in.tax_amount is not None
-            else transfer.tax_amount
+            transfer_in.tax_amount if transfer_in.tax_amount is not None else transfer.tax_amount
         )
         proposed_net = (
             transfer_in.net_amount_received

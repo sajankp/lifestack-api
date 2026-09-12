@@ -843,7 +843,23 @@ class DividendService:
                 workspace_id, account.id, dividend_in.external_ref
             )
             if existing is not None:
-                return existing, account
+                same_payload = (
+                    existing.symbol == dividend_in.symbol
+                    and existing.income_type == dividend_in.income_type
+                    and existing.gross_amount == dividend_in.gross_amount
+                    and existing.tax_withheld == dividend_in.tax_withheld
+                    and existing.currency == dividend_in.currency
+                    and existing.pay_date == dividend_in.pay_date
+                    and existing.notes == dividend_in.notes
+                )
+                if same_payload:
+                    return existing, account
+                raise ConflictError(
+                    detail=(
+                        f"external_ref '{dividend_in.external_ref}' is already used for a different "
+                        "dividend payload"
+                    )
+                )
 
         holding_id = await self._resolve_holding(workspace_id, account.id, dividend_in.symbol)
         net_amount = (dividend_in.gross_amount - dividend_in.tax_withheld).quantize(MONEY_QUANT)

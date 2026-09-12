@@ -1144,6 +1144,9 @@ def create_mcp_server() -> FastMCP:
         amount: str,
         fx_rate: str | None = None,
         fees: str | None = None,
+        fx_fee_amount: str | None = None,
+        platform_fee_amount: str | None = None,
+        tax_amount: str | None = None,
         net_amount: str | None = None,
         occurred_at: str | None = None,
         notes: str | None = None,
@@ -1161,6 +1164,9 @@ def create_mcp_server() -> FastMCP:
                 "amount": amount,
                 "fx_rate": fx_rate,
                 "fees": fees,
+                "fx_fee_amount": fx_fee_amount,
+                "platform_fee_amount": platform_fee_amount,
+                "tax_amount": tax_amount,
                 "net_amount": net_amount,
                 "occurred_at": occurred_at,
                 "notes": notes,
@@ -1178,6 +1184,9 @@ def create_mcp_server() -> FastMCP:
         amount: str | None = None,
         fx_rate: str | None = None,
         fees: str | None = None,
+        fx_fee_amount: str | None = None,
+        platform_fee_amount: str | None = None,
+        tax_amount: str | None = None,
         net_amount: str | None = None,
         occurred_at: str | None = None,
         notes: str | None = None,
@@ -1195,6 +1204,9 @@ def create_mcp_server() -> FastMCP:
                 "amount": amount,
                 "fx_rate": fx_rate,
                 "fees": fees,
+                "fx_fee_amount": fx_fee_amount,
+                "platform_fee_amount": platform_fee_amount,
+                "tax_amount": tax_amount,
                 "net_amount": net_amount,
                 "occurred_at": occurred_at,
                 "notes": notes,
@@ -1319,6 +1331,7 @@ def create_mcp_server() -> FastMCP:
         tags: list[str] | None = None,
         allow_duplicate: bool = False,
         transaction_type: str = "expense",
+        source_ref: str | None = None,
     ) -> dict[str, Any]:
         """Create a transaction (expense or income) in an authorized workspace."""
         return await _run_capture_tool(
@@ -1334,6 +1347,7 @@ def create_mcp_server() -> FastMCP:
                 "tags": tags,
                 "allow_duplicate": allow_duplicate,
                 "transaction_type": transaction_type,
+                "source_ref": source_ref,
             },
         )
 

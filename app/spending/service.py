@@ -946,7 +946,12 @@ class TransactionService:
         source_ref: str | None = None,
     ) -> TransactionResponse:
         tx = await self.create_transaction(
-            actor_id, workspace_id, tx_in, audit_logger, source_type=source_type, source_ref=source_ref
+            actor_id,
+            workspace_id,
+            tx_in,
+            audit_logger,
+            source_type=source_type,
+            source_ref=source_ref,
         )
         account_public_id = None
         if tx.account_id is not None:
@@ -1265,14 +1270,32 @@ class TransactionService:
         source_type: TransactionSourceType = TransactionSourceType.manual,
         source_ref: str | None = None,
     ) -> SpendingTransaction:
-        if source_ref:
-            st_val = source_type.value if hasattr(source_type, "value") else str(source_type)
-            existing = await self.transaction_repo.get_by_source_ref(workspace_id, st_val, source_ref)
-            if existing is not None:
-                return existing
-
         category = await self._resolve_category(workspace_id, tx_in.category_id)
         account_id = await self._resolve_create_account_id(workspace_id, tx_in.account_id)
+        if source_ref:
+            st_val = source_type.value if hasattr(source_type, "value") else str(source_type)
+            existing = await self.transaction_repo.get_by_source_ref(
+                workspace_id, st_val, source_ref
+            )
+            if existing is not None:
+                same_payload = (
+                    existing.category_id == category.id
+                    and existing.account_id == account_id
+                    and existing.amount == tx_in.amount
+                    and existing.type == tx_in.type
+                    and existing.description == tx_in.description
+                    and existing.wallet_name == tx_in.wallet_name
+                    and existing.labels == tx_in.labels
+                )
+                if same_payload:
+                    return existing
+                raise ConflictError(
+                    detail=(
+                        f"source_ref '{source_ref}' is already used for a different "
+                        "transaction payload"
+                    )
+                )
+
         transaction = SpendingTransaction(
             workspace_id=workspace_id,
             user_id=user_id,

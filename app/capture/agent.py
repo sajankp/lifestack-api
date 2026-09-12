@@ -28,6 +28,7 @@ from app.capture.tool_dedup import (
 from app.capture.tools import AgentTools
 from app.config import settings
 from app.core.database import postgres
+from app.core.exceptions import APIError
 
 logger = structlog.get_logger(__name__)
 
@@ -248,6 +249,16 @@ async def execute_agent_tool(
             else:
                 await session.rollback()
             return res
+        except APIError as e:
+            await session.rollback()
+            detail = getattr(e, "detail", None)
+            logger.info("tool_execution_rejected", tool=name, error_code=type(e).__name__)
+            return {
+                "status": "error",
+                "message": detail
+                if isinstance(detail, str) and detail
+                else "The requested operation was rejected.",
+            }
         except Exception as e:
             await session.rollback()
             logger.error("tool_execution_failed", tool=name, error=str(e))

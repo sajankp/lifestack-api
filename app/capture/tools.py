@@ -105,6 +105,15 @@ def _normalize_name(value: str) -> str:
     return " ".join(value.strip().lower().split())
 
 
+def _tool_error_message(
+    exc: Exception, fallback: str = "The requested operation was rejected."
+) -> str:
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, str) and detail:
+        return detail
+    return str(exc) or fallback
+
+
 class AgentTools:
     def __init__(
         self,
@@ -550,9 +559,7 @@ class AgentTools:
             ),
         }
 
-    async def _resolve_any_account(
-        self, account_name: str
-    ) -> tuple[Account | None, dict | None]:
+    async def _resolve_any_account(self, account_name: str) -> tuple[Account | None, dict | None]:
         """Resolve a spoken/written account reference against ALL active accounts in
         the workspace, including brokerage (used by transfer and dividend tools)."""
         accounts, _ = await self.account_repo.list_workspace_accounts(
@@ -665,9 +672,7 @@ class AgentTools:
                 "message": "transaction_type must be either 'expense' or 'income'.",
             }
         tx_type = (
-            TransactionType.income
-            if tx_type_normalized == "income"
-            else TransactionType.expense
+            TransactionType.income if tx_type_normalized == "income" else TransactionType.expense
         )
 
         now = datetime.now(UTC)
@@ -874,6 +879,11 @@ class AgentTools:
                 type_filter = TransactionType.income
             elif norm_type == "expense":
                 type_filter = TransactionType.expense
+            else:
+                return {
+                    "status": "error",
+                    "message": "transaction_type must be either 'expense' or 'income'.",
+                }
         else:
             type_filter = TransactionType.expense
 
@@ -1027,6 +1037,11 @@ class AgentTools:
                 type_filter = TransactionType.income
             elif norm_type == "expense":
                 type_filter = TransactionType.expense
+            else:
+                return {
+                    "status": "error",
+                    "message": "transaction_type must be either 'expense' or 'income'.",
+                }
         else:
             type_filter = TransactionType.expense
 
@@ -1454,7 +1469,9 @@ class AgentTools:
             "from_currency_code": item.get("from_currency_code"),
             "to_currency_code": item.get("to_currency_code"),
             "gross_amount": str(item.get("gross_amount")),
-            "fx_rate_used": str(item.get("fx_rate_used")) if item.get("fx_rate_used") is not None else None,
+            "fx_rate_used": str(item.get("fx_rate_used"))
+            if item.get("fx_rate_used") is not None
+            else None,
             "fx_fee_amount": str(item.get("fx_fee_amount")),
             "platform_fee_amount": str(item.get("platform_fee_amount")),
             "tax_amount": str(item.get("tax_amount")),
@@ -1490,15 +1507,9 @@ class AgentTools:
         else:
             try:
                 start_day = (
-                    date.fromisoformat(from_day.strip())
-                    if from_day and from_day.strip()
-                    else None
+                    date.fromisoformat(from_day.strip()) if from_day and from_day.strip() else None
                 )
-                end_day = (
-                    date.fromisoformat(to_day.strip())
-                    if to_day and to_day.strip()
-                    else None
-                )
+                end_day = date.fromisoformat(to_day.strip()) if to_day and to_day.strip() else None
             except ValueError:
                 return {"status": "error", "message": "Dates must use YYYY-MM-DD format."}
 
@@ -1527,7 +1538,9 @@ class AgentTools:
             local_start = datetime.combine(start_day, time.min, tzinfo=timezone)
             from_date = local_start.astimezone(UTC)
         if end_day is not None:
-            next_local_start = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=timezone)
+            next_local_start = datetime.combine(
+                end_day + timedelta(days=1), time.min, tzinfo=timezone
+            )
             to_date = (next_local_start - timedelta(microseconds=1)).astimezone(UTC)
 
         items, total = await self.transfer_service.find_transfers(
@@ -1618,7 +1631,9 @@ class AgentTools:
             local_start = datetime.combine(start_day, time.min, tzinfo=timezone)
             from_date = local_start.astimezone(UTC)
         if end_day is not None:
-            next_local_start = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=timezone)
+            next_local_start = datetime.combine(
+                end_day + timedelta(days=1), time.min, tzinfo=timezone
+            )
             to_date = (next_local_start - timedelta(microseconds=1)).astimezone(UTC)
 
         items, total = await self.transfer_service.find_transfers(
@@ -1715,7 +1730,11 @@ class AgentTools:
             except (InvalidOperation, TypeError, ValueError):
                 return {"status": "error", "message": "tax_amount must be numeric."}
 
-        if parsed_fx_fee < Decimal("0") or parsed_platform_fee < Decimal("0") or parsed_tax_fee < Decimal("0"):
+        if (
+            parsed_fx_fee < Decimal("0")
+            or parsed_platform_fee < Decimal("0")
+            or parsed_tax_fee < Decimal("0")
+        ):
             return {"status": "error", "message": "fees cannot be negative."}
 
         total_fees_amount = parsed_fx_fee + parsed_platform_fee + parsed_tax_fee
@@ -1731,16 +1750,8 @@ class AgentTools:
             else str(to_account.account_type)
         ) == "brokerage"
 
-        from_module = (
-            TransferModule.investing
-            if from_is_brokerage
-            else TransferModule.spending
-        )
-        to_module = (
-            TransferModule.investing
-            if to_is_brokerage
-            else TransferModule.spending
-        )
+        from_module = TransferModule.investing if from_is_brokerage else TransferModule.spending
+        to_module = TransferModule.investing if to_is_brokerage else TransferModule.spending
         from_currency_code = from_account.default_currency_code.upper()
         to_currency_code = to_account.default_currency_code.upper()
 
@@ -1824,16 +1835,8 @@ class AgentTools:
             if hasattr(to_account.account_type, "value")
             else str(to_account.account_type)
         )
-        from_mod_str = (
-            from_module.value
-            if hasattr(from_module, "value")
-            else str(from_module)
-        )
-        to_mod_str = (
-            to_module.value
-            if hasattr(to_module, "value")
-            else str(to_module)
-        )
+        from_mod_str = from_module.value if hasattr(from_module, "value") else str(from_module)
+        to_mod_str = to_module.value if hasattr(to_module, "value") else str(to_module)
 
         preview_data = {
             "from_account_name": from_account.name,
@@ -1893,7 +1896,7 @@ class AgentTools:
                 source_ref=source_ref,
             )
         except (APIError, ValueError) as exc:
-            return {"status": "error", "message": str(exc)}
+            return {"status": "error", "message": _tool_error_message(exc)}
 
         return {
             "status": "success",
@@ -1992,7 +1995,11 @@ class AgentTools:
             except (InvalidOperation, TypeError, ValueError):
                 return {"status": "error", "message": "tax_amount must be numeric."}
 
-        if (parsed_fx_fee is not None and parsed_fx_fee < Decimal("0")) or (parsed_platform_fee is not None and parsed_platform_fee < Decimal("0")) or (parsed_tax_fee is not None and parsed_tax_fee < Decimal("0")):
+        if (
+            (parsed_fx_fee is not None and parsed_fx_fee < Decimal("0"))
+            or (parsed_platform_fee is not None and parsed_platform_fee < Decimal("0"))
+            or (parsed_tax_fee is not None and parsed_tax_fee < Decimal("0"))
+        ):
             return {"status": "error", "message": "fees cannot be negative."}
 
         parsed_net = None
@@ -2013,12 +2020,20 @@ class AgentTools:
 
         gross_val = parsed_gross if parsed_gross is not None else current["gross_amount"]
         fx_fee_val = parsed_fx_fee if parsed_fx_fee is not None else current["fx_fee_amount"]
-        platform_fee_val = parsed_platform_fee if parsed_platform_fee is not None else current["platform_fee_amount"]
+        platform_fee_val = (
+            parsed_platform_fee
+            if parsed_platform_fee is not None
+            else current["platform_fee_amount"]
+        )
         tax_val = parsed_tax_fee if parsed_tax_fee is not None else current["tax_amount"]
         total_fees_val = fx_fee_val + platform_fee_val + tax_val
 
         if from_curr == to_curr:
-            if parsed_fx_rate is not None and parsed_fx_rate != Decimal("1.0") and parsed_fx_rate != Decimal("1"):
+            if (
+                parsed_fx_rate is not None
+                and parsed_fx_rate != Decimal("1.0")
+                and parsed_fx_rate != Decimal("1")
+            ):
                 return {
                     "status": "error",
                     "message": "FX rate must be 1.0 when transferring between the same currency.",
@@ -2032,11 +2047,7 @@ class AgentTools:
                     "message": f"FX rate is required for cross-currency transfer from {from_curr} to {to_curr}.",
                 }
 
-        net_val = (
-            (gross_val * rate_val) - total_fees_val
-            if parsed_net is None
-            else parsed_net
-        )
+        net_val = (gross_val * rate_val) - total_fees_val if parsed_net is None else parsed_net
 
         if net_val <= Decimal("0"):
             return {"status": "error", "message": "net_amount must be greater than zero."}
@@ -2051,7 +2062,21 @@ class AgentTools:
             fx_fee_amount=parsed_fx_fee,
             platform_fee_amount=parsed_platform_fee,
             tax_amount=parsed_tax_fee,
-            net_amount_received=net_val if parsed_net is not None or any(x is not None for x in [parsed_gross, parsed_fx_rate, parsed_fx_fee, parsed_platform_fee, parsed_tax_fee, from_account_id, to_account_id]) else None,
+            net_amount_received=net_val
+            if parsed_net is not None
+            or any(
+                x is not None
+                for x in [
+                    parsed_gross,
+                    parsed_fx_rate,
+                    parsed_fx_fee,
+                    parsed_platform_fee,
+                    parsed_tax_fee,
+                    from_account_id,
+                    to_account_id,
+                ]
+            )
+            else None,
             occurred_at=parsed_occurred_at,
             notes=notes,
         )
@@ -2091,7 +2116,7 @@ class AgentTools:
                 audit_logger=self.audit_logger,
             )
         except (APIError, ConflictError, ValueError) as exc:
-            return {"status": "error", "message": str(exc)}
+            return {"status": "error", "message": _tool_error_message(exc)}
 
         return {
             "status": "success",
@@ -2133,7 +2158,7 @@ class AgentTools:
                 audit_logger=self.audit_logger,
             )
         except (APIError, ConflictError, ValueError) as exc:
-            return {"status": "error", "message": str(exc)}
+            return {"status": "error", "message": _tool_error_message(exc)}
 
         return {
             "status": "success",
@@ -2200,7 +2225,10 @@ class AgentTools:
             return {"status": "error", "message": "tax_withheld cannot be negative."}
 
         if tax_amount >= gross_amount:
-            return {"status": "error", "message": "tax_withheld cannot exceed or equal gross amount."}
+            return {
+                "status": "error",
+                "message": "tax_withheld cannot exceed or equal gross amount.",
+            }
 
         currency = account.default_currency_code.upper()
         timezone = _safe_timezone(self.user_timezone)
@@ -2251,7 +2279,7 @@ class AgentTools:
                 audit_logger=self.audit_logger,
             )
         except (APIError, ValueError, PydanticValidationError) as exc:
-            return {"status": "error", "message": str(exc)}
+            return {"status": "error", "message": _tool_error_message(exc)}
 
         return {
             "status": "success",

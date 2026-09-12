@@ -159,10 +159,20 @@ async def test_mcp_exposes_voice_transaction_correction_tools(monkeypatch):
     }.issubset(tools)
     assert "workspace_id" in tools["find_spending_transactions"].parameters["properties"]
     assert "transaction_type" in tools["log_spending_transaction"].parameters["properties"]
+    assert "source_ref" in tools["log_spending_transaction"].parameters["properties"]
     assert "transaction_type" in tools["list_spending_transactions"].parameters["properties"]
     assert "confirmed" in tools["create_transfer"].parameters["properties"]
-    assert "confirmed" in tools["update_transfer"].parameters["properties"]
-    assert "confirmed" in tools["delete_transfer"].parameters["properties"]
+    assert "source_ref" in tools["create_transfer"].parameters["properties"]
+    assert {
+        "fx_fee_amount",
+        "platform_fee_amount",
+        "tax_amount",
+    }.issubset(tools["create_transfer"].parameters["properties"])
+    assert {
+        "fx_fee_amount",
+        "platform_fee_amount",
+        "tax_amount",
+    }.issubset(tools["update_transfer"].parameters["properties"])
     holdings_properties = tools["list_investment_holdings"].parameters["properties"]
     assert {
         "quantity_state",
@@ -310,10 +320,14 @@ async def test_spec095_mcp_transfer_and_dividend_tools(override_database_url, mo
     # Confirm no DB write occurred on preview
     async with postgres.async_session_maker() as session:
         t_rows = (
-            await session.execute(
-                select(CapitalTransfer).where(CapitalTransfer.workspace_id == 202)
+            (
+                await session.execute(
+                    select(CapitalTransfer).where(CapitalTransfer.workspace_id == 202)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(t_rows) == 0
 
     # 5. Confirmed transfer -> source_type must be mcp_agent
@@ -358,9 +372,7 @@ async def test_spec095_mcp_transfer_and_dividend_tools(override_database_url, mo
 
     async with postgres.async_session_maker() as session:
         div_row = (
-            await session.execute(
-                select(Dividend).where(Dividend.public_id == div_pid)
-            )
+            await session.execute(select(Dividend).where(Dividend.public_id == div_pid))
         ).scalar_one()
         assert div_row.gross_amount == Decimal("60.00")
         assert div_row.symbol == "GOOGL"

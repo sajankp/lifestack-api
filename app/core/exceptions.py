@@ -77,6 +77,7 @@ class APIError(Exception):
         status_code: int | None = None,
         **extra_fields: object,
     ):
+        super().__init__(detail)
         if type_str is not None:
             self.type_str = type_str
         if title is not None:

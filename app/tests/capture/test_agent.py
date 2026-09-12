@@ -650,6 +650,21 @@ def test_voice_agent_declares_timed_todos_and_spending_accounts():
         "update_spending_transaction",
         "delete_spending_transaction",
     }.issubset(by_name)
+    assert {
+        "list_transfers",
+        "find_transfers",
+        "create_transfer",
+        "update_transfer",
+        "delete_transfer",
+        "create_investment_dividend",
+    }.issubset(by_name)
+    assert spending_properties["transaction_type"]["description"]
+    transfer_properties = by_name["create_transfer"]["parameters"]["properties"]
+    assert {
+        "fx_fee_amount",
+        "platform_fee_amount",
+        "tax_amount",
+    }.issubset(transfer_properties)
     assert "confirmation" in setup["setup"]["systemInstruction"]["parts"][0]["text"].lower()
 
 
@@ -2387,9 +2402,7 @@ async def test_spec095_create_investment_dividend(seed_agent_test_data):
 
     async with postgres.async_session_maker() as session:
         div_row = (
-            await session.execute(
-                select(Dividend).where(Dividend.public_id == div_pid)
-            )
+            await session.execute(select(Dividend).where(Dividend.public_id == div_pid))
         ).scalar_one_or_none()
         assert div_row is not None
         assert div_row.gross_amount == Decimal("150.00")
@@ -2681,3 +2694,93 @@ async def test_spec095_dividend_boundary_and_income_type_validation(seed_agent_t
     )
     assert bad_tax["status"] == "error"
     assert "tax_withheld cannot exceed" in bad_tax["message"]
+
+
+@pytest.mark.asyncio
+async def test_spec095_rejects_reused_source_ref_with_different_payload(seed_agent_test_data):
+    """An operation reference is idempotent, not a license to silently accept a changed write."""
+    first = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "12.00",
+            "category_name": "food",
+            "description": "Source-ref test",
+            "account_name": "Everyday Wallet",
+            "source_ref": "operation-1",
+            "allow_duplicate": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert first["status"] == "success"
+
+    changed_transaction = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "13.00",
+            "category_name": "food",
+            "description": "Source-ref test",
+            "account_name": "Everyday Wallet",
+            "source_ref": "operation-1",
+            "allow_duplicate": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert changed_transaction["status"] == "error"
+    assert "source_ref" in changed_transaction["message"]
+
+    first_transfer = await execute_agent_tool(
+        name="create_transfer",
+        args={
+            "from_account_name": "Everyday Wallet",
+            "to_account_name": "Chase Brokerage",
+            "amount": "50.00",
+            "source_ref": "transfer-operation-1",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert first_transfer["status"] == "success"
+
+    changed_transfer = await execute_agent_tool(
+        name="create_transfer",
+        args={
+            "from_account_name": "Everyday Wallet",
+            "to_account_name": "Chase Brokerage",
+            "amount": "51.00",
+            "source_ref": "transfer-operation-1",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert changed_transfer["status"] == "error"
+    assert "source_ref" in changed_transfer["message"]
+
+
+@pytest.mark.asyncio
+async def test_spec095_rejects_invalid_transaction_type(seed_agent_test_data):
+    invalid_create = await execute_agent_tool(
+        name="log_spending_transaction",
+        args={
+            "amount": "12.00",
+            "category_name": "food",
+            "account_name": "Everyday Wallet",
+            "transaction_type": "refund",
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert invalid_create["status"] == "error"
+    assert "transaction_type" in invalid_create["message"]
+
+    invalid_list = await execute_agent_tool(
+        name="list_spending_transactions",
+        args={"transaction_type": "refund"},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert invalid_list["status"] == "error"
+    assert "transaction_type" in invalid_list["message"]

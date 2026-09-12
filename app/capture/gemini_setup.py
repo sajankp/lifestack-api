@@ -503,13 +503,34 @@ def _build_setup_message(
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
-                                    "day": {"type": "STRING", "description": "Optional ISO date (YYYY-MM-DD)."},
-                                    "from_day": {"type": "STRING", "description": "Optional start date (YYYY-MM-DD)."},
-                                    "to_day": {"type": "STRING", "description": "Optional end date (YYYY-MM-DD)."},
-                                    "account_name": {"type": "STRING", "description": "Optional account name."},
-                                    "amount": {"type": "STRING", "description": "Optional transfer amount."},
-                                    "search": {"type": "STRING", "description": "Optional notes search query."},
-                                    "limit": {"type": "NUMBER", "description": "Optional result limit up to 25; default 10."},
+                                    "day": {
+                                        "type": "STRING",
+                                        "description": "Optional ISO date (YYYY-MM-DD).",
+                                    },
+                                    "from_day": {
+                                        "type": "STRING",
+                                        "description": "Optional start date (YYYY-MM-DD).",
+                                    },
+                                    "to_day": {
+                                        "type": "STRING",
+                                        "description": "Optional end date (YYYY-MM-DD).",
+                                    },
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional account name.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Optional transfer amount.",
+                                    },
+                                    "search": {
+                                        "type": "STRING",
+                                        "description": "Optional notes search query.",
+                                    },
+                                    "limit": {
+                                        "type": "NUMBER",
+                                        "description": "Optional result limit up to 25; default 10.",
+                                    },
                                 },
                             },
                         },
@@ -519,12 +540,30 @@ def _build_setup_message(
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
-                                    "from_day": {"type": "STRING", "description": "Optional start date (YYYY-MM-DD)."},
-                                    "to_day": {"type": "STRING", "description": "Optional end date (YYYY-MM-DD)."},
-                                    "account_name": {"type": "STRING", "description": "Optional account name."},
-                                    "amount": {"type": "STRING", "description": "Optional transfer amount."},
-                                    "search": {"type": "STRING", "description": "Optional notes search query."},
-                                    "limit": {"type": "NUMBER", "description": "Optional candidate limit up to 25; default 10."},
+                                    "from_day": {
+                                        "type": "STRING",
+                                        "description": "Optional start date (YYYY-MM-DD).",
+                                    },
+                                    "to_day": {
+                                        "type": "STRING",
+                                        "description": "Optional end date (YYYY-MM-DD).",
+                                    },
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional account name.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Optional transfer amount.",
+                                    },
+                                    "search": {
+                                        "type": "STRING",
+                                        "description": "Optional notes search query.",
+                                    },
+                                    "limit": {
+                                        "type": "NUMBER",
+                                        "description": "Optional candidate limit up to 25; default 10.",
+                                    },
                                 },
                             },
                         },
@@ -534,15 +573,54 @@ def _build_setup_message(
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
-                                    "from_account_name": {"type": "STRING", "description": "Source account name as spoken by user."},
-                                    "to_account_name": {"type": "STRING", "description": "Destination account name as spoken by user."},
-                                    "amount": {"type": "STRING", "description": "Gross amount transferred in source account currency."},
-                                    "fx_rate": {"type": "STRING", "description": "Optional FX rate for cross-currency transfers."},
-                                    "fees": {"type": "STRING", "description": "Optional total transfer/platform/tax fees."},
-                                    "net_amount": {"type": "STRING", "description": "Optional net amount received in destination account currency."},
-                                    "occurred_at": {"type": "STRING", "description": "Optional ISO date or date-time; defaults to now."},
-                                    "notes": {"type": "STRING", "description": "Optional notes describing the transfer."},
-                                    "confirmed": {"type": "BOOLEAN", "description": "Set true only after user explicitly confirms preview."},
+                                    "from_account_name": {
+                                        "type": "STRING",
+                                        "description": "Source account name as spoken by user.",
+                                    },
+                                    "to_account_name": {
+                                        "type": "STRING",
+                                        "description": "Destination account name as spoken by user.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Gross amount transferred in source account currency.",
+                                    },
+                                    "fx_rate": {
+                                        "type": "STRING",
+                                        "description": "Optional FX rate for cross-currency transfers.",
+                                    },
+                                    "fees": {
+                                        "type": "STRING",
+                                        "description": "Legacy alias for total fees; prefer the separate fee fields below.",
+                                    },
+                                    "fx_fee_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional FX fee in the source/converted transfer arithmetic.",
+                                    },
+                                    "platform_fee_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional platform fee.",
+                                    },
+                                    "tax_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional tax amount.",
+                                    },
+                                    "net_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional net amount received in destination account currency.",
+                                    },
+                                    "occurred_at": {
+                                        "type": "STRING",
+                                        "description": "Optional ISO date or date-time; defaults to now.",
+                                    },
+                                    "notes": {
+                                        "type": "STRING",
+                                        "description": "Optional notes describing the transfer.",
+                                    },
+                                    "confirmed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Set true only after user explicitly confirms preview.",
+                                    },
                                 },
                                 "required": ["from_account_name", "to_account_name", "amount"],
                             },
@@ -553,16 +631,58 @@ def _build_setup_message(
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
-                                    "public_id": {"type": "STRING", "description": "Transfer public UUID."},
-                                    "from_account_name": {"type": "STRING", "description": "Optional new source account name."},
-                                    "to_account_name": {"type": "STRING", "description": "Optional new destination account name."},
-                                    "amount": {"type": "STRING", "description": "Optional new gross amount."},
-                                    "fx_rate": {"type": "STRING", "description": "Optional new FX rate."},
-                                    "fees": {"type": "STRING", "description": "Optional new fees amount."},
-                                    "net_amount": {"type": "STRING", "description": "Optional new net amount received."},
-                                    "occurred_at": {"type": "STRING", "description": "Optional new date."},
-                                    "notes": {"type": "STRING", "description": "Optional new notes."},
-                                    "confirmed": {"type": "BOOLEAN", "description": "Set true only after user explicitly confirms."},
+                                    "public_id": {
+                                        "type": "STRING",
+                                        "description": "Transfer public UUID.",
+                                    },
+                                    "from_account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional new source account name.",
+                                    },
+                                    "to_account_name": {
+                                        "type": "STRING",
+                                        "description": "Optional new destination account name.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Optional new gross amount.",
+                                    },
+                                    "fx_rate": {
+                                        "type": "STRING",
+                                        "description": "Optional new FX rate.",
+                                    },
+                                    "fees": {
+                                        "type": "STRING",
+                                        "description": "Legacy alias for total fees; prefer the separate fee fields below.",
+                                    },
+                                    "fx_fee_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional new FX fee.",
+                                    },
+                                    "platform_fee_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional new platform fee.",
+                                    },
+                                    "tax_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional new tax amount.",
+                                    },
+                                    "net_amount": {
+                                        "type": "STRING",
+                                        "description": "Optional new net amount received.",
+                                    },
+                                    "occurred_at": {
+                                        "type": "STRING",
+                                        "description": "Optional new date.",
+                                    },
+                                    "notes": {
+                                        "type": "STRING",
+                                        "description": "Optional new notes.",
+                                    },
+                                    "confirmed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Set true only after user explicitly confirms.",
+                                    },
                                 },
                                 "required": ["public_id"],
                             },
@@ -573,8 +693,14 @@ def _build_setup_message(
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
-                                    "public_id": {"type": "STRING", "description": "Transfer public UUID."},
-                                    "confirmed": {"type": "BOOLEAN", "description": "Set true only after user explicitly confirms deletion."},
+                                    "public_id": {
+                                        "type": "STRING",
+                                        "description": "Transfer public UUID.",
+                                    },
+                                    "confirmed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Set true only after user explicitly confirms deletion.",
+                                    },
                                 },
                                 "required": ["public_id"],
                             },
@@ -585,14 +711,35 @@ def _build_setup_message(
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {
-                                    "account_name": {"type": "STRING", "description": "Brokerage account name."},
-                                    "amount": {"type": "STRING", "description": "Gross dividend/income amount."},
-                                    "income_type": {"type": "STRING", "description": "One of 'dividend', 'interest', 'coupon'."},
-                                    "symbol": {"type": "STRING", "description": "Optional stock or asset ticker symbol."},
-                                    "tax_withheld": {"type": "STRING", "description": "Optional tax withheld amount."},
-                                    "pay_date": {"type": "STRING", "description": "Optional ISO date (YYYY-MM-DD); defaults to today."},
+                                    "account_name": {
+                                        "type": "STRING",
+                                        "description": "Brokerage account name.",
+                                    },
+                                    "amount": {
+                                        "type": "STRING",
+                                        "description": "Gross dividend/income amount.",
+                                    },
+                                    "income_type": {
+                                        "type": "STRING",
+                                        "description": "One of 'dividend', 'interest', 'coupon'.",
+                                    },
+                                    "symbol": {
+                                        "type": "STRING",
+                                        "description": "Optional stock or asset ticker symbol.",
+                                    },
+                                    "tax_withheld": {
+                                        "type": "STRING",
+                                        "description": "Optional tax withheld amount.",
+                                    },
+                                    "pay_date": {
+                                        "type": "STRING",
+                                        "description": "Optional ISO date (YYYY-MM-DD); defaults to today.",
+                                    },
                                     "notes": {"type": "STRING", "description": "Optional notes."},
-                                    "confirmed": {"type": "BOOLEAN", "description": "Set true only after user explicitly confirms."},
+                                    "confirmed": {
+                                        "type": "BOOLEAN",
+                                        "description": "Set true only after user explicitly confirms.",
+                                    },
                                 },
                                 "required": ["account_name", "amount"],
                             },
