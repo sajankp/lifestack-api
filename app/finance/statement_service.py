@@ -185,9 +185,7 @@ class StatementService:
                 if tx.category_id is not None:
                     cat = (
                         await self.session.execute(
-                            select(SpendingCategory).where(
-                                SpendingCategory.id == tx.category_id
-                            )
+                            select(SpendingCategory).where(SpendingCategory.id == tx.category_id)
                         )
                     ).scalar_one_or_none()
                     if cat is not None:
@@ -199,9 +197,7 @@ class StatementService:
         if line.matched_transfer_id is not None:
             transfer = (
                 await self.session.execute(
-                    select(CapitalTransfer).where(
-                        CapitalTransfer.id == line.matched_transfer_id
-                    )
+                    select(CapitalTransfer).where(CapitalTransfer.id == line.matched_transfer_id)
                 )
             ).scalar_one_or_none()
             if transfer is not None:
@@ -279,7 +275,11 @@ class StatementService:
 
         # Collect candidate events for unmatched lines
         unmatched_lines_candidates: list[
-            tuple[StatementLine, list[SpendingTransaction], list[tuple[CapitalTransfer, StatementLineMatchLeg]]]
+            tuple[
+                StatementLine,
+                list[SpendingTransaction],
+                list[tuple[CapitalTransfer, StatementLineMatchLeg]],
+            ]
         ] = []
         referenced_category_ids: set[int] = set()
 
@@ -334,13 +334,17 @@ class StatementService:
         cat_map: dict[int, SpendingCategory] = {}
         if referenced_category_ids:
             cat_rows = (
-                await self.session.execute(
-                    select(SpendingCategory).where(
-                        SpendingCategory.workspace_id == workspace_id,
-                        SpendingCategory.id.in_(referenced_category_ids),
+                (
+                    await self.session.execute(
+                        select(SpendingCategory).where(
+                            SpendingCategory.workspace_id == workspace_id,
+                            SpendingCategory.id.in_(referenced_category_ids),
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for cat in cat_rows:
                 cat_map[cat.id] = cat
 
