@@ -1,7 +1,7 @@
 # Spec-095: Financial Agent & MCP Operations
 
-**Status:** Implemented — pending deployment validation  
-**Scope:** API (`app/capture`, `app/mcp`, `app/finance`, `app/spending`), Web (`SpendingPage`, `LedgerTab`), E2E  
+**Status:** Implemented — pending deployment validation
+**Scope:** API (`app/capture`, `app/mcp`, `app/finance`, `app/spending`), Web (`SpendingPage`, `LedgerTab`), E2E
 **Depends on:** spec-040 transfer-inclusive ledger, spec-043 transfer edit/delete, spec-059 voice agent usability, spec-073 dividend income tracking, spec-090 voice tool idempotency, spec-093 voice transaction correction, spec-094 MCP investment research tools
 
 ---

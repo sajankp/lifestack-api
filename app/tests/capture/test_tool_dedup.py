@@ -72,7 +72,9 @@ def test_income_and_expense_do_not_share_fuzzy_key():
     args_inc = {"amount": "100.00", "occurred_at": "2026-07-15", "transaction_type": "income"}
     args_legacy_exp = {"amount": "100.00", "occurred_at": "2026-07-15"}
 
-    _record_spend(ledger, args_exp, now=1000.0, result={"status": "success", "entity_public_id": "exp-1"})
+    _record_spend(
+        ledger, args_exp, now=1000.0, result={"status": "success", "entity_public_id": "exp-1"}
+    )
 
     # Checking income must NOT be suppressed by the prior expense
     assert _check_spend(ledger, args_inc, now=1010.0) is None

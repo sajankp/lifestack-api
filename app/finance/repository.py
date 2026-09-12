@@ -879,7 +879,8 @@ class CapitalTransferRepository(BaseRepository[CapitalTransfer]):
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
         result = await self.session.execute(
-            base.order_by(CapitalTransfer.occurred_at.desc(), CapitalTransfer.id.desc())
+            base
+            .order_by(CapitalTransfer.occurred_at.desc(), CapitalTransfer.id.desc())
             .limit(limit)
             .offset(offset)
         )
