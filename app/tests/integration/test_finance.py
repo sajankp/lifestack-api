@@ -1248,7 +1248,17 @@ async def test_legacy_outflow_transfer_without_snapshot_is_unaffected(client: As
         username="legacy-outflow",
         password="TestPass123!",
     )
-    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-legacy")
+    bank_id, _broker_id = await _create_bank_and_brokerage(client, suffix="-legacy")
+    second_bank = await client.post(
+        "/v1/finance/accounts",
+        json={
+            "name": "SecondBank-legacy",
+            "account_type": "bank",
+            "default_currency_code": "USD",
+        },
+    )
+    assert second_bank.status_code == 201
+    second_bank_id = second_bank.json()["public_id"]
     # A spending-to-spending transfer: neither side is ever snapshot-managed.
     transfer = await client.post(
         "/v1/finance/transfers",
@@ -1256,7 +1266,7 @@ async def test_legacy_outflow_transfer_without_snapshot_is_unaffected(client: As
             "from_module": "spending",
             "to_module": "spending",
             "from_account_id": bank_id,
-            "to_account_id": bank_id,
+            "to_account_id": second_bank_id,
             "from_currency_code": "USD",
             "to_currency_code": "USD",
             "gross_amount": "50.00",
