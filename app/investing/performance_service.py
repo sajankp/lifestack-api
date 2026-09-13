@@ -645,13 +645,15 @@ class PerformanceService:
 
         used_currencies = sorted({d.currency.upper() for d in dividends})
         fx_lookup: dict[tuple[str, str], FxRate] = {}
-        if any(curr != configured_reporting_currency for curr in used_currencies):
-            if self.fx_rate_repo is not None:
-                required_pairs = _build_required_pairs(used_currencies, configured_reporting_currency)
-                fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
-                    list(required_pairs),
-                    as_of=effective_display_as_of(datetime.now(UTC)),
-                )
+        if (
+            any(curr != configured_reporting_currency for curr in used_currencies)
+            and self.fx_rate_repo is not None
+        ):
+            required_pairs = _build_required_pairs(used_currencies, configured_reporting_currency)
+            fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
+                list(required_pairs),
+                as_of=effective_display_as_of(datetime.now(UTC)),
+            )
 
         monthly_map: dict[str, dict[str, Any]] = {}
         today = datetime.now(UTC).date()

@@ -208,9 +208,7 @@ async def trigger_monthly_summary(
         NotificationService(NotificationRepository(session)),
     )
     month_start = date(target_year, target_month, 1)
-    summary = await service.generate_for_workspace_month(
-        workspace_id, user["id"], month_start
-    )
+    summary = await service.generate_for_workspace_month(workspace_id, user["id"], month_start)
     return MonthlySummaryWorkflowRunResponse(
         summary_public_id=str(summary.public_id),
         year=summary.month_start.year,
