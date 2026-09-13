@@ -473,6 +473,8 @@ class PerformanceHistoryPoint(BaseModel):
     cash_value: Decimal
     unrealized_gain_loss: Decimal
     unrealized_gain_loss_pct: Decimal | None
+    benchmark_value: Decimal | None = None
+    benchmark_return_pct: Decimal | None = None
 
     model_config = ConfigDict(json_encoders={Decimal: str})
 
@@ -480,6 +482,9 @@ class PerformanceHistoryPoint(BaseModel):
 class PerformanceHistoryResponse(BaseModel):
     currency: str
     points: list[PerformanceHistoryPoint] = Field(default_factory=list)
+    benchmark_symbol: str = "SPY"
+    benchmark_return_pct: Decimal | None = None
+    alpha_pct: Decimal | None = None
 
     model_config = ConfigDict(json_encoders={Decimal: str})
 

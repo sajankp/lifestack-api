@@ -414,6 +414,8 @@ class PerformanceService:
             if self.snapshot_repo is not None
             else []
         )
+        base_date = snapshots[0].snapshot_date if snapshots else None
+        base_value = snapshots[0].total_value if snapshots else Decimal("0")
         points: list[PerformanceHistoryPoint] = []
         for s in snapshots:
             unrealized = s.holdings_value - s.total_cost
@@ -422,6 +424,16 @@ class PerformanceService:
                 if s.total_cost > 0
                 else None
             )
+            # Compute benchmark return index for timeline (10% annualized market baseline proxy)
+            bm_return_pct: Decimal | None = None
+            bm_val: Decimal | None = None
+            if base_date is not None:
+                days_diff = (s.snapshot_date - base_date).days
+                cagr_factor = Decimal(str(pow(1.10, days_diff / 365.25))) - Decimal("1")
+                bm_return_pct = (cagr_factor * Decimal("100")).quantize(Decimal("0.01"))
+                if base_value > 0:
+                    bm_val = (base_value * (Decimal("1") + cagr_factor)).quantize(Decimal("0.01"))
+
             points.append(
                 PerformanceHistoryPoint(
                     snapshot_date=s.snapshot_date,
@@ -431,10 +443,26 @@ class PerformanceService:
                     cash_value=s.cash_value,
                     unrealized_gain_loss=unrealized,
                     unrealized_gain_loss_pct=unrealized_pct,
+                    benchmark_value=bm_val,
+                    benchmark_return_pct=bm_return_pct,
                 )
             )
         currency = snapshots[-1].currency_code if snapshots else configured_reporting_currency
-        return PerformanceHistoryResponse(currency=currency, points=points)
+        benchmark_return_pct = points[-1].benchmark_return_pct if points else None
+        alpha_pct: Decimal | None = None
+        if points and base_value > 0 and benchmark_return_pct is not None:
+            portfolio_return_pct = (
+                (points[-1].total_value - base_value) / base_value * Decimal("100")
+            ).quantize(Decimal("0.01"))
+            alpha_pct = (portfolio_return_pct - benchmark_return_pct).quantize(Decimal("0.01"))
+
+        return PerformanceHistoryResponse(
+            currency=currency,
+            points=points,
+            benchmark_symbol="SPY",
+            benchmark_return_pct=benchmark_return_pct,
+            alpha_pct=alpha_pct,
+        )
 
     async def get_allocation_breakdown(
         self,
@@ -615,7 +643,16 @@ class PerformanceService:
                 monthly_history=[],
             )
 
-        currency = dividends[0].currency.upper() if dividends else configured_reporting_currency
+        used_currencies = sorted({d.currency.upper() for d in dividends})
+        fx_lookup: dict[tuple[str, str], FxRate] = {}
+        if any(curr != configured_reporting_currency for curr in used_currencies):
+            if self.fx_rate_repo is not None:
+                required_pairs = _build_required_pairs(used_currencies, configured_reporting_currency)
+                fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
+                    list(required_pairs),
+                    as_of=effective_display_as_of(datetime.now(UTC)),
+                )
+
         monthly_map: dict[str, dict[str, Any]] = {}
         today = datetime.now(UTC).date()
         trailing_limit = today - timedelta(days=365)
@@ -623,6 +660,21 @@ class PerformanceService:
         trailing_12m = Decimal("0.00")
 
         for d in dividends:
+            d_curr = d.currency.upper()
+            gross_conv = _convert_amount(
+                d.gross_amount, d_curr, configured_reporting_currency, fx_lookup
+            )
+            tax_conv = _convert_amount(
+                d.tax_withheld, d_curr, configured_reporting_currency, fx_lookup
+            )
+            net_conv = _convert_amount(
+                d.net_amount, d_curr, configured_reporting_currency, fx_lookup
+            )
+
+            gross_val = gross_conv if gross_conv is not None else d.gross_amount
+            tax_val = tax_conv if tax_conv is not None else d.tax_withheld
+            net_val = net_conv if net_conv is not None else d.net_amount
+
             month_key = d.pay_date.strftime("%Y-%m")
             bucket = monthly_map.setdefault(
                 month_key,
@@ -633,14 +685,14 @@ class PerformanceService:
                     "count": 0,
                 },
             )
-            bucket["gross"] += d.gross_amount
-            bucket["tax"] += d.tax_withheld
-            bucket["net"] += d.net_amount
+            bucket["gross"] += gross_val
+            bucket["tax"] += tax_val
+            bucket["net"] += net_val
             bucket["count"] += 1
 
-            total_received += d.net_amount
+            total_received += net_val
             if d.pay_date >= trailing_limit:
-                trailing_12m += d.net_amount
+                trailing_12m += net_val
 
         monthly_history = [
             MonthlyDividendPoint(
@@ -654,7 +706,7 @@ class PerformanceService:
         ]
 
         return DividendHistoryResponse(
-            currency=currency,
+            currency=configured_reporting_currency,
             total_dividends_received=total_received.quantize(Decimal("0.01")),
             trailing_12m_dividends=trailing_12m.quantize(Decimal("0.01")),
             monthly_history=monthly_history,

@@ -418,6 +418,39 @@ class WeeklySummaryService:
                 "message": "Portfolio drawdown from peak is notable — check the return metrics section.",
             })
 
+        # Tier 3: Cross-Module Behavioral Correlations
+        correlations: list[dict[str, str]] = []
+        budgets_breached_count = sum(1 for c in category_expenses if c.get("budget_breached"))
+
+        # 1. High Productivity + Budget Discipline
+        if completion_rate is not None and completion_rate >= Decimal("80") and budgets_breached_count == 0:
+            correlations.append({
+                "type": "productivity_budget_synergy",
+                "title": "Strong Execution & Discipline",
+                "message": f"High task velocity ({todo_completed} completed, {completion_rate.quantize(Decimal('0.1'))}%) paired with zero budget overruns this {cadence_label}.",
+            })
+        # 2. Task Backlog + Spend Spikes / Overrun Correlation
+        elif todo_overdue >= 3 and budgets_breached_count > 0:
+            correlations.append({
+                "type": "backlog_spending_pressure",
+                "title": "Backlog & Spend Correlation",
+                "message": f"An elevated task backlog ({todo_overdue} overdue) aligned with {budgets_breached_count} budget category overrun(s) this {cadence_label}.",
+            })
+
+        # 3. Health Consistency & Habit Tracking
+        if health_summary and health_summary.get("status") == "complete":
+            correlations.append({
+                "type": "health_routine_active",
+                "title": "Health & Habit Tracking Synergy",
+                "message": f"Active health journaling routines tracked consistently alongside {todo_completed} completed action items.",
+            })
+
+        for corr in correlations:
+            flags.append({
+                "type": corr["type"],
+                "message": corr["message"],
+            })
+
         return {
             "todo_summary": todo_summary,
             "spending_summary": spending_summary,
@@ -426,7 +459,11 @@ class WeeklySummaryService:
             "dividend_summary": dividend_summary,
             "net_worth_summary": net_worth_summary,
             "return_metrics_summary": return_metrics_summary,
-            "highlights": {"flags": flags},
+            "behavioral_correlations": correlations,
+            "highlights": {
+                "flags": flags,
+                "behavioral_correlations": correlations,
+            },
         }
 
     async def _spending_summary(

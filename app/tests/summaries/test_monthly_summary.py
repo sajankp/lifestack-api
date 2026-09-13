@@ -313,8 +313,10 @@ async def test_spend_pacing_edge_cases_past_future_zero_budget():
     session = AsyncMock()
     budget_repo = MagicMock()
     budget_repo.session = session
+    category_repo = MagicMock()
+    category_repo.get_all = AsyncMock(return_value=([], 0))
 
-    service = BudgetService(budget_repo)
+    service = BudgetService(budget_repo, category_repo)
 
     # 1. Past month: 2025-01 (days_elapsed == days_in_month, days_remaining == 0)
     past_month = date(2025, 1, 1)
@@ -379,7 +381,64 @@ async def test_spend_pacing_edge_cases_past_future_zero_budget():
 
     session.execute.side_effect = AsyncMock(side_effect=mock_exec_zero_budget)
     res_zero = await service.get_spend_pacing(workspace_id=1, target_month=past_month)
-    assert res_zero.total_budget == Decimal("0.00")
-    assert res_zero.budget_consumed_pct == 0.0
-    assert res_zero.status == "on_track"
+    assert res_zero.total_budget is None
+    assert res_zero.budget_consumed_pct is None
+    assert res_zero.status == "no_budget"
+
+
+@pytest.mark.asyncio
+async def test_cross_module_behavioral_correlations():
+    from app.summaries.service import WeeklySummaryService
+    session = AsyncMock()
+    repo = MagicMock()
+    notif = MagicMock()
+    service = WeeklySummaryService(repo, session, notif)
+
+    # Mock _spending_summary, _investing_summary, _health_summary, _dividend_summary, etc.
+    service._investing_summary = AsyncMock(return_value={"status": "unavailable"})
+    service._health_summary = AsyncMock(return_value={"status": "complete", "log_count": 10})
+    service._dividend_summary = AsyncMock(return_value={"status": "unavailable", "count": 0})
+    service._net_worth_summary = AsyncMock(return_value={"status": "unavailable"})
+    service._return_metrics_summary = AsyncMock(return_value={"status": "unavailable", "notable": False})
+
+    # High productivity: 10 created, 9 completed (90% completion rate)
+    # Zero budget overruns
+    service._spending_summary = AsyncMock(return_value=({
+        "budgets_breached": 0,
+        "recurring_generated_count": 0,
+    }, []))
+
+    # Mock sql queries for todos and spending
+    exec_count = 0
+    def mock_exec(*args, **kwargs):
+        nonlocal exec_count
+        exec_count += 1
+        mock_res = MagicMock()
+        if exec_count == 1:  # todo_created
+            mock_res.scalar_one.return_value = 10
+        elif exec_count == 2:  # todo_completed
+            mock_res.scalar_one.return_value = 9
+        elif exec_count == 3:  # spending_rows
+            mock_res.all.return_value = []
+        elif exec_count == 4:  # todo_overdue
+            mock_res.scalar_one.return_value = 0
+        elif exec_count in (5, 6):  # open_count_start, open_count_end
+            mock_res.scalar_one.return_value = 2
+        return mock_res
+
+    session.execute.side_effect = AsyncMock(side_effect=mock_exec)
+
+    res = await service._compose_range(
+        workspace_id=1,
+        start_date=date(2026, 8, 1),
+        end_date=date(2026, 8, 31),
+        cadence_label="month",
+    )
+
+    assert "behavioral_correlations" in res
+    assert len(res["behavioral_correlations"]) >= 2
+    types = [c["type"] for c in res["behavioral_correlations"]]
+    assert "productivity_budget_synergy" in types
+    assert "health_routine_active" in types
+
 
