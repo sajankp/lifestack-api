@@ -244,3 +244,66 @@ async def test_benchmark_alpha_calculation():
     assert res.alpha_pct is not None
     assert res.alpha_pct > Decimal("0")  # Portfolio outperformed benchmark!
 
+
+@pytest.mark.asyncio
+async def test_constituent_quarterly_staleness_threshold():
+    """Verify that constituent snapshots within 90 days (1 quarter) are not flagged as stale."""
+    from app.investing.models import InstrumentConstituent
+    from app.investing.service import ExposureAnalyticsService
+
+    holding_repo = MagicMock()
+    h = Holding(
+        id=1,
+        workspace_id=1,
+        account_id=10,
+        instrument_id=101,
+        symbol="VOO",
+        quantity=Decimal("10"),
+        cost_basis=Decimal("4000.00"),
+        avg_cost=Decimal("400.00"),
+        currency="USD",
+    )
+    holding_repo.get_all = AsyncMock(return_value=([h], 1))
+
+    inst = Instrument(
+        id=101,
+        workspace_id=1,
+        symbol="VOO",
+        name="Vanguard 500",
+        instrument_type=InstrumentType.etf,
+        company_id=None,
+    )
+    instrument_repo = MagicMock()
+    instrument_repo.get_by_ids = AsyncMock(return_value={101: inst})
+    instrument_repo.get_by_symbols = AsyncMock(return_value={})
+
+    comp = Company(id=201, workspace_id=1, name="Apple", sector="Technology")
+    company_repo = MagicMock()
+    company_repo.get_by_ids = AsyncMock(return_value={201: comp})
+
+    # Snapshot dated 60 days ago (older than 30d, but within 90d quarter)
+    as_of = date(2026, 9, 13)
+    snapshot_60d = InstrumentConstituent(
+        id=1,
+        instrument_id=101,
+        constituent_company_id=201,
+        weight=Decimal("1.0"),
+        as_of_date=date(2026, 7, 15),  # ~60 days before 2026-09-13
+        source="factsheet",
+    )
+    constituent_repo = MagicMock()
+    constituent_repo.get_latest_on_or_before_many = AsyncMock(return_value={101: [snapshot_60d]})
+
+    service = ExposureAnalyticsService(
+        holding_repo=holding_repo,
+        instrument_repo=instrument_repo,
+        company_repo=company_repo,
+        constituent_repo=constituent_repo,
+    )
+
+    res = await service.exposure(workspace_id=1, as_of=as_of)
+    # Since staleness threshold is 90 days (1 quarter), 60d snapshot should NOT trigger stale warning
+    assert res.staleness_days == 90
+    assert not any("Stale constituent snapshot" in w for w in res.warnings)
+
+

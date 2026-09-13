@@ -1604,7 +1604,7 @@ class ExposureAnalyticsService:
         holding_price_repo: HoldingPriceRepository | None = None,
         finance_setting_repo: FinanceSettingRepository | None = None,
         fx_rate_repo: FxRateRepository | None = None,
-        staleness_window_days: int = 30,
+        staleness_window_days: int = 90,
     ):
         self.holding_repo = holding_repo
         self.instrument_repo = instrument_repo
