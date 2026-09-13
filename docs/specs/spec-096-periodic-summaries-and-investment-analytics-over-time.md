@@ -100,4 +100,3 @@ Lifestack's analytics currently have three structural gaps that limit tracking e
 - Real-time third-party broker sync or webhooks.
 - Benchmark index data feed ingestion (Tier 3).
 - Automated NLP spending narrative generation.
-
