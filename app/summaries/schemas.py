@@ -110,6 +110,8 @@ class MonthlySummaryResponse(BaseModel):
         resp.is_superseded = item.superseded_by_id is not None
         resp.data_revised_after_snapshot = data_revised_after_snapshot
         resp.data_stale = data_stale
+        if item.highlights and isinstance(item.highlights, dict):
+            resp.behavioral_correlations = item.highlights.get("behavioral_correlations")
         return resp
 
 

@@ -440,8 +440,8 @@ async def test_cross_module_behavioral_correlations():
         cadence_label="month",
     )
 
-    assert "behavioral_correlations" in res
-    assert len(res["behavioral_correlations"]) >= 2
-    types = [c["type"] for c in res["behavioral_correlations"]]
+    assert "behavioral_correlations" in res["highlights"]
+    assert len(res["highlights"]["behavioral_correlations"]) >= 2
+    types = [c["type"] for c in res["highlights"]["behavioral_correlations"]]
     assert "productivity_budget_synergy" in types
     assert "health_routine_active" in types
