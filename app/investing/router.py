@@ -39,6 +39,7 @@ from app.investing.schemas import (
     CorporateActionCreate,
     CorporateActionResponse,
     DividendCreate,
+    DividendHistoryResponse,
     DividendResponse,
     DividendUpdate,
     ExposureAnalyticsResponse,
@@ -57,7 +58,9 @@ from app.investing.schemas import (
     InvestingOrderUpdate,
     InvestingSummaryResponse,
     OverlapAnalyticsResponse,
+    PerformanceHistoryResponse,
     PerformanceSummaryResponse,
+    PortfolioAllocationResponse,
     ReferenceResolveResponse,
     ReferenceSecurityResponse,
     ReturnMetricsResponse,
@@ -355,6 +358,16 @@ async def get_overlap_analytics(
     return await analytics_service.overlap(workspace_id, as_of_date)
 
 
+@router.get("/analytics/allocation", response_model=PortfolioAllocationResponse)
+async def get_portfolio_allocation(
+    performance_service: Annotated[PerformanceService, Depends(get_investing_performance_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    as_of: date | None = None,
+):
+    return await performance_service.get_allocation_breakdown(workspace_id, as_of)
+
+
 @router.post("/prices", status_code=status.HTTP_201_CREATED)
 async def submit_prices(
     payload: HoldingPriceBulkCreate,
@@ -408,6 +421,17 @@ async def get_performance_summary(
     _user: Annotated[dict, Depends(get_current_user)],
 ):
     return await performance_service.summary(workspace_id)
+
+
+@router.get("/performance/history", response_model=PerformanceHistoryResponse)
+async def get_performance_history(
+    performance_service: Annotated[PerformanceService, Depends(get_investing_performance_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    from_date: date | None = Query(None, alias="from"),
+    to_date: date | None = Query(None, alias="to"),
+):
+    return await performance_service.get_performance_history(workspace_id, from_date, to_date)
 
 
 @router.get("/performance/returns", response_model=ReturnMetricsResponse)
@@ -776,6 +800,15 @@ async def list_dividends(
         _dividend_response(d, accounts[d.account_id]) for d in rows if d.account_id in accounts
     ]
     return build_page(items, total, pagination)
+
+
+@router.get("/dividends/history", response_model=DividendHistoryResponse)
+async def get_dividend_history(
+    performance_service: Annotated[PerformanceService, Depends(get_investing_performance_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    return await performance_service.get_dividend_history(workspace_id)
 
 
 @router.get("/dividends/{dividend_id}", response_model=DividendResponse)

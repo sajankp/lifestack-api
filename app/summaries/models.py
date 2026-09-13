@@ -80,3 +80,49 @@ class WorkspaceSummarySetting(SQLModel, table=True):
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
     )
+
+
+class MonthlySummary(SQLModel, table=True):
+    """Monthly financial close and productivity summary (spec-096).
+    Mirrors the WeeklySummary structure bounded by calendar month start/end dates."""
+
+    __tablename__ = "monthly_summaries"
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    month_start: date = Field(sa_type=sa.Date())
+    month_end: date = Field(sa_type=sa.Date())
+    generated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    todo_summary: dict = Field(sa_type=sa.JSON())
+    spending_summary: dict = Field(sa_type=sa.JSON())
+    investing_summary: dict = Field(sa_type=sa.JSON())
+    health_summary: dict | None = Field(default=None, sa_type=sa.JSON())
+    dividend_summary: dict | None = Field(default=None, sa_type=sa.JSON())
+    net_worth_summary: dict | None = Field(default=None, sa_type=sa.JSON())
+    return_metrics_summary: dict | None = Field(default=None, sa_type=sa.JSON())
+    highlights: dict = Field(sa_type=sa.JSON())
+    read_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    superseded_by_id: int | None = Field(default=None, index=True)
+    regenerated_at: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
+    regeneration_reason: str | None = Field(default=None, max_length=500)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.Index(
+            "uq_monthly_summary_workspace_month_current",
+            "workspace_id",
+            "month_start",
+            unique=True,
+            postgresql_where=sa.text("superseded_by_id IS NULL"),
+        ),
+        sa.UniqueConstraint("id", "workspace_id", name="uq_monthly_summaries_id_workspace"),
+        sa.ForeignKeyConstraint(
+            ["superseded_by_id", "workspace_id"],
+            ["monthly_summaries.id", "monthly_summaries.workspace_id"],
+            name="fk_monthly_summaries_superseded_by",
+        ),
+    )

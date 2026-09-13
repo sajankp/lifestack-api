@@ -465,7 +465,27 @@ class PerformanceSummaryResponse(BaseModel):
     model_config = ConfigDict(json_encoders={Decimal: str})
 
 
+class PerformanceHistoryPoint(BaseModel):
+    snapshot_date: date
+    holdings_value: Decimal
+    total_cost: Decimal
+    total_value: Decimal
+    cash_value: Decimal
+    unrealized_gain_loss: Decimal
+    unrealized_gain_loss_pct: Decimal | None
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class PerformanceHistoryResponse(BaseModel):
+    currency: str
+    points: list[PerformanceHistoryPoint] = Field(default_factory=list)
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
 # ---------------------------------------------------------------------------
+
 # Dividends / income events (spec-073)
 # ---------------------------------------------------------------------------
 
@@ -657,5 +677,54 @@ class ReturnMetricsResponse(BaseModel):
     overall: OverallReturnMetrics
     by_account: list[AccountReturnMetrics]
     by_currency: list[CurrencyReturnMetrics]
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class AssetClassAllocationItem(BaseModel):
+    key: str  # "stock", "etf", "mutual_fund", "cash"
+    label: str
+    value: Decimal
+    pct: float
+    count: int
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class SectorAllocationItem(BaseModel):
+    sector: str
+    value: Decimal
+    pct: float
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class PortfolioAllocationResponse(BaseModel):
+    as_of_date: date
+    currency: str
+    total_portfolio_value: Decimal
+    holdings_value: Decimal
+    cash_value: Decimal
+    asset_classes: list[AssetClassAllocationItem]
+    sectors: list[SectorAllocationItem]
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class MonthlyDividendPoint(BaseModel):
+    month: str  # "YYYY-MM"
+    gross_amount: Decimal
+    tax_withheld: Decimal
+    net_amount: Decimal
+    payment_count: int
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class DividendHistoryResponse(BaseModel):
+    currency: str
+    total_dividends_received: Decimal
+    trailing_12m_dividends: Decimal
+    monthly_history: list[MonthlyDividendPoint]
 
     model_config = ConfigDict(json_encoders={Decimal: str})

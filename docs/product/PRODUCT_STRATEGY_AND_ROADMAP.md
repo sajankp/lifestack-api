@@ -7,6 +7,13 @@ Scope: current product positioning, implementation status, post-Gate 0 backlog, 
 
 ## Changelog
 
+- **2026-09-13 — 3-Tier Analytics Strategy & Periodic Summaries (Spec-096).** Adopted the
+  3-tier analytics roadmap for maximum tracking usefulness and compounding visibility:
+  Tier 1 (Monthly Financial Close Summary, Investment Performance Over Time [Portfolio Value vs.
+  Invested Capital], and Spend Pacing & Burn Rate); Tier 2 (Fixed vs. Discretionary Categorization
+  and Dividend Income/Yield Trajectory); and Tier 3 (Benchmark Alpha Comparison and Cross-Module
+  Life Correlations). Spec-096 approved and Tier 1 implemented across API and Web.
+
 - **2026-08-24 — current-state reconciliation through spec 094.** Weekly-summary
   enhancements (076), identity/reference-data hardening (083), recurring account
   rules (084), summary/import/cache/job/schedule guards (085–092), voice transaction
@@ -135,7 +142,23 @@ This roadmap is the living home for product sequencing. Specs remain the source 
 | Implemented 2026-07-08→11 wave | [`066`](../specs/spec-066-capture-consolidation.md), [`067`](../specs/spec-067-morning-briefing.md), [`068`](../specs/spec-068-todo-organization.md), [`069`](../specs/spec-069-health-memory-v1.md), [`070`](../specs/spec-070-export-completeness-and-roundtrip.md), [`071`](../specs/spec-071-investment-return-metrics.md), [`072`](../specs/spec-072-historical-data-ingestion.md), [`073`](../specs/spec-073-dividend-income-tracking.md), [`074`](../specs/spec-074-consolidate-bulk-paste-imports.md) | Capture consolidation (api#137/139, web#91); deterministic morning briefing (api#138/140, web#93); todo subtasks + Clear completed (api#144, web#102); **Health Memory V1** — medications + weight, Track 1's first slice (api#145, web#103); export completeness across finance/health/orders (api#148, web#107); investment return metrics + historical FX/net-worth ingestion + dividend income tracking (api#150, web#110); consolidation of the dividend/FX/net-worth bulk-paste flows into the shared imports framework (api#151, web#111). All implemented and merged; e2e suite gated in CI in the same window (lifestack-e2e, merged 2026-07-09) and demo-path UX hardening P0/P1/P2 landed (web#90, #94, #95). |
 | Implemented 2026-07-12 wave | [`075`](../specs/spec-075-currency-display-consistency.md), [`077`](../specs/spec-077-custom-financial-kpis.md), [`078`](../specs/spec-078-wallet-ledger-reconciliation.md) | Currency display polish — explicit locale/decimal profile, one FX rate per calendar day (api#155, web#113); custom financial KPIs — `spend_total`/`income_total`/`net_cash_flow` v1, guardrail breach notifications, dashboard card (api#156, web#114); wallet ledger reconciliation — `account_statements`/`statement_lines`, `finance-account-statement` import module, deterministic ±3-day suggest-only match engine, reconciliation view, break-on-edit-clears-match (api#159, web#115). All implemented and merged same day. spec-078's transfer-detail both-legs timeline is a deferred, unspecced fast-follow. spec-076 (weekly summaries) remains Approved, not started. spec-079 (voice/capture hardening) is **in progress**: Stage A landed (api#158) — tool-wiring fix, disconnect instrumentation, eval harness — but the recalibrated accuracy run is 84.2%, below the 90% bar gating Stages B/C; see `docs/specs/spec-079-voice-capture-production-hardening.md` §"Stage A progress" for the full breakdown. |
 | Implemented 2026-07→08 wave | [`076`](../specs/spec-076-weekly-summaries-enhancements.md), [`083`](../specs/spec-083-security-identity-and-reference-data.md)–[`094`](../specs/spec-094-mcp-investment-research-tools.md) | Weekly-summary cadence/regeneration, reference identity, recurring-account rules, correctness/cache/job/health guards, voice transaction correction, and authenticated MCP investment research. Specs 093/094 are implemented but still pending deployment validation. |
+| Implemented 2026-09 wave | [`096`](../specs/spec-096-periodic-summaries-and-investment-analytics-over-time.md) | **3-Tier Analytics Strategy & Tier 1 Implementation:** Dedicated monthly financial close summary (`monthly_summaries`), investment performance over time (`PortfolioSnapshot` historical time-series with portfolio market value vs. invested cost basis chart), and real-time monthly spend pacing with daily burn rate. |
 ## 4) Near-Term Roadmap
+
+### Analytics Roadmap & Strategy (3 Tiers — Spec 096)
+
+To maximize tracking usefulness, compounding motivation, and actionable cash-flow management, analytics are organized into three tiers:
+
+- **Tier 1 (Immediate High-ROI Wins — Implemented):**
+  - **Monthly Financial Close Summary:** Dedicated calendar-month summary workflow (`MonthlySummary`), rolling up tasks, spending, investing, dividends, net worth, and return metrics. UI cadence switcher (`Weekly` vs. `Monthly`) on summaries surface.
+  - **Investment Performance Over Time:** Time-series endpoint (`GET /v1/investing/performance/history`) querying `PortfolioSnapshot` rows, paired with an interactive chart in the Investing section comparing portfolio market value against total invested cost basis over 1M, 3M, 6M, 1Y, and All-time windows.
+  - **Monthly Spend Pacing & Burn Rate:** Real-time spending pacing analytics (`GET /v1/spending/analytics/pacing`), calculating daily burn rate, elapsed month progress, pacing vs. budget, and projected month-end spend.
+- **Tier 2 (Strategic Depth & Granularity — Planned):**
+  - **Fixed (Committed) vs. Discretionary Categorization:** Classifying recurring obligations (rent, EMI, utilities, subscriptions) vs. flexible lifestyle spend (dining, shopping, entertainment) to compute the true "survival burn rate" and discretionary surplus.
+  - **Dividend Income & Yield Trajectory:** Dedicated dividend time-series and yield-on-cost charts over time, visualizing passive cash flow growth across months and years.
+- **Tier 3 (Advanced Frontier & Lifestack Moat — Planned):**
+  - **Benchmark Alpha Comparison:** Ingesting daily benchmark indices (Nifty 50 TRI, S&P 500 TRI) to calculate tracking error, beta, and user alpha over standardized horizons.
+  - **Cross-Module Correlations:** Correlating productivity/habits (overdue tasks, missed doses, high stress) with financial discipline (impulse spending spikes, missed investment SIPs).
 
 This is the Post-Gate 0 roadmap backlog, promoted near the top because it contains the next practical product slices. These items should deepen the current finance-led product before Lifestack expands into new life domains.
 

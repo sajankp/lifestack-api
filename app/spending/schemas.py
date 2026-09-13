@@ -525,6 +525,46 @@ class SavingsRateResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True, json_encoders={Decimal: str})
 
 
+class CategoryPacingItem(BaseModel):
+    category_id: uuid.UUID
+    category_name: str
+    category_color: str | None = None
+    category_icon: str | None = None
+    actual_spend: Decimal
+    daily_burn_rate: Decimal
+    projected_spend: Decimal
+    budget_amount: Decimal | None = None
+    budget_consumed_pct: float | None = None
+    pacing_status: Literal["under_budget", "on_track", "over_pacing", "no_budget"]
+    is_recurring: bool = False
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class SpendPacingResponse(BaseModel):
+    month: str
+    currency: str
+    days_in_month: int
+    days_elapsed: int
+    days_remaining: int
+    month_progress_pct: float
+    actual_spend: Decimal
+    daily_burn_rate: Decimal
+    projected_month_end_spend: Decimal
+    fixed_spend: Decimal = Decimal("0.00")
+    discretionary_spend: Decimal = Decimal("0.00")
+    fixed_burn_rate: Decimal = Decimal("0.00")
+    discretionary_burn_rate: Decimal = Decimal("0.00")
+    total_budget: Decimal | None = None
+    budget_consumed_pct: float | None = None
+    target_pace_pct: float
+    pacing_delta_pct: float | None = None
+    status: Literal["under_budget", "on_track", "over_pacing", "no_budget"]
+    categories: list[CategoryPacingItem] = Field(default_factory=list)
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
 # ---------------------------------------------------------------------------
 # Transaction Ledger schemas
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
-    from app.summaries.models import WeeklySummary
+    from app.summaries.models import MonthlySummary, WeeklySummary
 
 
 class WeeklySummaryResponse(BaseModel):
@@ -73,3 +73,49 @@ class WorkspaceSummarySettingResponse(BaseModel):
 class WorkspaceSummarySettingUpdate(BaseModel):
     cadence_day_of_week: int = Field(ge=0, le=6)
     cadence_hour_utc: int = Field(ge=0, le=23)
+
+
+class MonthlySummaryResponse(BaseModel):
+    public_id: uuid.UUID
+    month_start: date
+    month_end: date
+    generated_at: datetime
+    todo_summary: dict
+    spending_summary: dict
+    investing_summary: dict
+    health_summary: dict | None = None
+    dividend_summary: dict | None = None
+    net_worth_summary: dict | None = None
+    return_metrics_summary: dict | None = None
+    highlights: dict
+    read_at: datetime | None = None
+    regenerated_at: datetime | None = None
+    regeneration_reason: str | None = None
+    is_superseded: bool = False
+    data_revised_after_snapshot: bool = False
+    data_stale: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @classmethod
+    def from_summary(
+        cls,
+        item: MonthlySummary,
+        *,
+        data_revised_after_snapshot: bool = False,
+        data_stale: bool = False,
+    ) -> MonthlySummaryResponse:
+        resp = cls.model_validate(item)
+        resp.is_superseded = item.superseded_by_id is not None
+        resp.data_revised_after_snapshot = data_revised_after_snapshot
+        resp.data_stale = data_stale
+        return resp
+
+
+class RegenerateMonthlySummaryRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class GenerateMonthlySummaryRequest(BaseModel):
+    year: int = Field(ge=2000, le=2100)
+    month: int = Field(ge=1, le=12)

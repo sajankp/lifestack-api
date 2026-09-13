@@ -1,10 +1,11 @@
+import calendar
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import case, desc, func, select
+from sqlalchemy import case, desc, func, or_, select
 
 from app.imports.repository import ImportRepository
 from app.spending.response_helpers import (
@@ -67,6 +68,7 @@ from app.spending.schemas import (
     CategoryCreate,
     CategoryGroupCreate,
     CategoryGroupUpdate,
+    CategoryPacingItem,
     CategoryUpdate,
     KpiCreate,
     KpiResponse,
@@ -81,6 +83,7 @@ from app.spending.schemas import (
     SavingsRateTotals,
     SpendingTrendPoint,
     SpendingTrendResponse,
+    SpendPacingResponse,
     TagBreakdownItem,
     TagBreakdownResponse,
     TagCreate,
@@ -2343,6 +2346,270 @@ class BudgetService:
                 total_actual=group_actual_total,
                 overall_utilization_pct=group_overall_utilization,
             ),
+        )
+
+    async def get_spend_pacing(
+        self, workspace_id: int, target_month: date | None = None
+    ) -> SpendPacingResponse:
+        """Compute month-to-date spend pacing against budgets, category pacing items,
+        and fixed vs. discretionary burn velocity.
+
+        Heuristic note on Fixed vs. Discretionary classification:
+        Expenses linked to a recurring transaction template (`recurring_transaction_id IS NOT NULL`)
+        are classified as 'fixed' (survival commitments, subscriptions, rent, debt servicing).
+        The remainder (`actual_spend - fixed_spend`) is classified as 'discretionary' (lifestyle spending).
+        While some recurring expenses can be discretionary (e.g. streaming services) and certain one-off
+        spikes may be mandatory/fixed, this heuristic serves as an effective operational proxy in v1
+        prior to user-defined category/tag classification rules in future tiers.
+        """
+        today = datetime.now(UTC).date()
+        month_date = today.replace(day=1) if target_month is None else target_month.replace(day=1)
+
+        year = month_date.year
+        month = month_date.month
+        month_str = f"{year:04d}-{month:02d}"
+        days_in_month = calendar.monthrange(year, month)[1]
+        month_end = date(year, month, days_in_month)
+
+        if today < month_date:
+            days_elapsed = 0
+        elif today > month_end:
+            days_elapsed = days_in_month
+        else:
+            days_elapsed = today.day
+
+        days_remaining = max(0, days_in_month - days_elapsed)
+        month_progress_pct = round((days_elapsed / days_in_month) * 100, 2)
+
+        start_dt = datetime(year, month, 1, tzinfo=UTC)
+        if month == 12:
+            end_dt = datetime(year + 1, 1, 1, tzinfo=UTC)
+        else:
+            end_dt = datetime(year, month + 1, 1, tzinfo=UTC)
+
+        # 1. Total actual expense in month
+        tx_stmt = select(func.coalesce(func.sum(SpendingTransaction.amount), 0)).where(
+            SpendingTransaction.workspace_id == workspace_id,
+            SpendingTransaction.type == TransactionType.expense.value,
+            SpendingTransaction.occurred_at >= start_dt,
+            SpendingTransaction.occurred_at < end_dt,
+        )
+        actual_spend = Decimal(str((await self.budget_repo.session.execute(tx_stmt)).scalar_one()))
+
+        # 1b. Fixed (committed recurring) vs Discretionary spend
+        fixed_stmt = select(func.coalesce(func.sum(SpendingTransaction.amount), 0)).where(
+            SpendingTransaction.workspace_id == workspace_id,
+            SpendingTransaction.type == TransactionType.expense.value,
+            SpendingTransaction.occurred_at >= start_dt,
+            SpendingTransaction.occurred_at < end_dt,
+            SpendingTransaction.recurring_transaction_id.is_not(None),
+        )
+        fixed_spend = Decimal(
+            str((await self.budget_repo.session.execute(fixed_stmt)).scalar_one())
+        )
+        discretionary_spend = max(Decimal("0.00"), actual_spend - fixed_spend)
+
+        # Determine currency (from transactions or fallback USD)
+        curr_stmt = (
+            select(Account.default_currency_code)
+            .select_from(SpendingTransaction)
+            .join(Account, Account.id == SpendingTransaction.account_id)
+            .where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.occurred_at >= start_dt,
+                SpendingTransaction.occurred_at < end_dt,
+            )
+            .limit(1)
+        )
+        currency_code = (
+            await self.budget_repo.session.execute(curr_stmt)
+        ).scalar_one_or_none() or "USD"
+
+        # Daily burn rate & projected spend
+        if days_elapsed > 0:
+            daily_burn_rate = (actual_spend / Decimal(days_elapsed)).quantize(Decimal("0.01"))
+            fixed_burn_rate = (fixed_spend / Decimal(days_elapsed)).quantize(Decimal("0.01"))
+            discretionary_burn_rate = (discretionary_spend / Decimal(days_elapsed)).quantize(
+                Decimal("0.01")
+            )
+        else:
+            daily_burn_rate = Decimal("0.00")
+            fixed_burn_rate = Decimal("0.00")
+            discretionary_burn_rate = Decimal("0.00")
+        projected_month_end_spend = (daily_burn_rate * Decimal(days_in_month)).quantize(
+            Decimal("0.01")
+        )
+
+        # 2. Total active category budgets for month
+        budget_stmt = select(func.coalesce(func.sum(SpendingBudget.amount), 0)).where(
+            SpendingBudget.workspace_id == workspace_id,
+            SpendingBudget.start_month <= month_date,
+            or_(
+                SpendingBudget.end_month.is_(None),
+                SpendingBudget.end_month >= month_date,
+            ),
+        )
+        raw_budget = Decimal(
+            str((await self.budget_repo.session.execute(budget_stmt)).scalar_one())
+        )
+        total_budget = raw_budget if raw_budget > 0 else None
+
+        target_pace_pct = month_progress_pct
+        if total_budget is not None:
+            budget_consumed_pct = round(float((actual_spend / total_budget) * 100), 2)
+            pacing_delta_pct = round(budget_consumed_pct - target_pace_pct, 2)
+            if pacing_delta_pct <= -5.0:
+                status = "under_budget"
+            elif pacing_delta_pct <= 5.0:
+                status = "on_track"
+            else:
+                status = "over_pacing"
+        else:
+            budget_consumed_pct = None
+            pacing_delta_pct = None
+            status = "no_budget"
+
+        # 3. Category-level pacing breakdown
+        cat_tx_stmt = (
+            select(
+                SpendingCategory.id,
+                SpendingCategory.public_id,
+                SpendingCategory.name,
+                SpendingCategory.color,
+                SpendingCategory.icon,
+                func.coalesce(func.sum(SpendingTransaction.amount), 0).label("actual"),
+                func.count(SpendingTransaction.recurring_transaction_id).label("recurring_count"),
+            )
+            .select_from(SpendingCategory)
+            .join(SpendingTransaction, SpendingTransaction.category_id == SpendingCategory.id)
+            .where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.type == TransactionType.expense.value,
+                SpendingTransaction.occurred_at >= start_dt,
+                SpendingTransaction.occurred_at < end_dt,
+            )
+            .group_by(SpendingCategory.id)
+        )
+        cat_tx_rows = (await self.budget_repo.session.execute(cat_tx_stmt)).all()
+
+        cat_budget_stmt = select(
+            SpendingBudget.category_id,
+            SpendingBudget.amount,
+        ).where(
+            SpendingBudget.workspace_id == workspace_id,
+            SpendingBudget.category_id.is_not(None),
+            SpendingBudget.start_month <= month_date,
+            or_(
+                SpendingBudget.end_month.is_(None),
+                SpendingBudget.end_month >= month_date,
+            ),
+        )
+        cat_budget_rows = (await self.budget_repo.session.execute(cat_budget_stmt)).all()
+        cat_budgets: dict[int, Decimal] = {
+            row.category_id: Decimal(str(row.amount))
+            for row in cat_budget_rows
+            if row.category_id is not None
+        }
+
+        category_pacing_items: list[CategoryPacingItem] = []
+        seen_cat_ids = set()
+
+        for cat_row in cat_tx_rows:
+            cat_id = cat_row.id
+            seen_cat_ids.add(cat_id)
+            cat_actual = Decimal(str(cat_row.actual))
+            cat_is_rec = bool(cat_row.recurring_count > 0)
+            if days_elapsed > 0:
+                cat_daily_burn = (cat_actual / Decimal(days_elapsed)).quantize(Decimal("0.01"))
+            else:
+                cat_daily_burn = Decimal("0.00")
+            cat_projected = (cat_daily_burn * Decimal(days_in_month)).quantize(Decimal("0.01"))
+
+            cat_b_amt = cat_budgets.get(cat_id)
+            if cat_b_amt is not None and cat_b_amt > 0:
+                cat_consumed = round(float((cat_actual / cat_b_amt) * 100), 2)
+                cat_delta = round(cat_consumed - target_pace_pct, 2)
+                if cat_delta <= -5.0:
+                    cat_status = "under_budget"
+                elif cat_delta <= 5.0:
+                    cat_status = "on_track"
+                else:
+                    cat_status = "over_pacing"
+            else:
+                cat_consumed = None
+                cat_status = "no_budget"
+
+            category_pacing_items.append(
+                CategoryPacingItem(
+                    category_id=cat_row.public_id,
+                    category_name=cat_row.name,
+                    category_color=cat_row.color,
+                    category_icon=cat_row.icon,
+                    actual_spend=cat_actual,
+                    daily_burn_rate=cat_daily_burn,
+                    projected_spend=cat_projected,
+                    budget_amount=cat_b_amt,
+                    budget_consumed_pct=cat_consumed,
+                    pacing_status=cat_status,
+                    is_recurring=cat_is_rec,
+                )
+            )
+
+        remaining_budget_ids = set(cat_budgets.keys()) - seen_cat_ids
+        if remaining_budget_ids:
+            missing_cats = (
+                (
+                    await self.budget_repo.session.execute(
+                        select(SpendingCategory).where(
+                            SpendingCategory.id.in_(remaining_budget_ids)
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for mcat in missing_cats:
+                cat_b_amt = cat_budgets.get(mcat.id)
+                category_pacing_items.append(
+                    CategoryPacingItem(
+                        category_id=mcat.public_id,
+                        category_name=mcat.name,
+                        category_color=mcat.color,
+                        category_icon=mcat.icon,
+                        actual_spend=Decimal("0.00"),
+                        daily_burn_rate=Decimal("0.00"),
+                        projected_spend=Decimal("0.00"),
+                        budget_amount=cat_b_amt,
+                        budget_consumed_pct=0.0 if cat_b_amt and cat_b_amt > 0 else None,
+                        pacing_status=(
+                            "under_budget" if cat_b_amt and cat_b_amt > 0 else "no_budget"
+                        ),
+                        is_recurring=False,
+                    )
+                )
+
+        category_pacing_items.sort(key=lambda item: item.actual_spend, reverse=True)
+
+        return SpendPacingResponse(
+            month=month_str,
+            currency=currency_code,
+            days_in_month=days_in_month,
+            days_elapsed=days_elapsed,
+            days_remaining=days_remaining,
+            month_progress_pct=month_progress_pct,
+            actual_spend=actual_spend,
+            daily_burn_rate=daily_burn_rate,
+            projected_month_end_spend=projected_month_end_spend,
+            fixed_spend=fixed_spend,
+            discretionary_spend=discretionary_spend,
+            fixed_burn_rate=fixed_burn_rate,
+            discretionary_burn_rate=discretionary_burn_rate,
+            total_budget=total_budget,
+            budget_consumed_pct=budget_consumed_pct,
+            target_pace_pct=target_pace_pct,
+            pacing_delta_pct=pacing_delta_pct,
+            status=status,
+            categories=category_pacing_items,
         )
 
 

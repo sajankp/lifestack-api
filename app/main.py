@@ -27,6 +27,7 @@ from app.application.jobs import (
     job_health_heartbeat_job,
     kpi_guardrails_job,
     medication_reminder_job,
+    monthly_summary_job,
     morning_briefing_job,
     net_worth_snapshot_job,
     push_delivery_job,
@@ -78,7 +79,12 @@ from app.observability.scheduler_metrics import set_jobs_registered, set_schedul
 from app.observability.tracing import setup_tracing
 from app.platform.router import router as platform_router
 from app.spending.router import router as spending_router
-from app.summaries.router import router as summaries_router
+from app.summaries.router import (
+    monthly_router as monthly_summaries_router,
+)
+from app.summaries.router import (
+    router as summaries_router,
+)
 from app.testing.router import router as testing_router
 from app.todo.router import router as todo_router
 
@@ -259,6 +265,16 @@ def _register_scheduled_jobs():
         timezone="UTC",
         kwargs={"respect_cadence": True},
     )
+    scheduler.add_job(
+        monthly_summary_job,
+        "cron",
+        day=1,
+        hour=1,
+        minute=0,
+        id="monthly_summary",
+        replace_existing=True,
+        timezone="UTC",
+    )
     register_daily_job(
         morning_briefing_job,
         job_id="morning_briefing",
@@ -402,7 +418,9 @@ def create_app() -> FastAPI:
     _app.include_router(exports_router, prefix=settings.API_V1_STR)
     _app.include_router(notifications_router, prefix=settings.API_V1_STR)
     _app.include_router(summaries_router, prefix=settings.API_V1_STR)
+    _app.include_router(monthly_summaries_router, prefix=settings.API_V1_STR)
     _app.include_router(capture_router, prefix=settings.API_V1_STR)
+
     _app.include_router(imports_router, prefix=settings.API_V1_STR)
     _app.include_router(platform_router, prefix=settings.API_V1_STR)
     if settings.ENABLE_E2E_TEST_HOOKS and settings.ENV in {"local", "test"}:

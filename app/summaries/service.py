@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -44,8 +45,12 @@ from app.spending.models import (
     SpendingTransaction,
     TransactionType,
 )
-from app.summaries.models import WeeklySummary, WorkspaceSummarySetting
-from app.summaries.repository import WeeklySummaryRepository, WorkspaceSummarySettingRepository
+from app.summaries.models import MonthlySummary, WeeklySummary, WorkspaceSummarySetting
+from app.summaries.repository import (
+    MonthlySummaryRepository,
+    WeeklySummaryRepository,
+    WorkspaceSummarySettingRepository,
+)
 from app.todo.models import Todo
 
 
@@ -248,8 +253,21 @@ class WeeklySummaryService:
         current data. Shared by generate_for_workspace_week (upsert path) and
         regenerate (supersede path) so both recompute the same fields."""
         week_end = week_start + timedelta(days=6)
-        start_dt = datetime.combine(week_start, datetime.min.time(), tzinfo=UTC)
-        end_dt = datetime.combine(week_end + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+        sections = await self._compose_range(
+            workspace_id, week_start, week_end, cadence_label="week"
+        )
+        return week_end, sections
+
+    async def _compose_range(
+        self,
+        workspace_id: int,
+        start_date: date,
+        end_date: date,
+        cadence_label: str = "week",
+    ) -> dict:
+        """Computes every section + highlights for one workspace for an arbitrary date range."""
+        start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
+        end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
 
         todo_created = int(
             (
@@ -296,7 +314,7 @@ class WeeklySummaryService:
             )
         ).all()
         spending_summary, category_expenses = await self._spending_summary(
-            workspace_id, week_start, spending_rows
+            workspace_id, start_date, spending_rows
         )
         todo_overdue = int(
             (
@@ -365,23 +383,23 @@ class WeeklySummaryService:
             "open_count_end": open_count_end,
         }
 
-        investing_summary = await self._investing_summary(workspace_id, week_start, week_end)
+        investing_summary = await self._investing_summary(workspace_id, start_date, end_date)
         health_summary = await self._health_summary(
-            workspace_id, week_start, week_end, start_dt, end_dt
+            workspace_id, start_date, end_date, start_dt, end_dt
         )
-        dividend_summary = await self._dividend_summary(workspace_id, week_start, week_end)
-        net_worth_summary = await self._net_worth_summary(workspace_id, week_start, week_end)
+        dividend_summary = await self._dividend_summary(workspace_id, start_date, end_date)
+        net_worth_summary = await self._net_worth_summary(workspace_id, start_date, end_date)
         return_metrics_summary = await self._return_metrics_summary(workspace_id)
         flags: list[dict[str, str]] = []
         if completion_rate is not None and completion_rate >= Decimal("90"):
             flags.append({
                 "type": "high_completion",
-                "message": f"Completed {todo_completed} tasks this week.",
+                "message": f"Completed {todo_completed} tasks this {cadence_label}.",
             })
         elif todo_created >= 5 and completion_rate is not None and completion_rate < Decimal("50"):
             flags.append({
                 "type": "low_completion",
-                "message": "Less than half of this week's created tasks were completed.",
+                "message": f"Less than half of this {cadence_label}'s created tasks were completed.",
             })
         for category in category_expenses:
             if category["budget_breached"]:
@@ -392,7 +410,7 @@ class WeeklySummaryService:
         if dividend_summary["status"] == "complete" and dividend_summary["count"] > 0:
             flags.append({
                 "type": "dividend_income",
-                "message": f"Received {dividend_summary['count']} dividend/income payment(s) this week.",
+                "message": f"Received {dividend_summary['count']} dividend/income payment(s) this {cadence_label}.",
             })
         if return_metrics_summary["status"] == "complete" and return_metrics_summary["notable"]:
             flags.append({
@@ -400,7 +418,7 @@ class WeeklySummaryService:
                 "message": "Portfolio drawdown from peak is notable — check the return metrics section.",
             })
 
-        return week_end, {
+        return {
             "todo_summary": todo_summary,
             "spending_summary": spending_summary,
             "investing_summary": investing_summary,
@@ -900,3 +918,170 @@ class SummarySettingsService:
             cadence_day_of_week=cadence_day_of_week,
             cadence_hour_utc=cadence_hour_utc,
         )
+
+
+class MonthlySummaryService:
+    def __init__(
+        self,
+        repository: MonthlySummaryRepository,
+        session: AsyncSession,
+        notification_service: NotificationService,
+        composer: WeeklySummaryService | None = None,
+    ):
+        self.repository = repository
+        self.session = session
+        self.notification_service = notification_service
+        self.composer = composer or WeeklySummaryService(
+            WeeklySummaryRepository(session), session, notification_service
+        )
+
+    async def list(
+        self,
+        workspace_id: int,
+        from_date: date | None,
+        to_date: date | None,
+        limit: int,
+        offset: int,
+    ):
+        return await self.repository.list(workspace_id, from_date, to_date, limit, offset)
+
+    async def latest(self, workspace_id: int):
+        item = await self.repository.latest(workspace_id)
+        if not item:
+            raise NotFoundError(detail="No monthly summaries found")
+        return item
+
+    async def get(self, workspace_id: int, public_id: uuid.UUID):
+        item = await self.repository.by_public_id(workspace_id, public_id)
+        if not item:
+            raise NotFoundError(detail=f"Monthly summary with id {public_id} not found")
+        return item
+
+    async def mark_read(self, workspace_id: int, public_id: uuid.UUID):
+        item = await self.repository.by_public_id(workspace_id, public_id)
+        if not item:
+            raise NotFoundError(detail=f"Monthly summary with id {public_id} not found")
+        return await self.repository.mark_read(item)
+
+    async def generate_for_workspace_month(
+        self, workspace_id: int, user_id: int, month_start: date
+    ) -> MonthlySummary:
+        month_start = month_start.replace(day=1)
+        last_day = calendar.monthrange(month_start.year, month_start.month)[1]
+        month_end = month_start.replace(day=last_day)
+
+        sections = await self.composer._compose_range(
+            workspace_id, month_start, month_end, cadence_label="month"
+        )
+
+        existing = (
+            await self.session.execute(
+                select(MonthlySummary).where(
+                    MonthlySummary.workspace_id == workspace_id,
+                    MonthlySummary.month_start == month_start,
+                    MonthlySummary.superseded_by_id.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.month_end = month_end
+            for field, value in sections.items():
+                setattr(existing, field, value)
+            existing.generated_at = datetime.now(UTC)
+            summary = existing
+        else:
+            summary = MonthlySummary(
+                workspace_id=workspace_id,
+                month_start=month_start,
+                month_end=month_end,
+                **sections,
+            )
+            self.session.add(summary)
+
+        await self.session.flush()
+        await self.session.refresh(summary)
+        return summary
+
+    async def regenerate(
+        self, workspace_id: int, public_id: uuid.UUID, reason: str | None = None
+    ) -> MonthlySummary:
+        old = await self.get(workspace_id, public_id)
+        last_day = calendar.monthrange(old.month_start.year, old.month_start.month)[1]
+        month_end = old.month_start.replace(day=last_day)
+        sections = await self.composer._compose_range(
+            workspace_id, old.month_start, month_end, cadence_label="month"
+        )
+        new = MonthlySummary(
+            workspace_id=workspace_id,
+            month_start=old.month_start,
+            month_end=month_end,
+            **sections,
+        )
+        return await self.repository.supersede(old, new, reason)
+
+    async def has_reverted_import_overlap(self, item: MonthlySummary) -> bool:
+        dates: list[date] = []
+        if item.net_worth_summary and item.net_worth_summary.get("status") == "complete":
+            start_nw = item.net_worth_summary.get("start_snapshot_date")
+            end_nw = item.net_worth_summary.get("end_snapshot_date")
+            if start_nw:
+                dates.append(date.fromisoformat(start_nw))
+            if end_nw:
+                dates.append(date.fromisoformat(end_nw))
+        if item.investing_summary and item.investing_summary.get("status") == "complete":
+            start_inv = item.investing_summary.get("start_snapshot_date")
+            end_inv = item.investing_summary.get("end_snapshot_date")
+            if start_inv:
+                dates.append(date.fromisoformat(start_inv))
+            if end_inv:
+                dates.append(date.fromisoformat(end_inv))
+        if not dates:
+            return False
+
+        windows = await find_import_revert_windows(
+            self.session, item.workspace_id, min(dates), max(dates)
+        )
+        if not windows:
+            return False
+        return any(date_in_any_window(d, windows) for d in dates)
+
+    async def is_stale(self, item: MonthlySummary) -> bool:
+        if item.net_worth_summary and item.net_worth_summary.get("status") == "complete":
+            end_snapshot = (
+                await self.session.execute(
+                    select(NetWorthSnapshot)
+                    .where(
+                        NetWorthSnapshot.workspace_id == item.workspace_id,
+                        NetWorthSnapshot.snapshot_date <= item.month_end,
+                    )
+                    .order_by(NetWorthSnapshot.snapshot_date.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            stored_date = item.net_worth_summary.get("end_snapshot_date")
+            current_date = (
+                end_snapshot.snapshot_date.isoformat() if end_snapshot is not None else None
+            )
+            if current_date != stored_date:
+                return True
+
+        if item.investing_summary and item.investing_summary.get("status") == "complete":
+            end_snapshot = (
+                await self.session.execute(
+                    select(PortfolioSnapshot)
+                    .where(
+                        PortfolioSnapshot.workspace_id == item.workspace_id,
+                        PortfolioSnapshot.snapshot_date <= item.month_end,
+                    )
+                    .order_by(PortfolioSnapshot.snapshot_date.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            stored_date = item.investing_summary.get("end_snapshot_date")
+            current_date = (
+                end_snapshot.snapshot_date.isoformat() if end_snapshot is not None else None
+            )
+            if current_date != stored_date:
+                return True
+
+        return False

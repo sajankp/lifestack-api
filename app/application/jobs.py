@@ -59,6 +59,7 @@ from app.core.constants import (
     ADVISORY_LOCK_JOB_HEALTH_HEARTBEAT,
     ADVISORY_LOCK_KPI_GUARDRAILS,
     ADVISORY_LOCK_MEDICATION_REMINDER,
+    ADVISORY_LOCK_MONTHLY_SUMMARY,
     ADVISORY_LOCK_MORNING_BRIEFING,
     ADVISORY_LOCK_NET_WORTH_SNAPSHOT,
     ADVISORY_LOCK_PUSH_DELIVERY,
@@ -104,8 +105,12 @@ from app.spending.repository import (
     TransactionRepository,
 )
 from app.spending.service import BudgetService, RecurringTransactionService
-from app.summaries.repository import WeeklySummaryRepository, WorkspaceSummarySettingRepository
-from app.summaries.service import WeeklySummaryService
+from app.summaries.repository import (
+    MonthlySummaryRepository,
+    WeeklySummaryRepository,
+    WorkspaceSummarySettingRepository,
+)
+from app.summaries.service import MonthlySummaryService, WeeklySummaryService
 from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
 
@@ -779,6 +784,140 @@ async def weekly_summary_job(
         finally:
             await _release_session_advisory_lock(
                 session, WEEKLY_SUMMARY_LOCK_KEY, "weekly_summary_job"
+            )
+
+
+MONTHLY_SUMMARY_LOCK_KEY = ADVISORY_LOCK_MONTHLY_SUMMARY
+
+
+async def monthly_summary_job(
+    workspace_id: int | None = None,
+    month_start: date | None = None,
+) -> None:
+    """Generates monthly financial close summaries for active workspaces.
+
+    Runs on the 1st of each calendar month at 01:00 UTC for the previous
+    calendar month.
+    """
+    start_time = datetime.now(UTC)
+    logger.info("monthly_summary_job_start", job_name="monthly_summary_job")
+
+    async with postgres.async_session_maker() as session:
+        lock_res = await session.execute(
+            select(func.pg_try_advisory_lock(MONTHLY_SUMMARY_LOCK_KEY))
+        )
+        has_lock = lock_res.scalar()
+        if not has_lock:
+            await session.rollback()
+            logger.info(
+                "monthly_summary_job_skipped_lock_held",
+                job_name="monthly_summary_job",
+            )
+            return
+
+        try:
+            if workspace_id is not None:
+                ids_res = await session.execute(
+                    select(Workspace.id).where(Workspace.id == workspace_id, Workspace.is_active)
+                )
+            else:
+                ids_res = await session.execute(select(Workspace.id).where(Workspace.is_active))
+            workspace_ids = list(ids_res.scalars().all())
+            if workspace_id is not None and not workspace_ids:
+                logger.warning(
+                    "monthly_summary_job_workspace_not_found_or_inactive",
+                    workspace_id=workspace_id,
+                )
+
+            user_ids_by_workspace: dict[int, list[int]] = {}
+            if workspace_ids:
+                memberships_res = await session.execute(
+                    select(
+                        WorkspaceMembership.workspace_id,
+                        WorkspaceMembership.user_id,
+                        WorkspaceMembership.role,
+                    ).where(WorkspaceMembership.workspace_id.in_(workspace_ids))
+                )
+                rows_by_workspace: dict[int, list[tuple[int, object]]] = {}
+                for ws_id, user_id, role in memberships_res.all():
+                    rows_by_workspace.setdefault(ws_id, []).append((user_id, role))
+                for ws_id, rows in rows_by_workspace.items():
+                    rows.sort(key=lambda row: WEEKLY_SUMMARY_ROLE_ORDER.get(row[1], 99))
+                    user_ids_by_workspace[ws_id] = [user_id for user_id, _role in rows]
+
+            await session.commit()
+
+            if month_start is None:
+                today = start_time.date()
+                first_of_this_month = today.replace(day=1)
+                last_month_end = first_of_this_month - timedelta(days=1)
+                target_month_start = last_month_end.replace(day=1)
+            else:
+                target_month_start = month_start.replace(day=1)
+
+            month_label = target_month_start.strftime("%B %Y")
+
+            for target_workspace_id in workspace_ids:
+                ws_start = datetime.now(UTC)
+                try:
+                    member_user_ids = user_ids_by_workspace.get(target_workspace_id, [])
+                    if not member_user_ids:
+                        continue
+
+                    async with session.begin():
+                        summary_repo = MonthlySummaryRepository(session)
+                        notification_repo = NotificationRepository(session)
+                        notification_service = NotificationService(notification_repo)
+                        service = MonthlySummaryService(summary_repo, session, notification_service)
+
+                        primary_user_id = member_user_ids[0]
+                        await asyncio.wait_for(
+                            service.generate_for_workspace_month(
+                                target_workspace_id, primary_user_id, target_month_start
+                            ),
+                            timeout=WORKSPACE_EVALUATION_TIMEOUT_SECONDS,
+                        )
+
+                        for member_user_id in member_user_ids[1:]:
+                            await notification_service.notify(
+                                workspace_id=target_workspace_id,
+                                user_id=member_user_id,
+                                category="system",
+                                severity="info",
+                                title=f"Monthly summary ready: {month_label}",
+                                module="application",
+                            )
+
+                    duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                    logger.info(
+                        "monthly_summary_workspace_success",
+                        job_name="monthly_summary_job",
+                        workspace_id=target_workspace_id,
+                        duration_ms=duration_ms,
+                        status="success",
+                    )
+                except Exception as exc:
+                    duration_ms = (datetime.now(UTC) - ws_start).total_seconds() * 1000
+                    logger.error(
+                        "monthly_summary_workspace_failed",
+                        job_name="monthly_summary_job",
+                        workspace_id=target_workspace_id,
+                        duration_ms=duration_ms,
+                        status="failed",
+                        exc_info=True,
+                    )
+                    capture_exception(exc, job_name="monthly_summary_job")
+
+            total_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+            logger.info(
+                "monthly_summary_job_completed",
+                job_name="monthly_summary_job",
+                duration_ms=total_ms,
+                workspace_count=len(workspace_ids),
+            )
+        finally:
+            await _release_session_advisory_lock(
+                session, MONTHLY_SUMMARY_LOCK_KEY, "monthly_summary_job"
             )
 
 
