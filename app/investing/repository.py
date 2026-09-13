@@ -973,6 +973,20 @@ class PortfolioSnapshotRepository:
             )
         ).scalar_one_or_none()
 
+    async def list_range(
+        self,
+        workspace_id: int,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> list[PortfolioSnapshot]:
+        query = select(PortfolioSnapshot).where(PortfolioSnapshot.workspace_id == workspace_id)
+        if from_date is not None:
+            query = query.where(PortfolioSnapshot.snapshot_date >= from_date)
+        if to_date is not None:
+            query = query.where(PortfolioSnapshot.snapshot_date <= to_date)
+        query = query.order_by(PortfolioSnapshot.snapshot_date.asc())
+        return list((await self.session.execute(query)).scalars().all())
+
 
 class DividendRepository(BaseRepository[Dividend]):
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> Dividend | None:

@@ -94,8 +94,16 @@ from app.spending.service import (
     TagService,
     TransactionService,
 )
-from app.summaries.repository import WeeklySummaryRepository, WorkspaceSummarySettingRepository
-from app.summaries.service import SummarySettingsService, WeeklySummaryService
+from app.summaries.repository import (
+    MonthlySummaryRepository,
+    WeeklySummaryRepository,
+    WorkspaceSummarySettingRepository,
+)
+from app.summaries.service import (
+    MonthlySummaryService,
+    SummarySettingsService,
+    WeeklySummaryService,
+)
 from app.todo.repository import TodoRepository
 from app.todo.service import TodoService
 
@@ -756,6 +764,20 @@ async def get_weekly_summary_service(
     notification_service: NotificationService = Depends(get_notification_service),
 ) -> WeeklySummaryService:
     return WeeklySummaryService(repo, session, notification_service)
+
+
+async def get_monthly_summary_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> MonthlySummaryRepository:
+    return MonthlySummaryRepository(session)
+
+
+async def get_monthly_summary_service(
+    repo: MonthlySummaryRepository = Depends(get_monthly_summary_repo),
+    session: AsyncSession = Depends(get_db_session),
+    notification_service: NotificationService = Depends(get_notification_service),
+) -> MonthlySummaryService:
+    return MonthlySummaryService(repo, session, notification_service)
 
 
 async def get_summary_settings_repo(

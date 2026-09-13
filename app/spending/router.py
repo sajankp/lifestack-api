@@ -52,6 +52,7 @@ from app.spending.schemas import (
     RecurringTransactionUpdate,
     SavingsRateResponse,
     SpendingTrendResponse,
+    SpendPacingResponse,
     TagBreakdownResponse,
     TagCreate,
     TagResponse,
@@ -499,6 +500,19 @@ async def get_savings_rate(
         workspace_id=workspace_id,
         from_month=from_month,
         to_month=to_month,
+    )
+
+
+@router.get("/analytics/pacing", response_model=SpendPacingResponse)
+async def get_spend_pacing(
+    budget_service: Annotated[BudgetService, Depends(get_spending_budget_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    month: date | None = Query(None),
+):
+    return await budget_service.get_spend_pacing(
+        workspace_id=workspace_id,
+        target_month=month,
     )
 
 

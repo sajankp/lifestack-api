@@ -7,18 +7,26 @@ from fastapi import APIRouter, Depends, Query
 from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
+    get_monthly_summary_service,
     get_summary_settings_service,
     get_weekly_summary_service,
     require_min_role,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.summaries.schemas import (
+    GenerateMonthlySummaryRequest,
+    MonthlySummaryResponse,
+    RegenerateMonthlySummaryRequest,
     RegenerateWeeklySummaryRequest,
     WeeklySummaryResponse,
     WorkspaceSummarySettingResponse,
     WorkspaceSummarySettingUpdate,
 )
-from app.summaries.service import SummarySettingsService, WeeklySummaryService
+from app.summaries.service import (
+    MonthlySummaryService,
+    SummarySettingsService,
+    WeeklySummaryService,
+)
 
 router = APIRouter(
     prefix="/summaries/weekly",
@@ -131,3 +139,89 @@ async def regenerate_weekly_summary(
     version instead)."""
     new = await service.regenerate(workspace_id, summary_id, regenerate_in.reason)
     return WeeklySummaryResponse.from_summary(new)
+
+
+monthly_router = APIRouter(
+    prefix="/summaries/monthly",
+    tags=["summaries"],
+    dependencies=[Depends(require_min_role("member"))],
+)
+
+
+@monthly_router.get("", response_model=PaginatedResponse[MonthlySummaryResponse])
+async def list_monthly_summaries(
+    service: Annotated[MonthlySummaryService, Depends(get_monthly_summary_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    pagination: Annotated[PaginationParams, Depends()],
+    from_date: date | None = Query(None, alias="from"),
+    to_date: date | None = Query(None, alias="to"),
+):
+    items, total = await service.list(
+        workspace_id, from_date, to_date, pagination.limit, pagination.offset
+    )
+    return build_page([MonthlySummaryResponse.from_summary(i) for i in items], total, pagination)
+
+
+@monthly_router.get("/latest", response_model=MonthlySummaryResponse)
+async def get_latest_monthly_summary(
+    service: Annotated[MonthlySummaryService, Depends(get_monthly_summary_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    item = await service.latest(workspace_id)
+    return MonthlySummaryResponse.from_summary(
+        item,
+        data_revised_after_snapshot=await service.has_reverted_import_overlap(item),
+        data_stale=await service.is_stale(item),
+    )
+
+
+@monthly_router.get("/{summary_id}", response_model=MonthlySummaryResponse)
+async def get_monthly_summary(
+    summary_id: uuid.UUID,
+    service: Annotated[MonthlySummaryService, Depends(get_monthly_summary_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    item = await service.get(workspace_id, summary_id)
+    return MonthlySummaryResponse.from_summary(
+        item,
+        data_revised_after_snapshot=await service.has_reverted_import_overlap(item),
+        data_stale=await service.is_stale(item),
+    )
+
+
+@monthly_router.post("/{summary_id}/read", response_model=MonthlySummaryResponse)
+async def mark_monthly_summary_read(
+    summary_id: uuid.UUID,
+    service: Annotated[MonthlySummaryService, Depends(get_monthly_summary_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    return MonthlySummaryResponse.from_summary(await service.mark_read(workspace_id, summary_id))
+
+
+@monthly_router.post("/{summary_id}/regenerate", response_model=MonthlySummaryResponse)
+async def regenerate_monthly_summary(
+    summary_id: uuid.UUID,
+    regenerate_in: RegenerateMonthlySummaryRequest,
+    service: Annotated[MonthlySummaryService, Depends(get_monthly_summary_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    new = await service.regenerate(workspace_id, summary_id, regenerate_in.reason)
+    return MonthlySummaryResponse.from_summary(new)
+
+
+@monthly_router.post("/generate", response_model=MonthlySummaryResponse)
+async def generate_monthly_summary(
+    generate_in: GenerateMonthlySummaryRequest,
+    service: Annotated[MonthlySummaryService, Depends(get_monthly_summary_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+):
+    month_start = date(generate_in.year, generate_in.month, 1)
+    user_id = user["id"]
+    summary = await service.generate_for_workspace_month(workspace_id, user_id, month_start)
+    return MonthlySummaryResponse.from_summary(summary)

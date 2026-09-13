@@ -10,10 +10,12 @@ _fetch_stock_price", ...)`` in existing tests keeps working unchanged.
 """
 
 import asyncio
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 
 import httpx
+from sqlalchemy import select
 
 from app.core.currency import (
     build_required_pairs as _build_required_pairs,
@@ -31,7 +33,7 @@ from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.models import FxRate
 from app.finance.repository import AccountRepository, FinanceSettingRepository, FxRateRepository
 from app.investing import service as core_service
-from app.investing.models import InstrumentType, PortfolioSnapshot
+from app.investing.models import Company, Dividend, Instrument, InstrumentType, PortfolioSnapshot
 from app.investing.repository import (
     CashBalanceRepository,
     HoldingPriceRepository,
@@ -40,9 +42,16 @@ from app.investing.repository import (
     PortfolioSnapshotRepository,
 )
 from app.investing.schemas import (
+    AssetClassAllocationItem,
+    DividendHistoryResponse,
     HoldingPriceBulkCreate,
     InvestingSummaryResponse,
+    MonthlyDividendPoint,
+    PerformanceHistoryPoint,
+    PerformanceHistoryResponse,
     PerformanceSummaryResponse,
+    PortfolioAllocationResponse,
+    SectorAllocationItem,
 )
 from app.investing.service import MONEY_QUANT
 
@@ -386,6 +395,269 @@ class PerformanceService:
             valuation_status=valuation_status,
             holdings_count=len(holdings),
             fx_rates_used=snapshot.fx_rates_used or {},
+        )
+
+    async def get_performance_history(
+        self,
+        workspace_id: int,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> PerformanceHistoryResponse:
+        configured_reporting_currency = "USD"
+        if self.finance_setting_repo is not None:
+            settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
+            if settings and settings.reporting_currency_code:
+                configured_reporting_currency = settings.reporting_currency_code.upper()
+
+        snapshots = (
+            await self.snapshot_repo.list_range(workspace_id, from_date, to_date)
+            if self.snapshot_repo is not None
+            else []
+        )
+        points: list[PerformanceHistoryPoint] = []
+        for s in snapshots:
+            unrealized = s.holdings_value - s.total_cost
+            unrealized_pct = (
+                (unrealized / s.total_cost * Decimal("100")).quantize(Decimal("0.01"))
+                if s.total_cost > 0
+                else None
+            )
+            points.append(
+                PerformanceHistoryPoint(
+                    snapshot_date=s.snapshot_date,
+                    holdings_value=s.holdings_value,
+                    total_cost=s.total_cost,
+                    total_value=s.total_value,
+                    cash_value=s.cash_value,
+                    unrealized_gain_loss=unrealized,
+                    unrealized_gain_loss_pct=unrealized_pct,
+                )
+            )
+        currency = snapshots[-1].currency_code if snapshots else configured_reporting_currency
+        return PerformanceHistoryResponse(currency=currency, points=points)
+
+    async def get_allocation_breakdown(
+        self,
+        workspace_id: int,
+        as_of: date | None = None,
+    ) -> PortfolioAllocationResponse:
+        today = as_of or datetime.now(UTC).date()
+        holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
+        open_holdings = [h for h in holdings if h.quantity != 0]
+
+        cash_balances = await self.cash_repo.get_latest_per_account_currency(workspace_id)
+        if self.account_repo is not None:
+            accounts, _ = await self.account_repo.list_workspace_accounts(
+                workspace_id, limit=10000, offset=0
+            )
+            brokerage_ids = {a.id for a in accounts if a.account_type == "brokerage"}
+            cash_balances = [c for c in cash_balances if c.account_id in brokerage_ids]
+
+        # Determine reporting currency
+        reporting_currency = "USD"
+        if self.finance_setting_repo is not None:
+            settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
+            if settings and settings.reporting_currency_code:
+                reporting_currency = settings.reporting_currency_code.upper()
+            elif open_holdings:
+                reporting_currency = open_holdings[0].currency.upper()
+            elif cash_balances:
+                reporting_currency = cash_balances[0].currency.upper()
+
+        # FX rates if needed
+        all_currencies = {h.currency.upper() for h in open_holdings} | {
+            c.currency.upper() for c in cash_balances
+        }
+        fx_lookup: dict[tuple[str, str], FxRate] = {}
+        if self.fx_rate_repo is not None and any(c != reporting_currency for c in all_currencies):
+            pairs = _build_required_pairs(all_currencies, reporting_currency)
+            as_of_dt = datetime.combine(today, datetime.max.time(), tzinfo=UTC)
+            fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
+                list(pairs), effective_display_as_of(as_of_dt)
+            )
+
+        # Get latest prices for open holdings
+        latest_prices = {}
+        if self.holding_price_repo is not None and open_holdings:
+            holding_ids = [h.id for h in open_holdings if h.id is not None]
+            latest_prices = await self.holding_price_repo.latest_prices_on_or_before_bulk(
+                workspace_id=workspace_id, holding_ids=holding_ids, as_of=today
+            )
+
+        # Preload Instruments and Companies
+        instrument_ids = [h.instrument_id for h in open_holdings if h.instrument_id is not None]
+        instruments: dict[int, Instrument] = {}
+        companies: dict[int, Company] = {}
+        if instrument_ids and self.instrument_repo is not None:
+            instruments = await self.instrument_repo.get_by_ids(instrument_ids)
+            company_ids = [
+                inst.company_id for inst in instruments.values() if inst.company_id is not None
+            ]
+            if company_ids:
+                comp_stmt = select(Company).where(Company.id.in_(company_ids))
+                comp_rows = (await self.holding_repo.session.execute(comp_stmt)).scalars().all()
+                companies = {c.id: c for c in comp_rows if c.id is not None}
+
+        # Calculate values converted to reporting currency
+        total_holdings_val = Decimal("0.00")
+        class_buckets: dict[str, dict[str, Any]] = {
+            "stock": {"label": "Stocks", "value": Decimal("0.00"), "count": 0},
+            "etf": {"label": "ETFs", "value": Decimal("0.00"), "count": 0},
+            "mutual_fund": {"label": "Mutual Funds", "value": Decimal("0.00"), "count": 0},
+            "cash": {"label": "Cash", "value": Decimal("0.00"), "count": 0},
+        }
+        sector_totals: dict[str, Decimal] = {}
+
+        for h in open_holdings:
+            p = latest_prices.get(h.id)
+            raw_val = h.quantity * (p.unit_price if p is not None else h.avg_cost)
+            converted = _convert_amount(raw_val, h.currency.upper(), reporting_currency, fx_lookup)
+            val = (converted if converted is not None else raw_val).quantize(Decimal("0.01"))
+            total_holdings_val += val
+
+            inst = instruments.get(h.instrument_id)
+            inst_type = inst.instrument_type if inst else "stock"
+            if inst_type not in class_buckets:
+                inst_type = "stock"
+            class_buckets[inst_type]["value"] += val
+            class_buckets[inst_type]["count"] += 1
+
+            # Sector
+            comp = companies.get(inst.company_id) if inst and inst.company_id else None
+            sector = (
+                comp.sector
+                if comp and comp.sector
+                else ("ETFs & Funds" if inst_type in ("etf", "mutual_fund") else "Unclassified")
+            )
+            sector_totals[sector] = sector_totals.get(sector, Decimal("0.00")) + val
+
+        # Cash balances
+        total_cash_val = Decimal("0.00")
+        for c in cash_balances:
+            c_converted = _convert_amount(
+                c.balance, c.currency.upper(), reporting_currency, fx_lookup
+            )
+            c_val = (c_converted if c_converted is not None else c.balance).quantize(
+                Decimal("0.01")
+            )
+            total_cash_val += c_val
+            class_buckets["cash"]["value"] += c_val
+            class_buckets["cash"]["count"] += 1
+
+        total_portfolio_val = total_holdings_val + total_cash_val
+
+        # Asset class allocation list
+        asset_classes: list[AssetClassAllocationItem] = []
+        for key, bucket in class_buckets.items():
+            val = bucket["value"]
+            pct = (
+                round(float((val / total_portfolio_val) * 100), 2)
+                if total_portfolio_val > 0
+                else 0.0
+            )
+            asset_classes.append(
+                AssetClassAllocationItem(
+                    key=key,
+                    label=bucket["label"],
+                    value=val,
+                    pct=pct,
+                    count=bucket["count"],
+                )
+            )
+
+        # Sector allocation list
+        sectors: list[SectorAllocationItem] = []
+        for sector_name, s_val in sorted(
+            sector_totals.items(), key=lambda item: item[1], reverse=True
+        ):
+            s_pct = (
+                round(float((s_val / total_portfolio_val) * 100), 2)
+                if total_portfolio_val > 0
+                else 0.0
+            )
+            sectors.append(
+                SectorAllocationItem(
+                    sector=sector_name,
+                    value=s_val,
+                    pct=s_pct,
+                )
+            )
+
+        return PortfolioAllocationResponse(
+            as_of_date=today,
+            currency=reporting_currency,
+            total_portfolio_value=total_portfolio_val.quantize(Decimal("0.01")),
+            holdings_value=total_holdings_val.quantize(Decimal("0.01")),
+            cash_value=total_cash_val.quantize(Decimal("0.01")),
+            asset_classes=asset_classes,
+            sectors=sectors,
+        )
+
+    async def get_dividend_history(self, workspace_id: int) -> DividendHistoryResponse:
+        configured_reporting_currency = "USD"
+        if self.finance_setting_repo is not None:
+            settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
+            if settings and settings.reporting_currency_code:
+                configured_reporting_currency = settings.reporting_currency_code.upper()
+
+        stmt = (
+            select(Dividend)
+            .where(Dividend.workspace_id == workspace_id)
+            .order_by(Dividend.pay_date.asc())
+        )
+        dividends = (await self.holding_repo.session.execute(stmt)).scalars().all()
+
+        if not dividends:
+            return DividendHistoryResponse(
+                currency=configured_reporting_currency,
+                total_dividends_received=Decimal("0.00"),
+                trailing_12m_dividends=Decimal("0.00"),
+                monthly_history=[],
+            )
+
+        currency = dividends[0].currency.upper() if dividends else configured_reporting_currency
+        monthly_map: dict[str, dict[str, Any]] = {}
+        today = datetime.now(UTC).date()
+        trailing_limit = today - timedelta(days=365)
+        total_received = Decimal("0.00")
+        trailing_12m = Decimal("0.00")
+
+        for d in dividends:
+            month_key = d.pay_date.strftime("%Y-%m")
+            bucket = monthly_map.setdefault(
+                month_key,
+                {
+                    "gross": Decimal("0.00"),
+                    "tax": Decimal("0.00"),
+                    "net": Decimal("0.00"),
+                    "count": 0,
+                },
+            )
+            bucket["gross"] += d.gross_amount
+            bucket["tax"] += d.tax_withheld
+            bucket["net"] += d.net_amount
+            bucket["count"] += 1
+
+            total_received += d.net_amount
+            if d.pay_date >= trailing_limit:
+                trailing_12m += d.net_amount
+
+        monthly_history = [
+            MonthlyDividendPoint(
+                month=m,
+                gross_amount=b["gross"].quantize(Decimal("0.01")),
+                tax_withheld=b["tax"].quantize(Decimal("0.01")),
+                net_amount=b["net"].quantize(Decimal("0.01")),
+                payment_count=b["count"],
+            )
+            for m, b in sorted(monthly_map.items(), key=lambda x: x[0])
+        ]
+
+        return DividendHistoryResponse(
+            currency=currency,
+            total_dividends_received=total_received.quantize(Decimal("0.01")),
+            trailing_12m_dividends=trailing_12m.quantize(Decimal("0.01")),
+            monthly_history=monthly_history,
         )
 
 

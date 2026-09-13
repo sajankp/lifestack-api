@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.summaries.models import WeeklySummary, WorkspaceSummarySetting
+from app.summaries.models import MonthlySummary, WeeklySummary, WorkspaceSummarySetting
 
 
 class WeeklySummaryRepository:
@@ -168,3 +168,87 @@ class WorkspaceSummarySettingRepository:
             if ws_day == day_of_week and ws_hour == hour_utc:
                 due.append(workspace_id)
         return due
+
+
+class MonthlySummaryRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def list(
+        self,
+        workspace_id: int,
+        from_date: date | None,
+        to_date: date | None,
+        limit: int,
+        offset: int,
+    ):
+        q = select(MonthlySummary).where(
+            MonthlySummary.workspace_id == workspace_id,
+            MonthlySummary.superseded_by_id.is_(None),
+        )
+        cq = (
+            select(func.count())
+            .select_from(MonthlySummary)
+            .where(
+                MonthlySummary.workspace_id == workspace_id,
+                MonthlySummary.superseded_by_id.is_(None),
+            )
+        )
+        if from_date:
+            q = q.where(MonthlySummary.month_start >= from_date)
+            cq = cq.where(MonthlySummary.month_start >= from_date)
+        if to_date:
+            q = q.where(MonthlySummary.month_end <= to_date)
+            cq = cq.where(MonthlySummary.month_end <= to_date)
+        q = q.order_by(MonthlySummary.month_start.desc()).offset(offset).limit(limit)
+        return list((await self.session.execute(q)).scalars().all()), int(
+            (await self.session.execute(cq)).scalar_one()
+        )
+
+    async def latest(self, workspace_id: int):
+        return (
+            await self.session.execute(
+                select(MonthlySummary)
+                .where(
+                    MonthlySummary.workspace_id == workspace_id,
+                    MonthlySummary.superseded_by_id.is_(None),
+                )
+                .order_by(MonthlySummary.month_start.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    async def by_public_id(self, workspace_id: int, public_id):
+        return (
+            await self.session.execute(
+                select(MonthlySummary).where(
+                    MonthlySummary.workspace_id == workspace_id,
+                    MonthlySummary.public_id == public_id,
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def mark_read(self, summary: MonthlySummary) -> MonthlySummary:
+        if summary.read_at is None:
+            summary.read_at = datetime.now(UTC)
+            await self.session.flush()
+        return summary
+
+    async def supersede(
+        self, old: MonthlySummary, new: MonthlySummary, reason: str | None
+    ) -> MonthlySummary:
+        new.regenerated_at = datetime.now(UTC)
+        new.regeneration_reason = reason
+
+        old.superseded_by_id = old.id
+        self.session.add(old)
+        await self.session.flush()
+
+        self.session.add(new)
+        await self.session.flush()
+
+        old.superseded_by_id = new.id
+        self.session.add(old)
+        await self.session.flush()
+        await self.session.refresh(new)
+        return new

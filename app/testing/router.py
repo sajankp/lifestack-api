@@ -27,8 +27,8 @@ from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.platform.repository import WorkspaceRepository
 from app.spending.models import RecurringTransaction
-from app.summaries.repository import WeeklySummaryRepository
-from app.summaries.service import WeeklySummaryService
+from app.summaries.repository import MonthlySummaryRepository, WeeklySummaryRepository
+from app.summaries.service import MonthlySummaryService, WeeklySummaryService
 
 router = APIRouter(prefix="/e2e", tags=["testing"])
 
@@ -45,12 +45,24 @@ class WeeklySummaryWorkflowRunResponse(BaseModel):
     week_end: date
 
 
+class MonthlySummaryWorkflowRunResponse(BaseModel):
+    status: str = "ok"
+    summary_public_id: str
+    year: int
+    month: int
+
+
 class RecurringTransactionTriggerRequest(BaseModel):
     description: str = Field(..., min_length=1, max_length=500)
 
 
 class WeeklySummaryTriggerRequest(BaseModel):
     week_start: date | None = None
+
+
+class MonthlySummaryTriggerRequest(BaseModel):
+    year: int | None = None
+    month: int | None = None
 
 
 class FxRateSeedRequest(BaseModel):
@@ -166,4 +178,40 @@ async def trigger_weekly_summary(
         summary_public_id=str(summary.public_id),
         week_start=summary.week_start,
         week_end=summary.week_end,
+    )
+
+
+@router.post("/workflows/monthly-summary", response_model=MonthlySummaryWorkflowRunResponse)
+async def trigger_monthly_summary(
+    payload: MonthlySummaryTriggerRequest,
+    user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("owner"))],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    workspace_repo: Annotated[WorkspaceRepository, Depends(get_workspace_repo)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> MonthlySummaryWorkflowRunResponse:
+    await _active_workspace_or_404(workspace_id, workspace_repo)
+    today = datetime.now(UTC).date()
+    if today.month == 1:
+        default_year = today.year - 1
+        default_month = 12
+    else:
+        default_year = today.year
+        default_month = today.month - 1
+
+    target_year = payload.year or default_year
+    target_month = payload.month or default_month
+
+    service = MonthlySummaryService(
+        MonthlySummaryRepository(session),
+        session,
+        NotificationService(NotificationRepository(session)),
+    )
+    summary = await service.generate_for_workspace_month(
+        workspace_id, user["id"], target_year, target_month
+    )
+    return MonthlySummaryWorkflowRunResponse(
+        summary_public_id=str(summary.public_id),
+        year=summary.year,
+        month=summary.month,
     )
