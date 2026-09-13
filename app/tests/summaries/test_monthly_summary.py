@@ -218,3 +218,171 @@ async def test_compose_range_date_bounds():
     assert "highlights" in composed
     assert composed["spending_summary"]["status"] in ("complete", "unavailable")
     assert composed["investing_summary"]["status"] in ("complete", "unavailable")
+
+
+@pytest.mark.asyncio
+async def test_monthly_summary_supersede_chain():
+    """Verify that MonthlySummaryRepository.supersede correctly links old -> new -> newer
+    preserving regeneration reason and timestamp while updating superseded_by_id."""
+    from app.summaries.repository import MonthlySummaryRepository
+
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    id_counter = 1
+
+    async def fake_flush():
+        nonlocal id_counter
+        # If any added object lacks an id, assign one
+        for call_args in session.add.call_args_list:
+            obj = call_args[0][0]
+            if getattr(obj, "id", None) is None:
+                obj.id = id_counter
+                id_counter += 1
+
+    session.flush.side_effect = fake_flush
+    session.refresh = AsyncMock()
+
+    repo = MonthlySummaryRepository(session)
+
+    # Initial summary
+    initial = MonthlySummary(
+        id=1,
+        public_id=uuid.uuid4(),
+        workspace_id=1,
+        month_start=date(2026, 6, 1),
+        month_end=date(2026, 6, 30),
+        todo_summary={},
+        spending_summary={},
+        investing_summary={},
+        highlights={},
+        superseded_by_id=None,
+    )
+
+    # First regeneration
+    id_counter = 2
+    v2 = MonthlySummary(
+        id=None,
+        public_id=uuid.uuid4(),
+        workspace_id=1,
+        month_start=date(2026, 6, 1),
+        month_end=date(2026, 6, 30),
+        todo_summary={},
+        spending_summary={},
+        investing_summary={},
+        highlights={},
+        superseded_by_id=None,
+    )
+
+    result_v2 = await repo.supersede(initial, v2, reason="Statement reconciled")
+    assert initial.superseded_by_id == 2
+    assert result_v2.id == 2
+    assert result_v2.regeneration_reason == "Statement reconciled"
+    assert result_v2.regenerated_at is not None
+    assert result_v2.superseded_by_id is None
+
+    # Second regeneration (chaining v2 -> v3)
+    id_counter = 3
+    v3 = MonthlySummary(
+        id=None,
+        public_id=uuid.uuid4(),
+        workspace_id=1,
+        month_start=date(2026, 6, 1),
+        month_end=date(2026, 6, 30),
+        todo_summary={},
+        spending_summary={},
+        investing_summary={},
+        highlights={},
+        superseded_by_id=None,
+    )
+
+    result_v3 = await repo.supersede(v2, v3, reason="Tax adjustments")
+    assert v2.superseded_by_id == 3
+    assert result_v3.id == 3
+    assert result_v3.regeneration_reason == "Tax adjustments"
+    assert result_v3.superseded_by_id is None
+    # Verify initial still points to v2
+    assert initial.superseded_by_id == 2
+
+
+@pytest.mark.asyncio
+async def test_spend_pacing_edge_cases_past_future_zero_budget():
+    """Verify SpendPacingService edge cases: past month (100% elapsed),
+    future month (0% elapsed), and zero-budget workspace."""
+    from app.spending.service import BudgetService
+
+    session = AsyncMock()
+    session.add = MagicMock()  # avoid coroutine warning
+    budget_repo = MagicMock()
+    budget_repo.session = session
+    category_repo = MagicMock()
+
+    service = BudgetService(budget_repo, category_repo)
+
+    # 1. Past month: 2025-01 (days_elapsed == days_in_month, days_remaining == 0)
+    past_month = date(2025, 1, 1)
+
+    # Mock SQL executions
+    # execute calls:
+    # 1. actual_spend sum -> 500
+    # 2. fixed_spend sum -> 200
+    # 3. currency_code -> "USD"
+    # 4. total_budget sum -> 1000
+    # 5. budgets query -> empty list
+    exec_count = 0
+
+    def mock_exec(*args, **kwargs):
+        nonlocal exec_count
+        exec_count += 1
+        mock_result = MagicMock()
+        if exec_count in (1, 2, 4):
+            mock_result.scalar_one.return_value = (
+                500 if exec_count == 1 else (200 if exec_count == 2 else 1000)
+            )
+        elif exec_count == 3:
+            mock_result.scalar_one_or_none.return_value = "USD"
+        else:
+            mock_result.scalars.return_value.all.return_value = []
+        return mock_result
+
+    session.execute.side_effect = AsyncMock(side_effect=mock_exec)
+
+    res_past = await service.get_spend_pacing(workspace_id=1, target_month=past_month)
+    assert res_past.days_elapsed == 31
+    assert res_past.days_remaining == 0
+    assert res_past.month_progress_pct == 100.0
+    assert res_past.actual_spend == Decimal("500")
+    assert res_past.fixed_spend == Decimal("200")
+    assert res_past.discretionary_spend == Decimal("300")
+
+    # 2. Future month: 2030-01 (days_elapsed == 0, days_remaining == 31)
+    future_month = date(2030, 1, 1)
+    exec_count = 0
+    res_future = await service.get_spend_pacing(workspace_id=1, target_month=future_month)
+    assert res_future.days_elapsed == 0
+    assert res_future.days_remaining == 31
+    assert res_future.month_progress_pct == 0.0
+
+    # 3. Zero budget: total_budget == 0
+    exec_count = 0
+
+    def mock_exec_zero_budget(*args, **kwargs):
+        nonlocal exec_count
+        exec_count += 1
+        mock_result = MagicMock()
+        if exec_count in (1, 2):
+            mock_result.scalar_one.return_value = 0
+        elif exec_count == 3:
+            mock_result.scalar_one_or_none.return_value = "USD"
+        elif exec_count == 4:
+            mock_result.scalar_one.return_value = 0  # 0 budget
+        else:
+            mock_result.scalars.return_value.all.return_value = []
+        return mock_result
+
+    session.execute.side_effect = AsyncMock(side_effect=mock_exec_zero_budget)
+    res_zero = await service.get_spend_pacing(workspace_id=1, target_month=past_month)
+    assert res_zero.total_budget is None
+    assert res_zero.budget_consumed_pct is None
+    assert res_zero.status == "no_budget"
+

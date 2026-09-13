@@ -2351,6 +2351,17 @@ class BudgetService:
     async def get_spend_pacing(
         self, workspace_id: int, target_month: date | None = None
     ) -> SpendPacingResponse:
+        """Compute month-to-date spend pacing against budgets, category pacing items,
+        and fixed vs. discretionary burn velocity.
+
+        Heuristic note on Fixed vs. Discretionary classification:
+        Expenses linked to a recurring transaction template (`recurring_transaction_id IS NOT NULL`)
+        are classified as 'fixed' (survival commitments, subscriptions, rent, debt servicing).
+        The remainder (`actual_spend - fixed_spend`) is classified as 'discretionary' (lifestyle spending).
+        While some recurring expenses can be discretionary (e.g. streaming services) and certain one-off
+        spikes may be mandatory/fixed, this heuristic serves as an effective operational proxy in v1
+        prior to user-defined category/tag classification rules in future tiers.
+        """
         today = datetime.now(UTC).date()
         month_date = today.replace(day=1) if target_month is None else target_month.replace(day=1)
 
