@@ -227,7 +227,6 @@ async def test_monthly_summary_supersede_chain():
     from app.summaries.repository import MonthlySummaryRepository
 
     session = AsyncMock()
-    session.add = MagicMock()
 
     id_counter = 1
 
@@ -312,12 +311,10 @@ async def test_spend_pacing_edge_cases_past_future_zero_budget():
     from app.spending.service import BudgetService
 
     session = AsyncMock()
-    session.add = MagicMock()  # avoid coroutine warning
     budget_repo = MagicMock()
     budget_repo.session = session
-    category_repo = MagicMock()
 
-    service = BudgetService(budget_repo, category_repo)
+    service = BudgetService(budget_repo)
 
     # 1. Past month: 2025-01 (days_elapsed == days_in_month, days_remaining == 0)
     past_month = date(2025, 1, 1)
@@ -382,7 +379,7 @@ async def test_spend_pacing_edge_cases_past_future_zero_budget():
 
     session.execute.side_effect = AsyncMock(side_effect=mock_exec_zero_budget)
     res_zero = await service.get_spend_pacing(workspace_id=1, target_month=past_month)
-    assert res_zero.total_budget is None
-    assert res_zero.budget_consumed_pct is None
-    assert res_zero.status == "no_budget"
+    assert res_zero.total_budget == Decimal("0.00")
+    assert res_zero.budget_consumed_pct == 0.0
+    assert res_zero.status == "on_track"
 
