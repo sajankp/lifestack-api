@@ -5,12 +5,20 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.investing.models import Company, Dividend, Holding, Instrument, InstrumentType
+from app.investing.models import (
+    Company,
+    Dividend,
+    Holding,
+    Instrument,
+    InstrumentConstituent,
+    InstrumentType,
+)
 from app.investing.performance_service import PerformanceService
 from app.investing.schemas import (
     DividendHistoryResponse,
     PortfolioAllocationResponse,
 )
+from app.investing.service import ExposureAnalyticsService
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -248,9 +256,6 @@ async def test_benchmark_alpha_calculation():
 @pytest.mark.asyncio
 async def test_constituent_quarterly_staleness_threshold():
     """Verify that constituent snapshots within 90 days (1 quarter) are not flagged as stale."""
-    from app.investing.models import InstrumentConstituent
-    from app.investing.service import ExposureAnalyticsService
-
     holding_repo = MagicMock()
     h = Holding(
         id=1,
@@ -305,5 +310,3 @@ async def test_constituent_quarterly_staleness_threshold():
     # Since staleness threshold is 90 days (1 quarter), 60d snapshot should NOT trigger stale warning
     assert res.staleness_days == 90
     assert not any("Stale constituent snapshot" in w for w in res.warnings)
-
-

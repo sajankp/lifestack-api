@@ -45,11 +45,13 @@ account_id: int | None = Field(default=None, index=True)
 ```
 plus a composite FK constraint matching `SpendingTransaction`'s pattern (`__table_args__`):
 ```python
-sa.ForeignKeyConstraint(
-    ["account_id", "workspace_id"],
-    ["accounts.id", "accounts.workspace_id"],
-    name="fk_recurring_transactions_account_workspace",
-),
+(
+    sa.ForeignKeyConstraint(
+        ["account_id", "workspace_id"],
+        ["accounts.id", "accounts.workspace_id"],
+        name="fk_recurring_transactions_account_workspace",
+    ),
+)
 ```
 Column is nullable at the DB level — existing rows get `NULL` (not backfilled; see
 Retroactivity below). Alembic migration: `add_column` + FK, with a working `downgrade()`

@@ -8,7 +8,9 @@ from pydantic import ValidationError
 
 from app.investing.schemas import PerformanceHistoryPoint, PerformanceHistoryResponse
 from app.spending.schemas import SpendPacingResponse
+from app.spending.service import BudgetService
 from app.summaries.models import MonthlySummary
+from app.summaries.repository import MonthlySummaryRepository
 from app.summaries.schemas import (
     GenerateMonthlySummaryRequest,
     MonthlySummaryResponse,
@@ -224,8 +226,6 @@ async def test_compose_range_date_bounds():
 async def test_monthly_summary_supersede_chain():
     """Verify that MonthlySummaryRepository.supersede correctly links old -> new -> newer
     preserving regeneration reason and timestamp while updating superseded_by_id."""
-    from app.summaries.repository import MonthlySummaryRepository
-
     session = AsyncMock()
 
     id_counter = 1
@@ -308,8 +308,6 @@ async def test_monthly_summary_supersede_chain():
 async def test_spend_pacing_edge_cases_past_future_zero_budget():
     """Verify SpendPacingService edge cases: past month (100% elapsed),
     future month (0% elapsed), and zero-budget workspace."""
-    from app.spending.service import BudgetService
-
     session = AsyncMock()
     budget_repo = MagicMock()
     budget_repo.session = session
@@ -388,7 +386,6 @@ async def test_spend_pacing_edge_cases_past_future_zero_budget():
 
 @pytest.mark.asyncio
 async def test_cross_module_behavioral_correlations():
-    from app.summaries.service import WeeklySummaryService
     session = AsyncMock()
     repo = MagicMock()
     notif = MagicMock()
@@ -399,17 +396,25 @@ async def test_cross_module_behavioral_correlations():
     service._health_summary = AsyncMock(return_value={"status": "complete", "log_count": 10})
     service._dividend_summary = AsyncMock(return_value={"status": "unavailable", "count": 0})
     service._net_worth_summary = AsyncMock(return_value={"status": "unavailable"})
-    service._return_metrics_summary = AsyncMock(return_value={"status": "unavailable", "notable": False})
+    service._return_metrics_summary = AsyncMock(
+        return_value={"status": "unavailable", "notable": False}
+    )
 
     # High productivity: 10 created, 9 completed (90% completion rate)
     # Zero budget overruns
-    service._spending_summary = AsyncMock(return_value=({
-        "budgets_breached": 0,
-        "recurring_generated_count": 0,
-    }, []))
+    service._spending_summary = AsyncMock(
+        return_value=(
+            {
+                "budgets_breached": 0,
+                "recurring_generated_count": 0,
+            },
+            [],
+        )
+    )
 
     # Mock sql queries for todos and spending
     exec_count = 0
+
     def mock_exec(*args, **kwargs):
         nonlocal exec_count
         exec_count += 1
@@ -440,5 +445,3 @@ async def test_cross_module_behavioral_correlations():
     types = [c["type"] for c in res["behavioral_correlations"]]
     assert "productivity_budget_synergy" in types
     assert "health_routine_active" in types
-
-

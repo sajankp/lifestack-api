@@ -83,7 +83,9 @@ Both routes get a thin cache-aside wrapper — no changes to `DashboardSummaryWo
 ```python
 @router.get("/summary", response_model=DashboardSummary)
 async def get_summary(
-    dashboard_workflow: Annotated[DashboardSummaryWorkflow, Depends(get_dashboard_summary_workflow)],
+    dashboard_workflow: Annotated[
+        DashboardSummaryWorkflow, Depends(get_dashboard_summary_workflow)
+    ],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     cache: Annotated[ResponseCache, Depends(get_response_cache)],
 ):
@@ -91,7 +93,9 @@ async def get_summary(
     if cached := await cache.get_json(key):
         return cached
     result = await dashboard_workflow.get_summary(workspace_id)
-    await cache.set_json(key, result.model_dump(mode="json"), ttl_seconds=settings.DASHBOARD_CACHE_TTL_SECONDS)
+    await cache.set_json(
+        key, result.model_dump(mode="json"), ttl_seconds=settings.DASHBOARD_CACHE_TTL_SECONDS
+    )
     return result
 ```
 

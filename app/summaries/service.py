@@ -423,7 +423,11 @@ class WeeklySummaryService:
         budgets_breached_count = sum(1 for c in category_expenses if c.get("budget_breached"))
 
         # 1. High Productivity + Budget Discipline
-        if completion_rate is not None and completion_rate >= Decimal("80") and budgets_breached_count == 0:
+        if (
+            completion_rate is not None
+            and completion_rate >= Decimal("80")
+            and budgets_breached_count == 0
+        ):
             correlations.append({
                 "type": "productivity_budget_synergy",
                 "title": "Strong Execution & Discipline",
