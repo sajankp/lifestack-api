@@ -87,6 +87,7 @@ class MonthlySummaryResponse(BaseModel):
     dividend_summary: dict | None = None
     net_worth_summary: dict | None = None
     return_metrics_summary: dict | None = None
+    behavioral_correlations: list[dict] | None = None
     highlights: dict
     read_at: datetime | None = None
     regenerated_at: datetime | None = None

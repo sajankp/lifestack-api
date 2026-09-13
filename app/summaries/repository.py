@@ -240,10 +240,6 @@ class MonthlySummaryRepository:
         new.regenerated_at = datetime.now(UTC)
         new.regeneration_reason = reason
 
-        old.superseded_by_id = old.id
-        self.session.add(old)
-        await self.session.flush()
-
         self.session.add(new)
         await self.session.flush()
 

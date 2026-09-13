@@ -201,3 +201,46 @@ async def test_dividend_history_aggregation():
     assert m2.month == "2026-08"
     assert m2.net_amount == Decimal("93.50")
     assert m2.payment_count == 1
+
+
+@pytest.mark.asyncio
+async def test_benchmark_alpha_calculation():
+    snapshot_repo = MagicMock()
+    s1 = MagicMock()
+    s1.snapshot_date = date(2026, 1, 1)
+    s1.holdings_value = Decimal("10000.00")
+    s1.total_cost = Decimal("8000.00")
+    s1.total_value = Decimal("10000.00")
+    s1.cash_value = Decimal("0.00")
+    s1.currency_code = "USD"
+
+    s2 = MagicMock()
+    s2.snapshot_date = date(2026, 7, 1)  # ~181 days later
+    s2.holdings_value = Decimal("12000.00")
+    s2.total_cost = Decimal("8000.00")
+    s2.total_value = Decimal("12000.00")
+    s2.cash_value = Decimal("0.00")
+    s2.currency_code = "USD"
+
+    snapshot_repo.list_range = AsyncMock(return_value=[s1, s2])
+
+    service = PerformanceService(
+        holding_repo=MagicMock(),
+        cash_repo=MagicMock(),
+        holding_price_repo=MagicMock(),
+        snapshot_repo=snapshot_repo,
+    )
+
+    res = await service.get_performance_history(workspace_id=1)
+    assert res.benchmark_symbol == "SPY"
+    assert len(res.points) == 2
+    assert res.points[0].benchmark_return_pct == Decimal("0.00")
+    assert res.points[0].benchmark_value == Decimal("10000.00")
+
+    # s2 portfolio return = +20% (10000 -> 12000)
+    # Benchmark return ~4.8% (10% annualized over half a year)
+    assert res.points[1].benchmark_return_pct is not None
+    assert res.benchmark_return_pct is not None
+    assert res.alpha_pct is not None
+    assert res.alpha_pct > Decimal("0")  # Portfolio outperformed benchmark!
+
