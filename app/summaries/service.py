@@ -463,7 +463,6 @@ class WeeklySummaryService:
             "dividend_summary": dividend_summary,
             "net_worth_summary": net_worth_summary,
             "return_metrics_summary": return_metrics_summary,
-            "behavioral_correlations": correlations,
             "highlights": {
                 "flags": flags,
                 "behavioral_correlations": correlations,
