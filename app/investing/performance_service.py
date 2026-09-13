@@ -414,8 +414,6 @@ class PerformanceService:
             if self.snapshot_repo is not None
             else []
         )
-        base_date = snapshots[0].snapshot_date if snapshots else None
-        base_value = snapshots[0].total_value if snapshots else Decimal("0")
         points: list[PerformanceHistoryPoint] = []
         for s in snapshots:
             unrealized = s.holdings_value - s.total_cost
@@ -424,16 +422,6 @@ class PerformanceService:
                 if s.total_cost > 0
                 else None
             )
-            # Compute benchmark return index for timeline (10% annualized market baseline proxy)
-            bm_return_pct: Decimal | None = None
-            bm_val: Decimal | None = None
-            if base_date is not None:
-                days_diff = (s.snapshot_date - base_date).days
-                cagr_factor = Decimal(str(pow(1.10, days_diff / 365.25))) - Decimal("1")
-                bm_return_pct = (cagr_factor * Decimal("100")).quantize(Decimal("0.01"))
-                if base_value > 0:
-                    bm_val = (base_value * (Decimal("1") + cagr_factor)).quantize(Decimal("0.01"))
-
             points.append(
                 PerformanceHistoryPoint(
                     snapshot_date=s.snapshot_date,
@@ -443,26 +431,10 @@ class PerformanceService:
                     cash_value=s.cash_value,
                     unrealized_gain_loss=unrealized,
                     unrealized_gain_loss_pct=unrealized_pct,
-                    benchmark_value=bm_val,
-                    benchmark_return_pct=bm_return_pct,
                 )
             )
         currency = snapshots[-1].currency_code if snapshots else configured_reporting_currency
-        benchmark_return_pct = points[-1].benchmark_return_pct if points else None
-        alpha_pct: Decimal | None = None
-        if points and base_value > 0 and benchmark_return_pct is not None:
-            portfolio_return_pct = (
-                (points[-1].total_value - base_value) / base_value * Decimal("100")
-            ).quantize(Decimal("0.01"))
-            alpha_pct = (portfolio_return_pct - benchmark_return_pct).quantize(Decimal("0.01"))
-
-        return PerformanceHistoryResponse(
-            currency=currency,
-            points=points,
-            benchmark_symbol="SPY",
-            benchmark_return_pct=benchmark_return_pct,
-            alpha_pct=alpha_pct,
-        )
+        return PerformanceHistoryResponse(currency=currency, points=points)
 
     async def get_allocation_breakdown(
         self,
