@@ -9,6 +9,7 @@ from app.core.dependencies import (
     get_audit_logger,
     get_current_user,
     get_current_workspace_id,
+    get_finance_account_repo,
     get_finance_account_service,
     get_investing_analytics_service,
     get_investing_cash_balance_service,
@@ -26,6 +27,7 @@ from app.core.dependencies import (
     require_min_role,
 )
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
+from app.finance.repository import AccountRepository
 from app.finance.service import AccountService
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService, PerformanceService
@@ -746,11 +748,13 @@ async def delete_corporate_action(
     await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
 
 
-def _dividend_response(dividend, account) -> DividendResponse:
+def _dividend_response(dividend, account, credit_account=None) -> DividendResponse:
     return DividendResponse.model_validate({
         "public_id": dividend.public_id,
         "account_id": account.public_id,
         "account_name": account.name,
+        "credit_account_id": credit_account.public_id if credit_account else None,
+        "credit_account_name": credit_account.name if credit_account else None,
         "holding_id": None,
         "symbol": dividend.symbol,
         "income_type": dividend.income_type,
@@ -770,6 +774,7 @@ def _dividend_response(dividend, account) -> DividendResponse:
 async def create_dividend(
     dividend_in: DividendCreate,
     dividend_service: Annotated[DividendService, Depends(get_investing_dividend_service)],
+    account_repo: Annotated[AccountRepository, Depends(get_finance_account_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -781,7 +786,12 @@ async def create_dividend(
         dividend_in=dividend_in,
         audit_logger=audit_logger,
     )
-    return _dividend_response(dividend, account)
+    credit_account = (
+        await account_repo.get_by_id(workspace_id, dividend.credit_account_id)
+        if dividend.credit_account_id
+        else None
+    )
+    return _dividend_response(dividend, account, credit_account)
 
 
 @router.get("/dividends", response_model=PaginatedResponse[DividendResponse])
@@ -797,7 +807,13 @@ async def list_dividends(
         workspace_id, pagination.limit, pagination.offset, account_id=account_id, symbol=symbol
     )
     items = [
-        _dividend_response(d, accounts[d.account_id]) for d in rows if d.account_id in accounts
+        _dividend_response(
+            d,
+            accounts[d.account_id],
+            accounts.get(d.credit_account_id) if d.credit_account_id else None,
+        )
+        for d in rows
+        if d.account_id in accounts
     ]
     return build_page(items, total, pagination)
 
@@ -815,11 +831,17 @@ async def get_dividend_history(
 async def get_dividend(
     dividend_id: uuid.UUID,
     dividend_service: Annotated[DividendService, Depends(get_investing_dividend_service)],
+    account_repo: Annotated[AccountRepository, Depends(get_finance_account_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
 ):
     dividend, account = await dividend_service.get_dividend(workspace_id, dividend_id)
-    return _dividend_response(dividend, account)
+    credit_account = (
+        await account_repo.get_by_id(workspace_id, dividend.credit_account_id)
+        if dividend.credit_account_id
+        else None
+    )
+    return _dividend_response(dividend, account, credit_account)
 
 
 @router.patch("/dividends/{dividend_id}", response_model=DividendResponse)
@@ -827,6 +849,7 @@ async def update_dividend(
     dividend_id: uuid.UUID,
     dividend_in: DividendUpdate,
     dividend_service: Annotated[DividendService, Depends(get_investing_dividend_service)],
+    account_repo: Annotated[AccountRepository, Depends(get_finance_account_repo)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     user: Annotated[dict, Depends(get_current_user)],
     audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
@@ -839,7 +862,12 @@ async def update_dividend(
         actor_id=user["id"],
         audit_logger=audit_logger,
     )
-    return _dividend_response(dividend, account)
+    credit_account = (
+        await account_repo.get_by_id(workspace_id, dividend.credit_account_id)
+        if dividend.credit_account_id
+        else None
+    )
+    return _dividend_response(dividend, account, credit_account)
 
 
 @router.delete("/dividends/{dividend_id}", status_code=status.HTTP_204_NO_CONTENT)

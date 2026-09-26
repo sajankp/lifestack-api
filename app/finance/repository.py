@@ -465,22 +465,35 @@ class AccountRepository(BaseRepository[Account]):
         orders_net = Decimal(str(orders_result[0] or "0"))
         order_count = int(orders_result[1] or 0)
 
-        # Dividend/income cash impact (spec-073 INV-2): a dividend credits cash
+        # Dividend/income cash impact (spec-073 INV-2, spec-097): a dividend credits cash
         # with no offsetting debit anywhere, so — like orders — it must appear
         # on the projected side too, or it manufactures a permanent discrepancy
         # equal to the dividend total.
-        dividend_row = await self.session.execute(
-            select(
-                func.coalesce(func.sum(Dividend.net_amount), Decimal("0")),
-                func.count(Dividend.id),
-            ).where(
-                Dividend.workspace_id == workspace_id,
-                Dividend.account_id == account_id,
+        # spec-097: Only dividends credited to this brokerage account as a cash snapshot
+        # appear here. For bank/wallet accounts, the dividend created a spending transaction,
+        # which is already captured in ledger_balance above.
+        dividend_net = Decimal("0")
+        dividend_count = 0
+        account_row = await self.session.execute(
+            select(Account.account_type).where(
+                Account.workspace_id == workspace_id,
+                Account.id == account_id,
             )
         )
-        dividend_result = dividend_row.one()
-        dividend_net = Decimal(str(dividend_result[0] or "0"))
-        dividend_count = int(dividend_result[1] or 0)
+        acc_type = account_row.scalar_one_or_none()
+        if acc_type == "brokerage":
+            dividend_row = await self.session.execute(
+                select(
+                    func.coalesce(func.sum(Dividend.net_amount), Decimal("0")),
+                    func.count(Dividend.id),
+                ).where(
+                    Dividend.workspace_id == workspace_id,
+                    func.coalesce(Dividend.credit_account_id, Dividend.account_id) == account_id,
+                )
+            )
+            dividend_result = dividend_row.one()
+            dividend_net = Decimal(str(dividend_result[0] or "0"))
+            dividend_count = int(dividend_result[1] or 0)
 
         projected_balance = ledger_balance + orders_net + dividend_net
 
