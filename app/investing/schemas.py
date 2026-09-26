@@ -497,6 +497,7 @@ class PerformanceHistoryResponse(BaseModel):
 
 class DividendCreate(BaseModel):
     account_id: uuid.UUID
+    credit_account_id: uuid.UUID | None = None
     symbol: str | None = Field(default=None, min_length=1, max_length=20)
     income_type: str = Field(default="dividend")
     gross_amount: Decimal = Field(..., gt=0, decimal_places=2)
@@ -533,6 +534,7 @@ class DividendCreate(BaseModel):
 
 
 class DividendUpdate(BaseModel):
+    credit_account_id: uuid.UUID | None = None
     symbol: str | None = Field(default=None, min_length=1, max_length=20)
     income_type: str | None = None
     gross_amount: Decimal | None = Field(default=None, gt=0, decimal_places=2)
@@ -564,6 +566,8 @@ class DividendResponse(BaseModel):
     public_id: uuid.UUID
     account_id: uuid.UUID
     account_name: str
+    credit_account_id: uuid.UUID | None = None
+    credit_account_name: str | None = None
     holding_id: uuid.UUID | None = None
     symbol: str | None = None
     income_type: str
@@ -582,6 +586,7 @@ class DividendResponse(BaseModel):
 
 class DividendBulkImportRow(BaseModel):
     account_id: uuid.UUID
+    credit_account_id: uuid.UUID | None = None
     symbol: str | None = Field(default=None, max_length=20)
     income_type: str = Field(default="dividend")
     gross_amount: Decimal = Field(..., gt=0, decimal_places=2)

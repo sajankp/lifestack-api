@@ -1037,7 +1037,12 @@ class DividendRepository(BaseRepository[Dividend]):
     ) -> tuple[Sequence[Dividend], int]:
         base = select(Dividend).where(Dividend.workspace_id == workspace_id)
         if account_id is not None:
-            base = base.where(Dividend.account_id == account_id)
+            base = base.where(
+                or_(
+                    Dividend.account_id == account_id,
+                    Dividend.credit_account_id == account_id,
+                )
+            )
         if symbol is not None:
             base = base.where(Dividend.symbol == symbol.upper())
         total = (

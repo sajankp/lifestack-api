@@ -12,6 +12,7 @@ from app.core.dependencies import (
     get_current_user,
     get_current_workspace_id,
     get_finance_account_service,
+    get_finance_activity_feed_service,
     get_finance_currency_service,
     get_finance_fx_rate_service,
     get_finance_net_worth_service,
@@ -23,6 +24,8 @@ from app.core.dependencies import (
 )
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
+from app.finance.activity_schemas import ActivityFeedResponse
+from app.finance.activity_service import ActivityFeedService
 from app.finance.models import CurrencyDisplayPreference
 from app.finance.schemas import (
     AccountBalanceResponse,
@@ -556,3 +559,27 @@ async def delete_net_worth_user_point(
     _role: Annotated[object, Depends(require_min_role("member"))],
 ):
     await net_worth_service.delete_user_point(workspace_id, point_id)
+
+
+@router.get("/activity-feed", response_model=ActivityFeedResponse)
+async def get_activity_feed(
+    activity_service: Annotated[ActivityFeedService, Depends(get_finance_activity_feed_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    account_id: uuid.UUID | None = None,
+    event_types: str | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    type_list = [t.strip() for t in event_types.split(",") if t.strip()] if event_types else None
+    return await activity_service.get_activity_feed(
+        workspace_id=workspace_id,
+        account_id=account_id,
+        event_types=type_list,
+        from_date=from_date,
+        to_date=to_date,
+        limit=min(limit, 200),
+        offset=offset,
+    )

@@ -20,6 +20,7 @@ from app.core.database.postgres import get_db_session
 from app.core.exceptions import ForbiddenError
 from app.exports.repository import ExportRepository
 from app.exports.service import ExportService
+from app.finance.activity_service import ActivityFeedService
 from app.finance.repository import (
     AccountRepository,
     CapitalTransferRepository,
@@ -424,6 +425,13 @@ async def get_finance_account_repo(
     return AccountRepository(session)
 
 
+async def get_finance_activity_feed_service(
+    session: AsyncSession = Depends(get_db_session),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+) -> ActivityFeedService:
+    return ActivityFeedService(session, account_repo)
+
+
 async def get_investing_order_repo(
     session: AsyncSession = Depends(get_db_session),
 ) -> InvestingOrderRepository:
@@ -464,8 +472,18 @@ async def get_investing_dividend_service(
     account_repo: AccountRepository = Depends(get_finance_account_repo),
     holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
+    transaction_repo: TransactionRepository = Depends(get_transaction_repo),
+    category_repo: CategoryRepository = Depends(get_category_repo),
 ) -> DividendService:
-    return DividendService(repo, cash_balance_repo, account_repo, holding_repo, currency_repo)
+    return DividendService(
+        repo,
+        cash_balance_repo,
+        account_repo,
+        holding_repo,
+        currency_repo,
+        transaction_repo,
+        category_repo,
+    )
 
 
 async def get_investing_summary_service(

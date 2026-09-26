@@ -36,6 +36,7 @@ class TransactionSourceType(StrEnum):
     order = "order"
     voice_agent = "voice_agent"
     mcp_agent = "mcp_agent"
+    system = "system"
 
 
 class KpiMetricType(StrEnum):

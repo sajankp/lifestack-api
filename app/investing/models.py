@@ -466,7 +466,7 @@ class CorporateAction(SQLModel, table=True):
 
 
 class Dividend(SQLModel, table=True):
-    """A dividend/interest/coupon income event (spec-073).
+    """A dividend/interest/coupon income event (spec-073, extended spec-097).
 
     Credits ``investing_cash_balances`` with no offsetting debit anywhere —
     the structural fix for the former workaround of a fake wallet->brokerage
@@ -477,6 +477,12 @@ class Dividend(SQLModel, table=True):
     exited position still records with ``symbol`` set and ``holding_id``
     null. ``account_id`` must be a snapshot-managed brokerage account,
     enforced at the service layer.
+
+    ``credit_account_id`` (spec-097): optional override for where the cash
+    credit lands. When null, credits the holding's brokerage account
+    (``account_id``). When set, credits the specified account instead —
+    e.g. a bank/wallet account for Indian-market dividends that land
+    directly in the linked bank account.
     """
 
     __tablename__ = "investing_dividends"
@@ -486,6 +492,7 @@ class Dividend(SQLModel, table=True):
     workspace_id: int = Field(foreign_key="workspaces.id", index=True)
     user_id: int = Field(foreign_key="users.id", index=True)
     account_id: int = Field(index=True)
+    credit_account_id: int | None = Field(default=None, index=True)
     holding_id: int | None = Field(default=None, foreign_key="investing_holdings.id", index=True)
     symbol: str | None = Field(default=None, max_length=20)
     income_type: str = Field(
@@ -512,6 +519,11 @@ class Dividend(SQLModel, table=True):
             ["account_id", "workspace_id"],
             ["accounts.id", "accounts.workspace_id"],
             name="fk_investing_dividends_account_workspace",
+        ),
+        sa.ForeignKeyConstraint(
+            ["credit_account_id", "workspace_id"],
+            ["accounts.id", "accounts.workspace_id"],
+            name="fk_investing_dividends_credit_account_workspace",
         ),
         sa.CheckConstraint(
             "income_type IN ('dividend', 'interest', 'coupon')",

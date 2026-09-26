@@ -75,6 +75,16 @@ from app.investing.schemas import (
     OverlapAnalyticsResponse,
     OverlapRow,
 )
+from app.spending.models import (
+    SpendingCategory,
+    SpendingTransaction,
+    TransactionSourceType,
+    TransactionType,
+)
+from app.spending.repository import (
+    CategoryRepository,
+    TransactionRepository,
+)
 from app.spending.response_helpers import source_metadata_response
 
 MONEY_QUANT = Decimal("0.01")
@@ -718,13 +728,11 @@ def _snapshot_dividend(dividend: Dividend) -> dict:
 
 
 class DividendService:
-    """Dividend/interest/coupon income events (spec-073).
+    """Dividend/interest/coupon income events (spec-073, extended spec-097).
 
     A dividend credits investing_cash_balances with NO offsetting debit
-    anywhere (INV-1) — the structural fix for the former workaround of a
-    fake wallet->brokerage transfer. account_id must be a brokerage account
-    (snapshot-managed); interest/coupon on a bank/wallet account belongs in
-    the ordinary spending ledger, not here.
+    anywhere (INV-1) when credited to a brokerage account, or writes a
+    spending transaction when credited to a bank/wallet account (spec-097).
     """
 
     def __init__(
@@ -734,12 +742,16 @@ class DividendService:
         account_repository: AccountRepository,
         holding_repository: HoldingRepository,
         currency_repository: CurrencyRepository | None = None,
+        transaction_repository: TransactionRepository | None = None,
+        category_repository: CategoryRepository | None = None,
     ):
         self.repository = repository
         self.cash_balance_repository = cash_balance_repository
         self.account_repository = account_repository
         self.holding_repository = holding_repository
         self.currency_repository = currency_repository
+        self.transaction_repository = transaction_repository
+        self.category_repository = category_repository
 
     async def _validate_account_and_currency(
         self, workspace_id: int, account_public_id: uuid.UUID, currency: str
@@ -796,6 +808,42 @@ class DividendService:
         )
         await self.cash_balance_repository.create(new_cash)
 
+    async def _credit_spending(
+        self, workspace_id: int, user_id: int, credit_account: Account, dividend: Dividend
+    ) -> None:
+        if self.category_repository is None or self.transaction_repository is None:
+            return
+        cat = await self.category_repository.get_by_normalized_name(workspace_id, "dividend")
+        if not cat:
+            cat = SpendingCategory(
+                workspace_id=workspace_id,
+                name="Dividend",
+                normalized_name="dividend",
+                is_system=True,
+                icon="TrendingUp",
+                color="#10B981",
+            )
+            cat = await self.category_repository.create(cat)
+
+        desc = f"Dividend: {dividend.symbol}" if dividend.symbol else "Dividend income"
+        if dividend.notes:
+            desc += f" - {dividend.notes}"
+
+        occurred_at = datetime.combine(dividend.pay_date, datetime.min.time(), tzinfo=UTC)
+        tx = SpendingTransaction(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            category_id=cat.id,  # type: ignore[assignment]
+            account_id=credit_account.id,
+            amount=dividend.net_amount,
+            type=TransactionType.income,
+            occurred_at=occurred_at,
+            description=desc[:500],
+            source_type=TransactionSourceType.system,
+            source_ref=f"dividend:{dividend.public_id}",
+        )
+        await self.transaction_repository.create(tx)
+
     async def list_dividends(
         self,
         workspace_id: int,
@@ -813,7 +861,9 @@ class DividendService:
         rows, total = await self.repository.list_by_workspace(
             workspace_id, limit, offset, account_id=internal_account_id, symbol=symbol
         )
-        account_ids = {r.account_id for r in rows}
+        account_ids = {r.account_id for r in rows} | {
+            r.credit_account_id for r in rows if r.credit_account_id is not None
+        }
         accounts = await self.account_repository.get_by_ids(workspace_id, account_ids)
         return rows, total, accounts
 
@@ -838,6 +888,21 @@ class DividendService:
         account = await self._validate_account_and_currency(
             workspace_id, dividend_in.account_id, dividend_in.currency
         )
+        credit_account: Account | None = None
+        if dividend_in.credit_account_id is not None:
+            credit_account = await self.account_repository.get_by_public_id(
+                workspace_id, dividend_in.credit_account_id
+            )
+            if not credit_account or not credit_account.is_active:
+                raise ValidationError(detail="credit_account_id is invalid for this workspace")
+            if dividend_in.currency.upper() != credit_account.default_currency_code.upper():
+                raise ValidationError(
+                    detail=(
+                        f"Currency '{dividend_in.currency.upper()}' does not match credit account "
+                        f"'{credit_account.name}' ({credit_account.default_currency_code})"
+                    )
+                )
+
         if dividend_in.external_ref:
             existing = await self.repository.get_by_external_ref(
                 workspace_id, account.id, dividend_in.external_ref
@@ -851,6 +916,8 @@ class DividendService:
                     and existing.currency == dividend_in.currency
                     and existing.pay_date == dividend_in.pay_date
                     and existing.notes == dividend_in.notes
+                    and existing.credit_account_id
+                    == (credit_account.id if credit_account else None)
                 )
                 if same_payload:
                     return existing, account
@@ -867,6 +934,7 @@ class DividendService:
             workspace_id=workspace_id,
             user_id=user_id,
             account_id=account.id,
+            credit_account_id=credit_account.id if credit_account else None,
             holding_id=holding_id,
             symbol=dividend_in.symbol,
             income_type=dividend_in.income_type,
@@ -879,7 +947,12 @@ class DividendService:
             notes=dividend_in.notes,
         )
         dividend = await self.repository.create(dividend)
-        await self._credit_cash(workspace_id, user_id, account, dividend)
+
+        target_acc = credit_account or account
+        if target_acc.account_type == "brokerage":
+            await self._credit_cash(workspace_id, user_id, target_acc, dividend)
+        else:
+            await self._credit_spending(workspace_id, user_id, target_acc, dividend)
 
         if audit_logger:
             after_snap = _snapshot_dividend(dividend)
@@ -921,12 +994,20 @@ class DividendService:
         dividend, _account = await self.get_dividend(workspace_id, public_id)
         before_snap = _snapshot_dividend(dividend)
 
+        credit_acc_id = dividend.credit_account_id or dividend.account_id
         linked = await self.cash_balance_repository.get_by_trigger_ref_and_account(
-            workspace_id, dividend.public_id, dividend.account_id
+            workspace_id, dividend.public_id, credit_acc_id
         )
         if linked is not None:
             await self._check_no_newer_snapshot(workspace_id, linked)
             await self.cash_balance_repository.delete(linked)
+
+        if self.transaction_repository is not None:
+            tx = await self.transaction_repository.get_by_source_ref(
+                workspace_id, "system", f"dividend:{dividend.public_id}"
+            )
+            if tx is not None:
+                await self.transaction_repository.delete(tx)
 
         await self.repository.delete(dividend)
 
@@ -987,18 +1068,45 @@ class DividendService:
                 )
             )
 
+        credit_account: Account | None = None
+        if "credit_account_id" in update_data:
+            credit_pub_id = update_data["credit_account_id"]
+            if credit_pub_id is not None:
+                credit_account = await self.account_repository.get_by_public_id(
+                    workspace_id, credit_pub_id
+                )
+                if not credit_account or not credit_account.is_active:
+                    raise ValidationError(detail="credit_account_id is invalid for this workspace")
+                if next_currency.upper() != credit_account.default_currency_code.upper():
+                    raise ValidationError(
+                        detail=(
+                            f"Currency '{next_currency.upper()}' does not match credit account "
+                            f"'{credit_account.name}' ({credit_account.default_currency_code})"
+                        )
+                    )
+                update_data["credit_account_id"] = credit_account.id
+            else:
+                update_data["credit_account_id"] = None
+
         new_gross = update_data.get("gross_amount", dividend.gross_amount)
         new_tax = update_data.get("tax_withheld", dividend.tax_withheld)
         if new_tax >= new_gross:
             raise ValidationError(detail="tax_withheld must be less than gross_amount")
 
-        cash_affecting = {"gross_amount", "tax_withheld", "currency", "pay_date"}
-        needs_cash_update = cash_affecting.intersection(update_data.keys())
+        cash_affecting = {
+            "gross_amount",
+            "tax_withheld",
+            "currency",
+            "pay_date",
+            "credit_account_id",
+        }
+        needs_cash_update = bool(cash_affecting.intersection(update_data.keys()))
 
+        old_credit_acc_id = dividend.credit_account_id or dividend.account_id
         linked = None
         if needs_cash_update:
             linked = await self.cash_balance_repository.get_by_trigger_ref_and_account(
-                workspace_id, dividend.public_id, dividend.account_id
+                workspace_id, dividend.public_id, old_credit_acc_id
             )
             if linked is not None:
                 await self._check_no_newer_snapshot(workspace_id, linked)
@@ -1018,7 +1126,23 @@ class DividendService:
         if needs_cash_update:
             if linked is not None:
                 await self.cash_balance_repository.delete(linked)
-            await self._credit_cash(workspace_id, dividend.user_id, account, dividend)
+            if self.transaction_repository is not None:
+                old_tx = await self.transaction_repository.get_by_source_ref(
+                    workspace_id, "system", f"dividend:{dividend.public_id}"
+                )
+                if old_tx is not None:
+                    await self.transaction_repository.delete(old_tx)
+
+            target_acc = credit_account
+            if target_acc is None and dividend.credit_account_id is not None:
+                target_acc = await self.account_repository.get_by_id(
+                    workspace_id, dividend.credit_account_id
+                )
+            target = target_acc or account
+            if target.account_type == "brokerage":
+                await self._credit_cash(workspace_id, dividend.user_id, target, dividend)
+            else:
+                await self._credit_spending(workspace_id, dividend.user_id, target, dividend)
 
         if audit_logger and actor_id is not None:
             after_snap = _snapshot_dividend(dividend)
@@ -1084,6 +1208,7 @@ class DividendService:
                         # Upsert on external_ref: amount corrections are expected
                         # and allowed (spec-073 INV-5) — this is the identity.
                         update_in = DividendUpdate(
+                            credit_account_id=row.credit_account_id,
                             symbol=row.symbol,
                             income_type=row.income_type,
                             gross_amount=row.gross_amount,
@@ -1119,6 +1244,7 @@ class DividendService:
 
                 create_in = DividendCreate(
                     account_id=row.account_id,
+                    credit_account_id=row.credit_account_id,
                     symbol=row.symbol,
                     income_type=row.income_type,
                     gross_amount=row.gross_amount,
