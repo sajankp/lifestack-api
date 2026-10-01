@@ -42,8 +42,9 @@ ingress via Cloudflare Tunnel · encrypted nightly DB backups to S3/R2
 - **Operability** — append-only PII-redacted audit logging, structlog + OpenTelemetry + Prometheus, scheduled jobs guarded by Postgres advisory locks.
 - **Lot-accurate cost basis** — FIFO lot engine with corporate-action handling (splits, reverse splits, bonus issues), golden-tested against broker-statement numbers; Indian market ingestion via CAMS CAS PDF import and the NSE bhavcopy price feed.
 - **Permissioned AI adapters** — Gemini Live capture and authenticated MCP reuse domain services, persisted user timezone, workspace membership, grants, and explicit read/research/write scopes.
-- **Quality gates** — 80% backend / 70% frontend coverage thresholds, 60 full-stack Playwright tests across 28 E2E files, and `pip-audit` + Bandit + TruffleHog in CI.
-- **Spec-driven** — implementation contracts run through spec 094 under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
+- **Quality gates** — 80% backend / 70% frontend coverage thresholds, 64 full-stack Playwright tests across 29 E2E files, and `pip-audit` + Bandit + TruffleHog in CI.
+- **Spec-driven** — implementation contracts run through spec 097 under [`docs/specs/`](docs/specs/), plus [ARCHITECTURE](docs/ARCHITECTURE.md), [ERD](docs/ERD.md), and [JOBS](docs/JOBS.md).
+
 
 ---
 
@@ -137,8 +138,9 @@ The differentiator is not just having three modules. It is making them work toge
 - a rebalance check can surface on the dashboard
 - weekly summaries can combine productivity and finance data
 
-### Voice Capture and MCP
-Voice/text capture is an experimental Gemini Live adapter over existing services. It can create and correct spending transactions with confirmation, use persisted user timezone, and suppress resumed-session write replays. Authenticated MCP is implemented with workspace discovery, revocable grants, scoped todo/spending/health/finance tools, valued holdings, constituent research operations, and dividends. Specs 093/094 remain marked pending deployment validation; neither adapter is required for the core product to work.
+### Voice Capture, MCP, and Financial Agent Operations
+Voice/text capture is an experimental Gemini Live adapter over existing services. It can create and correct spending transactions with confirmation, use persisted user timezone, and suppress resumed-session write replays. Authenticated MCP is implemented with workspace discovery, revocable grants, scoped todo/spending/health/finance tools, valued holdings, constituent research operations, and dividends. Financial agent operations (spec-095) add multi-step preview executions and action audit logs. Specs 093/094/095 remain marked pending deployment validation; neither adapter is required for the core product to work.
+
 
 ---
 
@@ -311,7 +313,7 @@ The core rule is: business logic lives in services, cross-module orchestration l
 | Document ingestion and extraction | Stage 6 / planned |
 | RAG-backed documents and second-brain memory | Stage 7 / planned |
 | Personal coach over structured life data | Stage 7+ / planned |
-| Authenticated MCP tools, grants, investment research, and valuation | ✅ Implemented; deployment validation pending for specs 093/094 |
+| Authenticated MCP tools, grants, investment research, and valuation | ✅ Implemented; deployment validation pending for specs 093/094/095 |
 | BYOK and provider abstraction | Later-stage AI infrastructure |
 | Multi-workspace / SaaS platform layer | Stage 8 |
 
@@ -322,7 +324,8 @@ The core rule is: business logic lives in services, cross-module orchestration l
 Based on architectural reviews and implementation, the following items are tracked:
 
 1. **Scheduler: Running Deploy Window:** Advisory locks still do not provide strict exactly-once delivery semantics. As a hard guardrail, non-idempotent scheduler jobs are now blocked unless `SCHEDULER_ALLOW_NON_IDEMPOTENT_JOBS=true` is explicitly set.
-2. **Cross-repo full-stack E2E test harness:** the dedicated repo hosts 60 tests across 28 files. API CI has an `api-web-merge` sender, but the E2E workflow currently lacks a `repository_dispatch` receiver and Web has no sender, so nightly/manual runs remain the reliable cross-repo backstop.
+2. **Cross-repo full-stack E2E test harness:** the dedicated repo hosts 64 tests across 29 files. API CI has an `api-web-merge` sender, but the E2E workflow currently lacks a `repository_dispatch` receiver and Web has no sender, so nightly/manual runs remain the reliable cross-repo backstop.
+
 3. **Gate 0 hardening work:** Investing account identity, finance correctness, deterministic demo/reset data, and richer import/source lifecycle coverage have been implemented for the public-demo path. Production config policy now fails closed for invalid `ENV`, default secrets, insecure cookies, disabled rate limiting, and in-memory production rate-limit storage. Finance `NUMERIC` models now keep Decimal annotations through FX rates and capital transfers instead of casting through floats. Import artifact storage keys are generated from workspace/import IDs rather than user-supplied filenames. API CI now runs dependency audit, Bandit static analysis, and verified-secret scanning. Source metadata now exposes a structured response contract for manual and imported transactions, including import batch references and completed import rollback support across spending transactions, spending budgets, and investing holdings. FX rates are globally scoped read-only market data for users, with writes owned by scheduled ingestion/service code. Broader maintainability work remains in module decomposition and E2E harness cleanup.
 
 ### Source Metadata Contract
