@@ -1,11 +1,21 @@
 # Product Strategy and Roadmap
 
 Date: 2026-06-03
-Last updated: 2026-08-24
+Last updated: 2026-10-01
 
 Scope: current product positioning, implementation status, post-Gate 0 backlog, and staged roadmap for mobile, health tracking, medication reminders, workout tracking, document intelligence, second brain, and personal coach workflows.
 
 ## Changelog
+
+- **2026-10-01 — Unified Money Flow & Activity Feed (Spec-097) + AccountDetailView Transaction CRUD.**
+  Unified `/money` route with 3-lane AccountMap, AccountDetailView running balances, ActivityFeedTimeline
+  (`GET /v1/finance/activity-feed`), natural FX rate inputs, flexible bank-credited dividends (`credit_account_id`
+  + migration 0067), and direct creation, editing, and deletion for transactions and capital transfers inside
+  AccountDetailView with cascading cache invalidations.
+
+- **2026-09-20 — Financial Agent Operations (Spec-095).**
+  Shipped multi-step financial agent operations supporting preview executions (`dry_run=True`), structured action logs,
+  and explicit confirmation steps across accounts and budgets.
 
 - **2026-09-13 — 3-Tier Analytics Strategy & Periodic Summaries (Spec-096).** Adopted the
   3-tier analytics roadmap for maximum tracking usefulness and compounding visibility:
@@ -20,8 +30,8 @@ Scope: current product positioning, implementation status, post-Gate 0 backlog, 
   correction (093), and MCP investment research (094) are implemented. Authenticated
   MCP is no longer a future-only track: workspace discovery, grants, scoped domain
   tools, investment research, and reporting-currency holdings valuation are in code.
-  Specs 093/094 still await deployment validation. Full-stack E2E now discovers 60
-  tests across 28 files. Current priority is release evidence, demo/case-study quality,
+  Specs 093/094 still await deployment validation. Full-stack E2E discovers 64
+  tests across 29 files. Current priority is release evidence, demo/case-study quality,
   and closing the incomplete API/Web-to-E2E dispatch contract—not another broad domain.
 
 - **2026-07-12 (same day, fourth pass) — sequence items 2/4/5 shipped; §4 numbered list caught up.** Currency display polish (spec-075, api#155/web#113), custom financial KPIs (spec-077, api#156/web#114), and wallet ledger reconciliation (spec-078, api#159/web#115) are all merged. spec-078 shipped statement import + deterministic ±3-day match engine + reconciliation view + break-on-edit-clears-match; the spec's transfer-detail both-legs timeline is a deferred, unspecced fast-follow (no existing transfer-detail view to extend). spec-076 (weekly summaries) remains Approved but deliberately skipped this pass. spec-079
