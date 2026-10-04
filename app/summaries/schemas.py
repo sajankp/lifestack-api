@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING
@@ -122,3 +123,20 @@ class RegenerateMonthlySummaryRequest(BaseModel):
 class GenerateMonthlySummaryRequest(BaseModel):
     year: int = Field(ge=2000, le=2100)
     month: int = Field(ge=1, le=12)
+
+
+class GenerateWeeklySummaryRequest(BaseModel):
+    date: dt.date | None = None
+    week_start: dt.date | None = None
+
+
+class UpdateMonthlySummaryRequest(BaseModel):
+    todo_summary: dict | None = None
+    spending_summary: dict | None = None
+    investing_summary: dict | None = None
+    health_summary: dict | None = None
+    dividend_summary: dict | None = None
+    net_worth_summary: dict | None = None
+    return_metrics_summary: dict | None = None
+    highlights: dict | None = None
+    reason: str | None = Field(default=None, max_length=500)

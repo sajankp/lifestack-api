@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -15,9 +15,11 @@ from app.core.dependencies import (
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.summaries.schemas import (
     GenerateMonthlySummaryRequest,
+    GenerateWeeklySummaryRequest,
     MonthlySummaryResponse,
     RegenerateMonthlySummaryRequest,
     RegenerateWeeklySummaryRequest,
+    UpdateMonthlySummaryRequest,
     WeeklySummaryResponse,
     WorkspaceSummarySettingResponse,
     WorkspaceSummarySettingUpdate,
@@ -141,6 +143,21 @@ async def regenerate_weekly_summary(
     return WeeklySummaryResponse.from_summary(new)
 
 
+@router.post("/generate", response_model=WeeklySummaryResponse)
+async def generate_weekly_summary(
+    generate_in: GenerateWeeklySummaryRequest,
+    service: Annotated[WeeklySummaryService, Depends(get_weekly_summary_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+):
+    """Manually calculate and freeze a weekly summary for a given week."""
+    target_date = generate_in.week_start or generate_in.date or datetime.now(UTC).date()
+    week_start = target_date - timedelta(days=target_date.weekday())
+    user_id = user["id"]
+    summary = await service.generate_for_workspace_week(workspace_id, user_id, week_start)
+    return WeeklySummaryResponse.from_summary(summary)
+
+
 monthly_router = APIRouter(
     prefix="/summaries/monthly",
     tags=["summaries"],
@@ -224,4 +241,23 @@ async def generate_monthly_summary(
     month_start = date(generate_in.year, generate_in.month, 1)
     user_id = user["id"]
     summary = await service.generate_for_workspace_month(workspace_id, user_id, month_start)
+    return MonthlySummaryResponse.from_summary(summary)
+
+
+@monthly_router.patch("/{summary_id}", response_model=MonthlySummaryResponse)
+async def update_monthly_summary(
+    summary_id: uuid.UUID,
+    update_in: UpdateMonthlySummaryRequest,
+    service: Annotated[MonthlySummaryService, Depends(get_monthly_summary_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    """Update fields in an existing monthly summary to reflect correct manual accounting."""
+    updates = update_in.model_dump(exclude_unset=True, exclude={"reason"})
+    summary = await service.update(
+        workspace_id=workspace_id,
+        public_id=summary_id,
+        updates=updates,
+        reason=update_in.reason,
+    )
     return MonthlySummaryResponse.from_summary(summary)
