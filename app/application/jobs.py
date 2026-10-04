@@ -636,6 +636,7 @@ async def weekly_summary_job(
     workspace_id: int | None = None,
     week_start: date | None = None,
     respect_cadence: bool = False,
+    ignore_lock: bool = False,
 ) -> None:
     """
     Generates weekly summaries for active workspaces. The real scheduler
@@ -654,10 +655,12 @@ async def weekly_summary_job(
     logger.info("weekly_summary_job_start", job_name="weekly_summary_job")
 
     async with postgres.async_session_maker() as session:
-        # Session-level advisory lock on the SAME session that does the work —
-        # one pooled connection for the whole run (see run_workspace_job).
-        lock_res = await session.execute(select(func.pg_try_advisory_lock(WEEKLY_SUMMARY_LOCK_KEY)))
-        has_lock = lock_res.scalar()
+        has_lock = True
+        if not ignore_lock:
+            lock_res = await session.execute(
+                select(func.pg_try_advisory_lock(WEEKLY_SUMMARY_LOCK_KEY))
+            )
+            has_lock = bool(lock_res.scalar())
         if not has_lock:
             await session.rollback()
             logger.info(
@@ -782,9 +785,10 @@ async def weekly_summary_job(
                 workspace_count=len(workspace_ids),
             )
         finally:
-            await _release_session_advisory_lock(
-                session, WEEKLY_SUMMARY_LOCK_KEY, "weekly_summary_job"
-            )
+            if not ignore_lock and has_lock:
+                await _release_session_advisory_lock(
+                    session, WEEKLY_SUMMARY_LOCK_KEY, "weekly_summary_job"
+                )
 
 
 MONTHLY_SUMMARY_LOCK_KEY = ADVISORY_LOCK_MONTHLY_SUMMARY
@@ -793,6 +797,7 @@ MONTHLY_SUMMARY_LOCK_KEY = ADVISORY_LOCK_MONTHLY_SUMMARY
 async def monthly_summary_job(
     workspace_id: int | None = None,
     month_start: date | None = None,
+    ignore_lock: bool = False,
 ) -> None:
     """Generates monthly financial close summaries for active workspaces.
 
@@ -803,10 +808,12 @@ async def monthly_summary_job(
     logger.info("monthly_summary_job_start", job_name="monthly_summary_job")
 
     async with postgres.async_session_maker() as session:
-        lock_res = await session.execute(
-            select(func.pg_try_advisory_lock(MONTHLY_SUMMARY_LOCK_KEY))
-        )
-        has_lock = lock_res.scalar()
+        has_lock = True
+        if not ignore_lock:
+            lock_res = await session.execute(
+                select(func.pg_try_advisory_lock(MONTHLY_SUMMARY_LOCK_KEY))
+            )
+            has_lock = bool(lock_res.scalar())
         if not has_lock:
             await session.rollback()
             logger.info(
@@ -916,9 +923,10 @@ async def monthly_summary_job(
                 workspace_count=len(workspace_ids),
             )
         finally:
-            await _release_session_advisory_lock(
-                session, MONTHLY_SUMMARY_LOCK_KEY, "monthly_summary_job"
-            )
+            if not ignore_lock and has_lock:
+                await _release_session_advisory_lock(
+                    session, MONTHLY_SUMMARY_LOCK_KEY, "monthly_summary_job"
+                )
 
 
 FX_RATE_INGESTION_LOCK_KEY = ADVISORY_LOCK_FX_RATE_INGESTION

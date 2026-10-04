@@ -1059,6 +1059,16 @@ class MonthlySummaryService:
         )
         return await self.repository.supersede(old, new, reason)
 
+    async def update(
+        self,
+        workspace_id: int,
+        public_id: uuid.UUID,
+        updates: dict,
+        reason: str | None = None,
+    ) -> MonthlySummary:
+        item = await self.get(workspace_id, public_id)
+        return await self.repository.update(item, updates, reason)
+
     async def has_reverted_import_overlap(self, item: MonthlySummary) -> bool:
         dates: list[date] = []
         if item.net_worth_summary and item.net_worth_summary.get("status") == "complete":

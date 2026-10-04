@@ -96,6 +96,11 @@ async def main() -> None:
         help="Optional. Specific to merge_company_identities: report what would "
         "change without writing anything.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Optional. Bypass advisory lock for manual CLI invocation.",
+    )
 
     args = parser.parse_args()
 
@@ -147,6 +152,8 @@ async def main() -> None:
         kwargs["workspace_id"] = args.workspace_id
     if args.job == "weekly_summary":
         kwargs["week_start"] = week_start_date
+    if args.job in ("weekly_summary", "monthly_summary") and args.force:
+        kwargs["ignore_lock"] = True
     if args.job == "merge_company_identities":
         kwargs["dry_run"] = args.dry_run
 

@@ -305,6 +305,39 @@ async def test_monthly_summary_supersede_chain():
 
 
 @pytest.mark.asyncio
+async def test_monthly_summary_update_method():
+    session = AsyncMock()
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    repo = MonthlySummaryRepository(session)
+
+    item = MonthlySummary(
+        id=1,
+        public_id=uuid.uuid4(),
+        workspace_id=1,
+        month_start=date(2026, 6, 1),
+        month_end=date(2026, 6, 30),
+        todo_summary={"tasks_created": 5},
+        spending_summary={"total_income": "1000.00", "total_expense": "500.00"},
+        investing_summary={},
+        highlights={},
+        superseded_by_id=None,
+    )
+
+    updates = {
+        "spending_summary": {"total_income": "1200.00", "total_expense": "400.00"},
+        "todo_summary": {"tasks_created": 6},
+    }
+
+    updated = await repo.update(item, updates, reason="Manual adjustment")
+    assert updated.spending_summary["total_income"] == "1200.00"
+    assert updated.spending_summary["total_expense"] == "400.00"
+    assert updated.todo_summary["tasks_created"] == 6
+    assert updated.regeneration_reason == "Manual adjustment"
+    assert updated.regenerated_at is not None
+
+
+@pytest.mark.asyncio
 async def test_spend_pacing_edge_cases_past_future_zero_budget():
     """Verify SpendPacingService edge cases: past month (100% elapsed),
     future month (0% elapsed), and zero-budget workspace."""

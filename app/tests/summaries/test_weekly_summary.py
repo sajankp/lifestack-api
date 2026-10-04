@@ -1140,3 +1140,25 @@ async def test_regenerate_weekly_summary_404s(client: AsyncClient):
         f"/v1/summaries/weekly/{public_id}/regenerate", json={}, cookies=cookies
     )
     assert second.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_generate_weekly_summary_endpoint(client: AsyncClient):
+    creds = await _register_and_login(client, "sumgenweek")
+    cookies = creds["cookies"]
+
+    # Generate with explicit date (Wednesday, should snap to Monday)
+    target_date = date(2026, 9, 23)  # Wednesday
+    expected_monday = date(2026, 9, 21)
+
+    resp = await client.post(
+        "/v1/summaries/weekly/generate",
+        json={"date": target_date.isoformat()},
+        cookies=cookies,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["week_start"] == expected_monday.isoformat()
+    assert data["week_end"] == date(2026, 9, 27).isoformat()
+    assert "todo_summary" in data
+    assert "spending_summary" in data

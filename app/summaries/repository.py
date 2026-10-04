@@ -248,3 +248,17 @@ class MonthlySummaryRepository:
         await self.session.flush()
         await self.session.refresh(new)
         return new
+
+    async def update(
+        self, summary: MonthlySummary, updates: dict, reason: str | None = None
+    ) -> MonthlySummary:
+        for key, val in updates.items():
+            if val is not None and hasattr(summary, key):
+                setattr(summary, key, val)
+        summary.regenerated_at = datetime.now(UTC)
+        if reason:
+            summary.regeneration_reason = reason
+        self.session.add(summary)
+        await self.session.flush()
+        await self.session.refresh(summary)
+        return summary
