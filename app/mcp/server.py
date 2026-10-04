@@ -1011,7 +1011,7 @@ def create_mcp_server() -> FastMCP:
                 "entity_type": "investment_dividend",
                 "entity_public_id": item["public_id"],
                 "item": item,
-                "summary": f"Recorded {payload.income_type} income of {payload.net_amount} {payload.currency}.",
+                "summary": f"Recorded {dividend.income_type} income of {dividend.net_amount} {dividend.currency}.",
             }
 
     @mcp.tool

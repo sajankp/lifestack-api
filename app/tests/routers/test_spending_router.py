@@ -6,6 +6,7 @@ from httpx import AsyncClient
 from sqlmodel import select
 
 from app.auth.models import User
+from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.imports.models import ImportBatch, ImportModule
 from app.platform.models import WorkspaceMembership
@@ -276,3 +277,100 @@ async def test_budget_router_endpoints(client: AsyncClient):
     # 4. Delete budget (not supported, should return 405)
     del_res = await client.delete(f"/v1/spending/budgets/{budget_id}", cookies=cookies)
     assert del_res.status_code == 405
+
+
+@pytest.mark.asyncio
+async def test_tag_router_endpoints_and_audit_logging(client: AsyncClient):
+    cookies = await _register_and_login(client, "spendingtags@example.com", "spendingtags")
+
+    # 1. List tags (initially empty)
+    list_res = await client.get("/v1/spending/tags", cookies=cookies)
+    assert list_res.status_code == 200
+    assert list_res.json()["items"] == []
+
+    # 2. Create tag
+    create_res = await client.post(
+        "/v1/spending/tags",
+        json={"name": "groceries", "color": "#00ff00"},
+        cookies=cookies,
+    )
+    assert create_res.status_code == 201, create_res.text
+    tag_data = create_res.json()
+    tag_id = tag_data["public_id"]
+    assert tag_data["name"] == "groceries"
+    assert tag_data["color"] == "#00ff00"
+
+    # Verify audit log for create
+    async with postgres.async_session_maker() as session:
+        res = await session.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.module == "spending",
+                AuditLog.entity_type == "spending_tag",
+                AuditLog.action == "create",
+            )
+            .order_by(AuditLog.id.desc())
+        )
+        create_log = res.scalars().first()
+        assert create_log is not None
+        assert create_log.details["after"]["name"] == "groceries"
+        assert create_log.details["after"]["color"] == "#00ff00"
+        assert create_log.details["before"] is None
+        assert set(create_log.details.keys()) >= {
+            "entity_public_id",
+            "before",
+            "after",
+            "changed_fields",
+        }
+
+    # 3. Patch tag
+    patch_res = await client.patch(
+        f"/v1/spending/tags/{tag_id}",
+        json={"name": "supermarket"},
+        cookies=cookies,
+    )
+    assert patch_res.status_code == 200, patch_res.text
+    assert patch_res.json()["name"] == "supermarket"
+
+    # Verify audit log for update
+    async with postgres.async_session_maker() as session:
+        res = await session.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.module == "spending",
+                AuditLog.entity_type == "spending_tag",
+                AuditLog.action == "update",
+            )
+            .order_by(AuditLog.id.desc())
+        )
+        update_log = res.scalars().first()
+        assert update_log is not None
+        assert update_log.details["before"]["name"] == "groceries"
+        assert update_log.details["after"]["name"] == "supermarket"
+        assert "name" in update_log.details["changed_fields"]
+
+    # 4. Delete tag
+    del_res = await client.delete(f"/v1/spending/tags/{tag_id}", cookies=cookies)
+    assert del_res.status_code == 204
+
+    # Verify audit log for delete
+    async with postgres.async_session_maker() as session:
+        res = await session.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.module == "spending",
+                AuditLog.entity_type == "spending_tag",
+                AuditLog.action == "delete",
+            )
+            .order_by(AuditLog.id.desc())
+        )
+        del_log = res.scalars().first()
+        assert del_log is not None
+        assert del_log.details["before"]["name"] == "supermarket"
+        assert del_log.details["after"] is None
+        assert set(del_log.details.keys()) >= {
+            "entity_public_id",
+            "before",
+            "after",
+            "changed_fields",
+        }

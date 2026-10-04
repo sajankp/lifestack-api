@@ -255,3 +255,35 @@ async def test_analytics_date_range_validation(client: AsyncClient):
     )
     assert res.status_code == 422
     assert "Date range cannot exceed 24 months" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_spend_pacing_month_format_and_validation(client: AsyncClient):
+    cookies = await _register_and_login(client, "pacingformat@example.com", "pacingformat")
+
+    # 1. Test YYYY-MM format (e.g. from frontend)
+    res_month = await client.get(
+        "/v1/spending/analytics/pacing",
+        params={"month": "2026-10"},
+        cookies=cookies,
+    )
+    assert res_month.status_code == 200, res_month.text
+    data = res_month.json()
+    assert "month" in data
+
+    # 2. Test YYYY-MM-DD format
+    res_date = await client.get(
+        "/v1/spending/analytics/pacing",
+        params={"month": "2026-10-01"},
+        cookies=cookies,
+    )
+    assert res_date.status_code == 200, res_date.text
+
+    # 3. Test invalid month string
+    res_invalid = await client.get(
+        "/v1/spending/analytics/pacing",
+        params={"month": "not-a-date"},
+        cookies=cookies,
+    )
+    assert res_invalid.status_code == 422
+    assert "month must be in YYYY-MM or YYYY-MM-DD format" in res_invalid.json()["detail"]

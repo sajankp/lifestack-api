@@ -773,6 +773,10 @@ class TagService:
             )
         )
         if audit_logger and actor_id is not None:
+            after_snap = {
+                "name": tag.name,
+                "color": tag.color,
+            }
             await audit_logger.log(
                 workspace_id=workspace_id,
                 actor_id=actor_id,
@@ -780,7 +784,12 @@ class TagService:
                 module="spending",
                 entity_type="spending_tag",
                 entity_id=tag.id,  # type: ignore[arg-type]
-                details={"entity_public_id": str(tag.public_id), "name": tag.name},
+                details={
+                    "entity_public_id": str(tag.public_id),
+                    "before": None,
+                    "after": after_snap,
+                    "changed_fields": list(after_snap.keys()),
+                },
             )
         return tag
 
@@ -793,6 +802,10 @@ class TagService:
         audit_logger: AuditLogger | None = None,
     ) -> SpendingTag:
         tag = await self.get_tag(workspace_id, public_id)
+        before_snap = {
+            "name": tag.name,
+            "color": tag.color,
+        }
         update_data = tag_in.model_dump(exclude_unset=True)
         if "name" in update_data and update_data["name"] is not None:
             name = " ".join(update_data["name"].strip().split())
@@ -805,7 +818,32 @@ class TagService:
         if "color" in update_data:
             tag.color = update_data["color"]
         tag.updated_at = datetime.now(UTC)
-        return await self.repository.save(tag)
+        updated_tag = await self.repository.save(tag)
+
+        if audit_logger and actor_id is not None:
+            after_snap = {
+                "name": updated_tag.name,
+                "color": updated_tag.color,
+            }
+            changed_fields = [
+                k for k in ("name", "color") if before_snap.get(k) != after_snap.get(k)
+            ]
+            if changed_fields:
+                await audit_logger.log(
+                    workspace_id=workspace_id,
+                    actor_id=actor_id,
+                    action="update",
+                    module="spending",
+                    entity_type="spending_tag",
+                    entity_id=updated_tag.id,  # type: ignore[arg-type]
+                    details={
+                        "entity_public_id": str(updated_tag.public_id),
+                        "before": before_snap,
+                        "after": after_snap,
+                        "changed_fields": changed_fields,
+                    },
+                )
+        return updated_tag
 
     async def delete_tag(
         self,
@@ -815,6 +853,10 @@ class TagService:
         audit_logger: AuditLogger | None = None,
     ) -> None:
         tag = await self.get_tag(workspace_id, public_id)
+        before_snap = {
+            "name": tag.name,
+            "color": tag.color,
+        }
         await self.repository.delete(tag)
         if audit_logger and actor_id is not None:
             await audit_logger.log(
@@ -824,7 +866,12 @@ class TagService:
                 module="spending",
                 entity_type="spending_tag",
                 entity_id=tag.id,  # type: ignore[arg-type]
-                details={"entity_public_id": str(tag.public_id), "name": tag.name},
+                details={
+                    "entity_public_id": str(tag.public_id),
+                    "before": before_snap,
+                    "after": None,
+                    "changed_fields": list(before_snap.keys()),
+                },
             )
 
 

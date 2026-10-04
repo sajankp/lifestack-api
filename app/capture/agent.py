@@ -631,6 +631,15 @@ async def _handle_gemini_message(
             await gemini_ws.send(json.dumps(tool_response_payload))
 
 
+def _is_client_disconnect_exception(exc: BaseException | None) -> bool:
+    """Return True if exception indicates normal client websocket disconnection."""
+    if exc is None:
+        return False
+    if isinstance(exc, WebSocketDisconnect):
+        return True
+    return bool(isinstance(exc, RuntimeError) and 'Cannot call "receive"' in str(exc))
+
+
 async def run_agent_session(
     client_ws: WebSocket,
     user_id: int,
@@ -832,7 +841,7 @@ async def run_agent_session(
                 if task.cancelled():
                     continue
                 exc = task.exception()
-                if exc and isinstance(exc, WebSocketDisconnect):
+                if exc and _is_client_disconnect_exception(exc):
                     session_outcome["reason"] = "client_disconnect"
                     logger.info("client_websocket_disconnected")
                 elif exc:
@@ -848,10 +857,14 @@ async def run_agent_session(
             await asyncio.gather(pcm_task, gemini_task, client_task, return_exceptions=True)
 
     except Exception as e:
-        if session_outcome["reason"] == "normal":
-            session_outcome["reason"] = "gemini_stream_error"
-        logger.error("gemini_live_session_error", error=str(e))
-        await _send_capture_error(client_ws, CAPTURE_CLIENT_ERROR)
+        if _is_client_disconnect_exception(e):
+            session_outcome["reason"] = "client_disconnect"
+            logger.info("client_websocket_disconnected")
+        else:
+            if session_outcome["reason"] == "normal":
+                session_outcome["reason"] = "gemini_stream_error"
+            logger.error("gemini_live_session_error", error=str(e))
+            await _send_capture_error(client_ws, CAPTURE_CLIENT_ERROR)
     finally:
         await decoder.close()
         if ws_context_manager is not None:
