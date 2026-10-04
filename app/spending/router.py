@@ -18,6 +18,7 @@ from app.core.dependencies import (
     get_spending_transaction_service,
     require_min_role,
 )
+from app.core.exceptions import ValidationError
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.spending.models import (
     TransactionSort,
@@ -508,11 +509,22 @@ async def get_spend_pacing(
     budget_service: Annotated[BudgetService, Depends(get_spending_budget_service)],
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
-    month: date | None = Query(None),
+    month: str | None = Query(None, description="Target month in YYYY-MM or YYYY-MM-DD format"),
 ):
+    target_date: date | None = None
+    if month:
+        cleaned = month.strip()
+        try:
+            if len(cleaned) == 7:
+                target_date = datetime.strptime(cleaned, "%Y-%m").date().replace(day=1)
+            else:
+                target_date = date.fromisoformat(cleaned).replace(day=1)
+        except ValueError as exc:
+            raise ValidationError(detail="month must be in YYYY-MM or YYYY-MM-DD format") from exc
+
     return await budget_service.get_spend_pacing(
         workspace_id=workspace_id,
-        target_month=month,
+        target_month=target_date,
     )
 
 
