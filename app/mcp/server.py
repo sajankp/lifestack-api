@@ -1039,7 +1039,7 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Invalid public_id."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            user_id = await authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:write",
@@ -1049,7 +1049,7 @@ def create_mcp_server() -> FastMCP:
                 await _dividend_service(session).delete_dividend(
                     workspace_id=workspace_id,
                     public_id=div_public_id,
-                    actor_id=0,  # MCP tools don't have direct user_id, use 0 for audit
+                    actor_id=user_id,
                     audit_logger=AuditLogger(session),
                 )
                 await session.commit()
