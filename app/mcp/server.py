@@ -1015,6 +1015,55 @@ def create_mcp_server() -> FastMCP:
             }
 
     @mcp.tool
+    async def delete_investment_dividend(
+        workspace_id: int,
+        public_id: str,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Delete a dividend/investment-income event by public ID.
+
+        This removes the dividend record and its associated cash balance credit.
+        Requires explicit confirmation.
+        """
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": f"Delete dividend {public_id}? This will also remove its cash balance credit. Confirm to continue.",
+                "public_id": public_id,
+            }
+
+        try:
+            div_public_id = uuid.UUID(public_id)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid public_id."}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:write",
+                tool="delete_investment_dividend",
+            )
+            try:
+                await _dividend_service(session).delete_dividend(
+                    workspace_id=workspace_id,
+                    public_id=div_public_id,
+                    actor_id=0,  # MCP tools don't have direct user_id, use 0 for audit
+                    audit_logger=AuditLogger(session),
+                )
+                await session.commit()
+            except (APIError, ValueError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+            return {
+                "status": "success",
+                "entity_type": "investment_dividend",
+                "entity_public_id": public_id,
+                "summary": f"Deleted dividend {public_id}.",
+            }
+
+    @mcp.tool
     async def find_spending_transactions(
         workspace_id: int,
         from_day: str | None = None,

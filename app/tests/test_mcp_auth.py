@@ -376,3 +376,36 @@ async def test_spec095_mcp_transfer_and_dividend_tools(override_database_url, mo
         ).scalar_one()
         assert div_row.gross_amount == Decimal("60.00")
         assert div_row.symbol == "GOOGL"
+
+    # 7. Dividend deletion via MCP tool (preview)
+    div_delete_preview = await _run_capture_tool(
+        workspace_id=202,
+        required_scope="mcp:write",
+        tool_name="delete_investment_dividend",
+        kwargs={
+            "public_id": str(div_pid),
+            "confirmed": False,
+        },
+    )
+    assert div_delete_preview["status"] == "error"
+    assert div_delete_preview["needs_confirmation"] is True
+
+    # 8. Dividend deletion via MCP tool (confirmed)
+    div_deleted = await _run_capture_tool(
+        workspace_id=202,
+        required_scope="mcp:write",
+        tool_name="delete_investment_dividend",
+        kwargs={
+            "public_id": str(div_pid),
+            "confirmed": True,
+        },
+    )
+    assert div_deleted["status"] == "success"
+    assert div_deleted["entity_public_id"] == str(div_pid)
+
+    # 9. Verify dividend was deleted from DB
+    async with postgres.async_session_maker() as session:
+        div_row = (
+            await session.execute(select(Dividend).where(Dividend.public_id == div_pid))
+        ).scalar_one_or_none()
+        assert div_row is None
