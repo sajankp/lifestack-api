@@ -2287,3 +2287,56 @@ class AgentTools:
             "entity_type": "investment_dividend",
             "summary": f"Recorded {income_type} income of {dividend.net_amount} {dividend.currency} for {account.name}.",
         }
+
+    async def delete_investment_dividend(
+        self,
+        public_id: str,
+        confirmed: bool = False,
+    ) -> dict:
+        """Delete a dividend/investment-income event by public ID.
+
+        Removes the dividend record and its associated cash balance credit.
+        Requires explicit confirmation.
+        """
+        try:
+            pid = uuid.UUID(public_id.strip())
+        except (ValueError, TypeError):
+            return {"status": "error", "message": "Invalid dividend public_id format."}
+
+        try:
+            dividend, _ = await self.dividend_service.get_dividend(self.workspace_id, pid)
+        except NotFoundError:
+            return {"status": "error", "message": f"Dividend with id {public_id} not found."}
+
+        if not confirmed:
+            return {
+                "status": "error",
+                "needs_confirmation": True,
+                "entity_public_id": public_id,
+                "current": {
+                    "symbol": dividend.symbol,
+                    "income_type": dividend.income_type,
+                    "gross_amount": str(dividend.gross_amount),
+                    "tax_withheld": str(dividend.tax_withheld),
+                    "currency": dividend.currency,
+                    "pay_date": dividend.pay_date.isoformat(),
+                },
+                "message": "Read back the dividend details and ask for explicit deletion confirmation.",
+            }
+
+        try:
+            await self.dividend_service.delete_dividend(
+                workspace_id=self.workspace_id,
+                public_id=pid,
+                actor_id=self.user_id,
+                audit_logger=self.audit_logger,
+            )
+        except (APIError, ValueError, ConflictError) as exc:
+            return {"status": "error", "message": _tool_error_message(exc)}
+
+        return {
+            "status": "success",
+            "entity_public_id": public_id,
+            "entity_type": "investment_dividend",
+            "summary": f"Deleted dividend {public_id} after confirmation.",
+        }
