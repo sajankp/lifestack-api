@@ -243,3 +243,14 @@ Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**
   commit transaction (`commit_finance_account_statement_chunk` pre-checks instead).
   Out of scope (per spec): auto-creating transactions from unmatched statement lines,
   bank-specific parsers beyond generic CSV, wallet-account snapshots, fuzzy matching.
+- **2026-10-16 (fix: brokerage cash balance shadowing after order):** Fixed cash balance
+  shadowing in Net Worth and Reconciliation when transfers are added after orders.
+  Orders previously hardcoded `as_of = datetime.now(UTC)` in `_update_cash_balance`,
+  causing their snapshot timestamps to land ahead of transfers with historical or
+  midnight-UTC (`00:00:00Z`) `occurred_at`. Furthermore, `get_latest_per_account_currency`
+  (Net Worth) and `get_reconciliation_summary` sorted by `as_of DESC` rather than
+  `created_at DESC` (which had previously only been fixed in `get_latest_for_account_currency`
+  in 446649f). Live balance queries now sort by `created_at DESC` when `as_of` is None,
+  and orders record `as_of = order.occurred_at`, ensuring the latest appended snapshot
+  is consistently returned.
+

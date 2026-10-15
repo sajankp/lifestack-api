@@ -3799,4 +3799,3 @@ async def test_transfers_after_order_updates_net_worth_and_reconciliation_cash_b
         f"Expected snapshot_balance $1100.0, got: {rec_data['snapshot_balance']}"
     )
     assert float(rec_data["discrepancy"]) == 0.0
-

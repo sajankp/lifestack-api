@@ -205,13 +205,18 @@ class CashBalanceRepository(BaseRepository[CashBalance]):
         self, workspace_id: int, as_of: datetime | None = None
     ) -> Sequence[CashBalance]:
         """Return the single latest CashBalance row per (account_id, currency) pair."""
+        order_by_clause = (
+            [CashBalance.as_of.desc(), CashBalance.created_at.desc()]
+            if as_of is not None
+            else [CashBalance.created_at.desc()]
+        )
         subq_stmt = select(
             CashBalance.id,
             func
             .row_number()
             .over(
                 partition_by=[CashBalance.account_id, CashBalance.currency],
-                order_by=[CashBalance.as_of.desc(), CashBalance.created_at.desc()],
+                order_by=order_by_clause,
             )
             .label("rn"),
         ).where(CashBalance.workspace_id == workspace_id)
