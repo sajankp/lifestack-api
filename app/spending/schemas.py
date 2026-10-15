@@ -15,8 +15,15 @@ from app.spending.models import (
     TransactionType,
 )
 
-# Ledger entry kinds: regular spending transaction, or a capital transfer in/out
-LedgerEntryKind = Literal["transaction", "transfer_out", "transfer_in"]
+# Ledger entry kinds: regular spending transaction, capital transfer in/out, investing orders, or dividends
+LedgerEntryKind = Literal[
+    "transaction",
+    "transfer_out",
+    "transfer_in",
+    "order_buy",
+    "order_sell",
+    "dividend",
+]
 
 # ---------------------------------------------------------------------------
 # Category Group schemas
@@ -571,14 +578,17 @@ class SpendPacingResponse(BaseModel):
 
 
 class LedgerEntry(BaseModel):
-    """A single ledger entry (spending transaction or capital transfer) with a cumulative running balance.
+    """A single ledger entry (spending transaction, capital transfer, investing order, or dividend) with a cumulative running balance.
 
-    entry_kind discriminates between regular transactions and transfer events:
+    entry_kind discriminates between entry types:
     - ``transaction``: a spending income/expense transaction
     - ``transfer_out``: a capital transfer leaving this account
     - ``transfer_in``: a capital transfer arriving at this account
+    - ``order_buy``: an investing buy order debiting cash
+    - ``order_sell``: an investing sell order crediting cash
+    - ``dividend``: a dividend/income event crediting cash
 
-    Transfer entries have ``category_id = None`` and ``wallet_name = None``.
+    Transfer, order, and dividend entries have ``category_id = None`` and ``wallet_name = None``.
     """
 
     public_id: uuid.UUID

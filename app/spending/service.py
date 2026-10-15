@@ -1198,6 +1198,7 @@ class TransactionService:
         if account.id is None:
             raise ValidationError(detail="Account ID is missing.")
         account_id: int = account.id  # type: ignore[assignment]
+        is_brokerage = account.account_type == "brokerage"
 
         rows, total = await self.transaction_repo.get_ledger_page(
             workspace_id,
@@ -1206,6 +1207,7 @@ class TransactionService:
             to_date=to_date,
             limit=limit,
             offset=offset,
+            is_brokerage=is_brokerage,
         )
 
         total_balance = Decimal("0")
@@ -1215,6 +1217,7 @@ class TransactionService:
                 workspace_id,
                 account_id,
                 before_row=rows[-1],
+                is_brokerage=is_brokerage,
             )
         else:
             tail_balance = Decimal("0")
@@ -1223,12 +1226,15 @@ class TransactionService:
                 account_id,
                 from_date=from_date,
                 to_date=to_date,
+                is_brokerage=is_brokerage,
             )
 
         # Build running_balance per entry (desc page → oldest row first, accumulate, re-reverse)
         def _is_credit(row: LedgerRow) -> bool:
             """Return True if this entry adds to the balance."""
-            return row.entry_kind == "transfer_in" or row.type == "income"
+            return (
+                row.entry_kind in ("transfer_in", "order_sell", "dividend") or row.type == "income"
+            )
 
         reversed_rows = list(reversed(rows))
         running = tail_balance

@@ -196,9 +196,7 @@ async def test_brokerage_account_ledger_includes_orders_and_running_balance(clie
     """The account ledger for a brokerage account must include investing orders
     and dividends as ledger entries with correct running balance and pagination.
     """
-    cookies = await _register_and_login(
-        client, "brokerage_ledger@example.com", "brokerage_ledger"
-    )
+    cookies = await _register_and_login(client, "brokerage_ledger@example.com", "brokerage_ledger")
     src_account = await _create_account(client, cookies, "Bank Source", "USD")
 
     # Create brokerage account
@@ -344,4 +342,3 @@ async def test_brokerage_account_ledger_includes_orders_and_running_balance(clie
     assert p2_data["items"][1]["entry_kind"] == "transfer_in"
     assert float(p2_data["closing_balance"]) == 800.00
     assert float(p2_data["opening_balance"]) == 0.00
-
