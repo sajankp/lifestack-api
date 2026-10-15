@@ -3696,3 +3696,107 @@ async def test_create_dividend_rejects_tax_equal_to_gross(client: AsyncClient):
     )
     assert res.status_code == 422, res.text
     assert "less than" in res.text
+
+
+@pytest.mark.asyncio
+async def test_transfers_after_order_updates_net_worth_and_reconciliation_cash_balance(
+    client: AsyncClient,
+):
+    """
+    Regression test: When a transfer is added after an order, the brokerage account's
+    live balance in Net Worth and Reconciliation MUST reflect the newly added transfer
+    and not be shadowed by the order's as_of timestamp.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    await _register_and_login(
+        client,
+        email=f"shadow-fix-{suffix}@example.com",
+        username=f"shadow_{suffix}",
+        password="TestPass123!",
+    )
+
+    # 1. Create a bank account and a brokerage account
+    bank_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Test Bank", "account_type": "bank", "default_currency_code": "USD"},
+    )
+    assert bank_res.status_code == 201
+    bank_id = bank_res.json()["public_id"]
+
+    broker_res = await client.post(
+        "/v1/finance/accounts",
+        json={"name": "Test Broker", "account_type": "brokerage", "default_currency_code": "USD"},
+    )
+    assert broker_res.status_code == 201
+    broker_id = broker_res.json()["public_id"]
+
+    # 2. Seed transfer of $1000 into brokerage
+    t1_res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "investing",
+            "from_account_id": bank_id,
+            "to_account_id": broker_id,
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
+            "gross_amount": "1000.00",
+            "net_amount_received": "1000.00",
+            "occurred_at": "2026-06-01T00:00:00Z",
+        },
+    )
+    assert t1_res.status_code == 201
+
+    # 3. Buy order of $400 (balance becomes $600)
+    order_res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "buy",
+            "symbol": "NVDA",
+            "quantity": "2.00000000",
+            "price_per_unit": "200.00",
+            "currency": "USD",
+            "occurred_at": "2026-06-02T10:00:00Z",
+        },
+    )
+    assert order_res.status_code == 201
+
+    # 4. Add another transfer of $500 with datepicker midnight timestamp
+    t2_res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_module": "spending",
+            "to_module": "investing",
+            "from_account_id": bank_id,
+            "to_account_id": broker_id,
+            "from_currency_code": "USD",
+            "to_currency_code": "USD",
+            "gross_amount": "500.00",
+            "net_amount_received": "500.00",
+            "occurred_at": "2026-06-03T00:00:00Z",
+        },
+    )
+    assert t2_res.status_code == 201
+
+    # 5. Check Net Worth: Brokerage cash must be $1100 (600 + 500)
+    nw_res = await client.get("/v1/finance/net-worth")
+    assert nw_res.status_code == 200
+    nw_data = nw_res.json()
+    investing_accs = {
+        acc["account_public_id"]: acc for acc in nw_data.get("investing_accounts", [])
+    }
+    assert broker_id in investing_accs
+    assert float(investing_accs[broker_id]["balance"]) == 1100.0, (
+        f"Expected $1100.0, got: {investing_accs[broker_id]['balance']}"
+    )
+
+    # 6. Check Reconciliation: Snapshot balance must be $1100
+    rec_res = await client.get(f"/v1/finance/accounts/{broker_id}/reconciliation")
+    assert rec_res.status_code == 200
+    rec_data = rec_res.json()
+    assert float(rec_data["snapshot_balance"]) == 1100.0, (
+        f"Expected snapshot_balance $1100.0, got: {rec_data['snapshot_balance']}"
+    )
+    assert float(rec_data["discrepancy"]) == 0.0
+
