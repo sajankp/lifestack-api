@@ -33,8 +33,9 @@ confusion:
 | Transfer **into** an investing account | ✅ transfer row | ✅ `+net_amount_received` in `to_currency`, trigger `transfer` (`finance/service.py`, `create_transfer`) |
 | Transfer **out of** an investing account | ✅ transfer row | ✅ `−gross_amount` in `from_currency`, trigger `transfer` (spec-049; previously not decremented at all) |
 | Transfer between two non-investing accounts | ✅ transfer row | ❌ never (neither side is snapshot-managed) |
-| Order **buy** | ❌ orders aren't ledger rows | ✅ `−net` (net = gross + fees); validated vs available cash first (`investing/service.py:1967`, `:2039`) |
-| Order **sell** | ❌ | ✅ `+net` (net = gross − fees) |
+| Order **buy** | ✅ `order_buy` in brokerage ledger; not in `spending_transactions` table | ✅ `−net` (net = gross + fees); validated vs available cash first (`investing/service.py:1967`, `:2039`) |
+| Order **sell** | ✅ `order_sell` in brokerage ledger; not in `spending_transactions` table | ✅ `+net` (net = gross − fees) |
+| Dividend / interest | ✅ `dividend` in brokerage ledger (or income in bank ledger) | ✅ `+net_amount`, trigger `dividend` |
 
 Key asymmetries to remember:
 - **Spends never touch snapshots.** A wallet/bank account typically has *no* snapshot
@@ -45,7 +46,9 @@ Key asymmetries to remember:
   `CashBalanceRepository.get_by_trigger_ref_and_account` — the older unscoped
   `get_by_trigger_ref` assumes exactly one row per transfer and breaks
   (`MultipleResultsFound`) once both sides are investing accounts.
-- **Orders never touch the ledger**, but they *do* move the snapshot.
+- **Brokerage account ledgers unify orders, dividends, and transfers.** `GET /v1/spending/accounts/{id}/ledger`
+  for a brokerage account queries `investing_orders` and `investing_dividends` alongside `capital_transfers`,
+  producing a chronological, order-by-order running balance that reconciles with snapshots.
 - **Transfer outflows** move the ledger but not the snapshot.
 
 ## 3. Reconciliation (`GET /finance/accounts/{id}/reconciliation`)
@@ -243,3 +246,18 @@ Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**
   commit transaction (`commit_finance_account_statement_chunk` pre-checks instead).
   Out of scope (per spec): auto-creating transactions from unmatched statement lines,
   bank-specific parsers beyond generic CSV, wallet-account snapshots, fuzzy matching.
+- **2026-10-16 (fix: brokerage cash balance shadowing after order):** Fixed cash balance
+  shadowing in Net Worth and Reconciliation when transfers are added after orders.
+  Orders previously hardcoded `as_of = datetime.now(UTC)` in `_update_cash_balance`,
+  causing their snapshot timestamps to land ahead of transfers with historical or
+  midnight-UTC (`00:00:00Z`) `occurred_at`. Furthermore, `get_latest_per_account_currency`
+  (Net Worth) and `get_reconciliation_summary` sorted by `as_of DESC` rather than
+  `created_at DESC` (which had previously only been fixed in `get_latest_for_account_currency`
+  in 446649f). Live balance queries now sort by `created_at DESC` when `as_of` is None,
+  and orders record `as_of = order.occurred_at`, ensuring the latest appended snapshot
+  is consistently returned.
+  Additionally, extended `GET /v1/spending/accounts/{account_id}/ledger` (`get_ledger_page`
+  and `get_account_net_balance`) to include investing orders (`order_buy`, `order_sell`)
+  and brokerage dividends (`dividend`) when querying a brokerage account (`account_type == "brokerage"`).
+  This provides a continuous, chronological, order-by-order running balance timeline that matches
+  reconciliation and cash snapshots.

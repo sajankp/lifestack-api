@@ -210,6 +210,7 @@ class InvestingOrderService:
         delta: Decimal,
         trigger_type: str,
         trigger_ref: uuid.UUID,
+        as_of: datetime | None = None,
     ) -> CashBalance:
         current = await self._get_cash_balance(workspace_id, account_id, currency)
         new_balance = current + delta
@@ -219,7 +220,7 @@ class InvestingOrderService:
             account_id=account_id,
             balance=new_balance,
             currency=currency,
-            as_of=datetime.now(UTC),
+            as_of=as_of if as_of is not None else datetime.now(UTC),
             trigger_type=trigger_type,
             trigger_ref=trigger_ref,
         )
@@ -556,6 +557,7 @@ class InvestingOrderService:
             delta=cash_delta,
             trigger_type="order",
             trigger_ref=order.public_id,
+            as_of=order.occurred_at,
         )
 
         if audit_logger:
@@ -778,6 +780,7 @@ class InvestingOrderService:
             delta=combined_cash_delta,
             trigger_type="order",
             trigger_ref=order.public_id,
+            as_of=order.occurred_at,
         )
 
         # Recompute holding quantity and avg cost from full order history

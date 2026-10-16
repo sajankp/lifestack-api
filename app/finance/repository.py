@@ -503,7 +503,7 @@ class AccountRepository(BaseRepository[Account]):
                 CashBalance.workspace_id == workspace_id,
                 CashBalance.account_id == account_id,
             )
-            .order_by(CashBalance.as_of.desc())
+            .order_by(CashBalance.created_at.desc(), CashBalance.as_of.desc())
             .limit(1)
         )
         snapshot = snapshot_row.one_or_none()

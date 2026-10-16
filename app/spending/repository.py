@@ -10,6 +10,7 @@ from sqlalchemy import and_, case, func, literal, or_, select, union_all
 from app.core.pagination import DEFAULT_LIMIT
 from app.core.repository import BaseRepository
 from app.finance.models import CapitalTransfer
+from app.investing.models import Dividend, InvestingOrder
 from app.spending.models import (
     CategoryGroup,
     FinancialKpi,
@@ -47,14 +48,14 @@ def _transaction_order_by(sort: TransactionSort | None) -> list:  # type: ignore
 @dataclass
 class LedgerRow:
     """Unified row type returned by get_ledger_page representing either a
-    spending transaction or a capital transfer event for an account."""
+    spending transaction, capital transfer, investing order, or dividend event."""
 
     id: int
     public_id: UUID
     occurred_at: datetime
     amount: Decimal
-    entry_kind: str  # "transaction" | "transfer_out" | "transfer_in"
-    type: str | None  # "income" | "expense" | None (None for transfers)
+    entry_kind: str  # "transaction" | "transfer_out" | "transfer_in" | "order_buy" | "order_sell" | "dividend"
+    type: str | None  # "income" | "expense" | None (None for transfers/orders/dividends)
     description: str | None
     wallet_name: str | None
     labels: str | None
@@ -539,14 +540,18 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         to_date: datetime | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
+        is_brokerage: bool = False,
     ) -> tuple[list[LedgerRow], int]:
         """Return paginated ledger entries for an account ordered by occurred_at DESC.
 
-        Includes both spending_transactions AND capital_transfers in the same
-        timeline, giving each a consistent entry_kind discriminator:
+        Includes spending_transactions and capital_transfers, and when is_brokerage=True,
+        also includes investing orders and dividends in the same timeline:
           - ``transaction``  : spending income/expense row
           - ``transfer_out`` : capital transfer leaving this account
           - ``transfer_in``  : capital transfer arriving at this account
+          - ``order_buy``    : investing buy order debiting cash
+          - ``order_sell``   : investing sell order crediting cash
+          - ``dividend``     : dividend/income crediting cash
 
         Returns (ledger_rows, total_count_for_account).
         """
@@ -614,7 +619,83 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
             CapitalTransfer.created_at.label("created_at"),
         ).where(*xfer_where)
 
-        combined = union_all(tx_select, xfer_select).alias("ledger_entries")
+        selects = [tx_select, xfer_select]
+
+        if is_brokerage:
+            # --- Leg 3: investing orders for this brokerage account ----------
+            order_where = [
+                InvestingOrder.workspace_id == workspace_id,
+                InvestingOrder.account_id == account_id,
+            ]
+            if from_date is not None:
+                order_where.append(InvestingOrder.occurred_at >= from_date)
+            if to_date is not None:
+                order_where.append(InvestingOrder.occurred_at <= to_date)
+
+            order_select = select(
+                InvestingOrder.id.label("id"),
+                InvestingOrder.public_id.label("public_id"),
+                InvestingOrder.occurred_at.label("occurred_at"),
+                InvestingOrder.net_amount.label("amount"),
+                case(
+                    (InvestingOrder.order_type == "buy", literal("order_buy")),
+                    else_=literal("order_sell"),
+                ).label("entry_kind"),
+                literal(None, type_=sa.String()).label("type"),
+                func.coalesce(
+                    func.nullif(InvestingOrder.notes, ""),
+                    func.concat(
+                        case(
+                            (InvestingOrder.order_type == "buy", literal("BUY")),
+                            else_=literal("SELL"),
+                        ),
+                        " ",
+                        InvestingOrder.symbol,
+                    ),
+                ).label("description"),
+                literal(None, type_=sa.String()).label("wallet_name"),
+                literal(None, type_=sa.String()).label("labels"),
+                InvestingOrder.source_type.label("source_type"),
+                literal(None, type_=sa.Integer()).label("category_id"),
+                InvestingOrder.created_at.label("created_at"),
+            ).where(*order_where)
+
+            # --- Leg 4: dividends credited to this brokerage account ---------
+            div_where = [
+                Dividend.workspace_id == workspace_id,
+                func.coalesce(Dividend.credit_account_id, Dividend.account_id) == account_id,
+            ]
+            if from_date is not None:
+                div_where.append(
+                    sa.cast(Dividend.pay_date, sa.DateTime(timezone=True)) >= from_date
+                )
+            if to_date is not None:
+                div_where.append(sa.cast(Dividend.pay_date, sa.DateTime(timezone=True)) <= to_date)
+
+            div_select = select(
+                Dividend.id.label("id"),
+                Dividend.public_id.label("public_id"),
+                sa.cast(Dividend.pay_date, sa.DateTime(timezone=True)).label("occurred_at"),
+                Dividend.net_amount.label("amount"),
+                literal("dividend", type_=sa.String()).label("entry_kind"),
+                literal(None, type_=sa.String()).label("type"),
+                func.coalesce(
+                    func.nullif(Dividend.notes, ""),
+                    case(
+                        (Dividend.symbol.isnot(None), func.concat("Dividend: ", Dividend.symbol)),
+                        else_="Dividend income",
+                    ),
+                ).label("description"),
+                literal(None, type_=sa.String()).label("wallet_name"),
+                literal(None, type_=sa.String()).label("labels"),
+                literal("investing", type_=sa.String()).label("source_type"),
+                literal(None, type_=sa.Integer()).label("category_id"),
+                Dividend.created_at.label("created_at"),
+            ).where(*div_where)
+
+            selects.extend([order_select, div_select])
+
+        combined = union_all(*selects).alias("ledger_entries")
 
         # Total count (without pagination)
         total = (
@@ -661,12 +742,16 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
         from_date: datetime | None = None,
         to_date: datetime | None = None,
         before_row: LedgerRow | None = None,
+        is_brokerage: bool = False,
     ) -> Decimal:
-        """Return the net balance of an account including both spending transactions
-        AND capital transfer contributions.
+        """Return the net balance of an account including spending transactions,
+        capital transfer contributions, and for brokerage accounts, investing
+        orders and dividends.
 
         balance = SUM(income txns) - SUM(expense txns)
                 + SUM(transfer_in net_amount_received) - SUM(transfer_out gross_amount)
+                + SUM(sell net_amount) - SUM(buy net_amount)
+                + SUM(dividend net_amount)
 
         ``before_row`` restricts the query to entries strictly preceding that row
         (used for computing the running balance tail in paginated ledger views).
@@ -717,7 +802,54 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
             ).label("entry_kind"),
         ).where(*xfer_where)
 
-        combined = union_all(tx_select, xfer_select).alias("ledger_entries_balance")
+        selects = [tx_select, xfer_select]
+
+        if is_brokerage:
+            # --- Leg 3: investing orders for this brokerage account ----------
+            order_where = [
+                InvestingOrder.workspace_id == workspace_id,
+                InvestingOrder.account_id == account_id,
+            ]
+            if from_date is not None:
+                order_where.append(InvestingOrder.occurred_at >= from_date)
+            if to_date is not None:
+                order_where.append(InvestingOrder.occurred_at <= to_date)
+
+            order_select = select(
+                InvestingOrder.id.label("id"),
+                InvestingOrder.occurred_at.label("occurred_at"),
+                case(
+                    (InvestingOrder.order_type == "sell", InvestingOrder.net_amount),
+                    else_=-InvestingOrder.net_amount,
+                ).label("net_amount"),
+                case(
+                    (InvestingOrder.order_type == "buy", literal("order_buy")),
+                    else_=literal("order_sell"),
+                ).label("entry_kind"),
+            ).where(*order_where)
+
+            # --- Leg 4: dividends credited to this brokerage account ---------
+            div_where = [
+                Dividend.workspace_id == workspace_id,
+                func.coalesce(Dividend.credit_account_id, Dividend.account_id) == account_id,
+            ]
+            if from_date is not None:
+                div_where.append(
+                    sa.cast(Dividend.pay_date, sa.DateTime(timezone=True)) >= from_date
+                )
+            if to_date is not None:
+                div_where.append(sa.cast(Dividend.pay_date, sa.DateTime(timezone=True)) <= to_date)
+
+            div_select = select(
+                Dividend.id.label("id"),
+                sa.cast(Dividend.pay_date, sa.DateTime(timezone=True)).label("occurred_at"),
+                Dividend.net_amount.label("net_amount"),
+                literal("dividend", type_=sa.String()).label("entry_kind"),
+            ).where(*div_where)
+
+            selects.extend([order_select, div_select])
+
+        combined = union_all(*selects).alias("ledger_entries_balance")
 
         stmt = select(func.coalesce(func.sum(combined.c.net_amount), Decimal("0"))).select_from(
             combined
