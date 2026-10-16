@@ -205,11 +205,7 @@ class CashBalanceRepository(BaseRepository[CashBalance]):
         self, workspace_id: int, as_of: datetime | None = None
     ) -> Sequence[CashBalance]:
         """Return the single latest CashBalance row per (account_id, currency) pair."""
-        order_by_clause = (
-            [CashBalance.as_of.desc(), CashBalance.created_at.desc()]
-            if as_of is not None
-            else [CashBalance.created_at.desc()]
-        )
+        order_by_clause = [CashBalance.created_at.desc(), CashBalance.as_of.desc()]
         subq_stmt = select(
             CashBalance.id,
             func
