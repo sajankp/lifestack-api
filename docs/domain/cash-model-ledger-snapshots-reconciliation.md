@@ -261,5 +261,3 @@ Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**
   and brokerage dividends (`dividend`) when querying a brokerage account (`account_type == "brokerage"`).
   This provides a continuous, chronological, order-by-order running balance timeline that matches
   reconciliation and cash snapshots.
-
-
