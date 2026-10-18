@@ -88,8 +88,7 @@ class PerformanceService:
         if not holdings:
             return {}
 
-        today = datetime.now(UTC).date()
-        expected_close_date = core_service._previous_weekday(today)
+        expected_close_date = core_service._latest_completed_market_close(datetime.now(UTC))
         holding_ids = [holding.id for holding in holdings if holding.id is not None]
         if not holding_ids:
             return {}
@@ -105,7 +104,8 @@ class PerformanceService:
                 and (
                     latest.price_date == expected_close_date
                     or (
-                        latest.source == "api" and latest.created_at.astimezone(UTC).date() == today
+                        latest.source == "api"
+                        and latest.created_at.astimezone(UTC).date() == expected_close_date
                     )
                 )
             )
@@ -185,7 +185,7 @@ class PerformanceService:
                             source="api",
                         )
                         prices_updated[sym] = price
-            await self.snapshot_repo.delete_for_date(workspace_id, today)
+            await self.snapshot_repo.delete_for_date(workspace_id, expected_close_date)
 
         return prices_updated
 
