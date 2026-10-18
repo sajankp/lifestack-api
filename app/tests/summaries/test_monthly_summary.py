@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
+from app.core.database import postgres
 from app.investing.schemas import PerformanceHistoryPoint, PerformanceHistoryResponse
+from app.platform.models import Workspace
 from app.spending.schemas import SpendPacingResponse
 from app.spending.service import BudgetService
 from app.summaries.models import MonthlySummary
@@ -319,9 +321,6 @@ async def test_monthly_summary_supersede_satisfies_partial_unique_index(
     insert new, old -> new); this test pins it for monthly against the
     actually-migrated database.
     """
-    from app.platform.models import Workspace
-    from app.core.database import postgres
-
     async with postgres.async_session_maker() as session:
         ws = Workspace(name="monthly-supersede-regression")
         session.add(ws)

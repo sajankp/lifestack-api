@@ -139,15 +139,17 @@ async def test_oauth_callback_rejects_deactivated_user_without_session():
     workspace_service = MagicMock()
     workspace_service.ensure_default_workspace = AsyncMock(return_value=SimpleNamespace(id=7))
 
-    with patch("app.auth.oauth._get_oauth_client", return_value=oauth_client):
-        with pytest.raises(HTTPException) as exc_info:
-            await oauth_callback(
-                request=request,
-                provider="google",
-                auth_service=auth_service,
-                user_repo=user_repo,
-                workspace_service=workspace_service,
-            )
+    with (
+        patch("app.auth.oauth._get_oauth_client", return_value=oauth_client),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await oauth_callback(
+            request=request,
+            provider="google",
+            auth_service=auth_service,
+            user_repo=user_repo,
+            workspace_service=workspace_service,
+        )
 
     assert exc_info.value.status_code == 401
     assert "inactive" in exc_info.value.detail

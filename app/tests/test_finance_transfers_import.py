@@ -13,8 +13,8 @@ from app.imports.finance_transfers_import import (
     TEMPLATE_ROW,
     validate_finance_transfer_row,
 )
-from app.imports.schemas import TEMPLATE_HEADERS
 from app.imports.models import ImportModule
+from app.imports.schemas import TEMPLATE_HEADERS
 
 
 def _maps(account_types: dict[str, str]):

@@ -1047,9 +1047,7 @@ class MonthlySummaryService:
     ) -> MonthlySummary:
         old = await self.get(workspace_id, public_id)
         if old is None:
-            raise NotFoundError(
-                detail=f"Monthly summary with id {public_id} not found"
-            )
+            raise NotFoundError(detail=f"Monthly summary with id {public_id} not found")
         if old.superseded_by_id is not None:
             raise NotFoundError(
                 detail=f"Monthly summary with id {public_id} has already been superseded"

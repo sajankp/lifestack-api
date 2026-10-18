@@ -10,9 +10,7 @@ from app.mcp.security import authorize_workspace
 
 
 def _token(scopes):
-    return SimpleNamespace(
-        scopes=set(scopes), claims={"user_id": "101"}, client_id="test-client"
-    )
+    return SimpleNamespace(scopes=set(scopes), claims={"user_id": "101"}, client_id="test-client")
 
 
 def _membership(role):
@@ -36,9 +34,7 @@ async def test_write_scope_rejects_viewer_role():
         repo_cls.return_value.get_membership = AsyncMock(return_value=_membership("viewer"))
 
         with pytest.raises(ForbiddenError):
-            await authorize_workspace(
-                session, 202, required_scope="mcp:write", tool="create_todo"
-            )
+            await authorize_workspace(session, 202, required_scope="mcp:write", tool="create_todo")
 
 
 @pytest.mark.anyio

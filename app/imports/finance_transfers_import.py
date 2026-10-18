@@ -43,9 +43,12 @@ def _derive_module_from_account_type(
     """
     if module_raw:
         return module_raw
-    if account_name and account_type_map:
-        if account_type_map.get(account_name.lower()) == "brokerage":
-            return "investing"
+    if (
+        account_name
+        and account_type_map
+        and account_type_map.get(account_name.lower()) == "brokerage"
+    ):
+        return "investing"
     return "spending"
 
 

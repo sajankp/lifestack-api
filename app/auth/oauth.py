@@ -169,9 +169,7 @@ async def oauth_callback(
     assert user.id is not None
     if not user.is_active:
         # Mirrors the refresh endpoint: deactivated accounts never get sessions.
-        raise HTTPException(
-            status_code=401, detail="User account is inactive or no longer exists"
-        )
+        raise HTTPException(status_code=401, detail="User account is inactive or no longer exists")
     # Same flow as password login - generate SID, session, JWTs
     sid = str(uuid.uuid4())
     default_workspace = await workspace_service.ensure_default_workspace(user.id, user.username)

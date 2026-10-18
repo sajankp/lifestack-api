@@ -1366,7 +1366,6 @@ class ImportService:
 
         await self.repository.delete_batch(batch)
 
-
     async def retry_commit(self, batch_id: int) -> bool:
         """Recovery path for a batch permanently stuck in 'committing'.
         The production path (commit_import) sets batch.status='committing'
@@ -1380,6 +1379,7 @@ class ImportService:
         underlying data is still consistent before calling this.
         """
         return await self.repository.retry_commit(batch_id)
+
 
 async def run_background_validate(
     workspace_id: int,
