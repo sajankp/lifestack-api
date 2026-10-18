@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 
 from app.auth.models import User
@@ -90,6 +91,68 @@ async def test_oauth_callback_uses_provider_identity_and_sets_cookies_on_redirec
     assert any(header.startswith("refresh_token=") for header in set_cookie_headers)
     assert any(header.startswith("sid=") for header in set_cookie_headers)
     assert any(header.startswith("csrf_token=") for header in set_cookie_headers)
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_rejects_deactivated_user_without_session():
+    """Deactivated users must not complete OAuth login.
+
+    Password login and the refresh endpoint both reject inactive users, but
+    the OAuth callback previously resolved the user and went straight to
+    create_session, provisioning a workspace and issuing valid-looking
+    cookies for a deactivated account.
+    """
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/v1/auth/oauth/google/callback",
+        "headers": [],
+        "query_string": b"",
+        "scheme": "https",
+        "server": ("api.example.com", 443),
+        "client": ("127.0.0.1", 1234),
+    })
+    oauth_client = MagicMock()
+    oauth_client.authorize_access_token = AsyncMock(
+        return_value={
+            "userinfo": {
+                "sub": "google-subject",
+                "email": "deactivated@example.com",
+            }
+        }
+    )
+    deactivated_user = User(
+        id=42,
+        email="deactivated@example.com",
+        username="deactivated-user",
+        hashed_password="",
+        oauth_provider="google",
+        oauth_sub="google-subject",
+        is_active=False,
+    )
+    user_repo = MagicMock()
+    user_repo.get_by_oauth_identity = AsyncMock(return_value=deactivated_user)
+    user_repo.get_auth_identity = AsyncMock(return_value=None)
+    auth_service = MagicMock()
+    auth_service.create_session = AsyncMock()
+    auth_service.create_oauth_user = AsyncMock()
+    workspace_service = MagicMock()
+    workspace_service.ensure_default_workspace = AsyncMock(return_value=SimpleNamespace(id=7))
+
+    with patch("app.auth.oauth._get_oauth_client", return_value=oauth_client):
+        with pytest.raises(HTTPException) as exc_info:
+            await oauth_callback(
+                request=request,
+                provider="google",
+                auth_service=auth_service,
+                user_repo=user_repo,
+                workspace_service=workspace_service,
+            )
+
+    assert exc_info.value.status_code == 401
+    assert "inactive" in exc_info.value.detail
+    auth_service.create_session.assert_not_awaited()
+    workspace_service.ensure_default_workspace.assert_not_awaited()
 
 
 @pytest.mark.asyncio
