@@ -33,24 +33,36 @@ from app.finance.repository import (
 )
 from app.finance.service import AccountService, NetWorthService
 from app.health.repository import MedicationRepository
+from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
+    CorporateActionRepository,
     DividendRepository,
     HoldingPriceRepository,
     HoldingRepository,
     InstrumentConstituentRepository,
     InstrumentRepository,
     InvestingOrderRepository,
+    LotRepository,
     PortfolioSnapshotRepository,
 )
 from app.investing.schemas import (
     DividendCreate,
     DividendResponse,
     InstrumentConstituentUpsert,
+    InstrumentType,
+    InvestingOrderCreate,
+    InvestingOrderUpdate,
+    OrderType,
 )
-from app.investing.service import ConstituentService, DividendService, HoldingService
+from app.investing.service import (
+    ConstituentService,
+    DividendService,
+    HoldingService,
+    InstrumentService,
+)
 from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.security import authorize_user, authorize_workspace, validate_page
 from app.platform.repository import MembershipRepository, WorkspaceRepository
@@ -144,6 +156,50 @@ def _dividend_service(session: Any) -> DividendService:
         HoldingRepository(session),
         CurrencyRepository(session),
     )
+
+
+def _order_service(session: Any) -> InvestingOrderService:
+    return InvestingOrderService(
+        InvestingOrderRepository(session),
+        HoldingRepository(session),
+        CashBalanceRepository(session),
+        AccountRepository(session),
+        CurrencyRepository(session),
+        InstrumentService(InstrumentRepository(session), CompanyRepository(session)),
+        LotRepository(session),
+        CorporateActionRepository(session),
+    )
+
+
+def _order_response(order: Any, account: Any, instrument: Any | None = None) -> dict[str, Any]:
+    return {
+        "public_id": str(order.public_id),
+        "account_id": str(account.public_id),
+        "account_name": account.name,
+        "order_type": str(order.order_type),
+        "symbol": order.symbol,
+        "instrument_type": instrument.instrument_type if instrument else None,
+        "quantity": str(order.quantity),
+        "price_per_unit": str(order.price_per_unit),
+        "gross_amount": str(order.gross_amount),
+        "brokerage_fee": str(order.brokerage_fee),
+        "tax_amount": str(order.tax_amount),
+        "other_fees": str(order.other_fees),
+        "net_amount": str(order.net_amount),
+        "currency": order.currency,
+        "exchange_name": order.exchange_name,
+        "occurred_at": order.occurred_at.isoformat(),
+        "notes": order.notes,
+        "realized_gain_loss": str(order.realized_gain_loss)
+        if order.realized_gain_loss is not None
+        else None,
+        "avg_cost_at_sale": str(order.avg_cost_at_sale)
+        if order.avg_cost_at_sale is not None
+        else None,
+        "source_type": order.source_type,
+        "source_ref": order.source_ref,
+        "created_at": order.created_at.isoformat(),
+    }
 
 
 def _decimal_string(value: Decimal | None) -> str | None:
@@ -928,6 +984,310 @@ def create_mcp_server() -> FastMCP:
                 "limit": limit,
                 "offset": offset,
             }
+
+    @mcp.tool
+    async def list_investment_orders(
+        workspace_id: int,
+        account_id: str | None = None,
+        symbol: str | None = None,
+        order_type: str | None = None,
+        search: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """List recorded stock, ETF, and mutual-fund orders."""
+        validate_page(limit, offset)
+        if order_type is not None and order_type not in {"buy", "sell"}:
+            return {"status": "error", "message": "order_type must be 'buy' or 'sell'."}
+        try:
+            account_public_id = uuid.UUID(account_id) if account_id else None
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid account_id."}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="list_investment_orders"
+            )
+            account_repo = AccountRepository(session)
+            account_internal_id = None
+            if account_public_id is not None:
+                account = await account_repo.get_by_public_id(workspace_id, account_public_id)
+                if account is None or account.id is None:
+                    return {"status": "error", "message": "Investment account not found."}
+                account_internal_id = account.id
+            order_repo = InvestingOrderRepository(session)
+            orders, total = await order_repo.list_by_workspace(
+                workspace_id,
+                limit,
+                offset,
+                symbol=symbol,
+                account_id=account_internal_id,
+                order_type=order_type,
+                search=search,
+            )
+            accounts = await account_repo.get_by_ids(
+                workspace_id, {order.account_id for order in orders}
+            )
+            instruments = await InstrumentRepository(session).get_by_ids([
+                order.instrument_id for order in orders if order.instrument_id is not None
+            ])
+            items = [
+                _order_response(
+                    order, accounts[order.account_id], instruments.get(order.instrument_id)
+                )
+                for order in orders
+                if order.account_id in accounts
+            ]
+            return {
+                "status": "success",
+                "workspace_id": workspace_id,
+                "items": items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+
+    @mcp.tool
+    async def create_investment_order(
+        workspace_id: int,
+        account_id: str,
+        order_type: str,
+        symbol: str,
+        quantity: str,
+        price_per_unit: str,
+        currency: str,
+        occurred_at: str,
+        instrument_type: str = "stock",
+        instrument_name: str | None = None,
+        brokerage_fee: str = "0",
+        tax_amount: str = "0",
+        other_fees: str = "0",
+        exchange_name: str | None = None,
+        notes: str | None = None,
+        source_ref: str | None = None,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Record a historical buy or sell order after explicit confirmation.
+
+        This records the trade in Lifestack and updates holdings and brokerage
+        cash; it does not submit a live order to a broker.
+        """
+        try:
+            payload = InvestingOrderCreate(
+                account_id=uuid.UUID(account_id),
+                order_type=OrderType(order_type.strip().lower()),
+                symbol=symbol,
+                instrument_type=InstrumentType(instrument_type.strip().lower()),
+                instrument_name=instrument_name,
+                quantity=quantity,
+                price_per_unit=price_per_unit,
+                currency=currency,
+                brokerage_fee=brokerage_fee,
+                tax_amount=tax_amount,
+                other_fees=other_fees,
+                exchange_name=exchange_name,
+                occurred_at=occurred_at,
+                notes=notes,
+                source_ref=source_ref,
+            )
+        except (TypeError, ValueError, PydanticValidationError) as exc:
+            return {"status": "error", "message": f"Invalid investment order: {exc}"}
+
+        gross_amount = payload.quantity * payload.price_per_unit
+        fees = payload.brokerage_fee + payload.tax_amount + payload.other_fees
+        net_amount = (
+            gross_amount + fees if payload.order_type == OrderType.buy else gross_amount - fees
+        )
+        if net_amount <= 0:
+            return {"status": "error", "message": "Fees must leave a positive net amount."}
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": (
+                    f"Record {payload.order_type.value} order for {payload.quantity} {payload.symbol} "
+                    f"at {payload.price_per_unit} {payload.currency} per unit; net amount "
+                    f"{net_amount} {payload.currency} on {payload.occurred_at.isoformat()}?"
+                ),
+                "account_id": str(payload.account_id),
+                "order_type": payload.order_type.value,
+                "symbol": payload.symbol,
+                "instrument_type": payload.instrument_type.value,
+                "quantity": str(payload.quantity),
+                "price_per_unit": str(payload.price_per_unit),
+                "gross_amount": str(gross_amount),
+                "brokerage_fee": str(payload.brokerage_fee),
+                "tax_amount": str(payload.tax_amount),
+                "other_fees": str(payload.other_fees),
+                "net_amount": str(net_amount),
+                "currency": payload.currency,
+                "occurred_at": payload.occurred_at.isoformat(),
+                "source_ref": payload.source_ref,
+            }
+
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session, workspace_id, required_scope="mcp:write", tool="create_investment_order"
+            )
+            order_repo = InvestingOrderRepository(session)
+            if payload.source_ref:
+                existing = await order_repo.get_by_source_ref(workspace_id, payload.source_ref)
+                if existing is not None:
+                    account = await AccountRepository(session).get_by_id(
+                        workspace_id, existing.account_id
+                    )
+                    return {
+                        "status": "success",
+                        "idempotent": True,
+                        "entity_type": "investing_order",
+                        "entity_public_id": str(existing.public_id),
+                        "item": _order_response(existing, account),
+                    }
+            try:
+                order = await _order_service(session).place_order(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    order_in=payload,
+                    audit_logger=AuditLogger(session),
+                    source_type="mcp_agent",
+                )
+                await PortfolioSnapshotRepository(session).delete_for_date(
+                    workspace_id, datetime.now(UTC).date()
+                )
+                account = await AccountRepository(session).get_by_id(workspace_id, order.account_id)
+                instrument = (
+                    await InstrumentRepository(session).get_by_ids([order.instrument_id])
+                    if order.instrument_id is not None
+                    else {}
+                )
+                await session.commit()
+            except (APIError, ValueError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+            item = _order_response(order, account, instrument.get(order.instrument_id))
+            return {
+                "status": "success",
+                "entity_type": "investing_order",
+                "entity_public_id": item["public_id"],
+                "item": item,
+                "summary": f"Recorded {payload.order_type.value} order for {payload.symbol}.",
+            }
+
+    @mcp.tool
+    async def update_investment_order(
+        workspace_id: int,
+        public_id: str,
+        order_type: str | None = None,
+        quantity: str | None = None,
+        price_per_unit: str | None = None,
+        brokerage_fee: str | None = None,
+        tax_amount: str | None = None,
+        other_fees: str | None = None,
+        exchange_name: str | None = None,
+        occurred_at: str | None = None,
+        notes: str | None = None,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Update a recorded investment order after explicit confirmation."""
+        try:
+            order_public_id = uuid.UUID(public_id)
+            payload = InvestingOrderUpdate(
+                order_type=OrderType(order_type.strip().lower()) if order_type else None,
+                quantity=quantity,
+                price_per_unit=price_per_unit,
+                brokerage_fee=brokerage_fee,
+                tax_amount=tax_amount,
+                other_fees=other_fees,
+                exchange_name=exchange_name,
+                occurred_at=occurred_at,
+                notes=notes,
+            )
+        except (TypeError, ValueError, PydanticValidationError) as exc:
+            return {"status": "error", "message": f"Invalid investment order update: {exc}"}
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": f"Update investment order {public_id}? Confirm to continue.",
+                "public_id": public_id,
+                "changes": payload.model_dump(exclude_unset=True, mode="json"),
+            }
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session, workspace_id, required_scope="mcp:write", tool="update_investment_order"
+            )
+            try:
+                order = await _order_service(session).update_order(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    order_public_id=order_public_id,
+                    order_update=payload,
+                    audit_logger=AuditLogger(session),
+                )
+                await PortfolioSnapshotRepository(session).delete_for_date(
+                    workspace_id, datetime.now(UTC).date()
+                )
+                account = await AccountRepository(session).get_by_id(workspace_id, order.account_id)
+                instrument = (
+                    await InstrumentRepository(session).get_by_ids([order.instrument_id])
+                    if order.instrument_id is not None
+                    else {}
+                )
+                await session.commit()
+            except (APIError, ValueError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+            item = _order_response(order, account, instrument.get(order.instrument_id))
+            return {
+                "status": "success",
+                "entity_type": "investing_order",
+                "entity_public_id": item["public_id"],
+                "item": item,
+            }
+
+    @mcp.tool
+    async def delete_investment_order(
+        workspace_id: int, public_id: str, confirmed: bool = False
+    ) -> dict[str, Any]:
+        """Delete a recorded investment order after explicit confirmation."""
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": (
+                    f"Delete investment order {public_id}? This reverses its holding and "
+                    "cash impact. Confirm to continue."
+                ),
+                "public_id": public_id,
+            }
+        try:
+            order_public_id = uuid.UUID(public_id)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid public_id."}
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session, workspace_id, required_scope="mcp:write", tool="delete_investment_order"
+            )
+            try:
+                await _order_service(session).delete_order(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    order_public_id=order_public_id,
+                    audit_logger=AuditLogger(session),
+                )
+                await PortfolioSnapshotRepository(session).delete_for_date(
+                    workspace_id, datetime.now(UTC).date()
+                )
+                await session.commit()
+            except (APIError, ValueError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+        return {
+            "status": "success",
+            "entity_type": "investing_order",
+            "entity_public_id": public_id,
+            "summary": f"Deleted investment order {public_id}.",
+        }
 
     @mcp.tool
     async def create_investment_dividend(

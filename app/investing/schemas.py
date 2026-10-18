@@ -111,6 +111,7 @@ class InvestingOrderCreate(BaseModel):
     exchange_name: str | None = Field(default=None, max_length=50)
     occurred_at: datetime
     notes: str | None = None
+    source_ref: str | None = Field(default=None, max_length=255)
 
     @field_validator("symbol")
     @classmethod
