@@ -1347,6 +1347,20 @@ class ImportService:
         await self.repository.delete_batch(batch)
 
 
+    async def retry_commit(self, batch_id: int) -> bool:
+        """Recovery path for a batch permanently stuck in 'committing'.
+        The production path (commit_import) sets batch.status='committing'
+        then runs run_background_commit. If the process crashes between those
+        two steps, the batch is permanently stuck because:
+        - start_commit (commit_batch) requires status==validated
+        - delete_batch explicitly refuses 'committing'
+        - no reaper existed to reset it.
+        This method resets the batch back to 'validated' status so the
+        normal commit flow can resume. Callers should verify that the
+        underlying data is still consistent before calling this.
+        """
+        return await self.repository.retry_commit(batch_id)
+
 async def run_background_validate(
     workspace_id: int,
     user_id: int,
