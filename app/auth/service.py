@@ -11,6 +11,18 @@ from app.auth.schemas import UserCreate
 from app.config import settings
 from app.core.auth import hash_password, verify_password
 from app.core.exceptions import ConflictError, UnauthorizedError
+from app.notifications.email import send_email
+
+
+def _password_reset_email_html(reset_url: str) -> str:
+    """Minimal, dependency-free HTML body carrying the reset link."""
+    return (
+        "<p>Hello,</p>"
+        "<p>We received a request to reset your Lifestack password.</p>"
+        f'<p><a href="{reset_url}">Reset your password</a></p>'
+        "<p>This link expires in 15 minutes. "
+        "If you did not request a reset, you can ignore this email.</p>"
+    )
 
 
 class AuthService:
@@ -151,7 +163,28 @@ class AuthService:
             reset_url = f"{settings.FRONTEND_URL.rstrip('/')}/reset-password?token={token}"
             self.logger.info("Password Reset Link Generated", email=email, reset_url=reset_url)
         else:
-            self.logger.info("Password reset email triggered", email=email)
+            # Deliver the link via the existing email channel (spec-081).
+            # The raw token exists nowhere else -- only its hash is stored --
+            # so without this send the endpoint's 'a reset link has been
+            # sent' promise is false and the user can never reset.
+            reset_url = f"{settings.FRONTEND_URL.rstrip('/')}/reset-password?token={token}"
+            result = await send_email(
+                to=user.email,
+                subject="Reset your Lifestack password",
+                html=_password_reset_email_html(reset_url),
+            )
+            if result.skipped:
+                self.logger.error(
+                    "Password reset email not delivered: email delivery is not "
+                    "configured (EMAIL_ENABLED / RESEND_API_KEY / EMAIL_FROM_ADDRESS)",
+                    email=email,
+                )
+            elif not result.success:
+                self.logger.error(
+                    "Password reset email delivery failed",
+                    email=email,
+                    error_detail=result.error_detail,
+                )
 
     async def reset_password(self, token: str, new_password: str) -> None:
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
