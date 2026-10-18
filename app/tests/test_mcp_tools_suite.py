@@ -208,6 +208,54 @@ async def test_mcp_todo_tools(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_mcp_create_todo_passes_user_and_workspace_in_correct_order(monkeypatch):
+    """Regression test: MCP create_todo must forward (user_id, workspace_id).
+
+    TodoService.create_todo is declared as create_todo(user_id, workspace_id,
+    todo_in). The MCP tool previously passed them positionally swapped, so
+    every MCP-created todo got workspace_id=<user id> and user_id=<requested
+    workspace id> — a cross-tenant write when the ids collide, or an FK
+    violation (500) otherwise.
+    """
+    server = create_mcp_server()
+    tools = await server.list_tools()
+    tool_map = {t.name: t.fn for t in tools}
+
+    # authorize_workspace resolves to the authenticated user (id 101).
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+
+    fake_todo = SimpleNamespace(
+        id=1,
+        public_id=uuid.uuid4(),
+        workspace_id=202,
+        user_id=101,
+        title="Test Todo",
+        description=None,
+        due_date=None,
+        priority="medium",
+        completed=False,
+        completed_at=None,
+        created_at=datetime(2026, 10, 4, 10, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 10, 4, 10, 0, tzinfo=UTC),
+    )
+
+    with patch("app.mcp.server.TodoService") as mock_todo_svc_cls:
+        mock_todo_svc = mock_todo_svc_cls.return_value
+        mock_todo_svc.create_todo = AsyncMock(return_value=fake_todo)
+
+        await tool_map["create_todo"](workspace_id=202, title="Test Todo")
+
+        mock_todo_svc.create_todo.assert_called_once()
+        args, _kwargs = mock_todo_svc.create_todo.call_args
+        assert args[0] == 101, (
+            "first positional arg must be the authorized user_id, got workspace_id instead"
+        )
+        assert args[1] == 202, (
+            "second positional arg must be the requested workspace_id, got user_id instead"
+        )
+
+
+@pytest.mark.anyio
 async def test_mcp_net_worth_and_spending_budgets(monkeypatch):
     """Test get_net_worth and get_spending_budgets tools."""
     server = create_mcp_server()

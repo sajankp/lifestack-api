@@ -150,6 +150,10 @@ async def test_mcp_exposes_voice_transaction_correction_tools(monkeypatch):
         "write_investment_constituent_snapshot",
         "delete_investment_constituent_snapshot",
         "list_investment_dividends",
+        "list_investment_orders",
+        "create_investment_order",
+        "update_investment_order",
+        "delete_investment_order",
         "create_investment_dividend",
         "list_transfers",
         "find_transfers",
@@ -188,6 +192,19 @@ async def test_mcp_exposes_voice_transaction_correction_tools(monkeypatch):
     assert "confirmed" in tools["delete_spending_transaction"].parameters["properties"]
     assert "confirmed" in tools["write_investment_constituent_snapshot"].parameters["properties"]
     assert "confirmed" in tools["delete_investment_constituent_snapshot"].parameters["properties"]
+    assert {
+        "account_id",
+        "order_type",
+        "symbol",
+        "quantity",
+        "price_per_unit",
+        "currency",
+        "occurred_at",
+        "confirmed",
+        "source_ref",
+    }.issubset(tools["create_investment_order"].parameters["properties"])
+    assert "confirmed" in tools["update_investment_order"].parameters["properties"]
+    assert "confirmed" in tools["delete_investment_order"].parameters["properties"]
     assert "confirmed" in tools["create_investment_dividend"].parameters["properties"]
 
     resources = await server.list_resource_templates()

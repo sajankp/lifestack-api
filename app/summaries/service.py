@@ -1046,6 +1046,12 @@ class MonthlySummaryService:
         self, workspace_id: int, public_id: uuid.UUID, reason: str | None = None
     ) -> MonthlySummary:
         old = await self.get(workspace_id, public_id)
+        if old is None:
+            raise NotFoundError(detail=f"Monthly summary with id {public_id} not found")
+        if old.superseded_by_id is not None:
+            raise NotFoundError(
+                detail=f"Monthly summary with id {public_id} has already been superseded"
+            )
         last_day = calendar.monthrange(old.month_start.year, old.month_start.month)[1]
         month_end = old.month_start.replace(day=last_day)
         sections = await self.composer._compose_range(

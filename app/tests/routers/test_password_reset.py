@@ -1,11 +1,15 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.auth.models import AuthSession, PasswordResetToken, User
+from app.auth.service import AuthService
+from app.config import settings
 from app.core.database import postgres
 
 
@@ -36,6 +40,48 @@ async def test_forgot_password_generic_success(client: AsyncClient):
         forgot_res_nonexistent.json()["message"]
         == "If the email is registered, a password reset link has been sent."
     )
+
+
+@pytest.mark.asyncio
+async def test_forgot_password_delivers_reset_email_in_non_local_env(monkeypatch):
+    """In staging/production the reset token must actually be delivered.
+
+    The endpoint promises 'a password reset link has been sent', but the
+    non-local branch previously only logged 'Password reset email triggered'
+    -- the raw token existed nowhere (only its hash is stored), so users could
+    never reset their passwords outside local/test. The existing send_email
+    channel (spec-081) must carry the link.
+    """
+    sent: list[tuple[str, str, str]] = []
+
+    async def fake_send_email(to, subject, html, client=None):
+        sent.append((to, subject, html))
+        return SimpleNamespace(success=True, skipped=False, error_detail=None)
+
+    monkeypatch.setattr("app.auth.service.send_email", fake_send_email)
+    monkeypatch.setattr(settings, "ENV", "production")
+
+    user = User(
+        id=7,
+        email="user@example.com",
+        username="user",
+        hashed_password="irrelevant",
+        is_active=True,
+    )
+    user_repo = MagicMock()
+    user_repo.get_by_email = AsyncMock(return_value=user)
+    reset_token_repo = MagicMock()
+    reset_token_repo.create = AsyncMock()
+
+    service = AuthService(user_repo, MagicMock(), reset_token_repo=reset_token_repo)
+    await service.forgot_password("user@example.com")
+
+    reset_token_repo.create.assert_awaited_once()
+    assert len(sent) == 1, "non-local forgot_password must attempt one email delivery"
+    to, subject, html = sent[0]
+    assert to == "user@example.com"
+    assert "/reset-password?token=" in html, "email body must contain the reset link"
+    assert "reset" in subject.lower()
 
 
 @pytest.mark.asyncio

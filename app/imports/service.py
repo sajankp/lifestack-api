@@ -484,6 +484,22 @@ class ImportService:
         )
         return {a.name.strip().lower(): a.id for a in rows if a.id is not None}
 
+    async def _account_type_map(self, workspace_id: int) -> dict[str, str]:
+        """Lowercased account name -> account_type, for import module derivation."""
+        rows = (
+            (
+                await self.session.execute(
+                    select(Account).where(
+                        Account.workspace_id == workspace_id,
+                        Account.is_active,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {a.name.strip().lower(): str(a.account_type) for a in rows}
+
     async def _account_public_id_map(self, workspace_id: int) -> dict[str, uuid.UUID]:
         rows = (
             (
@@ -691,6 +707,9 @@ class ImportService:
             ImportModule.investing_dividends,
         }:
             order_account_pub_map = await self._account_public_id_map(workspace_id)
+        account_type_map: dict[str, str] = {}
+        if batch.module == ImportModule.finance_transfers:
+            account_type_map = await self._account_type_map(workspace_id)
         reference_lookup: ReferenceLookup | None = None
         if batch.module == ImportModule.investing_constituents:
             inst_rows = (
@@ -880,6 +899,7 @@ class ImportService:
                         order_account_pub_map=order_account_pub_map,
                         account_map=account_map,
                         currency_set=currency_set,
+                        account_type_map=account_type_map,
                     )
                 elif batch.module == ImportModule.investing_constituents:
                     payload, weight_entry = validate_investing_constituent_row(
@@ -1345,6 +1365,20 @@ class ImportService:
         )
 
         await self.repository.delete_batch(batch)
+
+    async def retry_commit(self, batch_id: int) -> bool:
+        """Recovery path for a batch permanently stuck in 'committing'.
+        The production path (commit_import) sets batch.status='committing'
+        then runs run_background_commit. If the process crashes between those
+        two steps, the batch is permanently stuck because:
+        - start_commit (commit_batch) requires status==validated
+        - delete_batch explicitly refuses 'committing'
+        - no reaper existed to reset it.
+        This method resets the batch back to 'validated' status so the
+        normal commit flow can resume. Callers should verify that the
+        underlying data is still consistent before calling this.
+        """
+        return await self.repository.retry_commit(batch_id)
 
 
 async def run_background_validate(

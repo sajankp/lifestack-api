@@ -8,7 +8,7 @@ removes the order-triggered cash balances and recomputes affected holdings.
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -135,3 +135,58 @@ def test_import_service_clears_instance_cache_on_session_change():
     # Session identity changed -- cache must be cleared.
     assert svc._cash_balance_cache == {}
     assert svc._cache_session is session_b
+
+
+@pytest.mark.asyncio
+async def test_import_repository_retry_commit_resets_stuck_batch():
+    """A batch stuck in 'committing' (worker died mid-commit) must be recoverable.
+
+    The production path (start_commit) persists the 'committing' transition
+    and then runs run_background_commit. If the process crashes between those
+    steps, the batch was permanently stuck: commit requires 'validated' and
+    delete_batch refuses 'committing', and no reaper existed. retry_commit is
+    the escape hatch: a CAS UPDATE that flips 'committing' back to 'validated'
+    so the normal commit flow can resume.
+    """
+    session = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.rowcount = 1
+    session.execute = AsyncMock(return_value=result_mock)
+    repo = ImportRepository(session)
+
+    ok = await repo.retry_commit(99)
+
+    assert ok is True
+    stmt = session.execute.call_args[0][0]
+    compiled = str(stmt)
+    assert "import_batches" in compiled
+    # The CAS predicate and the reset both act on status: verify via bound params.
+    params = stmt.compile().params
+    assert "committing" in params.values(), "CAS predicate must target the stuck status"
+    assert "validated" in params.values(), "reset must move the batch back to validated"
+
+
+@pytest.mark.asyncio
+async def test_import_repository_retry_commit_returns_false_when_not_committing():
+    """No rows updated (batch not stuck) must return False, not raise."""
+    session = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.rowcount = 0
+    session.execute = AsyncMock(return_value=result_mock)
+    repo = ImportRepository(session)
+
+    ok = await repo.retry_commit(99)
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_import_service_retry_commit_delegates_to_repository():
+    session = AsyncMock()
+    repo = AsyncMock()
+    repo.retry_commit = AsyncMock(return_value=True)
+    svc = ImportService(repo, session)
+
+    ok = await svc.retry_commit(123)
+
+    assert ok is True
+    repo.retry_commit.assert_awaited_once_with(123)

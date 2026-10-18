@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from app.imports.models import ImportBatch
@@ -1269,6 +1270,34 @@ def _previous_weekday(value: date) -> date:
     while candidate.weekday() >= 5:
         candidate -= timedelta(days=1)
     return candidate
+
+
+def _latest_completed_nse_trading_day(now_utc: datetime) -> date:
+    """Most recent NSE session that can have published a close, from the IST clock.
+
+    An NSE session of IST date D closes 15:30 IST. At any instant, the latest
+    session that can be complete is the previous IST weekday: before 15:30
+    IST today's session is still running (or unstarted), and after midnight
+    IST the new IST date's session has not run yet. Anchoring to the IST
+    calendar date -- not the UTC date -- keeps the 04:15 IST bhavcopy run
+    (22:45 UTC) on the session that just ended instead of the one before it.
+    """
+    ist_today = now_utc.astimezone(ZoneInfo("Asia/Kolkata")).date()
+    return _previous_weekday(ist_today)
+
+
+def _latest_completed_market_close(now_utc: datetime) -> date:
+    """Most recent trading session considered closed at the 23:00 UTC refresh.
+
+    spec-089 schedules investment_closing_prices_job at 23:00 UTC -- past the
+    worst-case winter US settle with ~1h margin -- so on a weekday the same
+    UTC date's session (US close just settled; NSE session closed that UTC
+    morning) is the latest completed one. On weekends it steps back to Friday.
+    """
+    today = now_utc.date()
+    if today.weekday() < 5:
+        return today
+    return _previous_weekday(today)
 
 
 async def _fetch_stock_price(

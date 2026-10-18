@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
+from app.core.database import postgres
 from app.investing.schemas import PerformanceHistoryPoint, PerformanceHistoryResponse
+from app.platform.models import Workspace
 from app.spending.schemas import SpendPacingResponse
 from app.spending.service import BudgetService
 from app.summaries.models import MonthlySummary
@@ -302,6 +304,74 @@ async def test_monthly_summary_supersede_chain():
     assert result_v3.superseded_by_id is None
     # Verify initial still points to v2
     assert initial.superseded_by_id == 2
+
+
+@pytest.mark.asyncio
+async def test_monthly_summary_supersede_satisfies_partial_unique_index(
+    override_database_url,
+):
+    """Regression: supersede must never have two current rows per (workspace, month).
+
+    The old monthly supersede inserted the new row (superseded_by_id NULL)
+    while the old row was still current (also NULL), which the mock-session
+    chain test above cannot catch: against the real schema the very first
+    flush violates uq_monthly_summary_workspace_month_current (migration
+    0066) and every POST /summaries/monthly/{id}/regenerate returns a 500.
+    The weekly twin documents the required three-step dance (old -> self,
+    insert new, old -> new); this test pins it for monthly against the
+    actually-migrated database.
+    """
+    async with postgres.async_session_maker() as session:
+        ws = Workspace(name="monthly-supersede-regression")
+        session.add(ws)
+        await session.flush()
+        assert ws.id is not None
+
+        old = MonthlySummary(
+            workspace_id=ws.id,
+            month_start=date(2026, 6, 1),
+            month_end=date(2026, 6, 30),
+            todo_summary={},
+            spending_summary={},
+            investing_summary={},
+            highlights={},
+        )
+        session.add(old)
+        await session.flush()
+        assert old.id is not None
+
+        new = MonthlySummary(
+            workspace_id=ws.id,
+            month_start=date(2026, 6, 1),
+            month_end=date(2026, 6, 30),
+            todo_summary={},
+            spending_summary={},
+            investing_summary={},
+            highlights={},
+        )
+
+        repo = MonthlySummaryRepository(session)
+        result = await repo.supersede(old, new, reason="regression test")
+
+        assert result.id is not None
+        assert result.superseded_by_id is None
+        assert old.superseded_by_id == result.id
+        assert result.regeneration_reason == "regression test"
+        assert result.regenerated_at is not None
+
+        # A second regeneration from the new current row must also succeed.
+        newer = MonthlySummary(
+            workspace_id=ws.id,
+            month_start=date(2026, 6, 1),
+            month_end=date(2026, 6, 30),
+            todo_summary={},
+            spending_summary={},
+            investing_summary={},
+            highlights={},
+        )
+        result_2 = await repo.supersede(new, newer, reason="chained")
+        assert new.superseded_by_id == result_2.id
+        assert result_2.superseded_by_id is None
 
 
 @pytest.mark.asyncio

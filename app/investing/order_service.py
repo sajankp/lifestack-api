@@ -537,6 +537,7 @@ class InvestingOrderService:
             occurred_at=order_in.occurred_at,
             notes=order_in.notes,
             source_type=source_type,
+            source_ref=order_in.source_ref,
         )
         order = await self.order_repository.create(order)
 

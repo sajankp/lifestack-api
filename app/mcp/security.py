@@ -4,10 +4,16 @@ import structlog
 from fastmcp.server.dependencies import get_access_token
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dependencies import ROLE_RANK, _role_key
 from app.core.exceptions import ForbiddenError, UnauthorizedError, ValidationError
 from app.platform.repository import MembershipRepository
 
 logger = structlog.get_logger(__name__)
+
+# Scopes that authorize mutating operations: these must additionally satisfy
+# the workspace role policy (member or above), mirroring require_min_role
+# ("member") on REST mutation endpoints. Read scopes stay membership-gated.
+_WRITE_SCOPES = {"mcp:write"}
 
 
 def principal() -> tuple[int, str]:
@@ -33,6 +39,10 @@ async def authorize_workspace(
     membership = await MembershipRepository(session).get_membership(workspace_id, user_id)
     if membership is None:
         raise ForbiddenError(detail="You do not have access to this workspace")
+    if required_scope in _WRITE_SCOPES and ROLE_RANK.get(
+        _role_key(membership.role), 0
+    ) < ROLE_RANK.get("member", 0):
+        raise ForbiddenError(detail="Insufficient workspace role for MCP write operations")
     logger.info("mcp_tool_authorized", tool=tool, user_id=user_id, workspace_id=workspace_id)
     return user_id
 

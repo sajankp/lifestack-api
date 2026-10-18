@@ -369,7 +369,7 @@ async def bhavcopy_price_feed_job() -> None:
     Yahoo for that symbol; a bhavcopy miss (feed outage, delisted, BSE-only)
     is unaffected and still gets priced by the existing Yahoo path.
     """
-    trade_date = investing_service._previous_weekday(datetime.now(UTC).date())
+    trade_date = investing_service._latest_completed_nse_trading_day(datetime.now(UTC))
 
     async def _fetch() -> dict:
         async with httpx.AsyncClient(timeout=15.0) as client:

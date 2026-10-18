@@ -22,7 +22,34 @@ from app.imports.shared import AddErrorFn, WeightEntry, norm
 from app.investing.models import CashBalance as InvestingCashBalance
 from app.investing.order_service import InvestingOrderService
 
-TEMPLATE_ROW = "2026-05-01T09:30:00Z,ICICI,GROWW,INR,INR,50000.00,50000.00,SIP Investment"
+TEMPLATE_ROW = (
+    "2026-05-01T09:30:00Z,ICICI,GROWW,INR,INR,50000.00,50000.00,"
+    "SIP Investment,spending,investing,1.0,0.00,0.00,0.00"
+)
+
+
+def _derive_module_from_account_type(
+    module_raw: str | None,
+    account_name: str | None,
+    account_type_map: dict[str, str] | None,
+) -> str:
+    """Return an explicit module, or derive it from the account's type.
+
+    A brokerage account is the 'investing' side; every other type (bank,
+    wallet, card, gift_card) is 'spending'. Falls back to 'spending' when
+    the module is absent and no type info resolves -- never 'investing',
+    because an investing destination writes a brokerage cash snapshot on
+    commit and must not happen by guesswork.
+    """
+    if module_raw:
+        return module_raw
+    if (
+        account_name
+        and account_type_map
+        and account_type_map.get(account_name.lower()) == "brokerage"
+    ):
+        return "investing"
+    return "spending"
 
 
 def validate_finance_transfer_row(
@@ -32,6 +59,7 @@ def validate_finance_transfer_row(
     order_account_pub_map: dict[str, uuid.UUID],
     account_map: dict[str, int],
     currency_set: set[str],
+    account_type_map: dict[str, str] | None = None,
 ) -> tuple[dict, WeightEntry | None]:
     occurred_raw = norm(row.get("occurred_at"))
     from_account_raw = norm(row.get("from_account"))
@@ -41,8 +69,8 @@ def validate_finance_transfer_row(
     gross_amount_raw = norm(row.get("gross_amount"))
     net_amount_raw = norm(row.get("net_amount_received"))
     notes_raw = norm(row.get("notes")) or None
-    from_module_raw = norm(row.get("from_module")) or "spending"
-    to_module_raw = norm(row.get("to_module")) or "investing"
+    from_module_raw = norm(row.get("from_module"))
+    to_module_raw = norm(row.get("to_module"))
     fx_rate_raw = norm(row.get("fx_rate_used")) or None
     fx_fee_raw = norm(row.get("fx_fee_amount")) or "0"
     platform_fee_raw = norm(row.get("platform_fee_amount")) or "0"
@@ -88,6 +116,19 @@ def validate_finance_transfer_row(
             )
     else:
         add_error("to_account", "required", "to_account is required", to_account_raw)
+
+    # Derive missing modules from the resolved accounts' types instead of
+    # guessing a fixed spending->investing default: a brokerage account is
+    # the investing side, everything else is spending. When no type info is
+    # available, 'spending' is the safe no-side-effect default for both
+    # sides -- committing an 'investing' destination writes an
+    # investing_cash_balances snapshot, which must never happen by guesswork.
+    from_module_raw = _derive_module_from_account_type(
+        from_module_raw, from_account_raw, account_type_map
+    )
+    to_module_raw = _derive_module_from_account_type(
+        to_module_raw, to_account_raw, account_type_map
+    )
 
     from_currency = None
     if from_currency_raw:

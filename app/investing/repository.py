@@ -239,6 +239,15 @@ class InvestingOrderRepository(BaseRepository[InvestingOrder]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_source_ref(self, workspace_id: int, source_ref: str) -> InvestingOrder | None:
+        result = await self.session.execute(
+            select(InvestingOrder).where(
+                InvestingOrder.workspace_id == workspace_id,
+                InvestingOrder.source_ref == source_ref,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def list_by_workspace(
         self,
         workspace_id: int,

@@ -237,8 +237,22 @@ class MonthlySummaryRepository:
     async def supersede(
         self, old: MonthlySummary, new: MonthlySummary, reason: str | None
     ) -> MonthlySummary:
+        """Replace ``old`` with ``new`` while keeping at most one current row.
+
+        Mirrors WeeklySummaryRepository.supersede: the partial unique index
+        uq_monthly_summary_workspace_month_current (WHERE superseded_by_id IS
+        NULL) forbids two current rows per (workspace, month), so inserting
+        ``new`` while ``old`` is still current raises IntegrityError. ``old``
+        is first pointed at itself (a valid self-reference satisfying the
+        composite FK) purely to flip it out of the NULL/"current" set before
+        ``new`` is inserted, then repointed at ``new``'s real id.
+        """
         new.regenerated_at = datetime.now(UTC)
         new.regeneration_reason = reason
+
+        old.superseded_by_id = old.id
+        self.session.add(old)
+        await self.session.flush()
 
         self.session.add(new)
         await self.session.flush()

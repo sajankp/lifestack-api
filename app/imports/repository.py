@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -282,6 +283,28 @@ class ImportRepository:
                 ImportBatch.error_rows == 0,
             )
             .values(status=ImportStatus.committing)
+        )
+        result = await self.session.execute(stmt)
+        return (result.rowcount or 0) == 1
+
+    async def retry_commit(self, batch_id: int) -> bool:
+        """Recovery path for a batch permanently stuck in 'committing'.
+
+        The production path (commit_import) sets batch.status='committing'
+        then runs run_background_commit. If the process crashes between those
+        two steps, the batch is permanently stuck because:
+        - start_commit (commit_batch) requires status==validated
+        - delete_batch explicitly refuses 'committing'
+        - no reaper existed to reset it.
+
+        This method resets the batch back to 'validated' status so the
+        normal commit flow can resume. Callers should verify that the
+        underlying data is still consistent before calling this.
+        """
+        stmt = (
+            update(ImportBatch)
+            .where(ImportBatch.id == batch_id, ImportBatch.status == ImportStatus.committing)
+            .values(status=ImportStatus.validated, error_rows=0, updated_at=datetime.now())
         )
         result = await self.session.execute(stmt)
         return (result.rowcount or 0) == 1
