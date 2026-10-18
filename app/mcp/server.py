@@ -362,8 +362,8 @@ def create_mcp_server() -> FastMCP:
             )
             due = datetime.fromisoformat(due_date) if due_date else None
             todo = await TodoService(TodoRepository(session)).create_todo(
-                workspace_id,
                 user_id,
+                workspace_id,
                 TodoCreate(title=title, description=description, due_date=due),
             )
             return TodoResponse.model_validate(todo).model_dump()
