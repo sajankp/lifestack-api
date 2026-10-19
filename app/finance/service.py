@@ -1029,29 +1029,49 @@ class CapitalTransferService:
         return self._serialize_transfer(transfer, from_account, to_account)
 
     async def _check_no_newer_snapshot(
-        self, workspace_id: int, linked: "InvestingCashBalance | None"
-    ) -> None:
-        """Raise ConflictError if a later snapshot (e.g. from a since-committed
-        order) has been layered on top of the given linked transfer snapshot.
+        self, workspace_id: int, linked: "InvestingCashBalance | None", transfer_public_id: uuid.UUID | None = None
+    ) -> list[dict]:
+        """Return newer CashBalance snapshots linked to this transfer, ordered oldest-first.
+        Raise ConflictError if any exist; return [] when none block.
+        Each dict: {public_id, created_at, source_ref, source_import_id}.
         No-op when linked is None (that side of the transfer isn't
         snapshot-managed -- its module wasn't "investing" at creation time, or
-        the transfer predates this snapshot behavior)."""
+        the transfer predates this snapshot behavior).
+        """
         if linked is None:
-            return
-        newer_count = await self.cash_balance_repository.count_newer_than(
-            workspace_id, linked.account_id, linked.currency, linked.created_at
+            return None
+        # Fetch newer CashBalance records linked to this transfer, ordered oldest-first
+        from sqlalchemy import select
+        from app.investing.models import CashBalance
+        stmt = select(CashBalance).where(
+            CashBalance.workspace_id == workspace_id,
+            CashBalance.account_id == linked.account_id,
+            CashBalance.currency == linked.currency,
+            CashBalance.created_at > linked.created_at,
+            CashBalance.trigger_ref == transfer_public_id,
+        ).order_by(CashBalance.created_at.asc()
         )
-        if newer_count > 0:
-            account = await self.account_repository.get_by_id(workspace_id, linked.account_id)
-            account_name = account.name if account else str(linked.account_id)
-            raise ConflictError(
-                detail=(
-                    f"{account_name} ({linked.currency}) has {newer_count} "
-                    f"newer balance snapshot(s) created after this transfer. "
-                    f"Delete those order imports first, then retry."
-                )
+        result = await self.cash_balance_repository.session.execute(stmt)
+        newer = result.scalars().all()
+        if not newer:
+            return []
+        account = await self.account_repository.get_by_id(workspace_id, linked.account_id)
+        account_name = account.name if account else str(linked.account_id)
+        raise ConflictError(
+            detail=(
+                f"{account_name} ({linked.currency}) has {len(newer)} ",
+                f"newer balance snapshot(s) created after this transfer. ",
+                f"Delete these in order (oldest first): ",
+                + ", ".join(
+                    [
+                        f"{s.public_id} (created: {s.created_at.strftime('%Y-%m-%d')})"
+                        + (f"via batch {s.source_import_id}" if s.source_import_id else '')
+                        for s in newer
+                    ]
+                ) ,
+                + ". then retry."
             )
-
+        )
     async def _check_no_newer_snapshot_for_account(
         self,
         workspace_id: int,
