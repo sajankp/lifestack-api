@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.audit import AuditLogger
-from app.core.currency import effective_display_as_of
+from app.core.currency import build_required_pairs, conversion_rate, effective_display_as_of
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
 from app.finance.models import (
@@ -1535,17 +1535,26 @@ class NetWorthService:
         reporting_currency: str,
         fx_lookup: dict[tuple[str, str], FxRate],
     ) -> Decimal | None:
+        """Convert *amount* into *reporting_currency* using the shared resolver.
+
+        Uses ``app.core.currency.conversion_rate`` so the net-worth headline
+        resolves rates exactly the way the investing/spending summary does
+        (direct -> inverse -> cross-via-USD). The previous local two-tier
+        lookup (direct -> inverse, else None) could not reach the cross leg
+        because the FX lookup it was given only ever contained the
+        (currency, reporting) and (reporting, currency) pairs -- so a
+        balance in a currency with no direct pair to the reporting currency
+        was reported as UNCONVERTIBLE here while the investing summary
+        converted it, and the two screens disagreed.
+        """
         currency = currency.upper()
         reporting_currency = reporting_currency.upper()
         if currency == reporting_currency:
             return amount
-        direct = fx_lookup.get((currency, reporting_currency))
-        if direct is not None:
-            return amount * direct.rate
-        inverse = fx_lookup.get((reporting_currency, currency))
-        if inverse is not None and inverse.rate:
-            return amount / inverse.rate
-        return None
+        rate = conversion_rate(currency, reporting_currency, fx_lookup)
+        if rate is None:
+            return None
+        return amount * rate
 
     async def _compute_net_worth(self, workspace_id: int) -> tuple[dict, dict | None]:
         """Compute live net-worth components for a workspace.
@@ -1579,7 +1588,14 @@ class NetWorthService:
             if c.account_id in brokerage_by_id
         ]
 
-        # Build FX lookup covering both spending and investing cash currencies -> reporting
+        # Build FX lookup covering both spending and investing cash currencies
+        # -> reporting.
+        #
+        # build_required_pairs() also requests the (X, USD) / (USD, X) legs so
+        # a currency with no direct pair to the reporting currency can still
+        # be converted via USD. Requesting only the direct/inverse pairs left
+        # the cross leg unreachable, which made this path report balances as
+        # unconvertible while the investing summary converted them.
         fx_lookup = {}
         if reporting_currency:
             currencies = {b["currency_code"].upper() for b in raw_balances} | {
@@ -1587,9 +1603,7 @@ class NetWorthService:
             }
             foreign = {c for c in currencies if c != reporting_currency}
             if foreign:
-                pairs = [(c, reporting_currency) for c in foreign] + [
-                    (reporting_currency, c) for c in foreign
-                ]
+                pairs = sorted(build_required_pairs(sorted(foreign), reporting_currency))
                 fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
                     pairs, as_of=effective_display_as_of()
                 )
