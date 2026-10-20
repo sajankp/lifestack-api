@@ -28,6 +28,77 @@ from app.application.jobs import (
     weekly_summary_job,
 )
 
+# ——— NEW: Recompute holding cost basis using FIFO lot model —————————————————
+#
+# Replays all buy orders chronologically with FIFO consumption (per
+# Income-tax Act 1961 §45(2A) / spec-044), then persists the resulting
+# weighted-average cost back to the holding record.  One call per holding
+# that has order history; holdings with a single-lot entry are unchanged.
+#
+# Usage (CLI, one‑time):
+#   python -m app.cli run recompute_holding_costs --workspace-id 1
+#
+# Usage (many‑times, idempotent — safe to re-run):
+#   Same command; each run recomputes from the current order state.
+
+async def recompute_holding_costs_job(workspace_id: int | None = None) -> None:
+    """Recompute avg_cost for all holdings that have order lot history.
+
+    This is a one‑shot "repair" job — safe to run multiple times.
+    It uses the existing FIFO lot replay (_replay_orders) and writes the
+    resulting avg_cost back to holding.avg_cost, so P&L % should align
+    with broker-reported cost basis (e.g. Ind Money / Drivewealth FIFO).
+    """
+    from datetime import UTC
+
+    # Resolve an async DB session the way the app does
+    from app.core.dependencies import get_async_session
+
+    async with get_async_session() as session:
+        # Import repos lazily to avoid circular imports at module load
+        from app.investing.repository import HoldingRepository
+        from app.investing.repository import InvestingOrderRepository
+        from app.investing.repository import OrderLotRepository
+        from app.investing.repository import CorporateActionRepository
+
+        holding_repo = HoldingRepository(session)
+        order_repo = InvestingOrderRepository(session)
+        lot_repo = OrderLotRepository(session)
+        ca_repo = CorporateActionRepository(session)
+
+        # Fetch all holdings for this workspace
+        holdings = await holding_repo.get_all(workspace_id, limit=10000, offset=0)
+
+        updated = 0
+        skipped = 0
+        for holding in holdings:
+            if holding.id is None:
+                continue
+
+            # Skip if no order history — nothing to recompute
+            orders = await order_repo.list_by_holding(workspace_id, holding.symbol, holding.account_id or 0)
+            if not orders:
+                skipped += 1
+                continue
+
+            # Run the FIFO lot replay; it mutates holding.avg_cost in-place
+            # and persists the holding record (see order_service.py:426-429)
+            from app.investing.order_service import InvestingOrderService
+            result = await InvestingOrderService._recompute_holding(
+                workspace_id=workspace_id,
+                user_id=holding.user_id or 1,
+                symbol=holding.symbol,
+                account_id=holding.account_id or 0,
+            )
+            updated += 1
+
+        await session.commit()
+        print(
+            f"Recompute complete: workspace={workspace_id}",
+            f"holdings_updated={updated}, holdings_skipped={skipped}",
+        )
+
+
 JOBS = {
     "bhavcopy_price_feed": bhavcopy_price_feed_job,
     "budget_guardrails": budget_guardrails_job,
@@ -47,13 +118,30 @@ JOBS = {
     "net_worth_snapshot": net_worth_snapshot_job,
     "push_delivery": push_delivery_job,
     "recurring_transactions": recurring_transactions_job,
+    "recompute_holding_costs": recompute_holding_costs_job,
     "session_cleanup": session_cleanup_job,
     "todo_reminder": todo_reminder_job,
     "weekly_summary": weekly_summary_job,
 }
 
-# Jobs that accept --workspace-id (optional for these; mandatory below for
-# merge_company_identities specifically, per spec-083 §9).
+
+# ——— Jobs that accept --workspace-id (optional for these; mandatory below for
+# ——— merge_company_identities specifically, per spec-083 §9). ————————
+
+# WORKSPACE_SCOPED_JOBS = {
+#     "budget_guardrails",
+#     "dashboard_insights",
+#     "investment_closing_prices",
+#     "kpi_guardrails",
+#     "medication_reminder",
+#     "merge_company_identities",
+#     "morning_briefing",
+#     "net_worth_snapshot",
+#     "recurring_transactions",
+#     "todo_reminder",
+#     "weekly_summary",
+# }
+
 WORKSPACE_SCOPED_JOBS = {
     "budget_guardrails",
     "dashboard_insights",
@@ -66,12 +154,13 @@ WORKSPACE_SCOPED_JOBS = {
     "recurring_transactions",
     "todo_reminder",
     "weekly_summary",
+    "recompute_holding_costs",
 }
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Lifestack CLI Job Runner - manually trigger scheduler background tasks."
+        description="Lifestack CLI Job Runner - manually trigger scheduler background tasks.",
     )
     parser.add_argument(
         "job",
