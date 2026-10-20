@@ -20,6 +20,7 @@ from app.core.dependencies import (
     get_finance_statement_service,
     get_finance_transfer_service,
     get_response_cache,
+    get_spending_kpi_service,
     require_min_role,
 )
 from app.core.exceptions import NotFoundError, ValidationError
@@ -65,6 +66,7 @@ from app.finance.statement_schemas import (
     UnmatchedStatementLineView,
 )
 from app.finance.statement_service import StatementService
+from app.spending.service import KpiService
 
 router = APIRouter(prefix="/finance", tags=["finance"])
 
@@ -99,8 +101,17 @@ async def create_account(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     _role: Annotated[object, Depends(require_min_role("admin"))],
+    kpi_service: Annotated[KpiService, Depends(get_spending_kpi_service)],
 ):
     account = await account_service.create_account(workspace_id, account_in)
+
+    # A custom KPI needs at least one active account on a single currency to
+    # evaluate over, so the first account in a workspace is the earliest
+    # point the default KPIs can be seeded. The helper is a no-op if the
+    # workspace already has KPIs, or if it spans several currencies, and it
+    # never fails the account creation.
+    await kpi_service.provision_default_kpis(workspace_id)
+
     return AccountResponse.model_validate(account)
 
 
