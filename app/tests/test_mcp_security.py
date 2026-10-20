@@ -81,3 +81,87 @@ async def test_read_scope_allows_viewer_role():
             session, 202, required_scope="mcp:read", tool="list_todos"
         )
         assert user_id == 101
+
+
+@pytest.mark.anyio
+async def test_research_scope_rejects_viewer_role():
+    """mcp:research gates two mutating tools, so it is a write scope.
+
+    `write_investment_constituent_snapshot` and
+    `delete_investment_constituent_snapshot` are the only tools gated on
+    `mcp:research`, and the equivalent REST endpoint
+    (POST /v1/investing/instruments/{id}/constituents) requires
+    require_min_role("member"). Before this was fixed the role check only
+    covered `mcp:write`, so a viewer holding an `mcp:research` grant could
+    replace and delete constituent snapshots.
+    """
+    session = MagicMock()
+    with (
+        patch("app.mcp.security.get_access_token", return_value=_token({"mcp:research"})),
+        patch("app.mcp.security.MembershipRepository") as repo_cls,
+    ):
+        repo_cls.return_value.get_membership = AsyncMock(return_value=_membership("viewer"))
+
+        with pytest.raises(ForbiddenError):
+            await authorize_workspace(
+                session,
+                202,
+                required_scope="mcp:research",
+                tool="write_investment_constituent_snapshot",
+            )
+
+
+@pytest.mark.anyio
+async def test_research_scope_rejects_viewer_for_delete_tool():
+    """The delete side of the research surface is gated the same way."""
+    session = MagicMock()
+    with (
+        patch("app.mcp.security.get_access_token", return_value=_token({"mcp:research"})),
+        patch("app.mcp.security.MembershipRepository") as repo_cls,
+    ):
+        repo_cls.return_value.get_membership = AsyncMock(return_value=_membership("viewer"))
+
+        with pytest.raises(ForbiddenError):
+            await authorize_workspace(
+                session,
+                202,
+                required_scope="mcp:research",
+                tool="delete_investment_constituent_snapshot",
+            )
+
+
+@pytest.mark.anyio
+async def test_research_scope_allows_member_role():
+    """A member holding an mcp:research grant may still use the research tools."""
+    session = MagicMock()
+    with (
+        patch("app.mcp.security.get_access_token", return_value=_token({"mcp:research"})),
+        patch("app.mcp.security.MembershipRepository") as repo_cls,
+    ):
+        repo_cls.return_value.get_membership = AsyncMock(return_value=_membership("member"))
+
+        user_id = await authorize_workspace(
+            session,
+            202,
+            required_scope="mcp:research",
+            tool="write_investment_constituent_snapshot",
+        )
+        assert user_id == 101
+
+
+@pytest.mark.anyio
+async def test_research_scope_allows_owner_role():
+    session = MagicMock()
+    with (
+        patch("app.mcp.security.get_access_token", return_value=_token({"mcp:research"})),
+        patch("app.mcp.security.MembershipRepository") as repo_cls,
+    ):
+        repo_cls.return_value.get_membership = AsyncMock(return_value=_membership("owner"))
+
+        user_id = await authorize_workspace(
+            session,
+            202,
+            required_scope="mcp:research",
+            tool="delete_investment_constituent_snapshot",
+        )
+        assert user_id == 101
