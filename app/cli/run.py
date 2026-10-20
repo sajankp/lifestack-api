@@ -27,68 +27,93 @@ from app.application.jobs import (
     todo_reminder_job,
     weekly_summary_job,
 )
+from app.core.database import postgres
+from app.finance.repository import AccountRepository, CurrencyRepository
+from app.investing.order_service import InvestingOrderService
+from app.investing.repository import (
+    CashBalanceRepository,
+    CompanyRepository,
+    CorporateActionRepository,
+    HoldingRepository,
+    InstrumentRepository,
+    InvestingOrderRepository,
+    LotRepository,
+)
+from app.investing.service import InstrumentService
 
-# ——— NEW: Recompute holding cost basis using FIFO lot model —————————————————
+# ——— Recompute holding cost basis using FIFO lot model ————————————————————
 #
 # Replays all buy orders chronologically with FIFO consumption (per
 # Income-tax Act 1961 §45(2A) / spec-044), then persists the resulting
 # weighted-average cost back to the holding record.  One call per holding
 # that has order history; holdings with a single-lot entry are unchanged.
 #
-# Usage (CLI, one‑time):
-#   python -m app.cli run recompute_holding_costs --workspace-id 1
+# Usage (CLI, one-time):
+#   python -m app.cli.run recompute_holding_costs --workspace-id 1
 #
-# Usage (many‑times, idempotent — safe to re-run):
+# Usage (many-times, idempotent — safe to re-run):
 #   Same command; each run recomputes from the current order state.
+
 
 async def recompute_holding_costs_job(workspace_id: int | None = None) -> None:
     """Recompute avg_cost for all holdings that have order lot history.
 
-    This is a one‑shot "repair" job — safe to run multiple times.
+    This is a one-shot "repair" job — safe to run multiple times.
     It uses the existing FIFO lot replay (_replay_orders) and writes the
     resulting avg_cost back to holding.avg_cost, so P&L % should align
     with broker-reported cost basis (e.g. Ind Money / Drivewealth FIFO).
+
+    ``workspace_id`` is required: this job rewrites cost basis for real
+    holdings, so it must never be run against an implicit "all
+    workspaces" scope. The CLI enforces this.
     """
-    from datetime import UTC
+    if workspace_id is None:
+        raise ValueError("recompute_holding_costs requires an explicit workspace_id")
 
-    # Resolve an async DB session the way the app does
-    from app.core.dependencies import get_async_session
-
-    async with get_async_session() as session:
-        # Import repos lazily to avoid circular imports at module load
-        from app.investing.repository import HoldingRepository
-        from app.investing.repository import InvestingOrderRepository
-        from app.investing.repository import OrderLotRepository
-        from app.investing.repository import CorporateActionRepository
-
+    async with postgres.async_session_maker() as session:
         holding_repo = HoldingRepository(session)
         order_repo = InvestingOrderRepository(session)
-        lot_repo = OrderLotRepository(session)
-        ca_repo = CorporateActionRepository(session)
 
-        # Fetch all holdings for this workspace
-        holdings = await holding_repo.get_all(workspace_id, limit=10000, offset=0)
+        # InvestingOrderService is not a free function: _recompute_holding is
+        # an instance method that needs the full repository graph, so the
+        # service must be constructed (same wiring as app/mcp/server.py).
+        order_service = InvestingOrderService(
+            order_repo,
+            holding_repo,
+            CashBalanceRepository(session),
+            AccountRepository(session),
+            CurrencyRepository(session),
+            InstrumentService(InstrumentRepository(session), CompanyRepository(session)),
+            LotRepository(session),
+            CorporateActionRepository(session),
+        )
+
+        # get_all returns (rows, total_count) — the second element is dropped.
+        holdings, _ = await holding_repo.get_all(workspace_id, limit=10000, offset=0)
 
         updated = 0
         skipped = 0
         for holding in holdings:
-            if holding.id is None:
+            if holding.id is None or holding.account_id is None:
+                skipped += 1
                 continue
 
-            # Skip if no order history — nothing to recompute
-            orders = await order_repo.list_by_holding(workspace_id, holding.symbol, holding.account_id or 0)
+            # Skip if no order history — nothing to recompute.
+            orders = await order_repo.list_by_holding(
+                workspace_id, holding.symbol, holding.account_id
+            )
             if not orders:
                 skipped += 1
                 continue
 
-            # Run the FIFO lot replay; it mutates holding.avg_cost in-place
-            # and persists the holding record (see order_service.py:426-429)
-            from app.investing.order_service import InvestingOrderService
-            result = await InvestingOrderService._recompute_holding(
+            # The FIFO replay mutates holding.avg_cost in place and persists
+            # the holding plus its lots. user_id is the holding's owner, not
+            # a placeholder — it is a foreign key on investing_holdings.
+            await order_service._recompute_holding(
                 workspace_id=workspace_id,
-                user_id=holding.user_id or 1,
+                user_id=holding.user_id,
                 symbol=holding.symbol,
-                account_id=holding.account_id or 0,
+                account_id=holding.account_id,
             )
             updated += 1
 
@@ -127,20 +152,6 @@ JOBS = {
 
 # ——— Jobs that accept --workspace-id (optional for these; mandatory below for
 # ——— merge_company_identities specifically, per spec-083 §9). ————————
-
-# WORKSPACE_SCOPED_JOBS = {
-#     "budget_guardrails",
-#     "dashboard_insights",
-#     "investment_closing_prices",
-#     "kpi_guardrails",
-#     "medication_reminder",
-#     "merge_company_identities",
-#     "morning_briefing",
-#     "net_worth_snapshot",
-#     "recurring_transactions",
-#     "todo_reminder",
-#     "weekly_summary",
-# }
 
 WORKSPACE_SCOPED_JOBS = {
     "budget_guardrails",
@@ -203,6 +214,13 @@ async def main() -> None:
     if args.job == "merge_company_identities" and args.workspace_id is None:
         print(
             "Error: --workspace-id is required for the 'merge_company_identities' job.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if args.job == "recompute_holding_costs" and args.workspace_id is None:
+        print(
+            "Error: --workspace-id is required for the 'recompute_holding_costs' job.",
             file=sys.stderr,
         )
         sys.exit(1)
