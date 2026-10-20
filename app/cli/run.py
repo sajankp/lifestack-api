@@ -28,51 +28,6 @@ from app.application.jobs import (
     weekly_summary_job,
 )
 
-JOBS = {
-    "bhavcopy_price_feed": bhavcopy_price_feed_job,
-    "budget_guardrails": budget_guardrails_job,
-    "dashboard_insights": dashboard_insights_job,
-    "email_delivery": email_delivery_job,
-    "export_cleanup": export_cleanup_job,
-    "fx_rate_ingestion": fx_rate_ingestion_job,
-    "import_preview_cleanup": import_preview_cleanup_job,
-    "investment_closing_prices": investment_closing_prices_job,
-    "job_failure_digest": job_failure_digest_job,
-    "job_health_heartbeat": job_health_heartbeat_job,
-    "kpi_guardrails": kpi_guardrails_job,
-    "load_reference_securities": load_reference_securities_job,
-    "medication_reminder": medication_reminder_job,
-    "merge_company_identities": merge_company_identities_job,
-    "morning_briefing": morning_briefing_job,
-    "net_worth_snapshot": net_worth_snapshot_job,
-    "push_delivery": push_delivery_job,
-    "recurring_transactions": recurring_transactions_job,
-    "recompute_holding_costs": recompute_holding_costs_job,
-    "session_cleanup": session_cleanup_job,
-    "todo_reminder": todo_reminder_job,
-    "weekly_summary": weekly_summary_job,
-}
-
-# Jobs that accept --workspace-id (optional for these; mandatory below for
-# merge_company_identities specifically, per spec-083 §9).
-WORKSPACE_SCOPED_JOBS = {
-    "budget_guardrails",
-    "dashboard_insights",
-    "investment_closing_prices",
-    "kpi_guardrails",
-    "medication_reminder",
-    "merge_company_identities",
-    "morning_briefing",
-    "net_worth_snapshot",
-    "recurring_transactions",
-    "recompute_holding_costs",
-    "todo_reminder",
-    "weekly_summary",
-}
-
-
-
-
 # ——— NEW: Recompute holding cost basis using FIFO lot model —————————————————
 #
 # Replays all buy orders chronologically with FIFO consumption (per
@@ -144,9 +99,68 @@ async def recompute_holding_costs_job(workspace_id: int | None = None) -> None:
         )
 
 
+JOBS = {
+    "bhavcopy_price_feed": bhavcopy_price_feed_job,
+    "budget_guardrails": budget_guardrails_job,
+    "dashboard_insights": dashboard_insights_job,
+    "email_delivery": email_delivery_job,
+    "export_cleanup": export_cleanup_job,
+    "fx_rate_ingestion": fx_rate_ingestion_job,
+    "import_preview_cleanup": import_preview_cleanup_job,
+    "investment_closing_prices": investment_closing_prices_job,
+    "job_failure_digest": job_failure_digest_job,
+    "job_health_heartbeat": job_health_heartbeat_job,
+    "kpi_guardrails": kpi_guardrails_job,
+    "load_reference_securities": load_reference_securities_job,
+    "medication_reminder": medication_reminder_job,
+    "merge_company_identities": merge_company_identities_job,
+    "morning_briefing": morning_briefing_job,
+    "net_worth_snapshot": net_worth_snapshot_job,
+    "push_delivery": push_delivery_job,
+    "recurring_transactions": recurring_transactions_job,
+    "recompute_holding_costs": recompute_holding_costs_job,
+    "session_cleanup": session_cleanup_job,
+    "todo_reminder": todo_reminder_job,
+    "weekly_summary": weekly_summary_job,
+}
+
+
+# ——— Jobs that accept --workspace-id (optional for these; mandatory below for
+# ——— merge_company_identities specifically, per spec-083 §9). ————————
+
+# WORKSPACE_SCOPED_JOBS = {
+#     "budget_guardrails",
+#     "dashboard_insights",
+#     "investment_closing_prices",
+#     "kpi_guardrails",
+#     "medication_reminder",
+#     "merge_company_identities",
+#     "morning_briefing",
+#     "net_worth_snapshot",
+#     "recurring_transactions",
+#     "todo_reminder",
+#     "weekly_summary",
+# }
+
+WORKSPACE_SCOPED_JOBS = {
+    "budget_guardrails",
+    "dashboard_insights",
+    "investment_closing_prices",
+    "kpi_guardrails",
+    "medication_reminder",
+    "merge_company_identities",
+    "morning_briefing",
+    "net_worth_snapshot",
+    "recurring_transactions",
+    "todo_reminder",
+    "weekly_summary",
+    "recompute_holding_costs",
+}
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Lifestack CLI Job Runner - manually trigger scheduler background tasks."
+        description="Lifestack CLI Job Runner - manually trigger scheduler background tasks.",
     )
     parser.add_argument(
         "job",
