@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -1029,7 +1030,10 @@ class CapitalTransferService:
         return self._serialize_transfer(transfer, from_account, to_account)
 
     async def _check_no_newer_snapshot(
-        self, workspace_id: int, linked: "InvestingCashBalance | None", transfer_public_id: uuid.UUID | None = None
+        self,
+        workspace_id: int,
+        linked: "InvestingCashBalance | None",
+        transfer_public_id: uuid.UUID | None = None,
     ) -> list[dict]:
         """Return newer CashBalance snapshots linked to this transfer, ordered oldest-first.
         Raise ConflictError if any exist; return [] when none block.
@@ -1041,15 +1045,16 @@ class CapitalTransferService:
         if linked is None:
             return None
         # Fetch newer CashBalance records linked to this transfer, ordered oldest-first
-        from sqlalchemy import select
-        from app.investing.models import CashBalance
-        stmt = select(CashBalance).where(
-            CashBalance.workspace_id == workspace_id,
-            CashBalance.account_id == linked.account_id,
-            CashBalance.currency == linked.currency,
-            CashBalance.created_at > linked.created_at,
-            CashBalance.trigger_ref == transfer_public_id,
-        ).order_by(CashBalance.created_at.asc()
+        stmt = (
+            select(InvestingCashBalance)
+            .where(
+                InvestingCashBalance.workspace_id == workspace_id,
+                InvestingCashBalance.account_id == linked.account_id,
+                InvestingCashBalance.currency == linked.currency,
+                InvestingCashBalance.created_at > linked.created_at,
+                InvestingCashBalance.trigger_ref == transfer_public_id,
+            )
+            .order_by(InvestingCashBalance.created_at.asc())
         )
         result = await self.cash_balance_repository.session.execute(stmt)
         newer = result.scalars().all()
@@ -1059,19 +1064,19 @@ class CapitalTransferService:
         account_name = account.name if account else str(linked.account_id)
         raise ConflictError(
             detail=(
-                f"{account_name} ({linked.currency}) has {len(newer)} ",
-                f"newer balance snapshot(s) created after this transfer. ",
-                f"Delete these in order (oldest first): ",
-                + ", ".join(
-                    [
-                        f"{s.public_id} (created: {s.created_at.strftime('%Y-%m-%d')})"
-                        + (f"via batch {s.source_import_id}" if s.source_import_id else '')
-                        for s in newer
-                    ]
-                ) ,
-                + ". then retry."
+                f"{account_name} ({linked.currency}) has {len(newer)} "
+                f"newer balance snapshot(s) created after this transfer. "
+                f"Delete those order imports first, then delete these "
+                f"(oldest first): "
+                + ", ".join([
+                    f"{s.public_id} (created: {s.created_at.strftime('%Y-%m-%d')})"
+                    + (f" via batch {s.source_import_id}" if s.source_import_id else "")
+                    for s in newer
+                ])
+                + ". Then retry."
             )
         )
+
     async def _check_no_newer_snapshot_for_account(
         self,
         workspace_id: int,
