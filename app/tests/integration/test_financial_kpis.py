@@ -115,9 +115,14 @@ async def test_kpi_crud_and_evaluation(client: AsyncClient):
 
     kpi_id = kpi["public_id"]
 
+    # The workspace is seeded with three default KPIs when its first
+    # account is created (KpiService.provision_default_kpis), so the
+    # list contains those plus the one this test creates. Assert on the
+    # specific KPI rather than an absolute count.
     list_resp = await client.get("/v1/spending/kpis", cookies=cookies)
     assert list_resp.status_code == 200, list_resp.text
-    assert list_resp.json()["total"] == 1
+    listed_ids = {k["public_id"] for k in list_resp.json()["items"]}
+    assert kpi_id in listed_ids
 
     update_resp = await client.patch(
         f"/v1/spending/kpis/{kpi_id}",
@@ -131,7 +136,7 @@ async def test_kpi_crud_and_evaluation(client: AsyncClient):
     assert delete_resp.status_code == 204, delete_resp.text
 
     list_resp = await client.get("/v1/spending/kpis", cookies=cookies)
-    assert list_resp.json()["total"] == 0
+    assert kpi_id not in {k["public_id"] for k in list_resp.json()["items"]}
 
 
 @pytest.mark.asyncio
