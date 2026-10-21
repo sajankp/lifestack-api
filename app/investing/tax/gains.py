@@ -128,10 +128,7 @@ class SellReconciliation:
     def cost_matches(self) -> bool:
         if self.recorded_cost_per_unit is None or self.computed_cost_per_unit is None:
             return True
-        return (
-            abs(self.computed_cost_per_unit - self.recorded_cost_per_unit)
-            <= Decimal("0.01")
-        )
+        return abs(self.computed_cost_per_unit - self.recorded_cost_per_unit) <= Decimal("0.01")
 
     @property
     def ok(self) -> bool:
@@ -156,9 +153,11 @@ class ReplayResult:
 
 
 def order_total_fees(order: OrderView) -> Decimal:
-    return (order.brokerage_fee or Decimal("0")) + (
-        order.tax_amount or Decimal("0")
-    ) + (order.other_fees or Decimal("0"))
+    return (
+        (order.brokerage_fee or Decimal("0"))
+        + (order.tax_amount or Decimal("0"))
+        + (order.other_fees or Decimal("0"))
+    )
 
 
 def effective_buy_cost_per_unit(order: OrderView) -> Decimal:
@@ -171,9 +170,7 @@ def effective_buy_cost_per_unit(order: OrderView) -> Decimal:
     fees = order_total_fees(order)
     if fees == 0 or order.quantity == 0:
         return order.price_per_unit.quantize(COST_QUANT)
-    return (
-        order.price_per_unit + fees / order.quantity
-    ).quantize(COST_QUANT)
+    return (order.price_per_unit + fees / order.quantity).quantize(COST_QUANT)
 
 
 def is_long_term(acquired_at: datetime, sold_at: datetime, regime: RegimeSpec) -> bool:
@@ -250,17 +247,12 @@ def replay_fifo_lots(
             if lot.quantity == 0:
                 queue.popleft()
 
-        computed_gain = (
-            sum(
-                (take * (order.price_per_unit - lot.cost_per_unit) for lot, take in consumed),
-                Decimal("0"),
-            )
-            - order_total_fees(order)
-        )
+        computed_gain = sum(
+            (take * (order.price_per_unit - lot.cost_per_unit) for lot, take in consumed),
+            Decimal("0"),
+        ) - order_total_fees(order)
         computed_cost = (
-            (cost_consumed / order.quantity).quantize(COST_QUANT)
-            if order.quantity
-            else None
+            (cost_consumed / order.quantity).quantize(COST_QUANT) if order.quantity else None
         )
         result.reconciliations.append(
             SellReconciliation(
@@ -281,14 +273,10 @@ def replay_fifo_lots(
         # Sell-side fees reduce proceeds, not cost. Spread them across the
         # lots this sell consumed, pro-rata by each lot's gross gain, so a
         # sell spanning both buckets allocates correctly.
-        gross_gains = [
-            take * (order.price_per_unit - lot.cost_per_unit) for lot, take in consumed
-        ]
+        gross_gains = [take * (order.price_per_unit - lot.cost_per_unit) for lot, take in consumed]
         gross_total = sum(gross_gains, Decimal("0"))
         for (lot, take), gross_gain in zip(consumed, gross_gains, strict=True):
-            lot_fees = (
-                (sell_fees * gross_gain / gross_total) if gross_total else Decimal("0")
-            )
+            lot_fees = (sell_fees * gross_gain / gross_total) if gross_total else Decimal("0")
             long_term = is_long_term(lot.acquired_at, order.occurred_at, regime)
             result.lots.append(
                 TaxLot(
@@ -307,9 +295,7 @@ def replay_fifo_lots(
                     regime=regime.key,
                     holding_months=_months_between(lot.acquired_at, order.occurred_at),
                     is_long_term=long_term,
-                    long_term_mark_date=add_months(
-                        lot.acquired_at, regime.ltcg_holding_months
-                    ),
+                    long_term_mark_date=add_months(lot.acquired_at, regime.ltcg_holding_months),
                     classified_by=classified_by,
                     classification_detail=classification_detail,
                 )

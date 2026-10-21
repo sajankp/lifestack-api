@@ -8,15 +8,15 @@ pure engine, and shapes the result for the API and the MCP tools.
 from __future__ import annotations
 
 import uuid
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.finance.models import Account, WorkspaceTaxProfile
-from app.investing.models import Instrument, InvestingOrder
+from app.investing.models import Instrument
 from app.investing.repository import (
     InvestingOrderRepository,
     ReferenceSecurityRepository,
@@ -50,9 +50,7 @@ class TaxProfileRepository:
 
     async def get_or_create(self, workspace_id: int) -> WorkspaceTaxProfile:
         result = await self.session.execute(
-            select_workspace_tax_profile().where(
-                WorkspaceTaxProfile.workspace_id == workspace_id
-            )
+            select_workspace_tax_profile().where(WorkspaceTaxProfile.workspace_id == workspace_id)
         )
         row = result.scalar_one_or_none()
         if row is not None:
@@ -64,7 +62,12 @@ class TaxProfileRepository:
 
     async def update(self, row: WorkspaceTaxProfile, **changes) -> WorkspaceTaxProfile:
         for key, value in changes.items():
-            if value is not None or key in ("slab_override_pct", "surcharge_override_pct", "explicit_regime", "notes"):
+            if value is not None or key in (
+                "slab_override_pct",
+                "surcharge_override_pct",
+                "explicit_regime",
+                "notes",
+            ):
                 setattr(row, key, value)
         row.updated_at = datetime.now(UTC)
         self.session.add(row)
@@ -73,8 +76,6 @@ class TaxProfileRepository:
 
 
 def select_workspace_tax_profile():
-    from sqlalchemy import select
-
     return select(WorkspaceTaxProfile)
 
 
@@ -100,9 +101,7 @@ def profile_to_domain(row: WorkspaceTaxProfile) -> TaxProfile:
             Decimal(row.slab_override_pct) if row.slab_override_pct is not None else None
         ),
         surcharge_override_pct=(
-            Decimal(row.surcharge_override_pct)
-            if row.surcharge_override_pct is not None
-            else None
+            Decimal(row.surcharge_override_pct) if row.surcharge_override_pct is not None else None
         ),
         cess_pct=Decimal(row.cess_pct if row.cess_pct is not None else 4),
         explicit_regime=explicit,
@@ -160,9 +159,7 @@ class TaxService:
         views: list[OrderView] = []
         for order in orders:
             account = accounts.get(order.account_id)
-            instrument = (
-                instruments.get(order.instrument_id) if order.instrument_id else None
-            )
+            instrument = instruments.get(order.instrument_id) if order.instrument_id else None
             views.append(
                 OrderView(
                     public_id=str(order.public_id),
@@ -181,9 +178,7 @@ class TaxService:
                     account_public_id=str(account.public_id) if account else "",
                     account_name=account.name if account else "",
                     instrument_id=order.instrument_id,
-                    instrument_type=(
-                        instrument.instrument_type if instrument else "stock"
-                    ),
+                    instrument_type=(instrument.instrument_type if instrument else "stock"),
                     realized_gain_loss=(
                         Decimal(order.realized_gain_loss)
                         if order.realized_gain_loss is not None
@@ -205,9 +200,7 @@ class TaxService:
             return None
         return rows[0].country_code
 
-    async def _app_fx_rates(
-        self, months: list[tuple[str, str]]
-    ) -> dict[tuple[str, str], Decimal]:
+    async def _app_fx_rates(self, months: list[tuple[str, str]]) -> dict[tuple[str, str], Decimal]:
         """The app's stored rates, keyed ``(month, currency)``.
 
         Rule 115 uses the SBI TT buying rate on the last day of the month
@@ -222,9 +215,7 @@ class TaxService:
         for month, currency in months:
             if currency == REPORTING_CURRENCY:
                 continue
-            specified = specified_fx_date(
-                datetime.strptime(month, "%Y-%m").date().replace(day=1)
-            )
+            specified = specified_fx_date(datetime.strptime(month, "%Y-%m").date().replace(day=1))
             found = await self.fx_rate_repository.get_latest_rate(
                 base_currency_code=currency,
                 quote_currency_code=REPORTING_CURRENCY,
@@ -309,16 +300,14 @@ class TaxService:
         # The Rule 115 rate is keyed by the month of transfer, so collect
         # the (month, currency) pairs the sell orders need and resolve one
         # rate for each.
-        sell_pairs = sorted(
-            {
-                (
-                    sale_month_key(o.occurred_at.date()),
-                    o.currency.upper(),
-                )
-                for o in orders
-                if o.order_type == "sell"
-            }
-        )
+        sell_pairs = sorted({
+            (
+                sale_month_key(o.occurred_at.date()),
+                o.currency.upper(),
+            )
+            for o in orders
+            if o.order_type == "sell"
+        })
         app_fx = await self._app_fx_rates(sell_pairs)
         return compute_tax_estimate(
             orders=orders,
@@ -392,11 +381,7 @@ class TaxService:
         orders, _ = await self.order_repository.list_by_workspace(
             workspace_id, limit=100000, offset=0, account_id=account.id
         )
-        symbols = {
-            o.symbol.upper()
-            for o in orders
-            if o.account_id == account.id
-        }
+        symbols = {o.symbol.upper() for o in orders if o.account_id == account.id}
         if not symbols:
             return []
         # Resolve by symbol, not by the order's instrument_id: the

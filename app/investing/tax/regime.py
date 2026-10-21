@@ -146,8 +146,7 @@ def classify_regime(
             regime=regime,
             source=ClassificationSource.explicit_regime,
             detail=(
-                f"Explicit workspace override — treating these holdings as "
-                f"{regime.label.lower()}."
+                f"Explicit workspace override — treating these holdings as {regime.label.lower()}."
             ),
         )
 
@@ -180,11 +179,7 @@ def classify_regime(
         )
 
     if account_market_scope and account_market_scope != "mixed":
-        regime = (
-            INDIAN_REGIME
-            if account_market_scope == "india"
-            else FOREIGN_REGIME
-        )
+        regime = INDIAN_REGIME if account_market_scope == "india" else FOREIGN_REGIME
         return RegimeClassification(
             regime=regime,
             source=ClassificationSource.account_market_scope,

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import calendar
 import re
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 
 _FY_LABEL_RE = re.compile(r"^(\d{4})-(\d{2})$")
 
@@ -41,8 +41,8 @@ def fy_bounds(label: str) -> tuple[datetime, datetime]:
     """
     start, end = parse_fy_label(label)
     return (
-        datetime.combine(start, time.min, tzinfo=timezone.utc),
-        datetime.combine(end, time.max, tzinfo=timezone.utc),
+        datetime.combine(start, time.min, tzinfo=UTC),
+        datetime.combine(end, time.max, tzinfo=UTC),
     )
 
 
@@ -57,7 +57,7 @@ def fy_label_for_date(value: date | datetime) -> str:
 def current_fy_label(now: datetime | None = None) -> str:
     """The FY label containing ``now`` (defaults to the current UTC time)."""
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
     return fy_label_for_date(now)
 
 

@@ -1,6 +1,5 @@
 """Integration tests for the capital gains tax endpoints (spec-099)."""
 
-import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -28,9 +27,7 @@ async def _register(client: AsyncClient, suffix: str) -> None:
     assert login_res.status_code == 200
 
 
-async def _create_brokerage_account(
-    client: AsyncClient, name: str, currency: str = "USD"
-) -> str:
+async def _create_brokerage_account(client: AsyncClient, name: str, currency: str = "USD") -> str:
     res = await client.post(
         "/v1/finance/accounts",
         json={
@@ -57,9 +54,7 @@ async def _fund_account(client: AsyncClient, account_id: str, amount: str = "100
     assert res.status_code == 201, res.text
 
 
-async def _seed_fx_rate(
-    client: AsyncClient, *, currency: str = "USD", rate: str = "95.00"
-) -> None:
+async def _seed_fx_rate(client: AsyncClient, *, currency: str = "USD", rate: str = "95.00") -> None:
     """Seed a USD->INR rate so the Rule 115 conversion has a rate to use.
 
     The app stores daily market rates; the tax engine takes the latest one
@@ -213,18 +208,14 @@ async def test_tax_profile_get_and_patch(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_tax_profile_rejects_an_invalid_tax_regime(client: AsyncClient):
     await _register(client, "badregime")
-    res = await client.patch(
-        "/v1/investing/tax/profile", json={"tax_regime": "something-else"}
-    )
+    res = await client.patch("/v1/investing/tax/profile", json={"tax_regime": "something-else"})
     assert res.status_code == 422
 
 
 @pytest.mark.asyncio
 async def test_tax_profile_rejects_a_negative_other_income(client: AsyncClient):
     await _register(client, "negincome")
-    res = await client.patch(
-        "/v1/investing/tax/profile", json={"other_income": "-1"}
-    )
+    res = await client.patch("/v1/investing/tax/profile", json={"other_income": "-1"})
     assert res.status_code == 422
 
 
@@ -232,9 +223,7 @@ async def test_tax_profile_rejects_a_negative_other_income(client: AsyncClient):
 async def test_account_market_scope_is_settable_on_a_brokerage_account(client: AsyncClient):
     await _register(client, "scope")
     account_id = await _create_brokerage_account(client, "us-brokerage")
-    res = await client.patch(
-        f"/v1/finance/accounts/{account_id}", json={"market_scope": "foreign"}
-    )
+    res = await client.patch(f"/v1/finance/accounts/{account_id}", json={"market_scope": "foreign"})
     assert res.status_code == 200
     assert res.json()["market_scope"] == "foreign"
 
@@ -262,9 +251,7 @@ async def test_account_market_scope_is_rejected_on_a_non_brokerage_account(clien
 async def test_account_market_scope_rejects_an_unknown_value(client: AsyncClient):
     await _register(client, "badscope")
     account_id = await _create_brokerage_account(client, "us-brokerage")
-    res = await client.patch(
-        f"/v1/finance/accounts/{account_id}", json={"market_scope": "mars"}
-    )
+    res = await client.patch(f"/v1/finance/accounts/{account_id}", json={"market_scope": "mars"})
     assert res.status_code == 422
 
 
@@ -353,6 +340,7 @@ async def test_tax_summary_falls_back_to_the_currency_when_the_master_has_no_ent
         "account_market_scope",
         "currency_fallback",
     }
+
 
 @pytest.mark.asyncio
 async def test_tax_summary_reports_missing_fx_rates_instead_of_a_number(

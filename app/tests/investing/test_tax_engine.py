@@ -12,7 +12,7 @@ tested here are the ones that make the output trustworthy:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -42,7 +42,7 @@ from app.investing.tax.slab import (
 )
 from app.investing.tax.tax_profile import TaxProfile
 
-UTC = timezone.utc
+UTC = UTC
 
 
 def order(
@@ -78,18 +78,14 @@ def order(
         other_fees=Decimal("0"),
         occurred_at=datetime.fromisoformat(occurred_at),
         currency=currency,
-        created_at=(
-            datetime.fromisoformat(created_at) if created_at else None
-        ),
+        created_at=(datetime.fromisoformat(created_at) if created_at else None),
         account_id=account_id,
         account_name=account_name,
         instrument_type=instrument_type,
         realized_gain_loss=(
             Decimal(realized_gain_loss) if realized_gain_loss is not None else None
         ),
-        avg_cost_at_sale=(
-            Decimal(avg_cost_at_sale) if avg_cost_at_sale is not None else None
-        ),
+        avg_cost_at_sale=(Decimal(avg_cost_at_sale) if avg_cost_at_sale is not None else None),
     )
 
 
@@ -139,9 +135,7 @@ class TestFiscalYear:
         assert add_months(datetime(2024, 1, 31, tzinfo=UTC), 24) == datetime(
             2026, 1, 31, tzinfo=UTC
         )
-        assert add_months(datetime(2024, 1, 31, tzinfo=UTC), 1) == datetime(
-            2024, 2, 29, tzinfo=UTC
-        )
+        assert add_months(datetime(2024, 1, 31, tzinfo=UTC), 1) == datetime(2024, 2, 29, tzinfo=UTC)
 
 
 # ----------------------------------------------------------------- Regime
@@ -179,9 +173,7 @@ class TestRegime:
         assert result.source is ClassificationSource.account_market_scope
 
     def test_mixed_account_falls_through(self):
-        result = classify_regime(
-            account_market_scope="mixed", holding_currency="USD"
-        )
+        result = classify_regime(account_market_scope="mixed", holding_currency="USD")
         assert result.regime is FOREIGN_REGIME
         assert result.source is ClassificationSource.currency_fallback
 
@@ -220,9 +212,7 @@ class TestHoldingPeriod:
         # Exactly 24 calendar months later, clamped to 28 Feb 2026.
         sold = datetime(2026, 2, 28, tzinfo=UTC)
         assert is_long_term(acquired, sold, FOREIGN_REGIME) is False
-        assert is_long_term(
-            acquired, datetime(2026, 3, 1, tzinfo=UTC), FOREIGN_REGIME
-        ) is True
+        assert is_long_term(acquired, datetime(2026, 3, 1, tzinfo=UTC), FOREIGN_REGIME) is True
 
     def test_day_before_24_months(self):
         acquired = datetime(2024, 1, 31, tzinfo=UTC)
@@ -387,19 +377,22 @@ class TestReconciliation:
 
 class TestFxDates:
     def test_specified_date_is_last_day_of_previous_month(self):
-        assert specified_fx_date(datetime(2026, 10, 16, tzinfo=UTC).date()) == datetime(
-            2026, 9, 30, tzinfo=UTC
-        ).date()
+        assert (
+            specified_fx_date(datetime(2026, 10, 16, tzinfo=UTC).date())
+            == datetime(2026, 9, 30, tzinfo=UTC).date()
+        )
 
     def test_january_rolls_back_a_year(self):
-        assert specified_fx_date(datetime(2026, 1, 5, tzinfo=UTC).date()) == datetime(
-            2025, 12, 31, tzinfo=UTC
-        ).date()
+        assert (
+            specified_fx_date(datetime(2026, 1, 5, tzinfo=UTC).date())
+            == datetime(2025, 12, 31, tzinfo=UTC).date()
+        )
 
     def test_february_specified_date(self):
-        assert specified_fx_date(datetime(2026, 2, 3, tzinfo=UTC).date()) == datetime(
-            2026, 1, 31, tzinfo=UTC
-        ).date()
+        assert (
+            specified_fx_date(datetime(2026, 2, 3, tzinfo=UTC).date())
+            == datetime(2026, 1, 31, tzinfo=UTC).date()
+        )
 
 
 # ------------------------------------------------------------------ Slab
@@ -442,18 +435,12 @@ class TestSlab:
         assert well_above == Decimal("0.10")
 
     def test_surcharge_cap_at_15_percent_for_capital_gains(self):
-        assert surcharge_rate(
-            Decimal("30000000"), capital_gains_only=True
-        ) == Decimal("0.15")
-        assert surcharge_rate(
-            Decimal("60000000"), capital_gains_only=True
-        ) == Decimal("0.15")
+        assert surcharge_rate(Decimal("30000000"), capital_gains_only=True) == Decimal("0.15")
+        assert surcharge_rate(Decimal("60000000"), capital_gains_only=True) == Decimal("0.15")
 
     def test_capital_gains_surcharge_is_capped_at_15(self):
         # 25% band, but capital-gains income only sees 15%.
-        assert surcharge_rate(
-            Decimal("30000000"), capital_gains_only=True
-        ) == Decimal("0.15")
+        assert surcharge_rate(Decimal("30000000"), capital_gains_only=True) == Decimal("0.15")
 
     def test_marginal_relief_removes_the_discontinuity(self):
         just_above = surcharge_rate(Decimal("10000001"))
@@ -475,27 +462,22 @@ class TestSlab:
         assert result.rate_pct == Decimal("0")
 
     def test_rebate_limit_new_regime(self):
-        assert compute_rebate(
-            Decimal("100000"), Decimal("1000000"), TAX_REGIME_NEW
-        ) == Decimal("60000")
+        assert compute_rebate(Decimal("100000"), Decimal("1000000"), TAX_REGIME_NEW) == Decimal(
+            "60000"
+        )
 
     def test_rebate_limit_old_regime(self):
-        assert compute_rebate(
-            Decimal("100000"), Decimal("1000000"), TAX_REGIME_OLD
-        ) == Decimal("12000")
+        assert compute_rebate(Decimal("100000"), Decimal("1000000"), TAX_REGIME_OLD) == Decimal(
+            "12000"
+        )
 
     def test_rebate_is_capped_at_the_tax_payable(self):
-        assert compute_rebate(
-            Decimal("5000"), Decimal("1000000"), TAX_REGIME_NEW
-        ) == Decimal("5000")
+        assert compute_rebate(Decimal("5000"), Decimal("1000000"), TAX_REGIME_NEW) == Decimal(
+            "5000"
+        )
 
     def test_no_rebate_above_ceiling(self):
-        assert (
-            compute_rebate(
-                Decimal("100000"), Decimal("1200001"), TAX_REGIME_NEW
-            )
-            == Decimal("0")
-        )
+        assert compute_rebate(Decimal("100000"), Decimal("1200001"), TAX_REGIME_NEW) == Decimal("0")
 
     def test_override_beats_derivation(self):
         result = derive_slab(

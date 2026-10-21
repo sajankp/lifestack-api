@@ -156,8 +156,8 @@ class TaxProfileUpdate(BaseModel):
             return None
         try:
             number = float(value)
-        except (TypeError, ValueError):
-            raise ValueError("must be a number")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("must be a number") from exc
         if number < 0 or number > 100:
             raise ValueError("must be between 0 and 100")
         return value
@@ -169,8 +169,8 @@ class TaxProfileUpdate(BaseModel):
             return None
         try:
             number = float(value)
-        except (TypeError, ValueError):
-            raise ValueError("must be a number")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("must be a number") from exc
         if number < 0:
             raise ValueError("must not be negative")
         return value

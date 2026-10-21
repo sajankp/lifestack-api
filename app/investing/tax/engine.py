@@ -224,21 +224,16 @@ def compute_tax_estimate(
             source="app_rate_estimate",
             is_estimated=True,
         )
-    estimate.fx_rates = sorted(
-        fx_by_month.values(), key=lambda f: (f.month, f.currency)
-    )
+    estimate.fx_rates = sorted(fx_by_month.values(), key=lambda f: (f.month, f.currency))
     estimate.missing_fx_rates = [
-        {"month": month, "currency": currency}
-        for month, currency in sorted(missing)
+        {"month": month, "currency": currency} for month, currency in sorted(missing)
     ]
     if estimate.missing_fx_rates:
         # Some foreign-currency lots have no Rule 115 rate. Converting them
         # would need a rate we do not have, and omitting them would
         # understate the tax. Present neither a number nor a silent gap.
         estimate.status = "missing_fx_rate"
-        detail = ", ".join(
-            f"{m['month']} ({m['currency']})" for m in estimate.missing_fx_rates
-        )
+        detail = ", ".join(f"{m['month']} ({m['currency']})" for m in estimate.missing_fx_rates)
         estimate.message = (
             "No Rule 115 exchange rate is available for: "
             f"{detail}. Supply the rate for those months to compute the tax "
@@ -257,9 +252,7 @@ def compute_tax_estimate(
             bucket = BucketResult(
                 regime=lot.regime,
                 section=(
-                    regime_spec.ltcg_section
-                    if lot.is_long_term
-                    else regime_spec.stcg_section
+                    regime_spec.ltcg_section if lot.is_long_term else regime_spec.stcg_section
                 ),
                 rate_pct=(
                     regime_spec.ltcg_rate_pct
@@ -281,9 +274,7 @@ def compute_tax_estimate(
                 continue
             if ("long_term" if lot.is_long_term else "short_term") != term:
                 continue
-            rate = fx_by_month.get(
-                (sale_month_key(lot.sold_at.date()), lot.currency.upper())
-            )
+            rate = fx_by_month.get((sale_month_key(lot.sold_at.date()), lot.currency.upper()))
             if rate is None:
                 continue
             gain_inr += lot.gain_native * rate.rate
@@ -305,10 +296,6 @@ def compute_tax_estimate(
     # The marginal rate applies to the short-term gain, but the *total income*
     # that sets the band, the surcharge and the 87A rebate ceiling includes
     # every capital gain, long-term included.
-    stcg_inr = sum(
-        (b.gain_inr for (r, t), b in buckets.items() if t == "short_term"),
-        Decimal("0"),
-    )
     all_gains_inr = sum((b.gain_inr for b in buckets.values()), Decimal("0"))
     slab = derive_slab(
         other_income=profile.other_income,
@@ -353,9 +340,9 @@ def compute_tax_estimate(
     estimate.buckets = {
         f"{regime_key}:{term}": bucket for (regime_key, term), bucket in buckets.items()
     }
-    estimate.total_gain_inr = sum(
-        (b.gain_inr for b in buckets.values()), Decimal("0")
-    ).quantize(MONEY)
+    estimate.total_gain_inr = sum((b.gain_inr for b in buckets.values()), Decimal("0")).quantize(
+        MONEY
+    )
     gross_tax = sum((b.tax for b in buckets.values()), Decimal("0")).quantize(MONEY)
     rebate = compute_rebate(
         gross_tax,
@@ -392,7 +379,7 @@ def _build_assumptions(
 ) -> list[str]:
     lines: list[str] = []
     seen: set[str] = set()
-    for (regime_key, _term), bucket in buckets.items():
+    for regime_key, _term in buckets:
         if str(regime_key) in seen:
             continue
         seen.add(str(regime_key))
@@ -415,9 +402,7 @@ def _build_assumptions(
     if manual:
         lines.append(
             "Rule 115 FX rate supplied manually for "
-            + ", ".join(
-                f"{f.month} (₹{f.rate} on {f.specified_date})" for f in manual
-            )
+            + ", ".join(f"{f.month} (₹{f.rate} on {f.specified_date})" for f in manual)
             + "."
         )
     if estimated:

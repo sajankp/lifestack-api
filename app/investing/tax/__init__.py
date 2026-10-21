@@ -20,6 +20,7 @@ The statutory facts this encodes:
 """
 
 from app.investing.tax.engine import compute_tax_estimate
+from app.investing.tax.exchanges import country_for_exchange, resolve_exchange
 from app.investing.tax.fy import fy_bounds, fy_label_for_date, parse_fy_label
 from app.investing.tax.gains import (
     GainTotals,
@@ -29,14 +30,13 @@ from app.investing.tax.gains import (
     replay_fifo_lots,
 )
 from app.investing.tax.regime import (
+    FOREIGN_REGIME,
     INDIAN_REGIME,
     RegimeSpec,
     RegimeType,
-    FOREIGN_REGIME,
     classify_regime,
 )
 from app.investing.tax.slab import SlabResolution, derive_slab
-from app.investing.tax.exchanges import country_for_exchange, resolve_exchange
 from app.investing.tax.tax_profile import TaxProfile
 
 __all__ = [

@@ -94,14 +94,12 @@ def tax_on_income(total_income: Decimal, slabs: list[tuple[Decimal | None, Decim
 
 def marginal_rate(total_income: Decimal, slabs: list[tuple[Decimal | None, Decimal]]) -> Decimal:
     """The rate applied to the topmost slab of ``total_income``."""
-    previous = Decimal("0")
     rate = Decimal("0")
     for cap, slab_rate in slabs:
         cap_value = Decimal("99999999999999") if cap is None else cap
         rate = slab_rate
         if total_income <= cap_value:
             break
-        previous = cap_value
     return rate
 
 
@@ -175,8 +173,7 @@ def derive_slab(
         rate = slab_override_pct
         source = "override"
         caveats.append(
-            f"Slab rate of {slab_override_pct}% was set manually, not derived "
-            "from other income."
+            f"Slab rate of {slab_override_pct}% was set manually, not derived from other income."
         )
     else:
         rate = marginal_rate(total_income, slabs)
