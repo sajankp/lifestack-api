@@ -1604,14 +1604,37 @@ async def test_bhavcopy_price_feed_job_hit_prevents_yahoo_fallback(client: Async
     inr_broker_id = await _create_brokerage_account(client, "INR Brokerage", "INR")
     await _create_holding_via_order(client, inr_broker_id, "INFY", "4.00000000", "1500.00", "INR")
 
-    with patch(
-        "app.investing.service._fetch_nse_bhavcopy", new_callable=AsyncMock
-    ) as bhavcopy_fetch:
-        bhavcopy_fetch.return_value = {"INFY": (date(2026, 6, 19), Decimal("1555.25"))}
-        await bhavcopy_price_feed_job()
+    # Pin both trade-date helpers to the same day. The bhavcopy job prices at
+    # the NSE session it just closed (_latest_completed_nse_trading_day,
+    # anchored to the IST calendar) while the refresh skips holdings already
+    # priced for the expected close (_latest_completed_market_close, anchored
+    # to the UTC date). The two agree during the scheduled 22:45-23:00 UTC
+    # window but disagree at most other hours, so without pinning them the
+    # bhavcopy price lands on a date the refresh does not recognise and the
+    # holding is priced from Yahoo anyway -- the opposite of what this test
+    # asserts. Pinning both to a fixed weekday makes the assertion hold
+    # regardless of when the suite runs.
+    trade_date = date(2026, 6, 19)
+    with (
+        patch(
+            "app.investing.service._latest_completed_nse_trading_day",
+            return_value=trade_date,
+        ),
+        patch(
+            "app.investing.service._latest_completed_market_close",
+            return_value=trade_date,
+        ),
+    ):
+        with patch(
+            "app.investing.service._fetch_nse_bhavcopy", new_callable=AsyncMock
+        ) as bhavcopy_fetch:
+            bhavcopy_fetch.return_value = {"INFY": (trade_date, Decimal("1555.25"))}
+            await bhavcopy_price_feed_job()
 
-    with patch("app.investing.service._fetch_stock_price", new_callable=AsyncMock) as stock_fetch:
-        refresh_res = await client.post("/v1/investing/prices/refresh")
+        with patch(
+            "app.investing.service._fetch_stock_price", new_callable=AsyncMock
+        ) as stock_fetch:
+            refresh_res = await client.post("/v1/investing/prices/refresh")
 
     assert refresh_res.status_code == 200
     assert refresh_res.json()["updated"] == []
