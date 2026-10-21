@@ -22,6 +22,16 @@ class AccountCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     account_type: AccountType = AccountType.brokerage
     default_currency_code: str = Field(..., min_length=1, max_length=10)
+    market_scope: str | None = None
+
+    @field_validator("market_scope")
+    @classmethod
+    def validate_market_scope(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value not in {"india", "foreign", "mixed"}:
+            raise ValueError("market_scope must be 'india', 'foreign' or 'mixed'")
+        return value
 
     @field_validator("default_currency_code")
     @classmethod
@@ -34,6 +44,16 @@ class AccountUpdate(BaseModel):
     account_type: AccountType | None = None
     default_currency_code: str | None = Field(default=None, min_length=1, max_length=10)
     is_active: bool | None = None
+    market_scope: str | None = None
+
+    @field_validator("market_scope")
+    @classmethod
+    def validate_market_scope(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value not in {"india", "foreign", "mixed"}:
+            raise ValueError("market_scope must be 'india', 'foreign' or 'mixed'")
+        return value
 
     @field_validator("default_currency_code")
     @classmethod
@@ -49,6 +69,7 @@ class AccountResponse(BaseModel):
     account_type: AccountType
     default_currency_code: str
     is_active: bool
+    market_scope: str | None = None
     created_at: datetime
     updated_at: datetime
 

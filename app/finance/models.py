@@ -63,6 +63,19 @@ class WorkspaceCurrency(SQLModel, table=True):
     )
 
 
+class MarketScope(StrEnum):
+    """Which market a brokerage account's holdings are listed on (spec-099).
+
+    A *default* used only when the reference security master has no entry
+    for a ticker and no holding-level override is set. Distinct from
+    ``AccountType``, which describes the account's nature, not its market.
+    """
+
+    india = "india"
+    foreign = "foreign"
+    mixed = "mixed"
+
+
 class Account(SQLModel, table=True):
     __tablename__ = "accounts"
 
@@ -73,6 +86,8 @@ class Account(SQLModel, table=True):
     account_type: AccountType = Field(default=AccountType.brokerage, sa_type=sa.String())
     default_currency_code: str = Field(foreign_key="currencies.code", max_length=10, index=True)
     is_active: bool = Field(default=True)
+    market_scope: str | None = Field(default=None, max_length=20)
+    """india | foreign | mixed — the account-level tax-regime default."""
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
@@ -316,3 +331,53 @@ class NetWorthSnapshot(SQLModel, table=True):
         if not isinstance(v, dict):
             raise ValueError("fx_rates_used must be a dictionary")
         return v
+
+
+class WorkspaceTaxProfile(SQLModel, table=True):
+    """A workspace's capital-gains tax configuration (spec-099).
+
+    One row per workspace. Holds the user's tax configuration: residency,
+    which slab table applies, their taxable other income, optional explicit
+    overrides, and the Rule 115 FX rate per sale month.
+    """
+
+    __tablename__ = "workspace_tax_profiles"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", unique=True, index=True)
+
+    resident_status: str = Field(default="resident", max_length=40)
+    """resident | resident_not_ordinarily_resident | non_resident."""
+
+    tax_regime: str = Field(default="new", max_length=10)
+    """new (Sec 115BAC) | old."""
+
+    other_income: Decimal = Field(default=Decimal("0"), sa_type=sa.Numeric(precision=18, scale=2))
+    """Taxable other income, after the user's own deductions."""
+
+    slab_override_pct: Decimal | None = Field(
+        default=None, sa_type=sa.Numeric(precision=5, scale=2)
+    )
+    surcharge_override_pct: Decimal | None = Field(
+        default=None, sa_type=sa.Numeric(precision=5, scale=2)
+    )
+    cess_pct: Decimal = Field(default=Decimal("4.00"), sa_type=sa.Numeric(precision=5, scale=2))
+
+    explicit_regime: str | None = Field(default=None, max_length=20)
+    """indian | foreign — overrides the automatic classification."""
+
+    apply_carry_forward: bool = Field(default=True)
+
+    # Rule 115 FX rate per sale month, keyed "YYYY-MM". Stored as JSON so
+    # the profile stays a single row.
+    fx_overrides: dict[str, str] = Field(default_factory=dict, sa_type=sa.JSON)
+
+    notes: str | None = Field(default=None, max_length=1000)
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )

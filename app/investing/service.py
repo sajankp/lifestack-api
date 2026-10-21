@@ -1583,6 +1583,32 @@ class InstrumentService:
             )
         )
 
+    async def _fork_instrument_for_workspace(
+        self, workspace_id: int, global_instrument: Instrument
+    ) -> Instrument:
+        """Create a workspace-scoped copy of a global instrument.
+
+        The global reference row is shared by every workspace and is not
+        workspace-editable. A per-holding tax override is a workspace
+        fact, so it needs a workspace-scoped row. The copy shadows the
+        global one: ``get_by_symbol`` prefers the workspace row, and the
+        tax engine resolves instruments by symbol.
+        """
+        existing = await self.instrument_repo.get_by_symbol(workspace_id, global_instrument.symbol)
+        if existing is not None and existing.workspace_id == workspace_id:
+            return existing
+        forked = Instrument(
+            workspace_id=workspace_id,
+            symbol=global_instrument.symbol,
+            name=global_instrument.name,
+            instrument_type=global_instrument.instrument_type,
+            isin=global_instrument.isin,
+            exchange=global_instrument.exchange,
+            company_id=global_instrument.company_id,
+            provider_key=global_instrument.provider_key,
+        )
+        return await self.instrument_repo.create(forked)
+
     async def update_instrument(
         self, workspace_id: int, public_id: uuid.UUID, payload: InstrumentUpdate
     ) -> Instrument:
@@ -1591,7 +1617,13 @@ class InstrumentService:
             raise NotFoundError(detail=f"Instrument '{public_id}' not found")
 
         if instrument.workspace_id != workspace_id:
-            raise ForbiddenError(detail="Cannot modify a global instrument reference")
+            # The security master is global and must not be workspace-editable.
+            # A per-holding tax override (spec-099) is a workspace fact, so
+            # fork the global row into a workspace-scoped one that shadows
+            # it, then apply the change there. The global row is left alone.
+            if "exchange_country_override" not in payload.model_dump(exclude_unset=True):
+                raise ForbiddenError(detail="Cannot modify a global instrument reference")
+            instrument = await self._fork_instrument_for_workspace(workspace_id, instrument)
 
         update_data = payload.model_dump(exclude_unset=True)
         if not update_data:
@@ -1601,6 +1633,10 @@ class InstrumentService:
             instrument.name = payload.name
         if payload.exchange is not None:
             instrument.exchange = payload.exchange
+        # Per-holding tax-regime override (spec-099). An explicit null
+        # clears it, so the field must be set even when it is None.
+        if "exchange_country_override" in update_data:
+            instrument.exchange_country_override = update_data["exchange_country_override"]
         if payload.isin is not None:
             instrument.isin = payload.isin
 

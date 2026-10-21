@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.audit import AuditLogger
 from app.core.dependencies import (
@@ -23,6 +23,7 @@ from app.core.dependencies import (
     get_investing_return_metrics_service,
     get_investing_snapshot_repo,
     get_investing_summary_service,
+    get_investing_tax_service,
     get_reference_resolve_service,
     require_min_role,
 )
@@ -75,6 +76,14 @@ from app.investing.service import (
     HoldingService,
     InstrumentService,
 )
+from app.investing.tax.regime import REGIMES
+from app.investing.tax_schemas import (
+    TaxProfileResponse,
+    TaxProfileUpdate,
+    TaxRegimeResponse,
+    TaxSummaryResponse,
+)
+from app.investing.tax_service import TaxService
 
 router = APIRouter(prefix="/investing", tags=["investing"])
 
@@ -942,3 +951,185 @@ async def list_holding_verifications(
     account_cache = await _build_account_cache(account_service, workspace_id)
     items = [_holding_verification_response(v, account_cache) for v in verifications]
     return build_page(items, total, pagination)
+
+
+# ------------------------------------------------------ capital gains tax
+# (spec-099)
+
+
+def _tax_summary_response(estimate) -> TaxSummaryResponse:
+    """Shape a TaxEstimate for the API."""
+    buckets = {
+        key: {
+            "regime": str(bucket.regime),
+            "section": bucket.section,
+            "rate_pct": str(bucket.rate_pct),
+            "gain_native": str(bucket.gain_native),
+            "gain_inr": str(bucket.gain_inr),
+            "fees_native": str(bucket.fees_native),
+            "fees_inr": str(bucket.fees_inr),
+            "exemption_applied": str(bucket.exemption_applied),
+            "tax": str(bucket.tax),
+            "sell_count": bucket.sell_count,
+            "lot_count": bucket.lot_count,
+        }
+        for key, bucket in estimate.buckets.items()
+    }
+    slab = None
+    if estimate.slab is not None:
+        slab = {
+            "rate_pct": str(estimate.slab.rate_pct),
+            "source": estimate.slab.source,
+            "tax_regime": estimate.slab.tax_regime,
+            "surcharge_pct": str(estimate.slab.surcharge_pct),
+            "surcharge_source": estimate.slab.surcharge_source,
+            "cess_pct": str(estimate.slab.cess_pct),
+            "rebate_amount": str(estimate.slab.rebate_amount),
+            "total_income_considered": str(estimate.slab.total_income_considered),
+            "marginal_relief_applied": estimate.slab.marginal_relief_applied,
+        }
+    positions = [
+        {
+            "symbol": lot.symbol,
+            "account_name": lot.account_name,
+            "instrument_type": lot.instrument_type,
+            "currency": lot.currency,
+            "quantity": str(lot.quantity),
+            "cost_per_unit": str(lot.cost_per_unit),
+            "acquired_at": lot.acquired_at.isoformat(),
+            "sold_at": lot.sold_at.isoformat(),
+            "long_term_mark_date": lot.long_term_mark_date.isoformat(),
+            "holding_months": lot.holding_months,
+            "is_long_term": lot.is_long_term,
+            "regime": str(lot.regime),
+            "classified_by": lot.classified_by,
+            "classification_detail": lot.classification_detail,
+            "gain_native": str(lot.gain_native),
+            "gain_inr": str(lot.gain_inr),
+            "fees_native": str(lot.fees_native),
+            "sale_price_per_unit": str(lot.sale_price_per_unit),
+        }
+        for lot in estimate.lots
+    ]
+    return TaxSummaryResponse(
+        status=estimate.status,
+        fy_label=estimate.fy_label,
+        currency=estimate.currency,
+        buckets=buckets,
+        total_gain_inr=str(estimate.total_gain_inr),
+        total_tax_inr=str(estimate.total_tax_inr),
+        effective_rate_pct=str(estimate.effective_rate_pct),
+        slab=slab,
+        fx_rates=[f.as_dict() for f in estimate.fx_rates],
+        positions=positions,
+        assumptions=estimate.assumptions,
+        disclaimers=estimate.disclaimers,
+        reconciliation_failures=estimate.reconciliation_failures,
+        missing_fx_rates=estimate.missing_fx_rates,
+        message=estimate.message,
+    )
+
+
+@router.get("/tax/summary", response_model=TaxSummaryResponse)
+async def get_tax_summary(
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    tax_service: Annotated[TaxService, Depends(get_investing_tax_service)],
+    fy: str | None = None,
+    account_id: str | None = None,
+) -> TaxSummaryResponse:
+    """Capital gains tax estimate for the workspace.
+
+    This is an estimate, not a filing-ready liability. The response
+    carries the assumptions (regime, slab derivation, FX rate and its
+    source) so the caller can show them.
+    """
+    try:
+        estimate = await tax_service.compute(workspace_id, fy=fy, account_id=account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _tax_summary_response(estimate)
+
+
+@router.get("/tax/regimes", response_model=list[TaxRegimeResponse])
+async def list_tax_regimes(
+    _user: Annotated[dict, Depends(get_current_user)],
+) -> list[TaxRegimeResponse]:
+    """The two capital-gains regimes, as data.
+
+    The Tax tab renders its regime explanations from this so the copy
+    lives in one place rather than being duplicated in the UI.
+    """
+    return [
+        TaxRegimeResponse(
+            key=str(spec.key),
+            label=spec.label,
+            description=spec.description,
+            ltcg_holding_months=spec.ltcg_holding_months,
+            stcg_section=spec.stcg_section,
+            ltcg_section=spec.ltcg_section,
+            ltcg_rate_pct=str(spec.ltcg_rate_pct),
+            ltcg_exemption_inr=str(spec.ltcg_exemption_inr),
+            stcg_is_flat=spec.stcg_is_flat,
+            stcg_flat_rate_pct=(
+                str(spec.stcg_flat_rate_pct) if spec.stcg_flat_rate_pct is not None else None
+            ),
+            cess_pct=str(spec.cess_pct),
+        )
+        for spec in REGIMES.values()
+    ]
+
+
+@router.get("/tax/profile", response_model=TaxProfileResponse)
+async def get_tax_profile(
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    tax_service: Annotated[TaxService, Depends(get_investing_tax_service)],
+) -> TaxProfileResponse:
+    """The workspace's capital-gains tax configuration."""
+    row = await tax_service.get_profile(workspace_id)
+    return TaxProfileResponse(
+        public_id=str(row.public_id),
+        resident_status=row.resident_status,
+        tax_regime=row.tax_regime,
+        other_income=str(row.other_income),
+        slab_override_pct=(
+            str(row.slab_override_pct) if row.slab_override_pct is not None else None
+        ),
+        surcharge_override_pct=(
+            str(row.surcharge_override_pct) if row.surcharge_override_pct is not None else None
+        ),
+        cess_pct=str(row.cess_pct),
+        explicit_regime=row.explicit_regime,
+        apply_carry_forward=bool(row.apply_carry_forward),
+        fx_overrides=dict(row.fx_overrides or {}),
+        notes=row.notes,
+    )
+
+
+@router.patch("/tax/profile", response_model=TaxProfileResponse)
+async def update_tax_profile(
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    tax_service: Annotated[TaxService, Depends(get_investing_tax_service)],
+    payload: TaxProfileUpdate,
+) -> TaxProfileResponse:
+    """Update the workspace's capital-gains tax configuration."""
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="No fields to update.")
+    row = await tax_service.update_profile(workspace_id, changes)
+    return TaxProfileResponse(
+        public_id=str(row.public_id),
+        resident_status=row.resident_status,
+        tax_regime=row.tax_regime,
+        other_income=str(row.other_income),
+        slab_override_pct=(
+            str(row.slab_override_pct) if row.slab_override_pct is not None else None
+        ),
+        surcharge_override_pct=(
+            str(row.surcharge_override_pct) if row.surcharge_override_pct is not None else None
+        ),
+        cess_pct=str(row.cess_pct),
+        explicit_regime=row.explicit_regime,
+        apply_carry_forward=bool(row.apply_carry_forward),
+        fx_overrides=dict(row.fx_overrides or {}),
+        notes=row.notes,
+    )

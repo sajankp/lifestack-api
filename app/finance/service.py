@@ -14,6 +14,7 @@ from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
 from app.finance.models import (
     Account,
+    AccountType,
     CapitalTransfer,
     Currency,
     CurrencyDisplayPreference,
@@ -148,6 +149,19 @@ class AccountService:
             currency = await self.currency_repository.get_by_code(new_currency)
             if not currency or not currency.is_active:
                 raise ValidationError(detail=f"Unsupported default currency '{new_currency}'")
+
+        # market_scope only applies to brokerage accounts (spec-099).
+        if (
+            "market_scope" in update_data
+            and update_data["market_scope"] is not None
+            and account.account_type != AccountType.brokerage
+        ):
+            raise ValidationError(
+                detail=(
+                    f"Account '{account.name}' is type '{account.account_type}'; "
+                    "market_scope only applies to brokerage accounts."
+                )
+            )
 
         for key, value in update_data.items():
             setattr(account, key, value)

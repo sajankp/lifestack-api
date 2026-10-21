@@ -81,6 +81,15 @@ class Instrument(SQLModel, table=True):
     )
     isin: str | None = Field(default=None, max_length=20)
     exchange: str | None = Field(default=None, max_length=50)
+    exchange_country_override: str | None = Field(default=None, max_length=2)
+    """Per-holding tax-regime override (spec-099): "IN" | "US" | NULL.
+
+    Beats both the brokerage account's market scope and the reference
+    security master for this holding. The security master is global and
+    must not be workspace-editable; the instrument row is workspace-scoped,
+    so the per-holding override lives here.
+    """
+
     provider_key: str | None = Field(default=None, max_length=100)
     company_id: int | None = Field(default=None, foreign_key="investing_companies.id", index=True)
     is_active: bool = Field(default=True)
