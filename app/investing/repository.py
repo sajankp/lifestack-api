@@ -116,6 +116,57 @@ class HoldingRepository(BaseRepository[Holding]):
         )
         return result.scalar_one_or_none()
 
+    async def upsert(
+        self,
+        holding: Holding,
+    ) -> Holding:
+        """Atomic upsert on (workspace_id, symbol, account_id).
+
+        Plain check-then-insert let two concurrent order placements for the
+        same symbol and account both find no existing holding and both
+        INSERT, raising IntegrityError on uq_holding_workspace_symbol_account
+        and returning 500 to the caller. The ON CONFLICT DO UPDATE makes the
+        write idempotent under concurrency.
+        """
+        stmt = pg_insert(Holding).values(
+            public_id=holding.public_id,
+            workspace_id=holding.workspace_id,
+            user_id=holding.user_id,
+            instrument_id=holding.instrument_id,
+            symbol=holding.symbol,
+            account_id=holding.account_id,
+            quantity=holding.quantity,
+            avg_cost=holding.avg_cost,
+            currency=holding.currency,
+            source_type=holding.source_type,
+            source_ref=holding.source_ref,
+            source_import_id=holding.source_import_id,
+            created_at=holding.created_at,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["workspace_id", "symbol", "account_id"],
+            set_={
+                "quantity": stmt.excluded.quantity,
+                "avg_cost": stmt.excluded.avg_cost,
+                "instrument_id": stmt.excluded.instrument_id,
+                "updated_at": func.now(),
+            },
+        )
+        await self.session.execute(stmt)
+        # The ON CONFLICT UPDATE above is raw Core DML and bypasses the
+        # unit-of-work, so a Holding already in this session's identity map
+        # would otherwise be returned with its stale pre-conflict values.
+        result = await self.session.execute(
+            select(Holding)
+            .where(
+                Holding.workspace_id == holding.workspace_id,
+                Holding.symbol == holding.symbol,
+                Holding.account_id == holding.account_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one()
+
 
 class CashBalanceRepository(BaseRepository[CashBalance]):
     async def get_all(
