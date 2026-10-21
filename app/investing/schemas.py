@@ -268,11 +268,27 @@ class InstrumentUpdate(BaseModel):
     ticker: str | None = Field(default=None, min_length=1, max_length=20)
     isin: str | None = Field(default=None, min_length=1, max_length=20)
     exchange: str | None = Field(default=None, min_length=1, max_length=50)
+    exchange_country_override: str | None = Field(default=None, min_length=2, max_length=2)
+    """Per-holding tax-regime override (spec-099): "IN" | "US" | null to clear.
+
+    Beats both the brokerage account's market scope and the reference
+    security master for this holding.
+    """
 
     @field_validator("ticker", "isin", "exchange")
     @classmethod
     def normalize_identifiers(cls, value: str | None) -> str | None:
         return _normalize_identifier(value)
+
+    @field_validator("exchange_country_override")
+    @classmethod
+    def validate_country_override(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if normalized not in {"IN", "US"}:
+            raise ValueError("exchange_country_override must be 'IN' or 'US'")
+        return normalized
 
 
 class InstrumentResponse(BaseModel):
@@ -284,6 +300,7 @@ class InstrumentResponse(BaseModel):
     ticker: str | None = None
     isin: str | None = None
     exchange: str | None = None
+    exchange_country_override: str | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

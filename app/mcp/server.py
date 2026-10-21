@@ -47,6 +47,7 @@ from app.investing.repository import (
     InvestingOrderRepository,
     LotRepository,
     PortfolioSnapshotRepository,
+    ReferenceSecurityRepository,
 )
 from app.investing.schemas import (
     DividendCreate,
@@ -63,6 +64,8 @@ from app.investing.service import (
     HoldingService,
     InstrumentService,
 )
+from app.investing.tax.exchanges import resolve_exchange
+from app.investing.tax_service import TaxService
 from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.security import authorize_user, authorize_workspace, validate_page
 from app.platform.repository import MembershipRepository, WorkspaceRepository
@@ -168,6 +171,17 @@ def _order_service(session: Any) -> InvestingOrderService:
         InstrumentService(InstrumentRepository(session), CompanyRepository(session)),
         LotRepository(session),
         CorporateActionRepository(session),
+    )
+
+
+def _tax_service(session: Any) -> TaxService:
+    return TaxService(
+        session=session,
+        order_repository=InvestingOrderRepository(session),
+        reference_repository=ReferenceSecurityRepository(session),
+        account_repository=AccountRepository(session),
+        instrument_repository=InstrumentRepository(session),
+        fx_rate_repository=FxRateRepository(session),
     )
 
 
@@ -1823,6 +1837,197 @@ def create_mcp_server() -> FastMCP:
     async def get_account_balances(workspace_id: int) -> dict[str, Any]:
         """Get read-only spending-account balances for an authorized workspace."""
         return await _run_capture_tool(workspace_id, "mcp:read", "get_account_balances", {})
+
+    @mcp.tool
+    async def get_tax_summary(
+        workspace_id: int,
+        fy: str | None = None,
+        account_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Get the capital gains tax estimate for a workspace and financial year.
+
+        Returns the LTCG and STCG buckets with their tax, the per-lot
+        detail, the FX rates used (with their source), and the assumptions
+        behind the number. This is an estimate, not a filing-ready
+        liability.
+
+        `fy` is an Indian financial year label such as "2026-27" and
+        defaults to the current one.
+        """
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_tax_summary"
+            )
+            estimate = await _tax_service(session).compute(
+                workspace_id, fy=fy, account_id=account_id
+            )
+        if estimate.status == "reconciliation_failed":
+            return {
+                "status": "reconciliation_failed",
+                "message": estimate.message,
+                "reconciliation_failures": estimate.reconciliation_failures,
+            }
+        if estimate.status == "missing_fx_rate":
+            return {
+                "status": "missing_fx_rate",
+                "message": estimate.message,
+                "missing_fx_rates": estimate.missing_fx_rates,
+            }
+        return {
+            "status": "success",
+            "fy_label": estimate.fy_label,
+            "currency": estimate.currency,
+            "buckets": {key: bucket.as_dict() for key, bucket in estimate.buckets.items()},
+            "total_gain_inr": str(estimate.total_gain_inr),
+            "total_tax_inr": str(estimate.total_tax_inr),
+            "effective_rate_pct": str(estimate.effective_rate_pct),
+            "slab": (
+                {
+                    "rate_pct": str(estimate.slab.rate_pct),
+                    "source": estimate.slab.source,
+                    "tax_regime": estimate.slab.tax_regime,
+                    "surcharge_pct": str(estimate.slab.surcharge_pct),
+                    "cess_pct": str(estimate.slab.cess_pct),
+                    "rebate_amount": str(estimate.slab.rebate_amount),
+                    "total_income_considered": str(estimate.slab.total_income_considered),
+                }
+                if estimate.slab is not None
+                else None
+            ),
+            "fx_rates": [f.as_dict() for f in estimate.fx_rates],
+            "positions": [
+                {
+                    "symbol": lot.symbol,
+                    "account_name": lot.account_name,
+                    "instrument_type": lot.instrument_type,
+                    "currency": lot.currency,
+                    "quantity": str(lot.quantity),
+                    "cost_per_unit": str(lot.cost_per_unit),
+                    "acquired_at": lot.acquired_at.isoformat(),
+                    "sold_at": lot.sold_at.isoformat(),
+                    "long_term_mark_date": lot.long_term_mark_date.isoformat(),
+                    "holding_months": lot.holding_months,
+                    "is_long_term": lot.is_long_term,
+                    "regime": str(lot.regime),
+                    "classified_by": lot.classified_by,
+                    "classification_detail": lot.classification_detail,
+                    "gain_native": str(lot.gain_native),
+                    "gain_inr": str(lot.gain_inr),
+                }
+                for lot in estimate.lots
+            ],
+            "assumptions": estimate.assumptions,
+            "disclaimers": estimate.disclaimers,
+        }
+
+    @mcp.tool
+    async def update_investing_account_status(
+        workspace_id: int,
+        account_id: str,
+        market_scope: str | None = None,
+        exchange_name: str | None = None,
+        symbol: str | None = None,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Set a brokerage account's market scope, or flag one holding's exchange.
+
+        The capital-gains tax regime depends on where a security is listed.
+        `market_scope` sets the account-level default ("india", "foreign" or
+        "mixed") used when the reference security master has no entry for a
+        ticker.
+
+        `exchange_name` sets the exchange on a holding. With `symbol` it
+        applies to that one holding and also sets its country override,
+        which beats the account default. Without `symbol` it applies to
+        every holding in the account whose exchange is still unset.
+
+        Holdings whose exchange is already set are skipped, and an
+        unrecognised exchange name leaves the country unset rather than
+        guessing.
+        """
+        if market_scope is not None and market_scope not in {"india", "foreign", "mixed"}:
+            return {
+                "status": "error",
+                "message": "market_scope must be 'india', 'foreign' or 'mixed'.",
+            }
+        if not market_scope and not exchange_name:
+            return {
+                "status": "error",
+                "message": "Supply market_scope and/or exchange_name.",
+            }
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": (
+                    f"Update the market status for account {account_id}? Confirm to continue."
+                ),
+                "account_id": account_id,
+                "market_scope": market_scope,
+                "exchange_name": exchange_name,
+                "symbol": symbol,
+            }
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:write",
+                tool="update_investing_account_status",
+            )
+            service = _tax_service(session)
+            try:
+                account = await service.set_account_market_scope(
+                    workspace_id, account_id, market_scope
+                )
+            except ValueError as exc:
+                return {"status": "error", "message": str(exc)}
+
+            updated: list[dict[str, Any]] = []
+            skipped: list[dict[str, Any]] = []
+            if exchange_name:
+                mic, country = resolve_exchange(exchange_name)
+                instruments = await service.list_account_instruments(workspace_id, account_id)
+                if symbol:
+                    instruments = [i for i in instruments if i.symbol.upper() == symbol.upper()]
+                    if not instruments:
+                        return {
+                            "status": "error",
+                            "message": f"No holding named '{symbol}' in this account.",
+                        }
+                for instrument in instruments:
+                    if instrument.exchange and not symbol:
+                        skipped.append({
+                            "symbol": instrument.symbol,
+                            "reason": f"exchange already set to {instrument.exchange}",
+                        })
+                        continue
+                    instrument.exchange = exchange_name
+                    if country:
+                        instrument.exchange_country_override = country
+                    instrument.updated_at = datetime.now(UTC)
+                    session.add(instrument)
+                    updated.append({
+                        "symbol": instrument.symbol,
+                        "exchange": instrument.exchange,
+                        "exchange_country_override": instrument.exchange_country_override,
+                    })
+                await session.flush()
+
+            return {
+                "status": "success",
+                "account": {
+                    "public_id": str(account.public_id),
+                    "name": account.name,
+                    "market_scope": account.market_scope,
+                },
+                "instruments_updated": updated,
+                "instruments_skipped": skipped,
+                "notes": [
+                    "The account market scope is a default; a holding-level "
+                    "exchange country override takes precedence over it.",
+                    "An unrecognised exchange name leaves the country unset rather than guessing.",
+                ],
+            }
 
     return mcp
 

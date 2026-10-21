@@ -787,3 +787,90 @@ Explicitly out of scope, so they are not smuggled in later:
 2. **Whether any holding is an NSE-IX UDR.** If so, `explicit_regime` should be set. The engine cannot detect this from the order data — the symbols are identical to the underlying US shares.
 3. **`other_income` as *taxable* income.** The engine derives the slab from it, so it must be after the user's own deductions and standard deduction. The UI must label the field accordingly.
 4. **Prior-year losses.** FY 2025-26 shows a net **gain** of ₹1,12,504 in Lifestack, so nothing carries forward from it; earlier years have losses that are not yet in the carry-forward table (Phase 4). The current-year figure is therefore an upper bound until Phase 4 lands.
+
+---
+
+## 9. Implementation Notes (added during build)
+
+These are the decisions and defects found while implementing the spec. They
+are recorded here because each one changes a rule stated earlier in the
+document.
+
+### 9.1 FX rates are keyed by `(month, currency)`, not `month`
+
+The original §4.4 described `fx_overrides` and the app fallback as keyed by
+the transfer month alone. That is wrong for a workspace holding more than one
+currency: a USD sale and a GBP sale in the same month need different rates,
+and the original key would have let one currency's rate silently price the
+other's gain.
+
+The engine now keys rates by `(month, currency)` throughout
+(`app/investing/tax/engine.py`). The profile's `fx_overrides` stays keyed by
+month for the manual override (a workspace overrides one currency's rate at a
+time in practice), and the manual override applies to every currency sold in
+that month — which is correct, because a manual override is the user
+asserting "this is the SBI rate for this month".
+
+### 9.2 A missing FX rate is a status, not a silent omission
+
+The original design let a lot with no available rate fall out of the
+conversion loop. That understates the tax: the gain simply vanishes from
+the total while the tax on it is never computed, and nothing in the response
+says so.
+
+The engine now returns:
+
+```json
+{
+  "status": "missing_fx_rate",
+  "message": "No Rule 115 exchange rate is available for: 2026-10 (USD). ...",
+  "missing_fx_rates": [{ "month": "2026-10", "currency": "USD" }]
+}
+```
+
+with **no tax number**, mirroring the `reconciliation_failed` contract. A
+sale already denominated in INR needs no conversion and is handled with a
+rate of 1 (source `reporting_currency`) so it never trips this guard.
+
+### 9.3 The engine stays pure — the regime resolver is synchronous
+
+§2.1 requires the engine to be pure and synchronous. The service layer
+originally passed an `async def` resolver, which failed at the first
+`regime_resolver(order)` call with `cannot unpack non-iterable coroutine
+object`.
+
+The service now resolves every sell's classification itself (where the
+`await` on the reference-security lookup is legal) and hands the engine a
+plain dict lookup. The engine's signature is unchanged.
+
+### 9.4 Instruments resolve by symbol, not by `instrument_id`
+
+`compute()` read `o.instrument_id` off `OrderView`, a field the dataclass
+never had — an `AttributeError` on every request with a sell order. Beyond
+the missing field, the id is the wrong key: an order may reference a symbol
+whose instrument row was created later, and a workspace-scoped instrument
+(which carries the override) has a different id from the global row it
+shadows.
+
+Instruments are now resolved by symbol via `get_by_symbols`, which already
+prefers the workspace-scoped row over the global one.
+
+### 9.5 A per-holding override on a global instrument forks a workspace copy
+
+The security master is global and must not be workspace-editable (§4.1b), but
+instruments are auto-created as global rows whenever Yahoo resolves the
+ticker — which is every US ticker. A `PATCH` on one returned *403 Cannot
+modify a global instrument reference*, making the per-holding override
+unreachable for exactly the holdings that need it.
+
+Setting `exchange_country_override` on a global instrument now forks a
+workspace-scoped copy (`InstrumentService._fork_instrument_for_workspace`)
+and applies the override there. The global row is left untouched. The copy
+shadows the global one, because `get_by_symbol` prefers the workspace row.
+
+### 9.6 `gain_inr` is carried on each lot
+
+The original response exposed only the bucket-level `gain_inr`. The
+per-transaction table (§5.1) needs a per-lot INR figure, so `TaxLot` now
+carries `gain_inr`, populated during the conversion pass and returned in
+`positions[]`.

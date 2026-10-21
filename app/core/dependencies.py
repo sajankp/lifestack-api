@@ -73,6 +73,7 @@ from app.investing.service import (
     HoldingService,
     InstrumentService,
 )
+from app.investing.tax_service import TaxService
 from app.notifications.repository import NotificationRepository, PushSubscriptionRepository
 from app.notifications.service import NotificationService, PushSubscriptionService
 from app.platform.repository import MembershipRepository, WorkspaceRepository
@@ -560,6 +561,24 @@ async def get_investing_performance_service(
         fx_rate_repo,
         instrument_repo,
         account_repo,
+    )
+
+
+async def get_investing_tax_service(
+    session: AsyncSession = Depends(get_db_session),
+    order_repo: InvestingOrderRepository = Depends(get_investing_order_repo),
+    reference_repo: ReferenceSecurityRepository = Depends(get_reference_security_repo),
+    account_repo: AccountRepository = Depends(get_finance_account_repo),
+    instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
+    fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
+) -> TaxService:
+    return TaxService(
+        session=session,
+        order_repository=order_repo,
+        reference_repository=reference_repo,
+        account_repository=account_repo,
+        instrument_repository=instrument_repo,
+        fx_rate_repository=fx_rate_repo,
     )
 
 
