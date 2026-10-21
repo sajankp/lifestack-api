@@ -165,6 +165,34 @@ def merge_budget_intervals(
     return merged_intervals
 
 
+# Default custom KPIs seeded once a workspace has an account to evaluate over.
+# Without these the custom-KPI surface is empty on arrival: the dashboard
+# card renders nothing when a workspace has no KPIs, and the /spending/kpis
+# tab has nothing to show. These are the three metric types spec-077 defines,
+# covering the three questions a personal-finance dashboard actually asks:
+# "am I overspending?", "how much came in?", and "am I net positive?".
+#
+# No targets are seeded: a target is a personal commitment, and a wrong
+# default would fire a spurious breach todo on day one.
+DEFAULT_KPIS: list[dict] = [
+    {
+        "name": "Monthly spend",
+        "metric_type": KpiMetricType.spend_total,
+        "evaluation_window": KpiWindow.calendar_month,
+    },
+    {
+        "name": "Monthly income",
+        "metric_type": KpiMetricType.income_total,
+        "evaluation_window": KpiWindow.calendar_month,
+    },
+    {
+        "name": "Net cash flow (this month)",
+        "metric_type": KpiMetricType.net_cash_flow,
+        "evaluation_window": KpiWindow.calendar_month,
+    },
+]
+
+
 # Default system categories seeded during registration
 DEFAULT_CATEGORIES: list[dict] = [
     {"name": "Food & Dining", "icon": "🍽️", "color": "#FF6B6B"},
@@ -3167,6 +3195,61 @@ class KpiService:
             await self._to_response(workspace_id, k, category_map, group_map, account_map)
             for k in kpis
         ], total
+
+    async def provision_default_kpis(self, workspace_id: int) -> int:
+        """Seed a small set of useful default KPIs for a workspace.
+
+        The custom-KPI surface is entirely user-defined: the dashboard card
+        renders nothing at all when a workspace has no KPIs, and the three
+        metric types (spend_total / income_total / net_cash_flow) are all
+        things a user would otherwise have to define by hand before the
+        tab shows anything.
+
+        Seeding is deliberately conservative:
+        - It only runs once (guarded by "workspace has no KPIs yet"), so a
+          user who deletes the defaults does not get them back.
+        - It is a no-op until the workspace has at least one active account
+          on a single currency, because ``_resolve_currency`` rejects a
+          KPI whose filter spans multiple currencies and there is no
+          currency to pin until an account exists.
+        - It never fails the caller: a workspace that cannot host a KPI
+          (mixed currencies, no accounts) simply gets none.
+
+        Returns the number of KPIs created.
+        """
+        existing, _ = await self.kpi_repo.get_all(workspace_id, limit=1, offset=0)
+        if existing:
+            return 0
+
+        accounts, _ = await self.account_repo.list_workspace_accounts(
+            workspace_id, limit=1000, offset=0
+        )
+        active = [a for a in accounts if a.is_active]
+        currencies = {a.default_currency_code for a in active}
+        if not active or len(currencies) != 1:
+            # No accounts yet, or the workspace spans several currencies --
+            # a workspace-level KPI would be invalid in v1 (spec-077).
+            return 0
+        currency_code = currencies.pop()
+
+        created = 0
+        for spec in DEFAULT_KPIS:
+            kpi = FinancialKpi(
+                workspace_id=workspace_id,
+                name=spec["name"],
+                metric_type=spec["metric_type"],
+                evaluation_window=spec["evaluation_window"],
+                category_id=None,
+                category_group_id=None,
+                account_id=None,
+                currency_code=currency_code,
+                target_value=spec.get("target_value"),
+                target_direction=spec.get("target_direction"),
+                display_format=spec.get("display_format", "amount"),
+            )
+            await self.kpi_repo.create(kpi)
+            created += 1
+        return created
 
     async def create_kpi(self, workspace_id: int, kpi_in: KpiCreate) -> KpiResponse:
         category_id, category_group_id, account_id = await self._resolve_filter_ids(

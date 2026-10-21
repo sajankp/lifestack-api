@@ -163,6 +163,18 @@ class FxRateResponse(BaseModel):
 
 
 class CapitalTransferCreate(BaseModel):
+    """A capital transfer between two accounts.
+
+    FX convention: ``fx_rate_used`` is the rate in **to-currency per 1
+    from-currency**, and the transfer arithmetic is
+    ``net_amount_received = gross_amount * fx_rate_used - fees``.
+
+    So a USD -> GBP transfer of 100.00 at ``fx_rate_used=1.25`` delivers
+    125.00 GBP gross (1 USD = 1.25 GBP, i.e. 1 GBP = 0.80 USD). A rate
+    quoted the other way round (0.8) would be rejected by the arithmetic
+    check, which allows a 0.01 tolerance.
+    """
+
     from_module: TransferModule = TransferModule.spending
     to_module: TransferModule = TransferModule.investing
     from_account_id: uuid.UUID

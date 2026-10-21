@@ -30,7 +30,13 @@ jobs:
       - name: "Set up Python"
         uses: actions/setup-python@v5
         with:
-          python-version-file: "pyproject.toml"
+          # Pinned explicitly rather than via `python-version-file`.
+          # `requires-python = ">=3.13"` lets setup-python pick the newest
+          # interpreter on the runner image, which drifted to 3.15 and broke
+          # the build: fastmcp 3.4.5 only declares support up to 3.13, so
+          # `from fastmcp import FastMCP` raised ImportError and pytest exited 4.
+          # The Dockerfile already pins python:3.13-slim, so CI now matches it.
+          python-version: "3.13"
 
       - name: Install dependencies
         run: uv sync --all-extras --dev

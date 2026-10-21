@@ -1,10 +1,20 @@
 # Spec-078: Wallet Ledger Reconciliation (Statement Matching)
 
 **Created:** 2026-07-12
-**Status:** Implemented (api `57051b5`, 2026-07-12) — statement import, match engine, reconciliation
-view, and the break-on-edit hook are live. The web-side "transfer detail both-legs timeline" (§Solution
-item 4) is deferred as a fast-follow; the reconciliation view itself (statement selector, matched/
-unmatched lines, one-click match/unmatch) is implemented in `lifestack-web`.
+**Status:** Partially superseded (2026-10-21) — the **statement import** (Solution item 1) and the
+break-on-edit hook remain live. The **match engine** (item 2), the **reconciliation view** (item 3),
+and their confirm/unmatch endpoints were **removed**: the feature had no reachable UI in the shipped
+app and was never used. The `account_statements` / `statement_lines` tables stay — the import writes
+them, and `StatementService.break_matches_for_*` still clears a stale match reference when the
+ledger row it points at is edited or deleted. The spec is kept for the reasoning behind the
+remaining import behaviour and the INV-1 metadata-only guarantee.
+**Removed:** 2026-10-21 — `GET /finance/accounts/{id}/statements/{sid}/reconciliation`,
+`POST .../lines/{lid}/match`, `POST .../lines/{lid}/unmatch`, the `ReconciliationView` /
+`MatchCandidate` / `UnmatchedLedgerRow` schemas, and the web's `StatementReconciliation` /
+`ReconciliationCard` components.
+**Note:** `GET /finance/accounts/{id}/reconciliation` is a *different* endpoint — the account-level
+ledger-vs-cash-snapshot discrepancy check, part of the brokerage domain, not the statement matching
+feature. It is unaffected.
 **Depends on:** spending ledger (`GET /spending/accounts/{id}/ledger`), derived wallet balance (`GET /finance/accounts/{id}/balance`), spec-074 (shared imports framework — the statement-upload vehicle), `docs/domain/cash-model-ledger-snapshots-reconciliation.md` (READ FIRST — this spec is cash-adjacent)
 **Scope:** multi-repo, user-facing — `lifestack-api` (statement import module, match model, reconciliation view) + `lifestack-web` (reconciliation UI, transfer timeline).
 
@@ -45,19 +55,25 @@ record, read-only).
    rows that don't parse under the chosen format surface as per-row validation errors in the
    preview for the user to fix. No bank-specific fixtures required for v1 — the user adapts their
    CSV, the format identifier does the rest.
-2. **Match engine (deterministic, suggest-only):** exact amount + date-window (default ±3 days)
+2. ~~**Match engine (deterministic, suggest-only):** exact amount + date-window (default ±3 days)
    proposes matches; user confirms/rejects in a review UI; confirmed matches persist as links.
    One statement line ↔ one ledger event. Transfers match on either leg by querying
    `CapitalTransfer` where `from_account_id` or `to_account_id` equals the statement's account
    (note: `CapitalTransfer` has no `trigger_ref` field — that mechanism belongs to snapshot rows,
    which wallet accounts don't have; matching here is direct against the transfer record, with
-   the leg recorded on the match link so a from-leg match is distinguishable from a to-leg match).
-3. **Reconciliation view:** per wallet account — statement closing balance vs ledger-derived
+   the leg recorded on the match link so a from-leg match is distinguishable from a to-leg match).~~
+   **REMOVED 2026-10-21** — the match engine, its confirm/unmatch endpoints, and the
+   `matched_*` write path it owned. The `matched_*` columns remain on `statement_lines` so
+   `break_matches_for_*` can still clear a reference set before the removal.
+3. ~~**Reconciliation view:** per wallet account — statement closing balance vs ledger-derived
    balance as of statement end date, unmatched statement lines (likely missing transactions),
    unmatched ledger rows in the period (possibly duplicates/errors), and a "reconciled through
-   <date>" marker set when a period fully matches.
+   <date>" marker set when a period fully matches.~~
+   **REMOVED 2026-10-21** — the reconciliation view endpoint and its schemas.
 4. **Transfer timeline UX (web):** the transfer detail view gains a both-legs timeline (created →
    from-account effect → to-account effect → matched statement lines on each side).
+   **DEFERRED** (unchanged since 2026-07-12; the matched-statement-lines column it depended on is
+   no longer populated by any user-facing flow).
 
 ## Backend / API / schema impact
 

@@ -13,7 +13,13 @@ logger = structlog.get_logger(__name__)
 # Scopes that authorize mutating operations: these must additionally satisfy
 # the workspace role policy (member or above), mirroring require_min_role
 # ("member") on REST mutation endpoints. Read scopes stay membership-gated.
-_WRITE_SCOPES = {"mcp:write"}
+#
+# `mcp:research` is included because both tools gated on it are writes:
+# `write_investment_constituent_snapshot` and
+# `delete_investment_constituent_snapshot`. The equivalent REST endpoint
+# (POST /v1/investing/instruments/{id}/constituents) requires
+# require_min_role("member"), so a viewer must not reach it via MCP either.
+_WRITE_SCOPES = {"mcp:write", "mcp:research"}
 
 
 def principal() -> tuple[int, str]:

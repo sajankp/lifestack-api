@@ -540,6 +540,11 @@ Statement matching is metadata-only — these tables never mutate `spending_tran
 `capital_transfers`, or `investing_cash_balances`. `reconciled_through` is informational,
 not a lock.
 
+**Status 2026-10-21:** the statement *import* still populates these tables. The match engine
+and the reconciliation view were removed (no reachable UI, never used) — see
+`docs/specs/spec-078-wallet-ledger-reconciliation.md`. The `matched_*` columns remain so a
+stale match reference can still be cleared when the referenced ledger row is edited or deleted.
+
 ```mermaid
 erDiagram
     ACCOUNTS {

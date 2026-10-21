@@ -409,7 +409,11 @@ class InvestingOrderService:
 
         if holding is None:
             instrument_id = next((o.instrument_id for o in orders if o.instrument_id), None)
-            holding = await self.holding_repository.create(
+            # Upsert, not check-then-insert: two concurrent order placements
+            # for the same symbol and account can both find no holding and
+            # both INSERT, which raised IntegrityError on
+            # uq_holding_workspace_symbol_account and returned 500.
+            holding = await self.holding_repository.upsert(
                 Holding(
                     workspace_id=workspace_id,
                     user_id=user_id,

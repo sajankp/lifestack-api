@@ -176,6 +176,10 @@ def _make_service(
 
     holding_repo.create = AsyncMock(side_effect=_create_holding)
     holding_repo.save = AsyncMock(side_effect=lambda h: h)
+    # The service upserts when it creates a holding: a check-then-insert
+    # races the uq_holding_workspace_symbol_account unique constraint when
+    # two orders for the same symbol/account are placed concurrently.
+    holding_repo.upsert = AsyncMock(side_effect=_create_holding)
 
     lot_next_id = [1]
 
@@ -217,7 +221,7 @@ async def test_first_buy_creates_holding_with_correct_avg_cost():
 
     await svc.place_order(WS, USER, order_in)
 
-    created_holding = svc.holding_repository.create.call_args[0][0]
+    created_holding = svc.holding_repository.upsert.call_args[0][0]
     assert created_holding.quantity == Decimal("10")
     assert created_holding.avg_cost == Decimal("150.000000")
 
@@ -346,7 +350,7 @@ async def test_buy_capitalizes_brokerage_into_avg_cost():
 
     await svc.place_order(WS, USER, order_in)
 
-    created = svc.holding_repository.create.call_args[0][0]
+    created = svc.holding_repository.upsert.call_args[0][0]
     # cost basis = (10 × 150 + 5 brokerage) / 10 = 150.50, not the raw 150.
     assert created.avg_cost == Decimal("150.500000")
     # book value the router will report = qty × avg_cost = net_amount paid.
@@ -371,7 +375,7 @@ async def test_buy_capitalizes_all_fee_types():
 
     await svc.place_order(WS, USER, order_in)
 
-    created = svc.holding_repository.create.call_args[0][0]
+    created = svc.holding_repository.upsert.call_args[0][0]
     # (150 + (1.99 + 0.50 + 0.25)/10) = 150.274
     assert created.avg_cost == Decimal("150.274000")
 
@@ -405,7 +409,7 @@ async def test_buy_preserves_sub_two_decimal_cost_precision():
 
     await svc.place_order(WS, USER, order_in)
 
-    created = svc.holding_repository.create.call_args[0][0]
+    created = svc.holding_repository.upsert.call_args[0][0]
     assert created.avg_cost == Decimal("9.075800")
     # book value tracks the precise NAV (≈80,996), not 8924.397 × 9.08 = 81,033.52.
     assert created.quantity * created.avg_cost == Decimal("80996.0422926")

@@ -4,11 +4,12 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.audit import AuditLogger
-from app.core.currency import effective_display_as_of
+from app.core.currency import build_required_pairs, conversion_rate, effective_display_as_of
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
 from app.finance.models import (
@@ -1029,7 +1030,10 @@ class CapitalTransferService:
         return self._serialize_transfer(transfer, from_account, to_account)
 
     async def _check_no_newer_snapshot(
-        self, workspace_id: int, linked: "InvestingCashBalance | None", transfer_public_id: uuid.UUID | None = None
+        self,
+        workspace_id: int,
+        linked: "InvestingCashBalance | None",
+        transfer_public_id: uuid.UUID | None = None,
     ) -> list[dict]:
         """Return newer CashBalance snapshots linked to this transfer, ordered oldest-first.
         Raise ConflictError if any exist; return [] when none block.
@@ -1041,15 +1045,16 @@ class CapitalTransferService:
         if linked is None:
             return None
         # Fetch newer CashBalance records linked to this transfer, ordered oldest-first
-        from sqlalchemy import select
-        from app.investing.models import CashBalance
-        stmt = select(CashBalance).where(
-            CashBalance.workspace_id == workspace_id,
-            CashBalance.account_id == linked.account_id,
-            CashBalance.currency == linked.currency,
-            CashBalance.created_at > linked.created_at,
-            CashBalance.trigger_ref == transfer_public_id,
-        ).order_by(CashBalance.created_at.asc()
+        stmt = (
+            select(InvestingCashBalance)
+            .where(
+                InvestingCashBalance.workspace_id == workspace_id,
+                InvestingCashBalance.account_id == linked.account_id,
+                InvestingCashBalance.currency == linked.currency,
+                InvestingCashBalance.created_at > linked.created_at,
+                InvestingCashBalance.trigger_ref == transfer_public_id,
+            )
+            .order_by(InvestingCashBalance.created_at.asc())
         )
         result = await self.cash_balance_repository.session.execute(stmt)
         newer = result.scalars().all()
@@ -1059,19 +1064,19 @@ class CapitalTransferService:
         account_name = account.name if account else str(linked.account_id)
         raise ConflictError(
             detail=(
-                f"{account_name} ({linked.currency}) has {len(newer)} ",
-                f"newer balance snapshot(s) created after this transfer. ",
-                f"Delete these in order (oldest first): ",
-                + ", ".join(
-                    [
-                        f"{s.public_id} (created: {s.created_at.strftime('%Y-%m-%d')})"
-                        + (f"via batch {s.source_import_id}" if s.source_import_id else '')
-                        for s in newer
-                    ]
-                ) ,
-                + ". then retry."
+                f"{account_name} ({linked.currency}) has {len(newer)} "
+                f"newer balance snapshot(s) created after this transfer. "
+                f"Delete those order imports first, then delete these "
+                f"(oldest first): "
+                + ", ".join([
+                    f"{s.public_id} (created: {s.created_at.strftime('%Y-%m-%d')})"
+                    + (f" via batch {s.source_import_id}" if s.source_import_id else "")
+                    for s in newer
+                ])
+                + ". Then retry."
             )
         )
+
     async def _check_no_newer_snapshot_for_account(
         self,
         workspace_id: int,
@@ -1530,17 +1535,26 @@ class NetWorthService:
         reporting_currency: str,
         fx_lookup: dict[tuple[str, str], FxRate],
     ) -> Decimal | None:
+        """Convert *amount* into *reporting_currency* using the shared resolver.
+
+        Uses ``app.core.currency.conversion_rate`` so the net-worth headline
+        resolves rates exactly the way the investing/spending summary does
+        (direct -> inverse -> cross-via-USD). The previous local two-tier
+        lookup (direct -> inverse, else None) could not reach the cross leg
+        because the FX lookup it was given only ever contained the
+        (currency, reporting) and (reporting, currency) pairs -- so a
+        balance in a currency with no direct pair to the reporting currency
+        was reported as UNCONVERTIBLE here while the investing summary
+        converted it, and the two screens disagreed.
+        """
         currency = currency.upper()
         reporting_currency = reporting_currency.upper()
         if currency == reporting_currency:
             return amount
-        direct = fx_lookup.get((currency, reporting_currency))
-        if direct is not None:
-            return amount * direct.rate
-        inverse = fx_lookup.get((reporting_currency, currency))
-        if inverse is not None and inverse.rate:
-            return amount / inverse.rate
-        return None
+        rate = conversion_rate(currency, reporting_currency, fx_lookup)
+        if rate is None:
+            return None
+        return amount * rate
 
     async def _compute_net_worth(self, workspace_id: int) -> tuple[dict, dict | None]:
         """Compute live net-worth components for a workspace.
@@ -1574,7 +1588,14 @@ class NetWorthService:
             if c.account_id in brokerage_by_id
         ]
 
-        # Build FX lookup covering both spending and investing cash currencies -> reporting
+        # Build FX lookup covering both spending and investing cash currencies
+        # -> reporting.
+        #
+        # build_required_pairs() also requests the (X, USD) / (USD, X) legs so
+        # a currency with no direct pair to the reporting currency can still
+        # be converted via USD. Requesting only the direct/inverse pairs left
+        # the cross leg unreachable, which made this path report balances as
+        # unconvertible while the investing summary converted them.
         fx_lookup = {}
         if reporting_currency:
             currencies = {b["currency_code"].upper() for b in raw_balances} | {
@@ -1582,9 +1603,7 @@ class NetWorthService:
             }
             foreign = {c for c in currencies if c != reporting_currency}
             if foreign:
-                pairs = [(c, reporting_currency) for c in foreign] + [
-                    (reporting_currency, c) for c in foreign
-                ]
+                pairs = sorted(build_required_pairs(sorted(foreign), reporting_currency))
                 fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
                     pairs, as_of=effective_display_as_of()
                 )
