@@ -56,15 +56,7 @@ from app.finance.service import (
     FxRateService,
     NetWorthService,
 )
-from app.finance.statement_schemas import (
-    AccountStatementResponse,
-    MatchCandidate,
-    MatchLineRequest,
-    ReconciliationView,
-    StatementLineResponse,
-    UnmatchedLedgerRow,
-    UnmatchedStatementLineView,
-)
+from app.finance.statement_schemas import AccountStatementResponse
 from app.finance.statement_service import StatementService
 from app.spending.service import KpiService
 
@@ -211,77 +203,6 @@ async def list_account_statements(
 ):
     statements = await statement_service.list_statements(workspace_id, account_id)
     return [_statement_response(s, account_id) for s in statements]
-
-
-@router.get(
-    "/accounts/{account_id}/statements/{statement_id}/reconciliation",
-    response_model=ReconciliationView,
-)
-async def get_statement_reconciliation(
-    account_id: uuid.UUID,
-    statement_id: uuid.UUID,
-    statement_service: Annotated[StatementService, Depends(get_finance_statement_service)],
-    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
-):
-    """Statement closing balance vs ledger-derived balance for the period,
-    unmatched statement lines (with deterministic ±3-day/exact-amount
-    suggestions), and unmatched ledger rows in the period. Suggestions are
-    computed live, never persisted until confirmed via the match endpoint."""
-    view = await statement_service.get_reconciliation_view(workspace_id, account_id, statement_id)
-    return ReconciliationView(
-        statement=_statement_response(view["statement"], account_id),
-        matched_lines=[StatementLineResponse(**line) for line in view["matched_lines"]],
-        unmatched_lines=[
-            UnmatchedStatementLineView(
-                line=StatementLineResponse.model_validate(entry["line"]),
-                candidates=[MatchCandidate(**c) for c in entry["candidates"]],
-            )
-            for entry in view["unmatched_lines"]
-        ],
-        unmatched_ledger_rows=[UnmatchedLedgerRow(**row) for row in view["unmatched_ledger_rows"]],
-    )
-
-
-@router.post(
-    "/accounts/{account_id}/statements/{statement_id}/lines/{line_id}/match",
-    response_model=StatementLineResponse,
-)
-async def confirm_statement_line_match(
-    account_id: uuid.UUID,
-    statement_id: uuid.UUID,
-    line_id: uuid.UUID,
-    match_in: MatchLineRequest,
-    statement_service: Annotated[StatementService, Depends(get_finance_statement_service)],
-    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
-):
-    line = await statement_service.confirm_match(
-        workspace_id,
-        account_id,
-        statement_id,
-        line_id,
-        transaction_id=match_in.transaction_id,
-        transfer_id=match_in.transfer_id,
-        leg=match_in.leg,
-    )
-    return StatementLineResponse(**(await statement_service.line_to_dict(line)))
-
-
-@router.post(
-    "/accounts/{account_id}/statements/{statement_id}/lines/{line_id}/unmatch",
-    response_model=StatementLineResponse,
-)
-async def unmatch_statement_line(
-    account_id: uuid.UUID,
-    statement_id: uuid.UUID,
-    line_id: uuid.UUID,
-    statement_service: Annotated[StatementService, Depends(get_finance_statement_service)],
-    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
-    _user: Annotated[dict, Depends(get_current_user)],
-):
-    line = await statement_service.unmatch_line(workspace_id, account_id, statement_id, line_id)
-    return StatementLineResponse(**(await statement_service.line_to_dict(line)))
 
 
 @router.get("/settings", response_model=WorkspaceFinanceSettingResponse)

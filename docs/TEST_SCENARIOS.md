@@ -112,7 +112,6 @@ for the exact test-level inventory.
 | `pwa-offline.spec.ts` | Manifest contract and authenticated offline banner behavior. |
 | `spending-analytics.spec.ts` | Category palette and savings-rate analytics rendering. |
 | `spending-kpis.spec.ts` | KPI create, breach, dashboard surfacing, and delete. |
-| `statement-reconciliation.spec.ts` | Statement CSV import and metadata-only matching to a transaction. |
 | `weekly-summaries.spec.ts` | Generated summary cards, stale status, and movement bounds. |
 
 ### Smoke Tier
