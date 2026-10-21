@@ -95,6 +95,16 @@ jobs:
     permissions:
       contents: read
     steps:
+      # paths-filter inspects the git history, so the repository has to be
+      # checked out in this job. On a push it diffs the event's `before` SHA
+      # against the new head, so both must be present locally -- a full
+      # fetch is used because the repo is small (~15MB) and it removes any
+      # shallow-clone ambiguity around merge commits.
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       # Only dispatch the E2E suite when this merge can actually change what
       # the suite sees. The E2E workflow checks out this repository and
       # rebuilds the api-e2e image from source, so a docs-only or
