@@ -49,11 +49,34 @@ Applying 111A/112A to foreign shares is the single most common error. It produce
 - Surcharge: 15% cap for Sec 112 LTCG; applies on total income if high enough.
 - Rebate u/s 87A: up to ₹12,000 for total income up to ₹12,00,000 (resident individual).
 
-### 1.3 The unresolved edge: IFSC / GIFT City
+### 1.3 IFSC / GIFT City — RESOLVED for the direct-US-shares route
 
-Sec 111A(1) carries a proviso that the STT requirement does not apply to a transaction on a recognised stock exchange located in an **International Financial Services Centre** where consideration is paid or payable in foreign currency. Whether an overseas-custodian account reached through GIFT City pulls foreign shares into 111A at 20% instead of slab rate is **not settled and depends on the account's structure**.
+**The GIFT City route does not give a resident individual a better capital-gains rate.** This was checked carefully because it is the single most common misconception, and because it determines the tax regime for this workspace.
 
-The product must therefore offer an explicit **explicit regime override** rather than silently picking a treatment. See §4.3.
+The statutory position:
+
+- **Sec 111A** (STCG at 20% flat) requires STT to have been paid. Its proviso removes the STT requirement only for *"a transaction undertaken on a recognised stock exchange located in any International Financial Services Centre and where the consideration for such transaction is paid or payable in foreign currency."* That is a **trade on an IFSC exchange** — i.e. the NSE-IX UDR route.
+- **Sec 112A** (LTCG at 12.5% with the ₹1.25 lakh exemption) has the same carve-out at sub-section (4) for IFSC-exchange trades settled in foreign currency.
+- **Sec 70(1)(r)** deems certain IFSC-exchange sales "not a transfer" — **but only for non-residents**. A resident individual gets no exclusion.
+
+So the test is **where the trade executes, not where the money or the custody sits**. Three distinct structures exist, and they are *not* equivalent:
+
+| Structure | Where the trade executes | Where the shares sit | Resident individual's capital-gains treatment |
+|---|---|---|---|
+| **Global Access Provider (GAP)** — Ind Money, Vested, NSE-IX GA, India INX GA | **NYSE / Nasdaq** (the order routes to the US exchange) | US custodian (DriveWealth, Alpaca, Apex) at DTCC; you are beneficial owner | **Sec 112** — 24-month threshold, LTCG 12.5% with **no** ₹1.25L exemption, STCG at **slab**. Identical to the plain foreign-share treatment. |
+| **NSE-IX UDR** | **NSE-IX (an IFSC exchange)** | IFSC demat (HDFC Bank IFSC) with Deutsche Bank as sub-custodian at DTCC | Potentially **Sec 111A/112A** (20% STCG / 12.5% LTCG with exemption) — because the trade is on an IFSC exchange in foreign currency. |
+| **Direct foreign broker** (LRS route: IBKR, Schwab) | NYSE / Nasdaq | US custodian | **Sec 112** — same as GAP. |
+
+**This workspace's holdings are the GAP structure.** The orders are recorded in USD against a Drivewealth custodian, the symbols are US-listed (AAPL, NVDA, AMD…), and the trade prices are US exchange prices. Nothing in the order data indicates NSE-IX UDRs. Ind Money obtained its IFSCA Global Access Provider licence in **August 2025**, which is consistent with the user's recollection of a recent migration.
+
+**Conclusion: the foreign regime (Sec 112) applies.** The GIFT City *wrapper* changes the remittance mechanics (no LRS TCS on the domestic transfer into GIFT City, no $250K LRS cap consumption) and the regulatory perimeter (IFSCA rather than SEC/FINRA) — **it does not change the capital-gains rate**.
+
+The product must still let the user override this, because:
+1. The UDR structure genuinely would attract 111A/112A, and a user might hold both.
+2. The Schedule FA treatment of GIFT City-routed holdings is itself not settled — no CBDT guidance specific to GAP-accessed foreign securities as of mid-2026, which is why Ind Money does not offer a Schedule FA pre-fill for them.
+3. The IFSC carve-out text says "recognised stock exchange located in any IFSC" — the interaction with a *global* IFSC route that executes offshore is not squarely addressed.
+
+So `explicit_regime` remains, and the UI must explain the distinction rather than just offer a dropdown. See §4.3.
 
 ### 1.4 What the codebase already provides (verified, not assumed)
 
@@ -293,11 +316,17 @@ FOREIGN = RegimeSpec(
 
 **Pre-23-Jul-2024 transfers** (FY 2024-25 and earlier) used 20% with indexation on Sec 112. The engine must not apply the current table to those years. Scope decision: **this spec covers the current and future FY only**. Historical years return `status: "unsupported_fy"` with an explanatory message rather than a wrong number. (A future spec may add the grandfathered regime.)
 
-### 4.3 The IFSC / GIFT City flag
+### 4.3 The IFSC / GIFT City override
 
-`profile.explicit_regime` covers this: setting it to `indian` forces 111A/112A (20% flat STCG) for the workspace, which is the treatment a GIFT City-linked foreign-custodian account may attract. The UI labels this explicitly and warns that it overrides the automatic classification.
+Per §1.3, the GIFT City *Global Access* route (which this workspace uses) does **not** change the capital-gains regime — it remains Sec 112. The NSE-IX **UDR** route does, because the trade executes on an IFSC exchange in foreign currency.
 
-A more granular per-account override is **out of scope** for this spec: the user has one foreign account, and `explicit_regime` at workspace level is sufficient. If per-account granularity is later needed, `accounts.market_scope` already provides the extension point.
+`profile.explicit_regime` therefore means: *"treat these holdings as IFSC-exchange trades."* Setting it to `indian` forces 111A/112A (20% flat STCG, 12.5% LTCG with the ₹1.25L exemption).
+
+The UI must present this with the actual reasoning, not as a bare dropdown. The `i` tooltip for the explicit-regime field must state:
+
+> GIFT City itself does not change your capital-gains rate. If your US shares are held as **NSE-IX UDRs** (traded on the IFSC exchange), the concessional 111A/112A regime may apply. If they are held as **direct US shares** through a Global Access Provider or a foreign broker, Section 112 applies — 24-month threshold, LTCG 12.5% with no ₹1.25 lakh exemption, and STCG at your slab rate. Leave this on Automatic unless your broker confirms you hold UDRs.
+
+A per-account override is **out of scope**: the workspace has one foreign account, and `accounts.market_scope` already provides the extension point if that changes.
 
 ### 4.4 FX — manual, user-supplied (Option B)
 
@@ -329,34 +358,62 @@ def derive_slab(
 ) -> SlabResolution
 ```
 
-Indian resident individual slabs (old regime) for FY 2026-27:
+**Default: the new regime (Sec 115BAC).** It has been the default since AY 2024-25 and is now the statutory default under the Income-tax Act, 2025 from FY 2026-27. The user confirmed this choice. The profile still carries `tax_regime: "new" | "old"` so an old-regime taxpayer can select it.
 
-| Income band (₹) | Rate |
-|---|---|
-| 0 – 2,50,000 | 0% |
-| 2,50,001 – 5,00,000 | 5% |
-| 5,00,001 – 10,00,000 | 20% |
-| Above 10,00,000 | 30% |
+**New regime (Sec 115BAC) — FY 2026-27, resident individual under 60:**
 
-Surcharge (on total income):
+| Income band (₹) | Rate | Cumulative tax (₹) |
+|---|---|---|
+| 0 – 4,00,000 | 0% | 0 |
+| 4,00,001 – 8,00,000 | 5% | 20,000 |
+| 8,00,001 – 12,00,000 | 10% | 60,000 |
+| 12,00,001 – 16,00,000 | 15% | 1,20,000 |
+| 16,00,001 – 20,00,000 | 20% | 2,00,000 |
+| 20,00,001 – 24,00,000 | 25% | 3,00,000 |
+| Above 24,00,000 | 30% | — |
+
+**Old regime — FY 2026-27:**
+
+| Income band (₹) | Rate | Cumulative tax (₹) |
+|---|---|---|
+| 0 – 2,50,000 | 0% | 0 |
+| 2,50,001 – 5,00,000 | 5% | 12,500 |
+| 5,00,001 – 10,00,000 | 20% | 1,12,500 |
+| Above 10,00,000 | 30% | — |
+
+**Surcharge** (on the income-tax, before cess), same thresholds under both regimes:
 
 | Total income | Surcharge |
 |---|---|
-| > 50,00,000 | 10% |
-| > 1,00,00,000 | 15% |
-| > 2,00,00,000 | 25% |
-| > 5,00,00,000 | 37% (Sec 112A capped at 15%) |
+| ≤ 50,00,000 | Nil |
+| 50,00,001 – 1,00,00,000 | 10% |
+| 1,00,00,001 – 2,00,00,000 | 15% |
+| 2,00,00,001 – 5,00,00,000 | 25% |
+| Above 5,00,00,000 | 37% |
 
-Cess: 4% on tax + surcharge. Rebate u/s 87A: up to ₹12,000 where total income ≤ ₹12,00,000.
+**The surcharge cap that matters for this feature:** the 25% and 37% rates are **not** levied on dividend income or income chargeable under Sec 111A, 112 or 112A. The maximum surcharge on capital-gains income is therefore **15%**. The engine applies the 15% cap to the capital-gains buckets and the full rate to the ordinary income.
+
+**Marginal relief** applies at every surcharge threshold: the tax-plus-surcharge must not exceed the tax on the threshold amount by more than the income exceeding that threshold. The engine must implement this, not just the flat surcharge rate — without it, a total income of ₹1,00,00,001 would produce a discontinuous tax jump.
+
+**Cess:** 4% on tax **plus** surcharge. No marginal relief on cess.
+
+**Rebate u/s 87A:**
+
+| Regime | Rebate | Condition |
+|---|---|---|
+| New | up to ₹60,000 | taxable income ≤ ₹12,00,000 |
+| Old | up to ₹12,000 | taxable income ≤ ₹12,00,000 |
+
+The rebate is capped at the tax payable, so it zeroes the liability at low incomes rather than creating a negative. Under the new regime a salaried individual effectively gets zero tax up to ₹12,75,000 (₹12,00,000 taxable after the ₹75,000 standard deduction).
+
+**Standard deduction** is not applied by the engine — it is part of the user's ordinary-income computation, which is out of scope. The `other_income` field is the user's **taxable** other income, after their own deductions. The UI must say so, or the derived slab will be wrong in a way the user cannot see.
 
 Resolution order:
 
 1. If `profile.slab_override_pct` is set → use it, `slab_source: "override"`.
 2. Else derive from `other_income + stcg_gain`, `slab_source: "derived"`.
 
-`SlabResolution` carries: `rate_pct`, `source`, `surcharge_pct`, `surcharge_source`, `cess_pct`, `rebate_amount`, `total_income_considered`, and a `caveats: list[str]` noting when the derived figure is uncertain (e.g. other income is stale, or the new regime is assumed).
-
-**New regime note:** the default regime in the income-tax portal changed from AY 2024-25. Which regime applies materially changes the slab table (the new regime's 15% band starts at ₹10 lakh rather than ₹5 lakh, and its slabs are different above that). The profile carries `tax_regime: "old" | "new"` (default `"old"`), and the slab table is selected accordingly. Surcharge/cess/rebate are computed the same way under both.
+`SlabResolution` carries: `rate_pct`, `source`, `surcharge_pct`, `surcharge_source`, `cess_pct`, `rebate_amount`, `marginal_relief_applied`, `total_income_considered`, `tax_regime`, and a `caveats: list[str]` noting when the derived figure is uncertain (e.g. `other_income` is stale, or the marginal rate was derived rather than given).
 
 **The estimate is a marginal-rate estimate.** It is the tax on the capital gain at the user's marginal rate, not a full return computation. The UI must say so. A full projection would need every income head; out of scope.
 
@@ -649,12 +706,20 @@ Phases 1–3 are a coherent PR-able unit. Phase 4 is where the feature stops bei
 - **Buy-side fees capitalise into cost; sell-side fees reduce proceeds.**
 - **Foreign regime has no ₹1.25 lakh exemption; Indian regime applies it once per year, not per holding.**
 - **Indian STCG is flat 20% regardless of slab; foreign STCG uses the slab.**
-- **Slab derivation:** boundary incomes (₹2,50,000 / ₹2,50,001 / ₹5,00,000 / ₹5,00,001 / ₹10,00,000 / ₹10,00,001); surcharge thresholds; 87A rebate at exactly ₹12,00,000; override beats derivation.
+- **Slab derivation — new regime (default):** boundary incomes (₹4,00,000 / ₹4,00,001 / ₹8,00,000 / ₹8,00,001 / ₹12,00,000 / ₹12,00,001 / ₹16,00,000 / ₹16,00,001 / ₹20,00,000 / ₹20,00,001 / ₹24,00,000 / ₹24,00,001).
+- **Slab derivation — old regime:** boundary incomes (₹2,50,000 / ₹2,50,001 / ₹5,00,000 / ₹5,00,001 / ₹10,00,000 / ₹10,00,001).
+- **87A rebate:** new regime caps at ₹60,000 and applies at exactly ₹12,00,000 taxable; old regime caps at ₹12,000. The rebate is capped at the tax payable — it never produces a negative liability.
+- **Surcharge:** thresholds at ₹50,00,000 / ₹1,00,00,000 / ₹2,00,00,000 / ₹5,00,00,000.
+- **Surcharge cap on capital-gains income:** the 25% and 37% surcharge rates are not levied on Sec 111A/112/112A income — the maximum applied to the capital-gains buckets is 15%. A test asserts a capital-gains-only taxpayer at ₹3Cr total income gets 15% surcharge on the gains, not 25%.
+- **Marginal relief:** a total income of ₹1,00,00,001 must not produce a discontinuous tax jump; the tax-plus-surcharge must not exceed the tax on ₹1,00,00,000 by more than ₹1.
+- **Cess:** 4% applied on tax **plus** surcharge, not on tax alone.
+- **Override beats derivation** in both regimes.
 - **Reconciliation failure returns no number** — a deliberately corrupted `realized_gain_loss` produces `status: "reconciliation_failed"`, not a tax figure.
 - **FX fallback:** a month with no manual override returns `fx_source: "app_rate_estimate"` and `is_estimated: true`.
 - **Regime precedence:** explicit override beats holding-level override beats security-master country beats account scope beats currency fallback, and `classified_by` reports the rule that fired.
 - **Security-master classification:** a ticker present in `reference_securities` with `country_code="IN"` classifies as Indian; `"US"` as foreign; a ticker absent from the master falls through to the account scope; a ticker present on multiple exchanges is treated as ambiguous and falls through rather than guessed.
 - **Exchange-name map:** every entry in §4.1c maps to the right MIC and country; an unrecognised name yields country `None` and never a guessed default.
+- **The explicit-regime override is reported, not silent:** a response computed under `explicit_regime` must carry an assumption line naming the IFSC/UDR rationale, so a user who overrode it sees why the number differs from the automatic classification.
 
 ### 7.2 API tests (Phase 3)
 
@@ -702,12 +767,23 @@ Explicitly out of scope, so they are not smuggled in later:
 - **TCS / LRS reporting** on remittances into India.
 - **Automatic SBITTBR ingestion** (Phase 5).
 - **Indexation** for grandfathered LTCG.
+- **UDR-specific treatment.** The engine can be *told* to apply the IFSC/112A treatment via `explicit_regime`, but it does not detect NSE-IX UDR holdings from the order data — the symbols look identical to the underlying US shares.
+- **Schedule FA.** The foreign-asset disclosure obligation (including the unsettled GIFT City question) is a separate return form. The Tax tab carries a note pointing at it; the engine does not generate it.
 
 ---
 
-## 9. Open Questions for the User
+## 9. Decisions Taken
 
-1. **Is the Drivewealth account a GIFT City / IFSC-linked route?** This decides whether STCG is 20% flat (111A) or slab (112). The `explicit_regime` flag exists either way, but the default matters.
-2. **Old regime or new regime?** The slab table differs. Default is old regime.
-3. **Should the Tax tab show Indian holdings too?** The engine can classify them via `exchange_country`, but the user's immediate need is the US portfolio. Recommendation: yes, but label the two regimes distinctly so the difference is visible.
-4. **Which FYs should be selectable?** Only FYs with recorded sells, or a free-form FY picker?
+| # | Question | Decision |
+|---|---|---|
+| 1 | Is the Drivewealth account a GIFT City / IFSC-linked route? | **Yes — but it does not change the regime.** The user confirmed a recent migration; Ind Money's IFSCA Global Access Provider licence dates from August 2025. The GAP route executes on NYSE/Nasdaq with US custody at Drivewealth, so **Sec 112 applies**. Only the NSE-IX **UDR** structure (the trade itself on the IFSC exchange) attracts 111A/112A. Resolved in §1.3. `explicit_regime` remains available for the UDR case. |
+| 2 | Old or new tax regime? | **New** (Sec 115BAC) — the default since AY 2024-25 and the statutory default under the Income-tax Act, 2025 from FY 2026-27. The profile can still be switched to old. |
+| 3 | Should the Tax tab show Indian holdings too? | **Yes — all holdings.** Every brokerage account, every instrument type, each classified into its own regime and labelled distinctly. A user opening a Tax tab should not have to know that Lifestack holds more than one market in the same portfolio. |
+| 4 | Which FYs should be selectable? | **Free picker.** Any FY can be entered; an FY with no sells returns an explanatory empty state rather than a disabled control. |
+
+### Still worth confirming with the user's CA
+
+1. **Schedule FA treatment of the GIFT City-routed holdings.** No CBDT guidance specific to GAP-accessed foreign securities exists as of mid-2026; the disclosure obligation is unsettled. Ind Money itself does not pre-fill Schedule FA for these holdings for this reason. Out of engine scope, but the Tax tab should carry a note pointing at it.
+2. **Whether any holding is an NSE-IX UDR.** If so, `explicit_regime` should be set. The engine cannot detect this from the order data — the symbols are identical to the underlying US shares.
+3. **`other_income` as *taxable* income.** The engine derives the slab from it, so it must be after the user's own deductions and standard deduction. The UI must label the field accordingly.
+4. **Prior-year losses.** FY 2025-26 shows a net **gain** of ₹1,12,504 in Lifestack, so nothing carries forward from it; earlier years have losses that are not yet in the carry-forward table (Phase 4). The current-year figure is therefore an upper bound until Phase 4 lands.
