@@ -75,6 +75,7 @@ async def test_holding_upsert_survives_concurrent_first_write(
         )
 
     try:
+
         async def _upsert(quantity: str, avg_cost: str) -> None:
             async with AsyncSession(test_database_engine, expire_on_commit=False) as session:
                 await HoldingRepository(session).upsert(_holding(quantity, avg_cost))
