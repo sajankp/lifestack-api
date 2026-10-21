@@ -95,7 +95,39 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Only dispatch the E2E suite when this merge can actually change what
+      # the suite sees. The E2E workflow checks out this repository and
+      # rebuilds the api-e2e image from source, so a docs-only or
+      # test-only change cannot affect the result -- and a full E2E run takes
+      # ~1h when it is failing. dorny/paths-filter is used rather than the
+      # `on.push.paths` trigger because that filter would also skip this
+      # repo's own CI, which must still run on every push.
+      - name: Detect runtime changes
+        id: changes
+        uses: dorny/paths-filter@v4
+        with:
+          list-files: shell
+          # 'some-with-excludes' is required: with the default 'some'
+          # quantifier a negated pattern matches everything, which would
+          # invert this filter.
+          predicate-quantifier: some-with-excludes
+          # Runtime inputs of the api-e2e image: the app package, the Alembic
+          # migrations, and the files that decide how the image is built.
+          filters: |
+            runtime:
+              - 'app/**'
+              - 'alembic/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'Dockerfile'
+              - 'docker-entrypoint.sh'
+              # Test files are excluded: they run in this repo's own CI and do
+              # not change the behaviour of the built image.
+              - '!app/tests/**'
+              - '!app/**/tests/**'
+
       - name: Trigger E2E pipeline
+        if: steps.changes.outputs.runtime == 'true'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.E2E_DISPATCH_TOKEN }}
