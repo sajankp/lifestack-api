@@ -17,7 +17,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.investing.tax.engine import compute_tax_estimate, specified_fx_date
+from app.investing.tax.engine import compute_tax_estimate, resolve_fx_rate, specified_fx_date
 from app.investing.tax.fy import add_months, fy_bounds, fy_label_for_date, parse_fy_label
 from app.investing.tax.gains import (
     OrderView,
@@ -805,3 +805,59 @@ class TestComputeTaxEstimate:
         assert estimate.disclaimers
         assert any("foreign" in a for a in estimate.assumptions)
         assert any("FX rate" in a for a in estimate.assumptions)
+
+
+def test_daily_currency_fx_override_is_used_for_rule_115_date():
+    orders = [
+        order(
+            public_id="buy-1",
+            order_type="buy",
+            occurred_at="2025-01-15T00:00:00+00:00",
+        ),
+        order(
+            public_id="sell-1",
+            order_type="sell",
+            price="200",
+            occurred_at="2026-10-16T00:00:00+00:00",
+            realized_gain_loss="1000.00",
+            avg_cost_at_sale="100.000000",
+        ),
+    ]
+    estimate = compute_tax_estimate(
+        orders=orders,
+        fy_label="2026-27",
+        profile=TaxProfile(fx_overrides={"2026-09-30:USD": Decimal("95.42")}),
+        regime_resolver=foreign_resolver(),
+    )
+    assert estimate.status == "success"
+    assert estimate.fx_rates[0].rate == Decimal("95.42")
+    assert estimate.total_gain_inr == Decimal("95420.00")
+
+
+def test_resolve_fx_rate_uses_nearest_same_currency_daily_override():
+    rate, source, estimated = resolve_fx_rate(
+        specified_date=datetime.fromisoformat("2026-09-30").date(),
+        sale_month="2026-10",
+        currency="USD",
+        fx_overrides={
+            "2026-09-28:USD": Decimal("95.10"),
+            "2026-09-29:GBP": Decimal("120.00"),
+        },
+        app_fx_rates={},
+    )
+    assert (rate, source, estimated) == (
+        Decimal("95.10"),
+        "manual_nearest:2026-09-28",
+        False,
+    )
+
+
+def test_resolve_fx_rate_keeps_legacy_month_override_compatible():
+    rate, source, estimated = resolve_fx_rate(
+        specified_date=datetime.fromisoformat("2026-09-30").date(),
+        sale_month="2026-10",
+        currency="USD",
+        fx_overrides={"2026-10": Decimal("94.50")},
+        app_fx_rates={},
+    )
+    assert (rate, source, estimated) == (Decimal("94.50"), "manual", False)

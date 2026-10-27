@@ -115,6 +115,61 @@ def sale_month_key(sale_date: date) -> str:
     return f"{sale_date.year:04d}-{sale_date.month:02d}"
 
 
+def _parse_override_key(key: str) -> tuple[date | None, str | None]:
+    """Return (date, currency) for daily override keys; legacy month keys return (None, None)."""
+    date_part, separator, currency = key.partition(":")
+    try:
+        parsed = date.fromisoformat(date_part)
+    except ValueError:
+        return None, None
+    if separator:
+        if len(currency) != 3 or not currency.isalpha():
+            return None, None
+        return parsed, currency.upper()
+    return parsed, None
+
+
+def resolve_fx_rate(
+    *,
+    specified_date: date,
+    sale_month: str,
+    currency: str,
+    fx_overrides: dict[str, Decimal],
+    app_fx_rates: dict[tuple[str, str], Decimal],
+) -> tuple[Decimal | None, str, bool]:
+    """Resolve manual daily/legacy FX overrides before app estimates.
+
+    Exact date+currency wins, then date-only, then nearest same-currency
+    daily rate within 35 days, legacy sale-month override, and app estimate.
+    """
+    currency = currency.upper()
+    exact_key = f"{specified_date.isoformat()}:{currency}"
+    if exact_key in fx_overrides:
+        return fx_overrides[exact_key], "manual", False
+    date_key = specified_date.isoformat()
+    if date_key in fx_overrides:
+        return fx_overrides[date_key], "manual", False
+
+    candidates: list[tuple[int, str, Decimal]] = []
+    for key, rate in fx_overrides.items():
+        override_date, override_currency = _parse_override_key(key)
+        if override_date is None or override_currency != currency:
+            continue
+        distance = abs((override_date - specified_date).days)
+        if distance <= 35:
+            candidates.append((distance, override_date.isoformat(), rate))
+    if candidates:
+        _distance, matched_date, rate = min(candidates)
+        return rate, f"manual_nearest:{matched_date}", False
+
+    if sale_month in fx_overrides:
+        return fx_overrides[sale_month], "manual", False
+    app_rate = app_fx_rates.get((sale_month, currency))
+    if app_rate is not None:
+        return app_rate, "app_rate_estimate", True
+    return None, "missing", False
+
+
 def compute_tax_estimate(
     *,
     orders: list[OrderView],
@@ -198,31 +253,23 @@ def compute_tax_estimate(
                 is_estimated=False,
             )
             continue
-        override = profile.fx_overrides.get(month)
-        if override is not None:
-            fx_by_month[key] = FxRate(
-                month=month,
-                specified_date=specified.isoformat(),
-                currency=currency,
-                rate=override,
-                source="manual",
-                is_estimated=False,
-            )
-            continue
-        app_rate = app_fx_rates.get(key)
-        if app_rate is None:
-            # No rate for this month/currency. The lot cannot be converted,
-            # so it must not be silently dropped from the total — record it
-            # and let the caller decide what to show.
+        rate, source, is_estimated = resolve_fx_rate(
+            specified_date=specified,
+            sale_month=month,
+            currency=currency,
+            fx_overrides=profile.fx_overrides,
+            app_fx_rates=app_fx_rates,
+        )
+        if rate is None:
             missing.add((month, currency))
             continue
         fx_by_month[key] = FxRate(
             month=month,
             specified_date=specified.isoformat(),
             currency=currency,
-            rate=app_rate,
-            source="app_rate_estimate",
-            is_estimated=True,
+            rate=rate,
+            source=source,
+            is_estimated=is_estimated,
         )
     estimate.fx_rates = sorted(fx_by_month.values(), key=lambda f: (f.month, f.currency))
     estimate.missing_fx_rates = [
@@ -397,12 +444,26 @@ def _build_assumptions(
             f"under the {slab.tax_regime} tax regime."
         )
         lines.extend(slab.caveats)
-    manual = [f for f in fx_by_month.values() if not f.is_estimated]
+    manual = [
+        f
+        for f in fx_by_month.values()
+        if not f.is_estimated and not f.source.startswith("manual_nearest:")
+    ]
+    nearest = [f for f in fx_by_month.values() if f.source.startswith("manual_nearest:")]
     estimated = [f for f in fx_by_month.values() if f.is_estimated]
     if manual:
         lines.append(
             "Rule 115 FX rate supplied manually for "
             + ", ".join(f"{f.month} (₹{f.rate} on {f.specified_date})" for f in manual)
+            + "."
+        )
+    if nearest:
+        lines.append(
+            "Rule 115 FX rate resolved from the nearest entered date for "
+            + ", ".join(
+                f"{f.month} (₹{f.rate} from {f.source.split(':', 1)[1]}, specified {f.specified_date})"
+                for f in nearest
+            )
             + "."
         )
     if estimated:
