@@ -1934,8 +1934,12 @@ def create_mcp_server() -> FastMCP:
             "resident_status": profile.resident_status,
             "tax_regime": profile.tax_regime,
             "other_income": str(profile.other_income),
-            "slab_override_pct": str(profile.slab_override_pct) if profile.slab_override_pct is not None else None,
-            "surcharge_override_pct": str(profile.surcharge_override_pct) if profile.surcharge_override_pct is not None else None,
+            "slab_override_pct": str(profile.slab_override_pct)
+            if profile.slab_override_pct is not None
+            else None,
+            "surcharge_override_pct": str(profile.surcharge_override_pct)
+            if profile.surcharge_override_pct is not None
+            else None,
             "cess_pct": str(profile.cess_pct),
             "explicit_regime": profile.explicit_regime,
             "apply_carry_forward": bool(profile.apply_carry_forward),
@@ -2005,8 +2009,12 @@ def create_mcp_server() -> FastMCP:
             "resident_status": profile.resident_status,
             "tax_regime": profile.tax_regime,
             "other_income": str(profile.other_income),
-            "slab_override_pct": str(profile.slab_override_pct) if profile.slab_override_pct is not None else None,
-            "surcharge_override_pct": str(profile.surcharge_override_pct) if profile.surcharge_override_pct is not None else None,
+            "slab_override_pct": str(profile.slab_override_pct)
+            if profile.slab_override_pct is not None
+            else None,
+            "surcharge_override_pct": str(profile.surcharge_override_pct)
+            if profile.surcharge_override_pct is not None
+            else None,
             "cess_pct": str(profile.cess_pct),
             "explicit_regime": profile.explicit_regime,
             "apply_carry_forward": bool(profile.apply_carry_forward),
@@ -2017,14 +2025,14 @@ def create_mcp_server() -> FastMCP:
     @mcp.tool
     async def set_fx_rate(
         workspace_id: int,
-        date: str,
+        date_str: str,
         currency: str,
         rate: str,
         confirmed: bool = False,
     ) -> dict[str, Any]:
         """Set a daily Rule 115 FX rate for a specific date and currency.
 
-        `date`: "YYYY-MM-DD" — the Rule 115 specified date (last day of month before sale month).
+        `date_str`: "YYYY-MM-DD" — the Rule 115 specified date (last day of month before sale month).
         `currency`: e.g., "USD", "GBP".
         `rate`: SBI TT buying rate ₹ per 1 unit (decimal string).
         The key is stored as "YYYY-MM-DD:CURRENCY" for multi-currency workspaces.
@@ -2033,17 +2041,15 @@ def create_mcp_server() -> FastMCP:
             return {
                 "status": "needs_confirmation",
                 "needs_confirmation": True,
-                "message": f"Set FX rate for {date} ({currency.upper()}) to {rate}? Confirm to continue.",
+                "message": f"Set FX rate for {date_str} ({currency.upper()}) to {rate}? Confirm to continue.",
             }
 
         # Validate that the date is a real calendar date, not only the right shape.
-        from datetime import date as date_type
-
         try:
-            parsed_date = date_type.fromisoformat(date)
+            parsed_date = date.fromisoformat(date_str)
         except ValueError:
             return {"status": "error", "message": "date must be a valid YYYY-MM-DD date."}
-        if parsed_date.isoformat() != date:
+        if parsed_date.isoformat() != date_str:
             return {"status": "error", "message": "date must be YYYY-MM-DD format."}
 
         currency = currency.upper()
@@ -2057,7 +2063,7 @@ def create_mcp_server() -> FastMCP:
         if not rate_value.is_finite() or rate_value <= 0 or rate_value > Decimal("1000"):
             return {"status": "error", "message": "rate must be finite and between 0 and 1000."}
 
-        composite_key = f"{date}:{currency}"
+        composite_key = f"{date_str}:{currency}"
 
         async with postgres.async_session_maker() as session:
             await authorize_workspace(
@@ -2066,7 +2072,9 @@ def create_mcp_server() -> FastMCP:
             profile = await _tax_service(session).get_profile(workspace_id)
             fx_overrides = dict(profile.fx_overrides or {})
             fx_overrides[composite_key] = rate
-            profile = await _tax_service(session).update_profile(workspace_id, {"fx_overrides": fx_overrides})
+            profile = await _tax_service(session).update_profile(
+                workspace_id, {"fx_overrides": fx_overrides}
+            )
 
         return {
             "status": "success",

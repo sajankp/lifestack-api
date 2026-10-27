@@ -17,7 +17,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.investing.tax.engine import compute_tax_estimate, specified_fx_date
+from app.investing.tax.engine import compute_tax_estimate, resolve_fx_rate, specified_fx_date
 from app.investing.tax.fy import add_months, fy_bounds, fy_label_for_date, parse_fy_label
 from app.investing.tax.gains import (
     OrderView,
@@ -835,8 +835,6 @@ def test_daily_currency_fx_override_is_used_for_rule_115_date():
 
 
 def test_resolve_fx_rate_uses_nearest_same_currency_daily_override():
-    from app.investing.tax.engine import resolve_fx_rate
-
     rate, source, estimated = resolve_fx_rate(
         specified_date=datetime.fromisoformat("2026-09-30").date(),
         sale_month="2026-10",
@@ -855,8 +853,6 @@ def test_resolve_fx_rate_uses_nearest_same_currency_daily_override():
 
 
 def test_resolve_fx_rate_keeps_legacy_month_override_compatible():
-    from app.investing.tax.engine import resolve_fx_rate
-
     rate, source, estimated = resolve_fx_rate(
         specified_date=datetime.fromisoformat("2026-09-30").date(),
         sale_month="2026-10",
