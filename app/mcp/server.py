@@ -1,9 +1,10 @@
 """Authenticated MCP tools and resources for Lifestack."""
 
 import json
+import re
 import uuid
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlparse
 
@@ -1918,6 +1919,161 @@ def create_mcp_server() -> FastMCP:
             ],
             "assumptions": estimate.assumptions,
             "disclaimers": estimate.disclaimers,
+        }
+
+    @mcp.tool
+    async def get_tax_profile(workspace_id: int) -> dict[str, Any]:
+        """Get the workspace's capital gains tax configuration."""
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_tax_profile"
+            )
+            profile = await _tax_service(session).get_profile(workspace_id)
+        return {
+            "public_id": str(profile.public_id),
+            "resident_status": profile.resident_status,
+            "tax_regime": profile.tax_regime,
+            "other_income": str(profile.other_income),
+            "slab_override_pct": str(profile.slab_override_pct) if profile.slab_override_pct is not None else None,
+            "surcharge_override_pct": str(profile.surcharge_override_pct) if profile.surcharge_override_pct is not None else None,
+            "cess_pct": str(profile.cess_pct),
+            "explicit_regime": profile.explicit_regime,
+            "apply_carry_forward": bool(profile.apply_carry_forward),
+            "fx_overrides": dict(profile.fx_overrides or {}),
+            "notes": profile.notes,
+        }
+
+    @mcp.tool
+    async def update_tax_profile(
+        workspace_id: int,
+        resident_status: str | None = None,
+        tax_regime: str | None = None,
+        other_income: str | None = None,
+        slab_override_pct: str | None = None,
+        surcharge_override_pct: str | None = None,
+        cess_pct: str | None = None,
+        explicit_regime: str | None = None,
+        apply_carry_forward: bool | None = None,
+        fx_overrides: dict[str, str] | None = None,
+        notes: str | None = None,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Update the workspace's capital gains tax configuration.
+
+        All fields are optional — only provided fields are updated.
+        `fx_overrides` accepts keys in "YYYY-MM" (legacy monthly) or "YYYY-MM-DD:CURRENCY" (daily) format.
+        """
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": "Update tax profile? Confirm to continue.",
+            }
+
+        changes: dict[str, Any] = {}
+        if resident_status is not None:
+            changes["resident_status"] = resident_status
+        if tax_regime is not None:
+            changes["tax_regime"] = tax_regime
+        if other_income is not None:
+            changes["other_income"] = other_income
+        if slab_override_pct is not None:
+            changes["slab_override_pct"] = slab_override_pct
+        if surcharge_override_pct is not None:
+            changes["surcharge_override_pct"] = surcharge_override_pct
+        if cess_pct is not None:
+            changes["cess_pct"] = cess_pct
+        if explicit_regime is not None:
+            changes["explicit_regime"] = explicit_regime
+        if apply_carry_forward is not None:
+            changes["apply_carry_forward"] = apply_carry_forward
+        if fx_overrides is not None:
+            changes["fx_overrides"] = fx_overrides
+        if notes is not None:
+            changes["notes"] = notes
+
+        if not changes:
+            return {"status": "error", "message": "No fields to update."}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:write", tool="update_tax_profile"
+            )
+            profile = await _tax_service(session).update_profile(workspace_id, changes)
+        return {
+            "public_id": str(profile.public_id),
+            "resident_status": profile.resident_status,
+            "tax_regime": profile.tax_regime,
+            "other_income": str(profile.other_income),
+            "slab_override_pct": str(profile.slab_override_pct) if profile.slab_override_pct is not None else None,
+            "surcharge_override_pct": str(profile.surcharge_override_pct) if profile.surcharge_override_pct is not None else None,
+            "cess_pct": str(profile.cess_pct),
+            "explicit_regime": profile.explicit_regime,
+            "apply_carry_forward": bool(profile.apply_carry_forward),
+            "fx_overrides": dict(profile.fx_overrides or {}),
+            "notes": profile.notes,
+        }
+
+    @mcp.tool
+    async def set_fx_rate(
+        workspace_id: int,
+        date: str,
+        currency: str,
+        rate: str,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Set a daily Rule 115 FX rate for a specific date and currency.
+
+        `date`: "YYYY-MM-DD" — the Rule 115 specified date (last day of month before sale month).
+        `currency`: e.g., "USD", "GBP".
+        `rate`: SBI TT buying rate ₹ per 1 unit (decimal string).
+        The key is stored as "YYYY-MM-DD:CURRENCY" for multi-currency workspaces.
+        """
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": f"Set FX rate for {date} ({currency.upper()}) to {rate}? Confirm to continue.",
+            }
+
+        # Validate that the date is a real calendar date, not only the right shape.
+        from datetime import date as date_type
+
+        try:
+            parsed_date = date_type.fromisoformat(date)
+        except ValueError:
+            return {"status": "error", "message": "date must be a valid YYYY-MM-DD date."}
+        if parsed_date.isoformat() != date:
+            return {"status": "error", "message": "date must be YYYY-MM-DD format."}
+
+        currency = currency.upper()
+        if not re.fullmatch(r"[A-Z]{3}", currency):
+            return {"status": "error", "message": "currency must be a 3-letter code (e.g., USD)."}
+
+        try:
+            rate_value = Decimal(rate)
+        except (InvalidOperation, ValueError):
+            return {"status": "error", "message": "rate must be a decimal string."}
+        if not rate_value.is_finite() or rate_value <= 0 or rate_value > Decimal("1000"):
+            return {"status": "error", "message": "rate must be finite and between 0 and 1000."}
+
+        composite_key = f"{date}:{currency}"
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:write", tool="set_fx_rate"
+            )
+            profile = await _tax_service(session).get_profile(workspace_id)
+            fx_overrides = dict(profile.fx_overrides or {})
+            fx_overrides[composite_key] = rate
+            profile = await _tax_service(session).update_profile(workspace_id, {"fx_overrides": fx_overrides})
+
+        return {
+            "status": "success",
+            "message": f"FX rate set for {date} ({currency}): {rate}",
+            "key": composite_key,
+            "rate": rate,
+            "fx_overrides": dict(profile.fx_overrides or {}),
         }
 
     @mcp.tool
