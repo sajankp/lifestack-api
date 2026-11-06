@@ -11,6 +11,7 @@ from app.auth.models import User
 from app.config import settings
 from app.core.database import postgres
 from app.finance.models import Account, CapitalTransfer, FxRate, TransferModule
+from app.mcp.server import _load_workspace_reference_data
 from app.platform.models import WorkspaceMembership
 from app.spending.models import SpendingCategory, SpendingTransaction, TransactionType
 
@@ -1381,3 +1382,149 @@ async def _workspace_id_for_username(username: str) -> int:
             .first()
         )
         return membership.workspace_id
+
+
+# --- Stale-snapshot guard: order/dividend snapshots must block transfer edits ---
+# Cash snapshots are an append-only chain of absolute balances (each = prev + delta).
+# Deleting or editing a mid-chain transfer snapshot leaves every later snapshot --
+# and therefore the displayed brokerage cash -- unchanged. The guard must treat a
+# later *order* snapshot (trigger_ref = order id) as blocking, not only manual ones.
+
+
+async def _place_buy(client: AsyncClient, *, broker_id: str, qty: str = "1") -> None:
+    res = await client.post(
+        "/v1/investing/orders",
+        json={
+            "account_id": broker_id,
+            "order_type": "buy",
+            "symbol": "AAPL",
+            "quantity": qty,
+            "price_per_unit": "100.00",
+            "currency": "USD",
+            "occurred_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert res.status_code == 201, res.text
+
+
+async def _broker_cash(client: AsyncClient, broker_id: str) -> str:
+    res = await client.get("/v1/investing/cash-balances", params={"account_id": broker_id})
+    assert res.status_code == 200
+    items = sorted(res.json()["items"], key=lambda i: i["created_at"])
+    return items[-1]["balance"]
+
+
+@pytest.mark.asyncio
+async def test_delete_inflow_transfer_blocked_by_later_order_snapshot(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="del-in-order-blk@example.com",
+        username="del-in-order-blk",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-dio")
+    transfer = await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id)
+    await _place_buy(client, broker_id=broker_id)  # 1000 -> 900
+    assert await _broker_cash(client, broker_id) == "900.00"
+
+    res = await client.delete(f"/v1/finance/transfers/{transfer['public_id']}")
+
+    assert res.status_code == 409, res.text
+    assert "newer balance snapshot" in res.json()["detail"]
+    # Nothing was deleted: the transfer and displayed cash are untouched.
+    assert (await client.get(f"/v1/finance/transfers/{transfer['public_id']}")).status_code == 200
+    assert await _broker_cash(client, broker_id) == "900.00"
+
+
+@pytest.mark.asyncio
+async def test_patch_inflow_transfer_blocked_by_later_order_snapshot(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="patch-in-order-blk@example.com",
+        username="patch-in-order-blk",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-pio")
+    transfer = await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id)
+    await _place_buy(client, broker_id=broker_id)
+
+    res = await client.patch(
+        f"/v1/finance/transfers/{transfer['public_id']}",
+        json={"net_amount_received": "1200.00", "gross_amount": "1200.00"},
+    )
+
+    assert res.status_code == 409, res.text
+    assert "newer balance snapshot" in res.json()["detail"]
+    assert await _broker_cash(client, broker_id) == "900.00"
+
+
+@pytest.mark.asyncio
+async def test_delete_outflow_transfer_blocked_by_later_order_snapshot(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="del-out-order-blk@example.com",
+        username="del-out-order-blk",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-doo")
+    await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id, amount="1000.00")
+    outflow = await _create_outflow_transfer(
+        client, from_id=broker_id, to_id=bank_id, amount="100.00"
+    )
+    await _place_buy(client, broker_id=broker_id)  # 900 -> 800
+    assert await _broker_cash(client, broker_id) == "800.00"
+
+    res = await client.delete(f"/v1/finance/transfers/{outflow['public_id']}")
+
+    assert res.status_code == 409, res.text
+    assert await _broker_cash(client, broker_id) == "800.00"
+
+
+@pytest.mark.asyncio
+async def test_patch_transfer_notes_only_allowed_after_later_order_snapshot(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="notes-order@example.com",
+        username="notes-order",
+        password="TestPass123!",
+    )
+    bank_id, broker_id = await _create_bank_and_brokerage(client, suffix="-nto")
+    transfer = await _create_investing_transfer(client, from_id=bank_id, to_id=broker_id)
+    await _place_buy(client, broker_id=broker_id)
+
+    res = await client.patch(
+        f"/v1/finance/transfers/{transfer['public_id']}", json={"notes": "edited"}
+    )
+
+    assert res.status_code == 200, res.text
+    assert await _broker_cash(client, broker_id) == "900.00"
+
+
+@pytest.mark.asyncio
+async def test_workspace_reference_data_loads_real_accounts(client: AsyncClient):
+    """account_type is stored as a plain string column; the loader must not
+    assume an Enum instance (regression: 'str' object has no attribute 'value')."""
+    await _register_and_login(
+        client,
+        email="refdata@example.com",
+        username="refdata",
+        password="TestPass123!",
+    )
+    await _create_bank_and_brokerage(client, suffix="-ref")
+    async with postgres.async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.email == "refdata@example.com"))
+        ).scalar_one()
+        membership = (
+            (
+                await session.execute(
+                    select(WorkspaceMembership).where(WorkspaceMembership.user_id == user.id)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        data = await _load_workspace_reference_data(session, membership.workspace_id, user.id)
+
+    names = {a["name"]: a["account_type"] for a in data["accounts"]}
+    assert names.get("Bank-ref") == "bank", names

@@ -1047,18 +1047,24 @@ class CapitalTransferService:
         self,
         workspace_id: int,
         linked: "InvestingCashBalance | None",
-        transfer_public_id: uuid.UUID | None = None,
-    ) -> list[dict]:
-        """Return newer CashBalance snapshots linked to this transfer, ordered oldest-first.
-        Raise ConflictError if any exist; return [] when none block.
-        Each dict: {public_id, created_at, source_ref, source_import_id}.
+    ) -> None:
+        """Raise ConflictError if any snapshot on the same (account, currency)
+        was created after the transfer's own snapshot, whatever its trigger
+        (order, dividend, another transfer, manual).
+
+        Snapshots are an append-only chain of absolute balances (each = previous
+        + delta), so deleting or editing a mid-chain row leaves every later row
+        -- and the displayed brokerage cash -- unchanged. The transfer would
+        change while the cash silently did not.
         No-op when linked is None (that side of the transfer isn't
         snapshot-managed -- its module wasn't "investing" at creation time, or
         the transfer predates this snapshot behavior).
         """
         if linked is None:
-            return None
-        # Fetch newer CashBalance records linked to this transfer, ordered oldest-first
+            return
+        # Newer snapshots on this account/currency, oldest-first. Deliberately
+        # not filtered by trigger_ref: order/dividend snapshots carry their own
+        # ids there, and filtering on the transfer's id matches nothing.
         stmt = (
             select(InvestingCashBalance)
             .where(
@@ -1066,14 +1072,13 @@ class CapitalTransferService:
                 InvestingCashBalance.account_id == linked.account_id,
                 InvestingCashBalance.currency == linked.currency,
                 InvestingCashBalance.created_at > linked.created_at,
-                InvestingCashBalance.trigger_ref == transfer_public_id,
             )
             .order_by(InvestingCashBalance.created_at.asc())
         )
         result = await self.cash_balance_repository.session.execute(stmt)
         newer = result.scalars().all()
         if not newer:
-            return []
+            return
         account = await self.account_repository.get_by_id(workspace_id, linked.account_id)
         account_name = account.name if account else str(linked.account_id)
         raise ConflictError(

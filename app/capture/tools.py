@@ -1,6 +1,6 @@
 import uuid
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -99,6 +99,11 @@ def _parse_occurred_at(value: str, user_timezone: str) -> datetime:
 # Voice spending targets: every account type except brokerage (spec-059) —
 # investing is read-only on the voice surface.
 _SPENDING_ACCOUNT_TYPES = frozenset(t for t in AccountType if t is not AccountType.brokerage)
+
+
+def _round_money(value: Decimal) -> Decimal:
+    """Round a derived money amount to the 2 dp the transfer schema accepts."""
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def _normalize_name(value: str) -> str:
@@ -1797,7 +1802,7 @@ class AgentTools:
                 except (InvalidOperation, TypeError, ValueError):
                     return {"status": "error", "message": "net_amount must be numeric."}
             else:
-                net_received = (gross_amount * fx_rate_used) - total_fees_amount
+                net_received = _round_money((gross_amount * fx_rate_used) - total_fees_amount)
 
         if net_received <= Decimal("0"):
             return {"status": "error", "message": "net_amount must be greater than zero."}
@@ -2047,7 +2052,11 @@ class AgentTools:
                     "message": f"FX rate is required for cross-currency transfer from {from_curr} to {to_curr}.",
                 }
 
-        net_val = (gross_val * rate_val) - total_fees_val if parsed_net is None else parsed_net
+        net_val = (
+            _round_money((gross_val * rate_val) - total_fees_val)
+            if parsed_net is None
+            else parsed_net
+        )
 
         if net_val <= Decimal("0"):
             return {"status": "error", "message": "net_amount must be greater than zero."}
