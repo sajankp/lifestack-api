@@ -20,6 +20,7 @@ import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import app.core.database.models  # noqa: F401  (register every table so FKs resolve on INSERT)
 from app.core.database import postgres
 from app.investing.cash_audit import CorrectionRefusedError, apply_correction, audit_brokerage_cash
 
