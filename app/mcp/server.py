@@ -367,7 +367,8 @@ async def _load_workspace_reference_data(
             {
                 "public_id": str(account.public_id),
                 "name": account.name,
-                "account_type": account.account_type.value,
+                # Stored as a plain string column, so it is not always an Enum instance.
+                "account_type": AccountType(account.account_type).value,
                 "currency_code": account.default_currency_code,
                 "is_default_spending_account": account.id == default_account_id,
             }

@@ -61,10 +61,14 @@ async def _seed_fx_rate(client: AsyncClient, *, currency: str = "USD", rate: str
     on or before the specified date.
     """
     # The engine takes the latest rate on or before the Rule 115 specified
-    # date (the last day of the month before the sale). Seed a rate well
-    # before that so it is always in range for a sale in the current FY.
+    # date (the last day of the month before the sale). The tests sell 10 days
+    # ago, so in the first 10 days of a month the sale falls in the PREVIOUS
+    # month and the specified date is the end of the month before that. A rate
+    # dated "last day of last month" is then too recent and the summary comes
+    # back missing_fx_rate. Seed one 60 days back: older than any specified
+    # date these tests can produce (at most ~41 days ago), whatever the date.
     now = datetime.now(UTC)
-    as_of = datetime(now.year, now.month, 1, tzinfo=UTC) - timedelta(days=1)
+    as_of = now - timedelta(days=60)
     async with postgres.async_session_maker() as session:
         session.add(
             FxRate(

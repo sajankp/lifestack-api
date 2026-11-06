@@ -261,3 +261,23 @@ Accounts: **ICICI** (wallet, INR), **Groww** (brokerage, INR), **IND Money**
   and brokerage dividends (`dividend`) when querying a brokerage account (`account_type == "brokerage"`).
   This provides a continuous, chronological, order-by-order running balance timeline that matches
   reconciliation and cash snapshots.
+- **2026-11-07 (fix: transfer delete/update left brokerage cash stale):** Snapshots are
+  absolute balances, so removing or editing a transfer's snapshot while *later* snapshots
+  exist changes the transfer but not the latest balance. `CapitalTransferService.
+  _check_no_newer_snapshot` was meant to refuse that (409 "Delete those order imports
+  first"), but it filtered newer snapshots by `trigger_ref == <transfer id>` and was called
+  without that id, so it matched only manual snapshots (`trigger_ref IS NULL`). A later
+  order, dividend or transfer snapshot slipped through: `delete_transfer` returned 200,
+  the spending leg reversed, brokerage cash did not. The guard now blocks on *any* newer
+  snapshot for the (account, currency), matching `DividendService`. Create was never
+  affected (it appends at the end of the chain).
+  **Existing data is not repaired by the fix.** Detect drift with the read-only
+  `uv run python -m scripts.audit_brokerage_cash` (method in `app/investing/cash_audit.py`):
+  it recomputes each brokerage account from the newest manual snapshot plus the
+  transfers/orders/dividends created after it and prints the correcting snapshot it *would*
+  append. It also flags pre-spec-049 outflows that never wrote a snapshot.
+  Open design question (needs a spec): rebase later snapshots by the delta instead of
+  refusing, or derive brokerage cash from the ledger instead of storing a chain.
+  Related: MCP/voice `create_transfer`/`update_transfer` now round the derived net to 2 dp
+  (was a validation error), and `get_workspace_reference_data` no longer assumes
+  `account_type` is an Enum.

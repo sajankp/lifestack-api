@@ -2784,3 +2784,55 @@ async def test_spec095_rejects_invalid_transaction_type(seed_agent_test_data):
     )
     assert invalid_list["status"] == "error"
     assert "transaction_type" in invalid_list["message"]
+
+
+@pytest.mark.asyncio
+async def test_cross_currency_transfer_derived_net_is_rounded_to_money_precision(
+    seed_agent_test_data,
+):
+    """The derived net (gross * fx - fees) has many decimals; the schema accepts
+    2 dp. Both create and update must round it instead of failing validation."""
+    async with postgres.async_session_maker() as session:
+        session.add(
+            Account(
+                workspace_id=20,
+                name="INR Wallet",
+                default_currency_code="INR",
+                account_type=AccountType.wallet,
+            )
+        )
+        await session.commit()
+
+    created = await execute_agent_tool(
+        name="create_transfer",
+        args={
+            "from_account_name": "INR Wallet",
+            "to_account_name": "Chase Brokerage",
+            "amount": "96693.73",
+            "fx_rate": "0.010360547",
+            "fx_fee_amount": "1.78",
+            "confirmed": True,
+        },
+        user_id=10,
+        workspace_id=20,
+    )
+    assert created["status"] == "success", created
+    transfer_pid = uuid.UUID(created["entity_public_id"])
+
+    # Only the fee changes; net is derived: 96693.73 * 0.010360547 - 1.80 = 999.99993...
+    updated = await execute_agent_tool(
+        name="update_transfer",
+        args={"public_id": str(transfer_pid), "fx_fee_amount": "1.80", "confirmed": True},
+        user_id=10,
+        workspace_id=20,
+    )
+    assert updated["status"] == "success", updated
+
+    async with postgres.async_session_maker() as session:
+        row = (
+            await session.execute(
+                select(CapitalTransfer).where(CapitalTransfer.public_id == transfer_pid)
+            )
+        ).scalar_one()
+        assert row.fx_fee_amount == Decimal("1.80")
+        assert row.net_amount_received == Decimal("1000.00")
