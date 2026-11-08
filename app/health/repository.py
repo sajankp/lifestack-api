@@ -53,6 +53,18 @@ class MedicationRepository(BaseRepository[Medication]):
         )
         return result.scalar_one_or_none()
 
+    async def get_by_ids(self, workspace_id: int, ids: Sequence[int]) -> dict[int, Medication]:
+        """Workspace-scoped bulk lookup keyed by internal id (one query)."""
+        unique_ids = {i for i in ids if i is not None}
+        if not unique_ids:
+            return {}
+        result = await self.session.execute(
+            select(Medication).where(
+                Medication.workspace_id == workspace_id, Medication.id.in_(unique_ids)
+            )
+        )
+        return {m.id: m for m in result.scalars().all() if m.id is not None}
+
     async def get_event_count(self, medication_id: int) -> int:
         result = await self.session.execute(
             select(func.count(MedicationEvent.id)).where(
@@ -133,6 +145,32 @@ class MedicationEventRepository(BaseRepository[MedicationEvent]):
         )
         return dict(result.all())
 
+    async def list_by_workspace(
+        self,
+        workspace_id: int,
+        medication_id: int | None = None,
+        status: str | None = None,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Sequence[MedicationEvent], int]:
+        """Workspace-scoped events, newest dose slot first (``id`` breaks ties)."""
+        base = select(MedicationEvent).where(MedicationEvent.workspace_id == workspace_id)
+        if medication_id is not None:
+            base = base.where(MedicationEvent.medication_id == medication_id)
+        if status is not None:
+            base = base.where(MedicationEvent.status == status)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        items_q = (
+            base
+            .order_by(MedicationEvent.scheduled_for.desc(), MedicationEvent.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self.session.execute(items_q)
+        return result.scalars().all(), int(total)
+
 
 class WeightEntryRepository(BaseRepository[WeightEntry]):
     async def get_range(
@@ -151,7 +189,12 @@ class WeightEntryRepository(BaseRepository[WeightEntry]):
         total = (
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
-        items_q = base.order_by(WeightEntry.measured_at.desc()).limit(limit).offset(offset)
+        items_q = (
+            base
+            .order_by(WeightEntry.measured_at.desc(), WeightEntry.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
         result = await self.session.execute(items_q)
         return result.scalars().all(), total
 
