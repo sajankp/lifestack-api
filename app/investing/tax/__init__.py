@@ -36,6 +36,17 @@ from app.investing.tax.regime import (
     RegimeType,
     classify_regime,
 )
+from app.investing.tax.simulation import (
+    ConsumedLot,
+    HarvestCandidate,
+    HoldingSnapshot,
+    LotSnapshot,
+    SaleSimulation,
+    TaxLotView,
+    harvest_candidates,
+    list_tax_lots,
+    simulate_sale,
+)
 from app.investing.tax.slab import SlabResolution, derive_slab
 from app.investing.tax.tax_profile import TaxProfile
 
@@ -59,4 +70,13 @@ __all__ = [
     "fy_label_for_date",
     "parse_fy_label",
     "replay_fifo_lots",
+    "ConsumedLot",
+    "HarvestCandidate",
+    "HoldingSnapshot",
+    "LotSnapshot",
+    "SaleSimulation",
+    "TaxLotView",
+    "harvest_candidates",
+    "list_tax_lots",
+    "simulate_sale",
 ]
