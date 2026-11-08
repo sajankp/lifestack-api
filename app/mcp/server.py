@@ -13,11 +13,13 @@ from fastmcp.server.dependencies import get_access_token
 from pydantic import ValidationError as PydanticValidationError
 
 from app.auth.models import User
+from app.auth.repository import UserRepository
 from app.capture.tools import AgentTools
 from app.config import settings
-from app.core.audit import AuditLogger
+from app.core.audit import AuditLogger, AuditLogRepository, redact_details
 from app.core.currency import (
     build_required_pairs,
+    conversion_rate,
     convert_amount,
     effective_display_as_of,
     fx_rates_used,
@@ -27,15 +29,32 @@ from app.core.exceptions import APIError
 from app.finance.models import AccountType
 from app.finance.repository import (
     AccountRepository,
+    CapitalTransferRepository,
     CurrencyRepository,
     FinanceSettingRepository,
     FxRateRepository,
     NetWorthSnapshotRepository,
 )
-from app.finance.service import AccountService, NetWorthService
-from app.health.repository import MedicationRepository
+from app.finance.service import AccountService, FxRateService, NetWorthService
+from app.health.repository import (
+    MedicationEventRepository,
+    MedicationRepository,
+    WeightEntryRepository,
+)
+from app.health.service import HealthService
 from app.investing.order_service import InvestingOrderService
-from app.investing.performance_service import InvestingSummaryService
+from app.investing.performance_report import (
+    VALID_PERIODS,
+    build_performance_report,
+    period_start,
+)
+from app.investing.performance_service import InvestingSummaryService, PerformanceService
+from app.investing.reconciliation import (
+    HoldingReconciliationService,
+    ReconciliationInputError,
+    parse_external_list,
+    parse_tolerances,
+)
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
@@ -50,6 +69,7 @@ from app.investing.repository import (
     PortfolioSnapshotRepository,
     ReferenceSecurityRepository,
 )
+from app.investing.return_metrics_service import ReturnMetricsService
 from app.investing.schemas import (
     DividendCreate,
     DividendResponse,
@@ -184,6 +204,61 @@ def _tax_service(session: Any) -> TaxService:
         instrument_repository=InstrumentRepository(session),
         fx_rate_repository=FxRateRepository(session),
     )
+
+
+def _reconciliation_service(session: Any) -> HoldingReconciliationService:
+    return HoldingReconciliationService(
+        HoldingRepository(session),
+        InstrumentRepository(session),
+        CompanyRepository(session),
+        AccountRepository(session),
+    )
+
+
+def _return_metrics_service(session: Any) -> ReturnMetricsService:
+    return ReturnMetricsService(
+        InvestingOrderRepository(session),
+        HoldingRepository(session),
+        HoldingPriceRepository(session),
+        DividendRepository(session),
+        AccountRepository(session),
+        NetWorthSnapshotRepository(session),
+        FxRateService(FxRateRepository(session), CurrencyRepository(session)),
+        FinanceSettingRepository(session),
+    )
+
+
+def _performance_service(session: Any) -> PerformanceService:
+    return PerformanceService(
+        HoldingRepository(session),
+        CashBalanceRepository(session),
+        HoldingPriceRepository(session),
+        PortfolioSnapshotRepository(session),
+        FinanceSettingRepository(session),
+        FxRateRepository(session),
+        InstrumentRepository(session),
+        AccountRepository(session),
+        CapitalTransferRepository(session),
+    )
+
+
+def _health_service(session: Any) -> HealthService:
+    return HealthService(
+        MedicationRepository(session),
+        MedicationEventRepository(session),
+        WeightEntryRepository(session),
+    )
+
+
+def _parse_iso_datetime(value: str | None, label: str) -> datetime | None:
+    """ISO-8601 -> aware UTC datetime (naive input is read as UTC)."""
+    if value is None or not str(value).strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip())
+    except ValueError as exc:
+        raise ValueError(f"{label} must be an ISO-8601 date or datetime.") from exc
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 def _order_response(order: Any, account: Any, instrument: Any | None = None) -> dict[str, Any]:
@@ -1829,6 +1904,334 @@ def create_mcp_server() -> FastMCP:
             "log_medication_event",
             {"name": name, "status": status, "dose_time": dose_time},
         )
+
+    @mcp.tool
+    async def reconcile_holdings(
+        workspace_id: int,
+        external_list: list[dict[str, Any]],
+        account_id: str | None = None,
+        quantity_tolerance: str = "0.0001",
+        cost_tolerance_pct: str = "0.5",
+    ) -> dict[str, Any]:
+        """Diff an external holdings list (INDmoney/Paasa/broker) against LifeStack.
+
+        ``external_list`` entries (max 500): ``symbol`` and/or ``isin``,
+        ``quantity`` (required), optional ``avg_cost``, ``currency``,
+        ``account_id`` (LifeStack account UUID), ``source``, ``external_ref``.
+        Symbols are normalised (``NSE:RELIANCE``, ``RELIANCE.NS`` and
+        ``RELIANCE-EQ`` match ``RELIANCE``) and ISIN wins over symbol when both
+        sides have one. Returns per-position status -- matched, quantity_drift,
+        cost_basis_drift, missing_in_lifestack, missing_at_depository -- with an
+        actionable suggestion for each non-match (record a missed order, review
+        fees on mis-fee'd orders, remove a stale holding). Pass ``account_id``
+        when the external list covers a single account. ``quantity_tolerance``
+        is an absolute share count (float noise); ``cost_tolerance_pct`` is the
+        allowed relative difference in average cost. Read-only.
+        """
+        try:
+            external = parse_external_list(external_list)
+            quantity_tol, cost_tol = parse_tolerances(quantity_tolerance, cost_tolerance_pct)
+            account_public_id = uuid.UUID(account_id) if account_id else None
+        except ReconciliationInputError as exc:
+            return {"status": "error", "message": str(exc)}
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid account_id."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="reconcile_holdings"
+            )
+            try:
+                result = await _reconciliation_service(session).reconcile(
+                    workspace_id,
+                    external,
+                    account_public_id=account_public_id,
+                    quantity_tolerance=quantity_tol,
+                    cost_tolerance_pct=cost_tol,
+                )
+            except ReconciliationInputError as exc:
+                return {"status": "error", "message": str(exc)}
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "account_id": account_id,
+            "quantity_tolerance": str(quantity_tol),
+            "cost_tolerance_pct": str(cost_tol),
+            **result,
+        }
+
+    @mcp.tool
+    async def list_recent_changes(
+        workspace_id: int,
+        limit: int = 25,
+        offset: int = 0,
+        module: str | None = None,
+        action: str | None = None,
+        entity_type: str | None = None,
+        entity_public_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict[str, Any]:
+        """Paginated, filterable read of the append-only audit log (newest first).
+
+        Each row has the actor's name, the entity, and the redacted
+        ``details.before`` / ``details.after`` / ``details.changed_fields`` --
+        enough to verify a write or to reconstruct an undo. Secrets (passwords,
+        tokens, API keys, hashes, ...) are redacted. ``limit`` is capped at 100.
+        ``since``/``until`` are ISO-8601 (naive values are read as UTC).
+        Read-only.
+        """
+        validate_page(limit, offset)
+        try:
+            since_dt = _parse_iso_datetime(since, "since")
+            until_dt = _parse_iso_datetime(until, "until")
+        except ValueError as exc:
+            return {"status": "error", "message": str(exc)}
+        if since_dt and until_dt and since_dt > until_dt:
+            return {"status": "error", "message": "since must not be after until."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="list_recent_changes"
+            )
+            rows, total = await AuditLogRepository(session).list_by_workspace(
+                workspace_id,
+                module=module,
+                action=action,
+                entity_type=entity_type,
+                entity_public_id=entity_public_id,
+                since=since_dt,
+                until=until_dt,
+                limit=limit,
+                offset=offset,
+            )
+            actors = await UserRepository(session).get_summaries_by_ids([
+                r.actor_id for r in rows if r.actor_id is not None
+            ])
+        items = []
+        for r in rows:
+            details = redact_details(r.details or {})
+            actor = actors.get(r.actor_id)
+            items.append({
+                "public_id": str(r.public_id),
+                "timestamp": r.timestamp.isoformat(),
+                "module": r.module,
+                "action": r.action,
+                "entity_type": r.entity_type,
+                "entity_public_id": details.get("entity_public_id"),
+                "actor_public_id": str(actor[0]) if actor else None,
+                "actor_name": actor[1] if actor else None,
+                "details": details,
+            })
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(items) < total,
+        }
+
+    @mcp.tool
+    async def get_performance(
+        workspace_id: int,
+        account_id: str | None = None,
+        period: str = "all",
+        reporting_currency: str = "INR",
+    ) -> dict[str, Any]:
+        """XIRR (money-weighted) and time-weighted return, converted to INR.
+
+        XIRR is reported overall, per brokerage account and per holding, since
+        inception, as a fraction (``0.1234`` = 12.34%) plus ``xirr_pct``; a
+        position whose flows cannot yield one gets ``xirr: null`` and
+        ``xirr_status: "not_computable"`` (never an error). Time-weighted return
+        is chain-linked from portfolio snapshots over ``period`` (all, 1m, 3m,
+        6m, 1y, 3y, 5y, ytd) with external contributions/withdrawals neutralised.
+        Amounts are given natively and converted to ``reporting_currency``
+        (default INR) at the latest FX; a currency with no rate yields null
+        converted values and an explicit warning, never zero. Read-only.
+        """
+        period = period.strip().lower()
+        if period not in VALID_PERIODS:
+            return {
+                "status": "error",
+                "message": f"period must be one of: {', '.join(VALID_PERIODS)}.",
+            }
+        reporting_currency = reporting_currency.strip().upper()
+        if not re.fullmatch(r"[A-Z]{3}", reporting_currency):
+            return {
+                "status": "error",
+                "message": "reporting_currency must be a 3-letter currency code.",
+            }
+        try:
+            account_public_id = uuid.UUID(account_id) if account_id else None
+        except ValueError:
+            return {"status": "error", "message": "Invalid account_id."}
+        today = datetime.now(UTC).date()
+        from_date = period_start(period, today)
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_performance"
+            )
+            if account_public_id is not None:
+                account = await AccountRepository(session).get_by_public_id(
+                    workspace_id, account_public_id
+                )
+                if account is None:
+                    return {"status": "error", "message": "Account not found in this workspace."}
+            metrics, positions = await _return_metrics_service(session).get_performance_metrics(
+                workspace_id
+            )
+            twr = await _performance_service(session).get_time_weighted_return(
+                workspace_id, from_date, today
+            )
+            used = {r.currency.upper() for r in metrics.by_account}
+            used |= {p["currency"].upper() for p in positions}
+            if twr.get("currency"):
+                used.add(twr["currency"].upper())
+            used.discard(reporting_currency)
+            fx_as_of = effective_display_as_of()
+            fx_lookup = (
+                await FxRateRepository(session).get_latest_rates_for_pairs(
+                    list(build_required_pairs(sorted(used), reporting_currency)), as_of=fx_as_of
+                )
+                if used
+                else {}
+            )
+        report = build_performance_report(
+            metrics=metrics,
+            positions=positions,
+            twr=twr,
+            rate_for=lambda ccy: conversion_rate(ccy, reporting_currency, fx_lookup),
+            reporting_currency=reporting_currency,
+            account_public_id=account_public_id,
+        )
+        rates_used = {
+            ccy: str(rate)
+            for ccy in sorted(used)
+            if (rate := conversion_rate(ccy, reporting_currency, fx_lookup)) is not None
+        }
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "account_id": account_id,
+            "period": period,
+            "from_date": from_date.isoformat() if from_date else None,
+            "to_date": today.isoformat(),
+            "reporting_currency": reporting_currency,
+            "fx_as_of": fx_as_of.isoformat() if used else None,
+            "fx_rates_used": rates_used,
+            **report,
+        }
+
+    @mcp.tool
+    async def get_weight_history(
+        workspace_id: int,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Paginated body-weight history, newest first (read counterpart of log_weight).
+
+        ``start``/``end`` are ISO-8601 bounds on ``measured_at`` (naive values
+        are read as UTC). ``limit`` is capped at 100. Weights are strings in kg.
+        """
+        validate_page(limit, offset)
+        try:
+            start_dt = _parse_iso_datetime(start, "start")
+            end_dt = _parse_iso_datetime(end, "end")
+        except ValueError as exc:
+            return {"status": "error", "message": str(exc)}
+        if start_dt and end_dt and start_dt > end_dt:
+            return {"status": "error", "message": "start must not be after end."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_weight_history"
+            )
+            items, total = await _health_service(session).list_weight_entries(
+                workspace_id, start_dt, end_dt, limit, offset
+            )
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "items": [item.model_dump(mode="json") for item in items],
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(items) < int(total),
+        }
+
+    @mcp.tool
+    async def list_medication_events(
+        workspace_id: int,
+        medication_id: str | None = None,
+        status: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Paginated medication dose-event history, newest first (read counterpart
+        of log_medication_event). Filter by ``medication_id`` (UUID) and/or
+        ``status`` (``taken`` | ``skipped``). ``limit`` is capped at 100.
+        """
+        validate_page(limit, offset)
+        status_filter = status.strip().lower() if status else None
+        if status_filter is not None and status_filter not in {"taken", "skipped"}:
+            return {"status": "error", "message": "status must be 'taken' or 'skipped'."}
+        try:
+            medication_public_id = uuid.UUID(medication_id) if medication_id else None
+        except ValueError:
+            return {"status": "error", "message": "Invalid medication_id."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="list_medication_events"
+            )
+            medication_repo = MedicationRepository(session)
+            medication_internal_id: int | None = None
+            if medication_public_id is not None:
+                medication = await medication_repo.get_by_public_id(
+                    workspace_id, medication_public_id
+                )
+                if medication is None:
+                    return {"status": "error", "message": "Medication not found in this workspace."}
+                medication_internal_id = medication.id
+            events, total = await MedicationEventRepository(session).list_by_workspace(
+                workspace_id,
+                medication_id=medication_internal_id,
+                status=status_filter,
+                limit=limit,
+                offset=offset,
+            )
+            medications = await medication_repo.get_by_ids(
+                workspace_id, [e.medication_id for e in events]
+            )
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "medication_id": medication_id,
+            "status_filter": status_filter,
+            "items": [
+                {
+                    "public_id": str(e.public_id),
+                    "medication_public_id": str(medications[e.medication_id].public_id)
+                    if e.medication_id in medications
+                    else None,
+                    "medication_name": medications[e.medication_id].name
+                    if e.medication_id in medications
+                    else None,
+                    "scheduled_for": e.scheduled_for.isoformat(),
+                    "status": e.status,
+                    "logged_at": e.logged_at.isoformat(),
+                    "taken_at": e.taken_at.isoformat() if e.taken_at else None,
+                    "note": e.note,
+                    "source_type": e.source_type,
+                }
+                for e in events
+            ],
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(events) < int(total),
+        }
 
     @mcp.tool
     async def get_investing_summary(workspace_id: int) -> dict[str, Any]:
