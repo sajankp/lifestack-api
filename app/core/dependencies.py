@@ -46,6 +46,7 @@ from app.health.repository import (
 from app.health.service import HealthService
 from app.imports.repository import ImportRepository
 from app.imports.service import ImportService
+from app.investing.compliance_service import HoldingComplianceService
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService, PerformanceService
 from app.investing.reference_resolve_service import ReferenceResolveService
@@ -54,6 +55,7 @@ from app.investing.repository import (
     CompanyRepository,
     CorporateActionRepository,
     DividendRepository,
+    HoldingComplianceRepository,
     HoldingPriceRepository,
     HoldingRepository,
     HoldingVerificationRepository,
@@ -457,6 +459,20 @@ async def get_investing_holding_service(
         holding_price_repo,
         order_repo,
     )
+
+
+async def get_investing_holding_compliance_repo(
+    session: AsyncSession = Depends(get_db_session),
+) -> HoldingComplianceRepository:
+    return HoldingComplianceRepository(session)
+
+
+async def get_investing_holding_compliance_service(
+    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
+    compliance_repo: HoldingComplianceRepository = Depends(get_investing_holding_compliance_repo),
+    dividend_repo: DividendRepository = Depends(get_investing_dividend_repo),
+) -> HoldingComplianceService:
+    return HoldingComplianceService(holding_repo, compliance_repo, dividend_repo)
 
 
 async def get_investing_cash_balance_service(

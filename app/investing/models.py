@@ -2,6 +2,7 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Any
 
 import sqlalchemy as sa
 from pydantic import field_validator
@@ -638,6 +639,79 @@ class HoldingVerification(SQLModel, table=True):
             ["account_id", "workspace_id"],
             ["accounts.id", "accounts.workspace_id"],
             name="fk_investing_holding_verifications_account_workspace",
+        ),
+    )
+
+
+class ComplianceVerdict(StrEnum):
+    """Overall halal verdict for a holding.
+
+    ``permissible`` means "not fully halal but acceptable once the
+    non-permissible share of income is purified" (the case purification
+    estimates exist for). ``unknown`` is an explicit "not yet reviewed".
+    """
+
+    halal = "halal"
+    non_halal = "non_halal"
+    permissible = "permissible"
+    unknown = "unknown"
+
+
+class HoldingCompliance(SQLModel, table=True):
+    """Current halal compliance verdict for one holding, with cited sources.
+
+    Exactly one row per holding (latest wins; history lives in the audit
+    log, which records before/after on every change). Screeners disagree,
+    so ``sources`` keeps every citation (screener name, URL, rule
+    reference, and optionally that screener's own verdict and as-of date)
+    instead of merging them into one opinion.
+
+    ``impure_income_pct`` (0-100) is the screener-stated share of income
+    from non-permissible sources. It is the only input to purification
+    estimates and is never inferred by the app.
+
+    ``holding_id`` is a plain FK because ``investing_holdings`` has no
+    ``(id, workspace_id)`` unique key to build a composite FK on; the
+    service resolves the holding workspace-scoped before every write, and
+    the unique key below includes ``workspace_id``.
+    """
+
+    __tablename__ = "investing_holding_compliance"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id")
+    holding_id: int = Field(index=True)
+    verdict: str = Field(sa_type=sa.String(length=20))
+    sources: list[dict[str, Any]] = Field(default_factory=list, sa_type=sa.JSON())
+    impure_income_pct: Decimal | None = Field(
+        default=None, sa_type=sa.Numeric(precision=7, scale=4), nullable=True
+    )
+    as_of_date: date = Field(sa_type=sa.Date())
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "workspace_id", "holding_id", name="uq_investing_holding_compliance_workspace_holding"
+        ),
+        sa.ForeignKeyConstraint(
+            ["holding_id"],
+            ["investing_holdings.id"],
+            name="fk_investing_holding_compliance_holding",
+            ondelete="CASCADE",
+        ),
+        sa.CheckConstraint(
+            "verdict IN ('halal', 'non_halal', 'permissible', 'unknown')",
+            name="ck_investing_holding_compliance_verdict",
+        ),
+        sa.CheckConstraint(
+            "impure_income_pct IS NULL OR (impure_income_pct >= 0 AND impure_income_pct <= 100)",
+            name="ck_investing_holding_compliance_pct_range",
         ),
     )
 

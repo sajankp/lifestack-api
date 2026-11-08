@@ -15,6 +15,7 @@ from app.core.dependencies import (
     get_investing_cash_balance_service,
     get_investing_constituent_service,
     get_investing_dividend_service,
+    get_investing_holding_compliance_service,
     get_investing_holding_service,
     get_investing_holding_verification_repo,
     get_investing_instrument_service,
@@ -27,9 +28,11 @@ from app.core.dependencies import (
     get_reference_resolve_service,
     require_min_role,
 )
+from app.core.exceptions import NotFoundError
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.finance.repository import AccountRepository
 from app.finance.service import AccountService
+from app.investing.compliance_service import HoldingComplianceService
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService, PerformanceService
 from app.investing.reference_resolve_service import ReferenceResolveService
@@ -46,6 +49,8 @@ from app.investing.schemas import (
     DividendResponse,
     DividendUpdate,
     ExposureAnalyticsResponse,
+    HoldingComplianceResponse,
+    HoldingComplianceUpsert,
     HoldingPriceBulkCreate,
     HoldingResponse,
     HoldingUpdate,
@@ -64,6 +69,7 @@ from app.investing.schemas import (
     PerformanceHistoryResponse,
     PerformanceSummaryResponse,
     PortfolioAllocationResponse,
+    PurificationEstimateResponse,
     ReferenceResolveResponse,
     ReferenceSecurityResponse,
     ReturnMetricsResponse,
@@ -141,6 +147,76 @@ async def delete_holding(
         workspace_id, holding_id, actor_id=user["id"], audit_logger=audit_logger
     )
     await snapshot_repo.delete_for_date(workspace_id, datetime.now(UTC).date())
+
+
+@router.put("/holdings/{holding_id}/compliance", response_model=HoldingComplianceResponse)
+async def set_holding_compliance(
+    holding_id: uuid.UUID,
+    compliance_in: HoldingComplianceUpsert,
+    compliance_service: Annotated[
+        HoldingComplianceService, Depends(get_investing_holding_compliance_service)
+    ],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    user: Annotated[dict, Depends(get_current_user)],
+    audit_logger: Annotated[AuditLogger, Depends(get_audit_logger)],
+    _role: Annotated[object, Depends(require_min_role("member"))],
+):
+    """Create or replace the halal compliance verdict for a holding (idempotent).
+
+    Latest write wins; the previous value is kept in the audit log. Each
+    source cites a screener, URL and rule reference and may carry its own
+    verdict/date so disagreeing screeners stay visible.
+    """
+    return await compliance_service.set_compliance(
+        workspace_id,
+        holding_id,
+        compliance_in,
+        actor_id=user["id"],
+        audit_logger=audit_logger,
+    )
+
+
+@router.get("/holdings/{holding_id}/compliance", response_model=HoldingComplianceResponse)
+async def get_holding_compliance(
+    holding_id: uuid.UUID,
+    compliance_service: Annotated[
+        HoldingComplianceService, Depends(get_investing_holding_compliance_service)
+    ],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    """Return the stored verdict, sources and date for a holding (404 if none)."""
+    compliance = await compliance_service.get_compliance(workspace_id, holding_id)
+    if compliance is None:
+        raise NotFoundError(detail=f"No compliance record for holding {holding_id}")
+    return compliance
+
+
+@router.get("/purification/estimate", response_model=PurificationEstimateResponse)
+async def get_purification_estimate(
+    compliance_service: Annotated[
+        HoldingComplianceService, Depends(get_investing_holding_compliance_service)
+    ],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    holding_id: Annotated[uuid.UUID | None, Query(description="Holding to estimate for")] = None,
+    dividend_id: Annotated[uuid.UUID | None, Query(description="Dividend to estimate for")] = None,
+    from_date: Annotated[date | None, Query(description="Holding scope: income from")] = None,
+    to_date: Annotated[date | None, Query(description="Holding scope: income to")] = None,
+):
+    """Estimate purification for one dividend or for a holding's income.
+
+    Exactly one of `holding_id` / `dividend_id`. Estimate only, not a fatwa:
+    amount = gross income x the non-permissible-income % on the holding's
+    compliance record; zero (with the reason) when no percentage is recorded.
+    """
+    return await compliance_service.get_purification_estimate(
+        workspace_id,
+        holding_public_id=holding_id,
+        dividend_public_id=dividend_id,
+        from_date=from_date,
+        to_date=to_date,
+    )
 
 
 @router.get("/cash-balances", response_model=PaginatedResponse[CashBalanceResponse])

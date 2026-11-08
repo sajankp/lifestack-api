@@ -36,6 +36,7 @@ from app.finance.repository import (
 from app.finance.service import AccountService, NetWorthService
 from app.health.repository import MedicationRepository
 from app.investing.company_sector_service import CompanySectorService
+from app.investing.compliance_service import HoldingComplianceService
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService
 from app.investing.repository import (
@@ -43,6 +44,7 @@ from app.investing.repository import (
     CompanyRepository,
     CorporateActionRepository,
     DividendRepository,
+    HoldingComplianceRepository,
     HoldingPriceRepository,
     HoldingRepository,
     InstrumentConstituentRepository,
@@ -56,6 +58,7 @@ from app.investing.schemas import (
     CompanySectorRow,
     DividendCreate,
     DividendResponse,
+    HoldingComplianceUpsert,
     InstrumentConstituentUpsert,
     InstrumentType,
     InvestingOrderCreate,
@@ -176,6 +179,14 @@ def _company_sector_service(session: Any) -> CompanySectorService:
         HoldingRepository(session),
         InstrumentRepository(session),
         CompanyRepository(session),
+    )
+
+
+def _compliance_service(session: Any) -> HoldingComplianceService:
+    return HoldingComplianceService(
+        HoldingRepository(session),
+        HoldingComplianceRepository(session),
+        DividendRepository(session),
     )
 
 
@@ -2389,6 +2400,169 @@ def create_mcp_server() -> FastMCP:
                     "exchange country override takes precedence over it.",
                     "An unrecognised exchange name leaves the country unset rather than guessing.",
                 ],
+            }
+
+    @mcp.tool
+    async def set_holding_compliance(
+        workspace_id: int,
+        holding_id: str,
+        verdict: str,
+        sources: list[dict[str, Any]],
+        as_of_date: str,
+        impure_income_pct: str | None = None,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Record (create or replace) the halal compliance verdict for a holding.
+
+        Requires the dedicated mcp:research grant and explicit confirmation.
+        Idempotent: the latest call wins and the previous value stays in the
+        audit log.
+
+        `verdict` is one of "halal", "non_halal", "permissible" (not fully
+        halal but acceptable once income is purified) or "unknown".
+        `sources` is 1-10 citations, each {"screener_name", "url" (http/https),
+        "rule_reference"} plus optional "verdict" and "as_of_date" (YYYY-MM-DD)
+        so screeners that disagree stay visible side by side. `as_of_date` is
+        the date of the verdict (not in the future). `impure_income_pct` is the
+        screener-stated share (0-100, decimal string) of non-permissible income;
+        it drives get_purification_estimate and is never inferred.
+        """
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": (
+                    f"Record compliance verdict '{verdict}' (as of {as_of_date}, "
+                    f"{len(sources)} source(s)) for holding {holding_id}, replacing any "
+                    "existing record? Confirm to continue."
+                ),
+                "holding_id": holding_id,
+                "verdict": verdict,
+                "as_of_date": as_of_date,
+                "impure_income_pct": impure_income_pct,
+                "source_count": len(sources),
+            }
+        try:
+            holding_public_id = uuid.UUID(holding_id)
+            payload = HoldingComplianceUpsert.model_validate({
+                "verdict": verdict,
+                "sources": sources,
+                "as_of_date": as_of_date,
+                "impure_income_pct": impure_income_pct,
+            })
+        except (TypeError, ValueError, PydanticValidationError) as exc:
+            return {"status": "error", "message": f"Invalid compliance record: {exc}"}
+
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:research",
+                tool="set_holding_compliance",
+            )
+            try:
+                compliance = await _compliance_service(session).set_compliance(
+                    workspace_id,
+                    holding_public_id,
+                    payload,
+                    actor_id=user_id,
+                    audit_logger=AuditLogger(session),
+                )
+                await session.commit()
+            except (APIError, ValueError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+            return {
+                "status": "success",
+                "entity_type": "holding_compliance",
+                "compliance": compliance.model_dump(mode="json"),
+                "summary": f"Saved '{compliance.verdict}' verdict with {len(payload.sources)} source(s).",
+            }
+
+    @mcp.tool
+    async def get_holding_compliance(workspace_id: int, holding_id: str) -> dict[str, Any]:
+        """Get the stored halal compliance verdict for a holding.
+
+        Returns the verdict, its date, the non-permissible income percentage
+        and every cited source (screener name, URL, rule reference, and each
+        screener's own verdict/date). `sources_disagree` is true when the
+        cited screeners gave different verdicts. When the holding has no
+        record yet, `compliance` is null.
+        """
+        try:
+            holding_public_id = uuid.UUID(holding_id)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid holding_id."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:read",
+                tool="get_holding_compliance",
+            )
+            try:
+                compliance = await _compliance_service(session).get_compliance(
+                    workspace_id, holding_public_id
+                )
+            except (APIError, ValueError) as exc:
+                return {"status": "error", "message": str(exc)}
+            return {
+                "status": "success",
+                "workspace_id": workspace_id,
+                "holding_id": holding_id,
+                "compliance": compliance.model_dump(mode="json") if compliance else None,
+                "message": (None if compliance else "No compliance record for this holding yet."),
+            }
+
+    @mcp.tool
+    async def get_purification_estimate(
+        workspace_id: int,
+        holding_id: str | None = None,
+        dividend_id: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Estimate the halal purification (charity) amount for income.
+
+        Pass exactly one of `holding_id` (all income recorded against that
+        holding, optionally limited by `from_date`/`to_date` as YYYY-MM-DD)
+        or `dividend_id` (one income event). Amount = gross income x the
+        holding's recorded non-permissible-income %, as a decimal string in
+        the holding's currency. If no percentage is recorded the amount is
+        "0.00" and `basis` says why; nothing is guessed. Estimate only, not
+        a fatwa: see the `disclaimer` field.
+        """
+        try:
+            holding_public_id = uuid.UUID(holding_id) if holding_id else None
+            dividend_public_id = uuid.UUID(dividend_id) if dividend_id else None
+            start = date.fromisoformat(from_date) if from_date else None
+            end = date.fromisoformat(to_date) if to_date else None
+        except (TypeError, ValueError):
+            return {
+                "status": "error",
+                "message": "Invalid holding_id, dividend_id, from_date or to_date.",
+            }
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:read",
+                tool="get_purification_estimate",
+            )
+            try:
+                estimate = await _compliance_service(session).get_purification_estimate(
+                    workspace_id,
+                    holding_public_id=holding_public_id,
+                    dividend_public_id=dividend_public_id,
+                    from_date=start,
+                    to_date=end,
+                )
+            except (APIError, ValueError) as exc:
+                return {"status": "error", "message": str(exc)}
+            return {
+                "status": "success",
+                "workspace_id": workspace_id,
+                "estimate": estimate.model_dump(mode="json"),
             }
 
     return mcp
