@@ -14,6 +14,7 @@ from app.core.database import postgres
 from app.core.exceptions import ValidationError
 from app.finance.models import FxRate
 from app.investing.models import Company, HoldingThemeTag, InstrumentConstituent
+from app.investing.theme_repository import LatestConstituentSnapshotRepository
 from app.investing.theme_schemas import ThemeTagInput
 from app.investing.theme_service import (
     ThemeExposureService,
@@ -623,8 +624,6 @@ async def test_allocation_rejects_invalid_new_cash(client: AsyncClient, bad: str
 async def test_single_snapshot_tie_breaks_on_fetched_at_then_date(client: AsyncClient):
     await _seed(client, "snap-single")
     async with postgres.async_session_maker() as session:
-        from app.investing.theme_repository import LatestConstituentSnapshotRepository
-
         instrument_ids = (
             (await session.execute(select(InstrumentConstituent.instrument_id).distinct()))
             .scalars()
