@@ -67,6 +67,18 @@ from app.investing.service import (
 )
 from app.investing.tax.exchanges import resolve_exchange
 from app.investing.tax_service import TaxService
+from app.investing.tax_whatif_service import (
+    TaxWhatIfService,
+    WhatIfError,
+    parse_decimal,
+    parse_sale_date,
+    resolve_zone,
+)
+from app.investing.tax_whatif_views import (
+    harvest_response,
+    lot_listing_response,
+    simulation_response,
+)
 from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.security import authorize_user, authorize_workspace, validate_page
 from app.platform.repository import MembershipRepository, WorkspaceRepository
@@ -184,6 +196,24 @@ def _tax_service(session: Any) -> TaxService:
         instrument_repository=InstrumentRepository(session),
         fx_rate_repository=FxRateRepository(session),
     )
+
+
+def _tax_whatif_service(session: Any) -> TaxWhatIfService:
+    return TaxWhatIfService(
+        _tax_service(session),
+        HoldingRepository(session),
+        LotRepository(session),
+        HoldingPriceRepository(session),
+    )
+
+
+async def _user_timezone_name(session: Any, user_id: int) -> str | None:
+    user = await session.get(User, user_id)
+    return user.timezone if user is not None and user.timezone else None
+
+
+def _what_if_error(exc: WhatIfError) -> dict[str, Any]:
+    return {"status": "error", "code": exc.code, "message": exc.message, **exc.details}
 
 
 def _order_response(order: Any, account: Any, instrument: Any | None = None) -> dict[str, Any]:
@@ -1921,6 +1951,157 @@ def create_mcp_server() -> FastMCP:
             "assumptions": estimate.assumptions,
             "disclaimers": estimate.disclaimers,
         }
+
+    @mcp.tool
+    async def simulate_sale(
+        workspace_id: int,
+        holding: str,
+        qty: str,
+        date: str,
+        price: str,
+        sell_fees: str = "0",
+        account_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Read-only what-if: the capital-gains tax of selling `qty` units of a holding.
+
+        Nothing is sold or changed. FIFO open lots are consumed oldest first;
+        each lot is classified long-term/short-term on calendar days (more
+        than 12 months for Indian-listed, 24 for foreign). The tax is
+        INCREMENTAL: the estimated tax for the sale's financial year with the
+        sale minus without it, on top of the gains already realised that FY
+        (the same data get_tax_summary uses), so the Rs 1.25 lakh Sec 112A
+        exemption is only what is left. Returns per-lot gains, the Rule 115
+        FX rate and its source, a status (success, insufficient_quantity,
+        missing_fx_rate, reconciliation_failed) and the assumptions used.
+
+        `holding` is a holding public_id (from list_investment_holdings), or
+        a symbol; a symbol held in several accounts is rejected with the
+        candidates unless `account_id` (account public_id) narrows it.
+        `date` is the sale day, YYYY-MM-DD in your timezone. `qty`, `price`
+        and `sell_fees` are decimal strings (price and fees in the holding's
+        currency).
+        """
+        try:
+            qty_value = parse_decimal("qty", qty, allow_zero=False, max_places=8)
+            price_value = parse_decimal("price", price, allow_zero=True, max_places=8)
+            fees_value = parse_decimal("sell_fees", sell_fees, allow_zero=True, max_places=4)
+        except WhatIfError as exc:
+            return _what_if_error(exc)
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="simulate_sale"
+            )
+            timezone_name = await _user_timezone_name(session, user_id)
+            try:
+                sale_dt = parse_sale_date(date, resolve_zone(timezone_name))
+                outcome = await _tax_whatif_service(session).simulate_sale(
+                    workspace_id,
+                    holding_ref=holding,
+                    account_id=account_id,
+                    qty=qty_value,
+                    sale_date=sale_dt,
+                    sale_price=price_value,
+                    sell_fees=fees_value,
+                    timezone_name=timezone_name,
+                )
+            except WhatIfError as exc:
+                return _what_if_error(exc)
+            return simulation_response(outcome)
+
+    @mcp.tool
+    async def list_tax_lots(
+        workspace_id: int,
+        holding: str,
+        account_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Read-only: a holding's open FIFO tax lots with their long-term countdown.
+
+        Per lot: acquired date, quantity, cost per unit (fee-inclusive),
+        whether it is long-term today, and `days_to_long_term` (calendar
+        days until the first day a sale is long-term; 0 = already). The
+        threshold is 12 months for Indian-listed holdings and 24 for foreign
+        ones. Unrealised P&L is included when a stored price exists.
+
+        `holding` is a holding public_id or a symbol (use `account_id` to
+        disambiguate a symbol held in several accounts). Lots are paged:
+        `limit` 1-500, `offset` >= 0.
+        """
+        if not 1 <= limit <= 500 or offset < 0:
+            return {
+                "status": "error",
+                "code": "invalid_page",
+                "message": "limit must be 1-500 and offset non-negative.",
+            }
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="list_tax_lots"
+            )
+            try:
+                listing = await _tax_whatif_service(session).list_lots(
+                    workspace_id,
+                    holding_ref=holding,
+                    account_id=account_id,
+                    timezone_name=await _user_timezone_name(session, user_id),
+                )
+            except WhatIfError as exc:
+                return _what_if_error(exc)
+        response = lot_listing_response(listing)
+        total = len(response["lots"])
+        response["lot_count"] = total
+        response["lots"] = response["lots"][offset : offset + limit]
+        response["offset"] = offset
+        response["has_more"] = offset + limit < total
+        return response
+
+    @mcp.tool
+    async def harvest_candidates(
+        workspace_id: int,
+        stcg_rate_percent: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Read-only: unrealised-loss lots worth realising for tax, best first.
+
+        Scans every non-zero holding's open lots against its latest stored
+        price, ranks loss lots by the tax the loss would save (converted to
+        INR so mixed currencies compare), and reports each lot's price date
+        and whether that price is stale. Holdings with no stored price or no
+        open lots are listed under `skipped_holdings`, never guessed. A
+        foreign short-term loss follows your slab, so it is ranked last
+        unless you pass `stcg_rate_percent` (e.g. "30").
+
+        `limit` 1-200 caps the returned candidates (candidate_count is the
+        total).
+        """
+        if not 1 <= limit <= 200:
+            return {
+                "status": "error",
+                "code": "invalid_page",
+                "message": "limit must be between 1 and 200.",
+            }
+        stcg_value = None
+        if stcg_rate_percent is not None:
+            try:
+                stcg_value = parse_decimal("stcg_rate_percent", stcg_rate_percent, allow_zero=True)
+            except WhatIfError as exc:
+                return _what_if_error(exc)
+            if stcg_value > 100:
+                return {
+                    "status": "error",
+                    "code": "invalid_number",
+                    "message": "stcg_rate_percent must be between 0 and 100.",
+                }
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="harvest_candidates"
+            )
+            report = await _tax_whatif_service(session).harvest(
+                workspace_id,
+                stcg_rate_percent=stcg_value,
+                timezone_name=await _user_timezone_name(session, user_id),
+            )
+        return harvest_response(report, limit)
 
     @mcp.tool
     async def get_tax_profile(workspace_id: int) -> dict[str, Any]:

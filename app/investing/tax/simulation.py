@@ -526,6 +526,11 @@ def simulate_sale(
         specified = specified_fx_date(sale_day.date())
         assumptions.append(
             f"Rule 115 FX rate for {month}: ₹{fx_rate} on {specified} ({fx_source})."
+            + (
+                " This is the app's stored market rate — verify against SBI's TT buying rate."
+                if fx_source == "app_rate_estimate"
+                else ""
+            )
         )
     else:
         assumptions.append(
