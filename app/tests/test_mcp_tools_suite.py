@@ -34,6 +34,9 @@ class MockAsyncSession:
     async def rollback(self):
         pass
 
+    def add(self, obj):
+        pass
+
 
 @pytest.fixture(autouse=True)
 def mock_mcp_environment(monkeypatch):
@@ -84,6 +87,8 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
         "get_investment_constituents",
         "write_investment_constituent_snapshot",
         "delete_investment_constituent_snapshot",
+        "set_company_sector",
+        "get_investment_sector_allocation",
         "list_investment_dividends",
         "create_investment_dividend",
         "get_investing_summary",
@@ -101,7 +106,7 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
 
     missing = expected_tools - registered_tools
     assert not missing, f"Missing MCP tools from server: {missing}"
-    assert len(expected_tools) == 37
+    assert len(expected_tools) == 39
 
 
 @pytest.mark.anyio
@@ -625,3 +630,148 @@ async def test_mcp_delegated_capture_tools(monkeypatch):
     await tool_map["get_account_balances"](workspace_id=202)
     assert called_tools[-1][1] == "mcp:read"
     assert called_tools[-1][2] == "get_account_balances"
+
+
+@pytest.mark.anyio
+async def test_mcp_set_company_sector_validation_and_preview(monkeypatch):
+    """set_company_sector: row validation and unconfirmed preview (no writes)."""
+    server = create_mcp_server()
+    tools = await server.list_tools()
+    tool = {t.name: t.fn for t in tools}["set_company_sector"]
+
+    auth = AsyncMock(return_value=101)
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", auth)
+    service = SimpleNamespace(set_sectors=AsyncMock())
+    monkeypatch.setattr("app.mcp.server._company_sector_service", lambda session: service)
+
+    holding = str(uuid.uuid4())
+    bad_rows = {
+        "no sector": ([{"holding_public_id": holding}], "sector is required"),
+        "blank sector": ([{"holding_public_id": holding, "sector": "   "}], "sector is required"),
+        "no key": ([{"sector": "Energy"}], "exactly one of"),
+        "two keys": (
+            [{"holding_public_id": holding, "isin": "US0378331005", "sector": "Energy"}],
+            "exactly one of",
+        ),
+        "ticker without exchange": ([{"ticker": "AAPL", "sector": "Energy"}], "together"),
+        "long sector": ([{"holding_public_id": holding, "sector": "x" * 101}], "row 0"),
+        "bad holding id": ([{"holding_public_id": "nope", "sector": "Energy"}], "row 0"),
+    }
+    for label, (rows, fragment) in bad_rows.items():
+        res = await tool(workspace_id=202, rows=rows, confirmed=True)
+        assert res["status"] == "error", label
+        assert fragment in res["message"], (label, res)
+
+    empty = await tool(workspace_id=202, rows=[], confirmed=True)
+    assert empty["status"] == "error"
+    too_many = await tool(
+        workspace_id=202,
+        rows=[{"isin": f"US{i:010d}", "sector": "Energy"} for i in range(201)],
+        confirmed=True,
+    )
+    assert too_many["status"] == "error"
+    service.set_sectors.assert_not_called()
+
+    preview = await tool(
+        workspace_id=202,
+        rows=[{"holding_public_id": holding, "sector": "health  care", "industry": "Biotech"}],
+        confirmed=False,
+    )
+    assert preview["status"] == "needs_confirmation"
+    assert preview["needs_confirmation"] is True
+    assert preview["row_count"] == 1
+    assert preview["rows"][0]["requested_sector"] == "Health Care"
+    service.set_sectors.assert_not_called()
+    assert auth.call_args.kwargs["required_scope"] == "mcp:research"
+
+
+@pytest.mark.anyio
+async def test_mcp_set_company_sector_confirmed_and_failure_rolls_back(monkeypatch):
+    server = create_mcp_server()
+    tools = await server.list_tools()
+    tool = {t.name: t.fn for t in tools}["set_company_sector"]
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+
+    commits: list[str] = []
+
+    class RecordingSession(MockAsyncSession):
+        async def commit(self):
+            commits.append("commit")
+
+        async def rollback(self):
+            commits.append("rollback")
+
+    monkeypatch.setattr("app.mcp.server.postgres.async_session_maker", lambda: RecordingSession())
+
+    outcome = {
+        "updated": [{"row_index": 0, "before": {"sector": None}, "after": {"sector": "Energy"}}],
+        "errors": [{"row_index": 1, "message": "holding not found"}],
+    }
+    service = SimpleNamespace(set_sectors=AsyncMock(return_value=outcome))
+    monkeypatch.setattr("app.mcp.server._company_sector_service", lambda session: service)
+    rows = [
+        {"isin": "US0378331005", "sector": "energy"},
+        {"holding_public_id": str(uuid.uuid4()), "sector": "Energy"},
+    ]
+    res = await tool(workspace_id=202, rows=rows, confirmed=True)
+    assert res["status"] == "success"
+    assert res["updated"] == outcome["updated"]
+    assert res["errors"] == outcome["errors"]
+    assert commits == ["commit"]
+    parsed_rows = service.set_sectors.call_args.args[1]
+    assert [r.sector for r in parsed_rows] == ["Energy", "Energy"]
+
+    # An unexpected failure never commits: everything is rolled back.
+    commits.clear()
+    service.set_sectors = AsyncMock(side_effect=RuntimeError("boom"))
+    res = await tool(workspace_id=202, rows=rows, confirmed=True)
+    assert res["status"] == "error"
+    assert "no changes were saved" in res["message"]
+    assert commits == ["rollback"]
+
+
+@pytest.mark.anyio
+async def test_mcp_get_investment_sector_allocation(monkeypatch):
+    """get_investment_sector_allocation delegates to the analytics service."""
+    server = create_mcp_server()
+    tools = await server.list_tools()
+    tool_map = {t.name: t.fn for t in tools}
+
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+
+    # 1. Invalid date is rejected without touching the database.
+    bad = await tool_map["get_investment_sector_allocation"](
+        workspace_id=202, as_of_date="not-a-date"
+    )
+    assert bad["status"] == "error"
+
+    # 2. Valid request maps the analytics result into the response shape.
+    fake_result = {
+        "as_of_date": "2026-11-08",
+        "currency": "USD",
+        "lookthrough": True,
+        "total_portfolio_value": "3600.00",
+        "holdings_value": "3600.00",
+        "sectors": [
+            {"sector": "Information Technology", "value": "2000.00", "pct": 55.56},
+            {"sector": "Other / not itemised", "value": "1600.00", "pct": 44.44},
+        ],
+        "fund_coverage": [],
+        "warnings": [],
+        "fx_as_of": None,
+        "fx_rates_used": {},
+    }
+    fake_service = SimpleNamespace(sector_allocation=AsyncMock(return_value=fake_result))
+    monkeypatch.setattr("app.mcp.server._analytics_service", lambda session: fake_service)
+
+    res = await tool_map["get_investment_sector_allocation"](
+        workspace_id=202, as_of_date="2026-11-08", lookthrough=True
+    )
+    assert res["status"] == "success"
+    assert res["workspace_id"] == 202
+    assert res["sectors"][0]["sector"] == "Information Technology"
+    assert round(sum(s["pct"] for s in res["sectors"]), 2) == 100.0
+
+    args, kwargs = fake_service.sector_allocation.call_args
+    assert args == (202, date(2026, 11, 8))
+    assert kwargs["lookthrough"] is True

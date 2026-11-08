@@ -375,8 +375,17 @@ async def get_portfolio_allocation(
     workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
     as_of: date | None = None,
+    lookthrough: bool = False,
 ):
-    return await performance_service.get_allocation_breakdown(workspace_id, as_of)
+    """Portfolio allocation by asset class and sector.
+
+    With `lookthrough=true`, ETF/MF holdings are decomposed through their
+    latest constituent snapshot into company sectors; direct stocks use
+    their company's sector and ``OTHER-<FUND>`` placeholder holdings and
+    unmapped companies fall into ``Other / not itemised``. Sector
+    percentages sum to 100% including that bucket.
+    """
+    return await performance_service.get_allocation_breakdown(workspace_id, as_of, lookthrough)
 
 
 @router.post("/prices", status_code=status.HTTP_201_CREATED)

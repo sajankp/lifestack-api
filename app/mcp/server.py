@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlparse
 
+import structlog
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_access_token
 from pydantic import ValidationError as PydanticValidationError
@@ -34,6 +35,7 @@ from app.finance.repository import (
 )
 from app.finance.service import AccountService, NetWorthService
 from app.health.repository import MedicationRepository
+from app.investing.company_sector_service import CompanySectorService
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_service import InvestingSummaryService
 from app.investing.repository import (
@@ -51,6 +53,7 @@ from app.investing.repository import (
     ReferenceSecurityRepository,
 )
 from app.investing.schemas import (
+    CompanySectorRow,
     DividendCreate,
     DividendResponse,
     InstrumentConstituentUpsert,
@@ -62,6 +65,7 @@ from app.investing.schemas import (
 from app.investing.service import (
     ConstituentService,
     DividendService,
+    ExposureAnalyticsService,
     HoldingService,
     InstrumentService,
 )
@@ -131,6 +135,9 @@ async def _run_capture_tool(
         return result
 
 
+logger = structlog.get_logger(__name__)
+
+
 def _holding_service(session: Any) -> HoldingService:
     """Build the investing holding service with the same repositories as REST."""
     return HoldingService(
@@ -149,6 +156,26 @@ def _constituent_service(session: Any) -> ConstituentService:
         InstrumentRepository(session),
         CompanyRepository(session),
         InstrumentConstituentRepository(session),
+    )
+
+
+def _analytics_service(session: Any) -> ExposureAnalyticsService:
+    return ExposureAnalyticsService(
+        HoldingRepository(session),
+        InstrumentRepository(session),
+        CompanyRepository(session),
+        InstrumentConstituentRepository(session),
+        HoldingPriceRepository(session),
+        FinanceSettingRepository(session),
+        FxRateRepository(session),
+    )
+
+
+def _company_sector_service(session: Any) -> CompanySectorService:
+    return CompanySectorService(
+        HoldingRepository(session),
+        InstrumentRepository(session),
+        CompanyRepository(session),
     )
 
 
@@ -701,6 +728,11 @@ def create_mcp_server() -> FastMCP:
                 for holding in raw_holdings
                 if holding.instrument_id is not None
             ])
+            companies = await CompanyRepository(session).get_by_ids([
+                instrument.company_id
+                for instrument in instruments.values()
+                if instrument.company_id is not None
+            ])
             raw_by_public_id = {holding.public_id: holding for holding in raw_holdings}
             price_rows = await HoldingPriceRepository(session).latest_prices_on_or_before_bulk(
                 workspace_id,
@@ -751,6 +783,11 @@ def create_mcp_server() -> FastMCP:
                     "isin": instrument.isin if instrument else None,
                     "exchange": instrument.exchange if instrument else None,
                 })
+                if instrument is not None and instrument.company_id is not None:
+                    company = companies.get(instrument.company_id)
+                    if company is not None:
+                        data["company_sector"] = company.sector
+                        data["company_industry"] = company.industry
                 if raw is not None:
                     _add_holding_reporting_valuation(
                         data,
@@ -803,7 +840,13 @@ def create_mcp_server() -> FastMCP:
         as_of_date: str | None = None,
         source: str | None = None,
     ) -> dict[str, Any]:
-        """Read the latest sourced ETF or mutual-fund constituent snapshot."""
+        """Read the latest sourced ETF or mutual-fund constituent snapshot.
+
+        Returns the snapshot on or before ``as_of_date`` (latest snapshot by
+        ``(as_of_date, fetched_at)`` counts when several exist), optionally
+        filtered by ``source``. Each row carries the constituent company's
+        ``sector`` and ``industry`` where known.
+        """
         try:
             instrument_id = uuid.UUID(instrument_public_id)
             as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
@@ -839,12 +882,18 @@ def create_mcp_server() -> FastMCP:
         fetched_at: str,
         constituents: list[dict[str, Any]],
         renormalise: bool = False,
+        overwrite_existing: bool = False,
         confirmed: bool = False,
     ) -> dict[str, Any]:
         """Replace one sourced ETF or mutual-fund constituent snapshot.
 
         Requires the dedicated mcp:research grant and explicit confirmation.
-        Each constituent must include a ticker or ISIN and a decimal weight.
+        Each constituent must include a ticker or ISIN and a decimal weight,
+        and may optionally carry ``sector`` and ``industry`` (free text, up to
+        100 characters each; GICS sector names are recommended). A provided
+        sector/industry fills an empty value on the constituent company; an
+        already-set value is overwritten only when ``overwrite_existing`` is
+        true.
         """
         if not confirmed:
             return {
@@ -873,6 +922,7 @@ def create_mcp_server() -> FastMCP:
                 "fetched_at": fetched_at,
                 "constituents": constituents,
                 "renormalise": renormalise,
+                "overwrite_existing": overwrite_existing,
             })
         except (TypeError, ValueError, PydanticValidationError) as exc:
             return {"status": "error", "message": f"Invalid constituent snapshot: {exc}"}
@@ -956,6 +1006,153 @@ def create_mcp_server() -> FastMCP:
                 "source": source,
                 "deleted_rows": deleted,
                 "summary": f"Deleted the {source} constituent snapshot.",
+            }
+
+    @mcp.tool
+    async def set_company_sector(
+        workspace_id: int,
+        rows: list[dict[str, Any]],
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Set the sector (and optional industry and country) on companies, in bulk.
+
+        ``rows`` holds 1-200 entries. Each row identifies its company by
+        exactly one of:
+
+        - ``holding_public_id`` - a holding in this workspace; the company
+          behind that holding's instrument is updated.
+        - ``isin`` - a company matched by ISIN, workspace-scoped or global.
+        - ``ticker`` plus ``exchange`` - a company via an instrument listed
+          on that exchange, workspace-scoped or global.
+
+        ``sector`` is required on every row (free text, up to 100 characters).
+        Use GICS names: Information Technology, Health Care, Financials,
+        Industrials, Energy, Consumer Staples, Consumer Discretionary,
+        Materials, Utilities, Communication Services, Real Estate. Case and
+        extra whitespace are normalised (``health  care`` -> ``Health Care``)
+        so variants never split an allocation bucket. ``industry`` (up to 100
+        characters) and ``country_code`` are optional and only written when
+        provided. ETFs and mutual funds have no company; their sectors come
+        from constituent snapshots.
+
+        A global company is never edited in place: it is forked into a
+        workspace-scoped copy and this workspace's instruments and holdings
+        are re-pointed to it (idempotent on re-run). Without ``confirmed`` the
+        call returns ``needs_confirmation`` and writes nothing. With it, each
+        row is applied atomically; a row that cannot be applied is reported in
+        ``errors`` while the other rows still apply, and an unexpected failure
+        rolls back the whole call. Returns per-row ``before``/``after`` values.
+        Requires the mcp:research scope.
+        """
+        if not 1 <= len(rows) <= 200:
+            return {
+                "status": "error",
+                "message": "rows must contain between 1 and 200 entries.",
+            }
+        parsed: list[CompanySectorRow] = []
+        for idx, raw in enumerate(rows):
+            try:
+                parsed.append(CompanySectorRow.model_validate(raw))
+            except PydanticValidationError as exc:
+                detail = "; ".join(
+                    str(err["msg"]).removeprefix("Value error, ") for err in exc.errors()
+                )
+                return {"status": "error", "message": f"row {idx}: {detail}"}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:research",
+                tool="set_company_sector",
+            )
+            if not confirmed:
+                return {
+                    "status": "needs_confirmation",
+                    "needs_confirmation": True,
+                    "message": (
+                        f"This will set the sector on {len(parsed)} company(ies) in "
+                        f"workspace {workspace_id}. Confirm to continue."
+                    ),
+                    "row_count": len(parsed),
+                    "rows": [
+                        {
+                            "row_index": idx,
+                            "requested_sector": row.sector,
+                            "requested_industry": row.industry,
+                            "requested_country_code": row.country_code,
+                        }
+                        for idx, row in enumerate(parsed)
+                    ],
+                }
+            try:
+                outcome = await _company_sector_service(session).set_sectors(workspace_id, parsed)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                logger.exception("set_company_sector failed; no changes were saved")
+                return {
+                    "status": "error",
+                    "message": "set_company_sector failed unexpectedly; no changes were saved.",
+                }
+        updated, errors = outcome["updated"], outcome["errors"]
+        return {
+            "status": "success",
+            "entity_type": "company_sector",
+            "workspace_id": workspace_id,
+            "updated": updated,
+            "errors": errors,
+            "summary": (
+                f"Set sector on {len(updated)} company(ies)"
+                + (f"; {len(errors)} row(s) failed" if errors else "")
+                + "."
+            ),
+        }
+
+    @mcp.tool
+    async def get_investment_sector_allocation(
+        workspace_id: int,
+        as_of_date: str | None = None,
+        lookthrough: bool = True,
+    ) -> dict[str, Any]:
+        """Sector allocation of the portfolio, with optional ETF/MF look-through.
+
+        With look-through (default) each ETF/MF holding is split across the
+        sectors of the companies in its latest constituent snapshot (exactly
+        one snapshot per instrument, newest by ``(as_of_date, fetched_at)``);
+        direct stocks use their own company's sector; ``OTHER-<FUND>``
+        placeholder holdings and unmapped companies go to ``Other / not
+        itemised`` and are never rescaled. Returns value and % per sector
+        (summing to 100% including that bucket) plus coverage per fund.
+        """
+        try:
+            as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid as_of_date. Use YYYY-MM-DD."}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:read",
+                tool="get_investment_sector_allocation",
+            )
+            result = await _analytics_service(session).sector_allocation(
+                workspace_id, as_of, lookthrough=lookthrough
+            )
+            return {
+                "status": "success",
+                "workspace_id": workspace_id,
+                "as_of_date": result["as_of_date"],
+                "currency": result["currency"],
+                "lookthrough": result["lookthrough"],
+                "total_portfolio_value": result["total_portfolio_value"],
+                "holdings_value": result["holdings_value"],
+                "sectors": result["sectors"],
+                "fund_coverage": result["fund_coverage"],
+                "warnings": result["warnings"],
+                "fx_as_of": result["fx_as_of"],
+                "fx_rates_used": result["fx_rates_used"],
             }
 
     @mcp.tool
