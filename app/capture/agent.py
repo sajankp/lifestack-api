@@ -212,6 +212,7 @@ async def execute_agent_tool(
                 "create_todo_task": tools.create_todo_task,
                 "create_recurring_todo": tools.create_recurring_todo,
                 "log_spending_transaction": tools.log_spending_transaction,
+                "log_spending_transactions_batch": tools.log_spending_transactions_batch,
                 "list_spending_transactions": tools.list_spending_transactions,
                 "find_spending_transactions": tools.find_spending_transactions,
                 "update_spending_transaction": tools.update_spending_transaction,

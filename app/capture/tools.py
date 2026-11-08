@@ -8,6 +8,23 @@ import structlog
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.capture.spending_batch import (
+    ALLOWED_ITEM_FIELDS,
+    MAX_BATCH_ITEMS,
+    CursorError,
+    ResolvedSpend,
+    count_results,
+    decode_cursor,
+    encode_cursor,
+    filter_fingerprint,
+    group_existing_by_natural_key,
+    item_result,
+    local_day_range_utc,
+    normalize_description,
+    plan_natural_key_matches,
+    same_item_payload,
+    same_payload,
+)
 from app.core.audit import AuditLogger
 from app.core.exceptions import APIError, ConflictError, NotFoundError
 from app.finance.models import Account, AccountType, TransferModule
@@ -37,7 +54,7 @@ from app.investing.repository import (
 )
 from app.investing.schemas import DividendCreate
 from app.investing.service import DividendService
-from app.spending.models import TransactionSourceType, TransactionType
+from app.spending.models import TransactionSort, TransactionSourceType, TransactionType
 from app.spending.repository import CategoryRepository, TagRepository, TransactionRepository
 from app.spending.schemas import TagCreate, TransactionCreate, TransactionUpdate
 from app.spending.service import CategoryService, TagService, TransactionService
@@ -648,6 +665,8 @@ class AgentTools:
         allow_duplicate: bool = False,
         transaction_type: str = "expense",
         source_ref: str | None = None,
+        dry_run: bool = False,
+        skip_duplicates: bool = False,
     ) -> dict:
         """Record/log a new spending transaction (expense or income).
 
@@ -661,6 +680,14 @@ class AgentTools:
             allow_duplicate: Set only when the user explicitly confirms an additional
                 identical transaction or explicitly reports multiple identical items.
             transaction_type: 'expense' (default) or 'income'.
+            source_ref: Optional caller-supplied unique reference. Re-sending the same
+                source_ref returns the existing transaction instead of creating another.
+            dry_run: Validate and report what would happen without writing anything.
+                Returns ``{counts, items: [{index, status, match_reason, existing_id,
+                errors}]}`` -- the same shape as a batch run, minus created IDs.
+            skip_duplicates: When a transaction with the same day + amount + account +
+                description already exists, report it as a duplicate (success, nothing
+                written) instead of refusing with ``duplicate_detected``.
         """
         try:
             amt = Decimal(amount)
@@ -751,19 +778,76 @@ class AgentTools:
 
         resolved_timezone = _safe_timezone(self.user_timezone)
         local_day = resolved_occurred_at.astimezone(resolved_timezone).date()
-        local_start = datetime.combine(local_day, time.min, tzinfo=resolved_timezone)
-        next_local_start = datetime.combine(
-            local_day + timedelta(days=1), time.min, tzinfo=resolved_timezone
+        local_start, local_end = local_day_range_utc(local_day, local_day, resolved_timezone)
+        source_ref = source_ref.strip() if source_ref and source_ref.strip() else None
+        source_type = (
+            TransactionSourceType.mcp_agent
+            if self.source_channel == "mcp_agent"
+            else TransactionSourceType.voice_agent
         )
-        duplicate_candidates = await self.tx_repo.find_same_day_duplicates(
-            self.workspace_id,
-            category_id=category.id,  # type: ignore[arg-type]
-            account_id=account_obj.id if account_obj else None,
-            amount=amt,
-            from_date=local_start.astimezone(UTC),
-            to_date=(next_local_start - timedelta(microseconds=1)).astimezone(UTC),
-            description=description,
-            transaction_type=tx_type.value,
+
+        if dry_run:
+            return await self._log_spending_dry_run(
+                source_type=source_type,
+                source_ref=source_ref,
+                category_id=category.id,  # type: ignore[arg-type]
+                account_id=account_obj.id if account_obj else None,
+                amount=amt,
+                description=description,
+                tx_type=tx_type,
+                local_start=local_start,
+                local_end=local_end,
+                allow_duplicate=allow_duplicate,
+                skip_duplicates=skip_duplicates,
+            )
+
+        if source_ref or skip_duplicates:
+            # Check-then-insert below; serialise concurrent idempotent writers.
+            await self.tx_repo.lock_idempotent_writes(self.workspace_id)
+
+        replayed_source_ref = None
+        if source_ref:
+            # source_ref is authoritative, so the same-day duplicate guard below is
+            # skipped: a retry resolves to the original record (create_transaction
+            # returns it for an identical payload and raises for a changed one).
+            replayed_source_ref = await self.tx_repo.get_by_source_ref(
+                self.workspace_id, source_type.value, source_ref
+            )
+        elif skip_duplicates and not allow_duplicate:
+            matches = await self._natural_key_matches(
+                account_id=account_obj.id if account_obj else None,
+                amount=amt,
+                description=description,
+                tx_type=tx_type,
+                local_start=local_start,
+                local_end=local_end,
+            )
+            if matches:
+                return {
+                    "status": "success",
+                    "duplicate": True,
+                    "skipped": True,
+                    "match_reason": "natural_key",
+                    "existing_id": str(matches[0].public_id),
+                    "local_day": local_day.isoformat(),
+                    "summary": (
+                        f"Skipped: a matching transaction is already logged for {local_day.isoformat()}."
+                    ),
+                }
+
+        duplicate_candidates = (
+            []
+            if source_ref
+            else await self.tx_repo.find_same_day_duplicates(
+                self.workspace_id,
+                category_id=category.id,  # type: ignore[arg-type]
+                account_id=account_obj.id if account_obj else None,
+                amount=amt,
+                from_date=local_start,
+                to_date=local_end - timedelta(microseconds=1),
+                description=description,
+                transaction_type=tx_type.value,
+            )
         )
         if duplicate_candidates and not allow_duplicate:
             kind_label = "income" if tx_type == TransactionType.income else "expense"
@@ -799,11 +883,6 @@ class AgentTools:
             )
             resolved_tag_ids.append(tag.public_id)
 
-        source_type = (
-            TransactionSourceType.mcp_agent
-            if self.source_channel == "mcp_agent"
-            else TransactionSourceType.voice_agent
-        )
         payload = TransactionCreate(
             category_id=category.public_id,
             account_id=account_public_id,
@@ -821,6 +900,8 @@ class AgentTools:
             source_type=source_type,
             source_ref=source_ref,
         )
+
+        idempotent_replay = replayed_source_ref is not None and tx.id == replayed_source_ref.id
 
         # Resolve currency symbol for the transaction summary
         symbol = account_obj.default_currency_code
@@ -845,7 +926,589 @@ class AgentTools:
             ],
             "account_name": resolved_account_name,
             "occurred_at": tx.occurred_at.isoformat(),
-            "summary": f"Added {symbol}{tx.amount} '{tx.description}' to Spending",
+            "summary": (
+                "Already recorded for this source_ref; nothing was added."
+                if idempotent_replay
+                else f"Added {symbol}{tx.amount} '{tx.description}' to Spending"
+            ),
+            **(
+                {
+                    "idempotent": True,
+                    "duplicate": True,
+                    "match_reason": "source_ref",
+                    "existing_id": str(tx.public_id),
+                }
+                if idempotent_replay
+                else {}
+            ),
+        }
+
+    # ---- idempotent spending writes (spec-101) --------------------------------
+
+    async def _natural_key_matches(
+        self,
+        *,
+        account_id: int | None,
+        amount: Decimal,
+        description: str | None,
+        tx_type: TransactionType,
+        local_start: datetime,
+        local_end: datetime,
+    ) -> list:
+        """Existing rows on the same local day + amount + account + description."""
+        if account_id is None:
+            return []
+        candidates = await self.tx_repo.find_natural_key_candidates(
+            self.workspace_id,
+            account_ids=[account_id],
+            amounts=[amount],
+            transaction_types=[tx_type.value],
+            from_date=local_start,
+            to_date=local_end,
+        )
+        wanted = normalize_description(description)
+        return [c for c in candidates if normalize_description(c.description) == wanted]
+
+    async def _log_spending_dry_run(
+        self,
+        *,
+        source_type: TransactionSourceType,
+        source_ref: str | None,
+        category_id: int,
+        account_id: int | None,
+        amount: Decimal,
+        description: str | None,
+        tx_type: TransactionType,
+        local_start: datetime,
+        local_end: datetime,
+        allow_duplicate: bool,
+        skip_duplicates: bool,
+    ) -> dict:
+        """Report what ``log_spending_transaction`` would do, writing nothing."""
+        status, match_reason, existing_id = "would_create", None, None
+        errors: list[str] = []
+        if source_ref:
+            existing = await self.tx_repo.get_by_source_ref(
+                self.workspace_id, source_type.value, source_ref
+            )
+            if existing is not None:
+                if (
+                    existing.category_id == category_id
+                    and existing.account_id == account_id
+                    and existing.amount == amount
+                    and existing.type == tx_type
+                    and existing.description == description
+                    and existing.wallet_name is None
+                    and existing.labels is None
+                ):
+                    status, match_reason, existing_id = (
+                        "duplicate",
+                        "source_ref",
+                        str(existing.public_id),
+                    )
+                else:
+                    # create_transaction would raise a ConflictError for this.
+                    status, match_reason, existing_id = (
+                        "invalid",
+                        "source_ref",
+                        str(existing.public_id),
+                    )
+                    errors = [
+                        f"source_ref '{source_ref}' is already used for a different "
+                        "transaction payload"
+                    ]
+        elif not allow_duplicate:
+            if skip_duplicates:
+                matches = await self._natural_key_matches(
+                    account_id=account_id,
+                    amount=amount,
+                    description=description,
+                    tx_type=tx_type,
+                    local_start=local_start,
+                    local_end=local_end,
+                )
+                if matches:
+                    status, match_reason, existing_id = (
+                        "duplicate",
+                        "natural_key",
+                        str(matches[0].public_id),
+                    )
+            else:
+                same_day = await self.tx_repo.find_same_day_duplicates(
+                    self.workspace_id,
+                    category_id=category_id,
+                    account_id=account_id,
+                    amount=amount,
+                    from_date=local_start,
+                    to_date=local_end - timedelta(microseconds=1),
+                    description=description,
+                    transaction_type=tx_type.value,
+                )
+                if same_day:
+                    # A real run would refuse with duplicate_detected: report, don't skip.
+                    status, match_reason, existing_id = (
+                        "possible_duplicate",
+                        "natural_key",
+                        str(same_day[0].public_id),
+                    )
+        items = [
+            item_result(
+                0, status, match_reason=match_reason, existing_id=existing_id, errors=errors
+            )
+        ]
+        return {
+            "status": "success",
+            "dry_run": True,
+            "counts": count_results(items),
+            "items": items,
+        }
+
+    async def _resolve_batch_item(
+        self,
+        index: int,
+        raw: Any,
+        *,
+        categories: list,
+        account_cache: dict,
+        default_account_holder: dict,
+        tz: tzinfo,
+        now: datetime,
+    ) -> ResolvedSpend | dict:
+        """Validate one batch item. Returns a ResolvedSpend, or an ``invalid`` result."""
+
+        def invalid(message: str) -> dict:
+            return item_result(index, "invalid", errors=[message])
+
+        if not isinstance(raw, dict):
+            return invalid("item must be an object")
+        unknown = sorted(set(raw) - ALLOWED_ITEM_FIELDS)
+        if unknown:
+            return invalid(f"unknown field(s): {', '.join(unknown)}")
+
+        amount_raw = raw.get("amount")
+        if amount_raw is None or isinstance(amount_raw, bool):
+            return invalid("amount is required")
+        try:
+            amt = Decimal(str(amount_raw).strip())
+        except (InvalidOperation, TypeError, ValueError):
+            return invalid("invalid amount; must be a decimal number")
+        if not amt.is_finite():
+            return invalid("invalid amount; must be a finite decimal number")
+        if amt <= 0:
+            return invalid("amount must be greater than zero")
+        if amt != amt.quantize(Decimal("0.01")):
+            return invalid("amount must have at most 2 decimal places")
+
+        type_norm = str(raw.get("transaction_type") or "expense").strip().lower()
+        if type_norm not in ("expense", "income"):
+            return invalid("transaction_type must be 'expense' or 'income'")
+        tx_type = TransactionType.income if type_norm == "income" else TransactionType.expense
+
+        description = raw.get("description")
+        if description is not None and not isinstance(description, str):
+            return invalid("description must be a string")
+        if description is not None and len(description) > 500:
+            return invalid("description must be at most 500 characters")
+
+        source_ref = raw.get("source_ref")
+        if source_ref is not None and not isinstance(source_ref, str):
+            return invalid("source_ref must be a string")
+        source_ref = source_ref.strip() if source_ref and source_ref.strip() else None
+        if source_ref is not None and len(source_ref) > 255:
+            return invalid("source_ref must be at most 255 characters")
+
+        tags_raw = raw.get("tags") or []
+        if not isinstance(tags_raw, list) or not all(isinstance(t, str) for t in tags_raw):
+            return invalid("tags must be a list of strings")
+        tag_names = [" ".join(t.strip().split()) for t in tags_raw]
+        tag_names = [t for t in tag_names if t]
+        if len(tag_names) > 20:
+            return invalid("at most 20 tags per item")
+        try:
+            for tag_name in tag_names:
+                TagCreate(name=tag_name)
+        except PydanticValidationError as exc:
+            return invalid(f"invalid tag: {exc.errors()[0].get('msg', 'invalid')}")
+
+        warnings: list[str] = []
+        category_name = str(raw.get("category_name") or "").strip().lower()
+        category = next((c for c in categories if c.name.strip().lower() == category_name), None)
+        if category is None:
+            category = next((c for c in categories if c.name.strip().lower() == "other"), None)
+            if category is None:
+                return invalid("no suitable spending category found in this workspace")
+            warnings.append(
+                f"category {raw.get('category_name')!r} not found; used {category.name!r}"
+            )
+
+        account_name = raw.get("account_name")
+        if account_name is not None and not isinstance(account_name, str):
+            return invalid("account_name must be a string")
+        if account_name and account_name.strip():
+            cache_key = _normalize_name(account_name)
+            if cache_key not in account_cache:
+                account_cache[cache_key] = await self._resolve_spending_account(account_name)
+            account, resolution_error = account_cache[cache_key]
+            if resolution_error is not None or account is None:
+                message = (resolution_error or {}).get("message", "could not resolve account")
+                return invalid(message)
+        else:
+            if "account" not in default_account_holder:
+                setting = await self.setting_repo.get_by_workspace(self.workspace_id)
+                default_id = setting.default_spending_account_id if setting else None
+                candidate = (
+                    await self.account_repo.get_by_id(self.workspace_id, default_id)
+                    if default_id is not None
+                    else None
+                )
+                default_account_holder["account"] = (
+                    candidate if candidate and candidate.is_active else None
+                )
+            account = default_account_holder["account"]
+            if account is None:
+                return invalid(
+                    "no account_name given and the workspace has no default spending account"
+                )
+
+        occurred_raw = raw.get("occurred_at")
+        if occurred_raw is not None and not isinstance(occurred_raw, str):
+            return invalid("occurred_at must be an ISO date or date-time string")
+        if occurred_raw and occurred_raw.strip():
+            try:
+                occurred_at = _parse_occurred_at(occurred_raw, self.user_timezone)
+            except ValueError:
+                return invalid("invalid occurred_at; use an ISO date or date-time")
+            if occurred_at.astimezone(tz).date() > now.astimezone(tz).date():
+                return invalid("cannot log a spend for a future date")
+            if occurred_at > now:
+                occurred_at = now
+        else:
+            occurred_at = now
+
+        allow_duplicate = raw.get("allow_duplicate", False)
+        if not isinstance(allow_duplicate, bool):
+            return invalid("allow_duplicate must be a boolean")
+
+        return ResolvedSpend(
+            index=index,
+            amount=amt,
+            category=category,
+            account=account,
+            occurred_at=occurred_at,
+            local_day=occurred_at.astimezone(tz).date(),
+            description=description,
+            tx_type=tx_type,
+            source_ref=source_ref,
+            tags=tag_names,
+            allow_duplicate=allow_duplicate,
+            warnings=warnings,
+        )
+
+    async def _create_batch_transaction(
+        self, item: ResolvedSpend, source_type: TransactionSourceType, tag_cache: dict
+    ):
+        """Persist one resolved item through the same service path as single writes."""
+        tag_ids = []
+        for name in item.tags:
+            tag_key = name.lower()
+            if tag_key not in tag_cache:
+                tag = await self.tag_service.create_tag(
+                    self.workspace_id,
+                    TagCreate(name=name),
+                    actor_id=self.user_id,
+                    audit_logger=self.audit_logger,
+                )
+                tag_cache[tag_key] = tag.public_id
+            tag_ids.append(tag_cache[tag_key])
+        payload = TransactionCreate(
+            category_id=item.category.public_id,
+            account_id=item.account.public_id,
+            amount=item.amount,
+            type=item.tx_type,
+            occurred_at=item.occurred_at,
+            description=item.description,
+            tag_ids=tag_ids,
+        )
+        return await self.tx_service.create_transaction(
+            user_id=self.user_id,
+            workspace_id=self.workspace_id,
+            tx_in=payload,
+            audit_logger=self.audit_logger,
+            source_type=source_type,
+            source_ref=item.source_ref,
+        )
+
+    async def log_spending_transactions_batch(
+        self,
+        items: list[dict],
+        atomic: bool = False,
+        dry_run: bool = False,
+        skip_duplicates: bool = False,
+    ) -> dict:
+        """Record up to 50 spending transactions idempotently, in one call.
+
+        Each item takes the same fields as ``log_spending_transaction``
+        (``amount``, ``category_name``, ``description``, ``account_name``,
+        ``occurred_at``, ``tags``, ``transaction_type``, ``source_ref``,
+        ``allow_duplicate``); unknown fields are rejected.
+
+        Dedupe, per item:
+          1. ``source_ref`` -- exact match returns the existing record (``duplicate``,
+             ``match_reason=source_ref``, ``existing_id``). Also applies within the batch.
+          2. Otherwise the natural key: local day + amount + account + normalised
+             description, *multiplicity-aware*: if the ledger already holds ``e`` such
+             rows and the batch asks for ``k``, the first ``min(e, k)`` match and the rest
+             are created. A match is ``duplicate`` (skipped) with ``skip_duplicates=true``,
+             otherwise ``possible_duplicate`` (not written; set the item's
+             ``allow_duplicate=true`` to record it anyway). Nothing is skipped silently.
+
+        ``atomic=false`` (default): per-item partial success. ``atomic=true``:
+        all-or-nothing -- any invalid or possible-duplicate item, or any failure while
+        writing, persists nothing. ``dry_run=true`` writes nothing and reports
+        ``would_create`` with the same structure as a real run, minus created IDs.
+        Returns ``{status, dry_run, atomic, counts, items:[{index, status, match_reason,
+        existing_id, errors, warnings}]}``.
+        """
+        if not isinstance(items, list) or not items:
+            return {"status": "error", "message": "items must be a non-empty list."}
+        if len(items) > MAX_BATCH_ITEMS:
+            return {
+                "status": "error",
+                "message": (
+                    f"A batch is limited to {MAX_BATCH_ITEMS} items; received {len(items)}. "
+                    "Nothing was written."
+                ),
+                "counts": count_results([]),
+                "items": [],
+            }
+
+        tz = _safe_timezone(self.user_timezone)
+        now = datetime.now(UTC)
+        source_type = (
+            TransactionSourceType.mcp_agent
+            if self.source_channel == "mcp_agent"
+            else TransactionSourceType.voice_agent
+        )
+
+        # ---- pass 1: validate + resolve each item (reads only) ----
+        categories, _ = await self.category_service.list_categories(
+            self.workspace_id, limit=200, offset=0
+        )
+        account_cache: dict = {}
+        default_account_holder: dict = {}
+        results: list[dict | None] = [None] * len(items)
+        resolved: dict[int, ResolvedSpend] = {}
+        for index, raw in enumerate(items):
+            outcome = await self._resolve_batch_item(
+                index,
+                raw,
+                categories=categories,
+                account_cache=account_cache,
+                default_account_holder=default_account_holder,
+                tz=tz,
+                now=now,
+            )
+            if isinstance(outcome, dict):
+                results[index] = outcome
+            else:
+                resolved[index] = outcome
+
+        # ---- pass 2: classify against the ledger (3 queries total, not per item) ----
+        if resolved and not dry_run:
+            # Serialise concurrent idempotent writers for this workspace until commit.
+            await self.tx_repo.lock_idempotent_writes(self.workspace_id)
+
+        refs = sorted({r.source_ref for r in resolved.values() if r.source_ref})
+        existing_by_ref = await self.tx_repo.get_by_source_refs(
+            self.workspace_id, source_type.value, refs
+        )
+
+        natural_items = [r for r in resolved.values() if not r.source_ref and not r.allow_duplicate]
+        existing_by_key: dict = {}
+        if natural_items:
+            window_start, window_end = local_day_range_utc(
+                min(r.local_day for r in natural_items),
+                max(r.local_day for r in natural_items),
+                tz,
+            )
+            candidates = await self.tx_repo.find_natural_key_candidates(
+                self.workspace_id,
+                account_ids=sorted({r.account.id for r in natural_items}),
+                amounts=sorted({r.amount for r in natural_items}),
+                transaction_types=sorted({r.tx_type.value for r in natural_items}),
+                from_date=window_start,
+                to_date=window_end,
+            )
+            existing_by_key = group_existing_by_natural_key(candidates, tz)
+        natural_plan = plan_natural_key_matches(natural_items, existing_by_key)
+
+        to_create: list[int] = []
+        first_with_ref: dict[str, int] = {}
+        repeated_in_batch: dict[int, int] = {}
+        for index in sorted(resolved):
+            r = resolved[index]
+            if r.source_ref:
+                existing = existing_by_ref.get(r.source_ref)
+                if existing is not None and not same_payload(existing, r, tz):
+                    # Same contract as the single tool: a reused source_ref with a
+                    # changed payload is an error, not a silent accept or overwrite.
+                    results[index] = item_result(
+                        index,
+                        "invalid",
+                        match_reason="source_ref",
+                        existing_id=str(existing.public_id),
+                        errors=[
+                            f"source_ref '{r.source_ref}' is already used for a different "
+                            "transaction payload"
+                        ],
+                    )
+                elif existing is not None:
+                    results[index] = item_result(
+                        index,
+                        "duplicate",
+                        match_reason="source_ref",
+                        existing_id=str(existing.public_id),
+                        warnings=r.warnings,
+                    )
+                elif r.source_ref in first_with_ref:
+                    first = first_with_ref[r.source_ref]
+                    if same_item_payload(resolved[first], r):
+                        repeated_in_batch[index] = first
+                        results[index] = item_result(
+                            index,
+                            "duplicate",
+                            match_reason="source_ref",
+                            warnings=r.warnings,
+                            duplicate_of_index=first,
+                        )
+                    else:
+                        results[index] = item_result(
+                            index,
+                            "invalid",
+                            errors=[
+                                f"source_ref reused with a different payload (see item {first})"
+                            ],
+                        )
+                else:
+                    first_with_ref[r.source_ref] = index
+                    to_create.append(index)
+                continue
+            match = natural_plan.get(index)
+            if match is None:
+                to_create.append(index)
+            else:
+                results[index] = item_result(
+                    index,
+                    "duplicate" if skip_duplicates else "possible_duplicate",
+                    match_reason="natural_key",
+                    existing_id=str(match.existing.public_id),
+                    warnings=r.warnings,
+                )
+
+        # ---- pass 3: atomic gate, then persist ----
+        blocked = any(
+            res is not None and res["status"] in ("invalid", "possible_duplicate")
+            for res in results
+        )
+        if atomic and blocked:
+            for index in to_create:
+                results[index] = item_result(
+                    index,
+                    "not_created",
+                    errors=["atomic batch aborted; nothing was written"],
+                    warnings=resolved[index].warnings,
+                )
+            final = [res for res in results if res is not None]
+            return {
+                "status": "error",
+                "dry_run": dry_run,
+                "atomic": True,
+                "persisted": False,
+                "message": (
+                    "Atomic batch rejected: one or more items are invalid or possible "
+                    "duplicates. Nothing was written."
+                ),
+                "counts": count_results(final),
+                "items": final,
+            }
+
+        if dry_run:
+            for index in to_create:
+                results[index] = item_result(
+                    index, "would_create", warnings=resolved[index].warnings
+                )
+        elif atomic:
+            tag_cache: dict = {}
+            try:
+                for index in to_create:
+                    tx = await self._create_batch_transaction(
+                        resolved[index], source_type, tag_cache
+                    )
+                    results[index] = item_result(
+                        index,
+                        "created",
+                        warnings=resolved[index].warnings,
+                        entity_public_id=str(tx.public_id),
+                    )
+            except Exception as exc:  # noqa: BLE001 -- all-or-nothing: undo everything
+                await self.session.rollback()
+                logger.warning("spending_batch_atomic_rollback", error_type=type(exc).__name__)
+                return {
+                    "status": "error",
+                    "dry_run": False,
+                    "atomic": True,
+                    "persisted": False,
+                    "message": (
+                        "Atomic batch rolled back; nothing was written: "
+                        f"{_tool_error_message(exc, 'internal error')}"
+                    ),
+                    "counts": count_results([]),
+                    "items": [],
+                }
+        else:
+            tag_cache = {}
+            for index in to_create:
+                try:
+                    # SAVEPOINT per item: a failing item can't poison the others.
+                    async with self.session.begin_nested():
+                        tx = await self._create_batch_transaction(
+                            resolved[index], source_type, tag_cache
+                        )
+                    results[index] = item_result(
+                        index,
+                        "created",
+                        warnings=resolved[index].warnings,
+                        entity_public_id=str(tx.public_id),
+                    )
+                except Exception as exc:  # noqa: BLE001 -- partial success by design
+                    tag_cache.clear()  # tags made inside the rolled-back savepoint are gone
+                    logger.warning("spending_batch_item_failed", error_type=type(exc).__name__)
+                    results[index] = item_result(
+                        index,
+                        "invalid",
+                        errors=[_tool_error_message(exc, "could not create this item")],
+                    )
+
+        # In-batch repeats of a source_ref point at the record their first item made.
+        for index, first in repeated_in_batch.items():
+            repeat = results[index]
+            first_result = results[first]
+            assert repeat is not None and first_result is not None
+            if first_result["status"] in ("created", "would_create"):
+                repeat["existing_id"] = first_result.get("entity_public_id")
+            else:
+                repeat["status"] = "invalid"
+                repeat["match_reason"] = None
+                repeat["errors"] = [f"item {first} with the same source_ref was not created"]
+
+        final = [res for res in results if res is not None]
+        return {
+            "status": "success",
+            "dry_run": dry_run,
+            "atomic": atomic,
+            "persisted": not dry_run,
+            "counts": count_results(final),
+            "items": final,
         }
 
     async def list_spending_transactions(
@@ -857,21 +1520,46 @@ class AgentTools:
         account_name: str | None = None,
         transaction_type: str | None = "expense",
         limit: int = 10,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        cursor: str | None = None,
     ) -> dict:
-        """List transactions (expense or income) for a local calendar day in the user's timezone."""
+        """List transactions (expense or income) for a local day or inclusive date range.
+
+        ``day`` selects one local calendar day; otherwise ``from_date``/``to_date``
+        (YYYY-MM-DD, both inclusive, in the user's timezone) select a range -- a missing
+        ``to_date`` means the same day as ``from_date``, and no dates means today.
+        Results are newest first with a stable tiebreaker. The response carries
+        ``total_count`` (all matches) and ``next_cursor`` (pass back as ``cursor`` for the
+        next page; ``None`` on the last page).
+        """
         timezone = _safe_timezone(self.user_timezone)
         if day and day.strip():
             try:
-                local_day = date.fromisoformat(day.strip())
+                start_day = date.fromisoformat(day.strip())
             except ValueError:
                 return {"status": "error", "message": "day must be an ISO date (YYYY-MM-DD)."}
+            end_day = start_day
         else:
-            local_day = datetime.now(timezone).date()
+            try:
+                start_day = (
+                    date.fromisoformat(from_date.strip())
+                    if from_date and from_date.strip()
+                    else None
+                )
+                end_day = (
+                    date.fromisoformat(to_date.strip()) if to_date and to_date.strip() else None
+                )
+            except ValueError:
+                return {"status": "error", "message": "Dates must use YYYY-MM-DD format."}
+            if start_day is None:
+                start_day = end_day or datetime.now(timezone).date()
+            if end_day is None:
+                end_day = start_day
+        if end_day < start_day:
+            return {"status": "error", "message": "to_date must not be before from_date."}
 
-        local_start = datetime.combine(local_day, time.min, tzinfo=timezone)
-        next_local_start = datetime.combine(
-            local_day + timedelta(days=1), time.min, tzinfo=timezone
-        )
+        range_start, range_end = local_day_range_utc(start_day, end_day, timezone)
         try:
             normalized_limit = max(1, min(int(limit), 25))
         except (TypeError, ValueError):
@@ -931,22 +1619,47 @@ class AgentTools:
                     "message": "amount must be numeric and must not include a currency symbol.",
                 }
 
-        items, _ = await self.tx_service.list_transactions_with_details(
+        fingerprint = filter_fingerprint(
+            start=start_day,
+            end=end_day,
+            category=category_public_id,
+            account=account_public_id,
+            type=type_filter,
+            search=search,
+            amount=parsed_amount,
+        )
+        try:
+            offset = decode_cursor(cursor, fingerprint)
+        except CursorError as exc:
+            return {"status": "error", "message": str(exc)}
+        items, total = await self.tx_service.list_transactions_with_details(
             self.workspace_id,
             category_public_id=category_public_id,
             account_public_id=account_public_id,
             type_filter=type_filter,
-            from_date=local_start.astimezone(UTC),
-            to_date=(next_local_start - timedelta(microseconds=1)).astimezone(UTC),
+            from_date=range_start,
+            # The repository bound is inclusive (<=); step back one microsecond so the
+            # next local midnight is excluded.
+            to_date=range_end - timedelta(microseconds=1),
             search=search,
             amount=parsed_amount,
+            sort=TransactionSort.date_desc,
             limit=normalized_limit,
-            offset=0,
+            offset=offset,
+        )
+        next_cursor = (
+            encode_cursor(offset + len(items), fingerprint)
+            if items and offset + len(items) < total
+            else None
         )
         return {
             "status": "success",
-            "day": local_day.isoformat(),
+            "day": start_day.isoformat(),
+            "from_date": start_day.isoformat(),
+            "to_date": end_day.isoformat(),
             "timezone": getattr(timezone, "key", "UTC"),
+            "total_count": total,
+            "next_cursor": next_cursor,
             "transactions": [
                 {
                     "entity_public_id": str(item.public_id),
@@ -990,13 +1703,20 @@ class AgentTools:
         account_name: str | None = None,
         transaction_type: str | None = "expense",
         limit: int = 10,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        cursor: str | None = None,
     ) -> dict:
         """Find bounded transaction candidates for a correction or deletion.
 
         At least one meaningful clue is required so a conversational correction
         cannot accidentally select an arbitrary workspace transaction.
-        Dates are local calendar days in the user's persisted timezone.
+        Dates are inclusive local calendar days in the user's persisted timezone;
+        ``from_date``/``to_date`` are the preferred names (``from_day``/``to_day`` remain
+        as aliases). Large result sets are paginated: use ``next_cursor`` as ``cursor``.
         """
+        from_day = from_date if from_date and from_date.strip() else from_day
+        to_day = to_date if to_date and to_date.strip() else to_day
         clues = (from_day, to_day, category_name, amount, search, account_name)
         if not any(value and value.strip() for value in clues if isinstance(value, str)):
             return {
@@ -1086,36 +1806,50 @@ class AgentTools:
             except (InvalidOperation, TypeError, ValueError):
                 return {"status": "error", "message": "amount must be numeric."}
 
-        local_start = datetime.combine(start_day, time.min, tzinfo=timezone)
-        next_local_start = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=timezone)
+        range_start, range_end = local_day_range_utc(start_day, end_day, timezone)
+        search_term = search.strip() if search and search.strip() else None
+        fingerprint = filter_fingerprint(
+            start=start_day,
+            end=end_day,
+            category=category_public_id,
+            account=account_public_id,
+            type=type_filter,
+            search=search_term,
+            amount=parsed_amount,
+        )
+        try:
+            offset = decode_cursor(cursor, fingerprint)
+        except CursorError as exc:
+            return {"status": "error", "message": str(exc)}
         items, total = await self.tx_service.list_transactions_with_details(
             self.workspace_id,
             category_public_id=category_public_id,
             account_public_id=account_public_id,
             type_filter=type_filter,
-            from_date=local_start.astimezone(UTC),
-            to_date=next_local_start.astimezone(UTC),
-            search=search.strip() if search and search.strip() else None,
+            from_date=range_start,
+            # Repository bound is inclusive (<=): exclude the next local midnight.
+            to_date=range_end - timedelta(microseconds=1),
+            search=search_term,
             amount=parsed_amount,
+            sort=TransactionSort.date_desc,
             limit=normalized_limit,
-            offset=0,
+            offset=offset,
         )
-        if total > normalized_limit:
-            return {
-                "status": "error",
-                "needs_filter": True,
-                "total": total,
-                "message": (
-                    f"I found {total} matching transactions. Add a more specific date, "
-                    "amount, description, category, or account."
-                ),
-            }
+        next_cursor = (
+            encode_cursor(offset + len(items), fingerprint)
+            if items and offset + len(items) < total
+            else None
+        )
         return {
             "status": "success",
             "from_day": start_day.isoformat(),
             "to_day": end_day.isoformat(),
+            "from_date": start_day.isoformat(),
+            "to_date": end_day.isoformat(),
             "timezone": getattr(timezone, "key", "UTC"),
             "total": total,
+            "total_count": total,
+            "next_cursor": next_cursor,
             "transactions": [
                 self._transaction_candidate(item, category_names, account_names) for item in items
             ],
