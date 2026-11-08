@@ -1,11 +1,12 @@
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.investing.models import CorporateActionType, InstrumentType, OrderType
+from app.investing.models import ComplianceVerdict, CorporateActionType, InstrumentType, OrderType
 from app.spending.schemas import SourceMetadataResponse
 
 DIVIDEND_INCOME_TYPES = ("dividend", "interest", "coupon")
@@ -754,5 +755,114 @@ class DividendHistoryResponse(BaseModel):
     total_dividends_received: Decimal
     trailing_12m_dividends: Decimal
     monthly_history: list[MonthlyDividendPoint]
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+# ---------------------------------------------------------------------------
+# Halal compliance verdicts + purification estimates (spec-104)
+# ---------------------------------------------------------------------------
+
+MAX_COMPLIANCE_SOURCES = 10
+MAX_SOURCE_URL_LENGTH = 2048
+PURIFICATION_DISCLAIMER = (
+    "Estimate only, not a fatwa or religious ruling. Screeners disagree and rules "
+    "differ by school; consult a qualified scholar before acting on this figure."
+)
+
+
+def _not_in_future(value: date | None) -> date | None:
+    """Reject dates after tomorrow (UTC); one day of slack covers users ahead of UTC."""
+    if value is not None and value > datetime.now(UTC).date() + timedelta(days=1):
+        raise ValueError("date cannot be in the future")
+    return value
+
+
+class ComplianceSource(BaseModel):
+    """A verifiable citation behind a compliance verdict.
+
+    Each source may carry that screener's own verdict and as-of date so
+    disagreeing screeners stay visible side by side instead of being merged.
+    """
+
+    screener_name: str = Field(..., min_length=1, max_length=100)
+    url: str = Field(..., min_length=1, max_length=MAX_SOURCE_URL_LENGTH)
+    rule_reference: str = Field(..., min_length=1, max_length=500)
+    verdict: ComplianceVerdict | None = None
+    as_of_date: date | None = None
+
+    @field_validator("screener_name", "rule_reference", "url", mode="before")
+    @classmethod
+    def _strip(cls, v: object) -> object:
+        return v.strip() if isinstance(v, str) else v
+
+    @field_validator("screener_name", "rule_reference")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v:
+            raise ValueError("must not be blank")
+        return v
+
+    @field_validator("url")
+    @classmethod
+    def _http_url(cls, v: str) -> str:
+        parsed = urlparse(v)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.netloc
+            or any(ch.isspace() or ord(ch) < 32 for ch in v)
+        ):
+            raise ValueError("url must be an absolute http(s) URL")
+        return v
+
+    @field_validator("as_of_date")
+    @classmethod
+    def _source_date_not_future(cls, v: date | None) -> date | None:
+        return _not_in_future(v)
+
+
+class HoldingComplianceUpsert(BaseModel):
+    verdict: ComplianceVerdict
+    sources: list[ComplianceSource] = Field(..., min_length=1, max_length=MAX_COMPLIANCE_SOURCES)
+    as_of_date: date
+    impure_income_pct: Decimal | None = Field(
+        default=None, ge=0, le=100, max_digits=7, decimal_places=4
+    )
+
+    @field_validator("as_of_date")
+    @classmethod
+    def _as_of_not_future(cls, v: date) -> date:
+        return _not_in_future(v)  # type: ignore[return-value]
+
+
+class HoldingComplianceResponse(BaseModel):
+    public_id: uuid.UUID
+    holding_public_id: uuid.UUID
+    verdict: ComplianceVerdict
+    sources: list[ComplianceSource]
+    sources_disagree: bool = False
+    as_of_date: date
+    impure_income_pct: Decimal | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class PurificationEstimateResponse(BaseModel):
+    scope: Literal["holding", "dividend"]
+    target_public_id: uuid.UUID
+    holding_public_id: uuid.UUID | None = None
+    verdict: ComplianceVerdict
+    compliance_on_file: bool
+    verdict_as_of_date: date | None = None
+    impure_income_pct: Decimal | None = None
+    base_amount: Decimal
+    purification_amount: Decimal
+    currency: str
+    dividend_count: int = 0
+    basis: str
+    assumptions: list[str] = Field(default_factory=list)
+    disclaimer: str = PURIFICATION_DISCLAIMER
 
     model_config = ConfigDict(json_encoders={Decimal: str})

@@ -1,7 +1,9 @@
 import re
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
-from uuid import UUID
+from decimal import Decimal
+from typing import Any
+from uuid import UUID, uuid4
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -15,6 +17,7 @@ from app.investing.models import (
     CorporateAction,
     Dividend,
     Holding,
+    HoldingCompliance,
     HoldingPrice,
     HoldingVerification,
     Instrument,
@@ -100,6 +103,15 @@ class HoldingRepository(BaseRepository[Holding]):
             select(Holding).where(
                 Holding.workspace_id == workspace_id,
                 Holding.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_id_in_workspace(self, workspace_id: int, holding_id: int) -> Holding | None:
+        result = await self.session.execute(
+            select(Holding).where(
+                Holding.workspace_id == workspace_id,
+                Holding.id == holding_id,
             )
         )
         return result.scalar_one_or_none()
@@ -1113,3 +1125,81 @@ class DividendRepository(BaseRepository[Dividend]):
             base.order_by(Dividend.pay_date.desc(), Dividend.id.desc()).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
+
+    async def sum_gross_by_holding(
+        self,
+        workspace_id: int,
+        holding_id: int,
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> list[tuple[str, int, Decimal]]:
+        """Return ``(currency, event_count, gross_total)`` per currency for one holding.
+
+        Aggregated in SQL (one query, no per-dividend loading).
+        """
+        query = (
+            select(Dividend.currency, func.count(Dividend.id), func.sum(Dividend.gross_amount))
+            .where(Dividend.workspace_id == workspace_id, Dividend.holding_id == holding_id)
+            .group_by(Dividend.currency)
+            .order_by(Dividend.currency)
+        )
+        if from_date is not None:
+            query = query.where(Dividend.pay_date >= from_date)
+        if to_date is not None:
+            query = query.where(Dividend.pay_date <= to_date)
+        rows = (await self.session.execute(query)).all()
+        return [(row[0], int(row[1]), Decimal(row[2])) for row in rows]
+
+
+class HoldingComplianceRepository(BaseRepository[HoldingCompliance]):
+    async def get_by_holding(self, workspace_id: int, holding_id: int) -> HoldingCompliance | None:
+        result = await self.session.execute(
+            select(HoldingCompliance).where(
+                HoldingCompliance.workspace_id == workspace_id,
+                HoldingCompliance.holding_id == holding_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert(
+        self,
+        workspace_id: int,
+        holding_id: int,
+        *,
+        verdict: str,
+        sources: list[dict[str, Any]],
+        as_of_date: date,
+        impure_income_pct: Decimal | None,
+    ) -> HoldingCompliance:
+        """Atomically insert or replace the single compliance row for a holding.
+
+        Uses ``INSERT .. ON CONFLICT DO UPDATE`` on the
+        ``(workspace_id, holding_id)`` unique key so two concurrent first
+        writes cannot raise an IntegrityError or create duplicates.
+        """
+        now = datetime.now(UTC)
+        values = {
+            "verdict": verdict,
+            "sources": sources,
+            "as_of_date": as_of_date,
+            "impure_income_pct": impure_income_pct,
+        }
+        stmt = (
+            pg_insert(HoldingCompliance)
+            .values(
+                public_id=uuid4(),
+                workspace_id=workspace_id,
+                holding_id=holding_id,
+                created_at=now,
+                updated_at=now,
+                **values,
+            )
+            .on_conflict_do_update(
+                constraint="uq_investing_holding_compliance_workspace_holding",
+                set_={**values, "updated_at": now},
+            )
+            .returning(HoldingCompliance)
+            .execution_options(populate_existing=True)
+        )
+        return (await self.session.execute(stmt)).scalar_one()
