@@ -83,6 +83,16 @@ Output: sectors [{sector, value, pct}] sorted desc by value (pct rounded 2 dp), 
 
 `GET /v1/investing/analytics/allocation?lookthrough=true|false` — when true, sectors come from the look-through computation; asset-class buckets unchanged.
 
+## As-built decisions (review of the retroactive implementation)
+
+- **Sector normalisation.** Writes strip/collapse whitespace and canonicalise a case-insensitive match of a GICS name or `Other / not itemised` (`health  care` -> `Health Care`); other free text keeps its casing. Allocation groups on a case/whitespace-insensitive key, so legacy rows written before this rule still share one bucket. Blank/whitespace-only sector on `set_company_sector` is rejected ("sector is required"); blank sector/industry on a constituent row means "not provided". Code: `app/investing/sectors.py`.
+- **Forking.** `CompanyRepository.fork_for_workspace` never edits a global company. It reuses an existing workspace copy (same ISIN, else same name) so re-runs are idempotent, and re-points what the workspace owns: workspace instruments, a workspace shadow of each global instrument linked to the company (holdings in the workspace move onto the shadow, all accounts, not just the targeted one), and the workspace's own constituent rows. `get_by_isin` and company matching prefer the workspace copy over the global row. Constituent sector propagation uses the same fork, and only when a change would actually be made.
+- **Transaction semantics of `set_company_sector`.** Each row runs in its own SAVEPOINT. Expected row failures (not found, ambiguous ticker, name clash) are returned in `errors`, their partial writes (e.g. a fork) are rolled back, and the other rows still commit. Any unexpected exception rolls back the whole call; nothing is committed and the tool returns `status=error`.
+- **Single-snapshot reads.** `get_constituents` (REST and MCP) now also uses the single newest snapshot by `(as_of_date, fetched_at)` (tie-break: source) instead of mixing every source on the requested date.
+- **Rounding.** Sector values and percentages are rounded with the largest-remainder method: values sum exactly to the total, percentages to exactly 100.00.
+- **FX / warnings.** A holding whose FX rate is missing is excluded from the allocation and named in `warnings` (never counted as zero). A missing price falls back to average cost with a warning. Multi-currency with no reporting currency converts to USD and warns. All reads are batched (instruments, companies, constituents, prices): no per-holding queries.
+- **REST.** `GET /v1/investing/analytics/allocation?lookthrough=true` additionally returns `lookthrough`, `fund_coverage` and `warnings`; asset-class buckets are unchanged.
+
 ## Risks
 
 - Global company forked on first sector write in a workspace: two workspaces setting different sectors on the same global company diverge (intentional — workspace-scoped override, same precedent as spec-099 instrument forks).
