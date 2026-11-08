@@ -572,7 +572,7 @@ class ThemeExposureService:
         return LookthroughExposureResponse(
             as_of_date=as_of,
             currency=portfolio.currency,
-            status="complete" if not warnings else "partial",
+            analysis_status="complete" if not warnings else "partial",
             group_by=group_by,
             total_value=total,
             itemised_value=total - not_itemised,
@@ -708,7 +708,7 @@ class ThemeExposureService:
         return AllocationVsTargetResponse(
             as_of_date=as_of,
             currency=portfolio.currency,
-            status="complete" if not warnings else "partial",
+            analysis_status="complete" if not warnings else "partial",
             portfolio_value=_q(portfolio_value),
             new_cash=cash,
             post_deployment_value=_q(post_total),

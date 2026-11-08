@@ -138,7 +138,7 @@ class FundCoverageRow(BaseModel):
 class LookthroughExposureResponse(BaseModel):
     as_of_date: date
     currency: str | None
-    status: AnalysisStatus
+    analysis_status: AnalysisStatus
     group_by: GroupBy | None = None
     total_value: Decimal
     itemised_value: Decimal
@@ -190,7 +190,7 @@ class AllocationThemeRow(BaseModel):
 class AllocationVsTargetResponse(BaseModel):
     as_of_date: date
     currency: str | None
-    status: AnalysisStatus
+    analysis_status: AnalysisStatus
     portfolio_value: Decimal
     new_cash: Decimal
     post_deployment_value: Decimal
