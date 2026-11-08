@@ -1,3 +1,4 @@
+import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Protocol
@@ -95,6 +96,18 @@ class UserRepository:
         statement = select(User).where(User.id == user_id)
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
+
+    async def get_summaries_by_ids(
+        self, user_ids: Sequence[int]
+    ) -> dict[int, tuple[uuid.UUID, str]]:
+        """Bulk ``{user_id: (public_id, username)}`` lookup in a single query."""
+        unique_ids = {i for i in user_ids if i is not None}
+        if not unique_ids:
+            return {}
+        result = await self.session.execute(
+            select(User.id, User.public_id, User.username).where(User.id.in_(unique_ids))
+        )
+        return {uid: (public_id, username) for uid, public_id, username in result.all()}
 
     async def create(self, user_create: UserCreate) -> User:
         db_user = User(

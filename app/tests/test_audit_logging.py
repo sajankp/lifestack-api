@@ -16,6 +16,7 @@ DB entity state after each mutation.
 """
 
 import uuid
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
@@ -48,6 +49,58 @@ async def seed_audit_test_data(override_database_url):
             ws = Workspace(id=wid, name=f"Workspace {wid}")
             session.add(ws)
         await session.commit()
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "password",
+        "PASSWORD",
+        "password_hash",
+        "hashed_password",
+        "new_password",
+        "api_key",
+        "stripe_api_key",
+        "apiKey",
+        "access_token",
+        "refresh_token_value",
+        "client_secret",
+        "mfa_secret",
+        "private_key",
+        "Authorization",
+        "credentials",
+        "card_number",
+        "cvv",
+        "session_hash",
+    ],
+)
+def test_redact_details_catches_compound_secret_key_names(key):
+    out = redact_details({key: "super-secret-value", "safe": "visible"})
+    assert out[key] == "[REDACTED]"
+    assert out["safe"] == "visible"
+
+
+def test_redact_details_walks_lists_and_nested_before_after_snapshots():
+    payload = {
+        "before": {"items": [{"token": "t1", "name": "a"}, {"nested": {"password": "p"}}]},
+        "after": [{"client_secret": "s"}],
+        "amount": Decimal("1.50"),
+        "id": uuid.UUID(int=1),
+    }
+    out = redact_details(payload)
+    assert out["before"]["items"][0] == {"token": "[REDACTED]", "name": "a"}
+    assert out["before"]["items"][1]["nested"]["password"] == "[REDACTED]"
+    assert out["after"] == [{"client_secret": "[REDACTED]"}]
+    assert out["amount"] == "1.50" and out["id"] == str(uuid.UUID(int=1))
+    assert "super" not in repr(out)
+
+
+def test_redact_details_does_not_over_redact_ordinary_fields():
+    payload = {"quantity": "3", "symbol": "AAPL", "authority": "x", "tokenizer_note": "y"}
+    out = redact_details(payload)
+    assert out["quantity"] == "3" and out["symbol"] == "AAPL" and out["authority"] == "x"
+    # Substring policy is deliberately conservative: a key containing "token" is hidden.
+    assert out["tokenizer_note"] == "[REDACTED]"
 
 
 @pytest.mark.asyncio
