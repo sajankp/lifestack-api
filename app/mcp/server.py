@@ -67,6 +67,12 @@ from app.investing.service import (
 )
 from app.investing.tax.exchanges import resolve_exchange
 from app.investing.tax_service import TaxService
+from app.investing.theme_repository import (
+    HoldingThemeTagRepository,
+    LatestConstituentSnapshotRepository,
+)
+from app.investing.theme_schemas import HoldingThemeTagsBulkRequest
+from app.investing.theme_service import HoldingThemeTagService, ThemeExposureService
 from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.security import authorize_user, authorize_workspace, validate_page
 from app.platform.repository import MembershipRepository, WorkspaceRepository
@@ -183,6 +189,23 @@ def _tax_service(session: Any) -> TaxService:
         account_repository=AccountRepository(session),
         instrument_repository=InstrumentRepository(session),
         fx_rate_repository=FxRateRepository(session),
+    )
+
+
+def _theme_tag_service(session: Any) -> HoldingThemeTagService:
+    return HoldingThemeTagService(HoldingThemeTagRepository(session))
+
+
+def _theme_exposure_service(session: Any) -> ThemeExposureService:
+    return ThemeExposureService(
+        HoldingRepository(session),
+        InstrumentRepository(session),
+        CompanyRepository(session),
+        LatestConstituentSnapshotRepository(session),
+        HoldingPriceRepository(session),
+        FinanceSettingRepository(session),
+        FxRateRepository(session),
+        HoldingThemeTagRepository(session),
     )
 
 
@@ -2193,6 +2216,132 @@ def create_mcp_server() -> FastMCP:
                     "An unrecognised exchange name leaves the country unset rather than guessing.",
                 ],
             }
+
+    @mcp.tool
+    async def set_holding_theme_tags(
+        workspace_id: int,
+        holdings: list[dict[str, Any]],
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Set investment-theme tags (with optional target weights) on holdings, in bulk.
+
+        `holdings` is a list of `{"holding_id": "<holding public_id>", "tags":
+        [{"theme": "AI power/grid", "target_weight_pct": "5"}]}`. Each listed
+        holding's tag set is REPLACED (an empty `tags` list clears it); other
+        holdings are untouched. `target_weight_pct` (0-100, optional) is the
+        share of the whole portfolio that holding should contribute to the
+        theme; a theme's target is the sum over its tags and all theme targets
+        together may not exceed 100. The whole batch is validated first and
+        written atomically. Requires the mcp:research grant and `confirmed=true`.
+        """
+        try:
+            payload = HoldingThemeTagsBulkRequest.model_validate({"holdings": holdings})
+        except PydanticValidationError as exc:
+            return {"status": "error", "message": f"Invalid theme tags: {exc}"}
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": (
+                    f"This will replace the theme tags on {len(payload.holdings)} holding(s). "
+                    "Confirm to continue."
+                ),
+                "holding_count": len(payload.holdings),
+                "tag_count": sum(len(h.tags) for h in payload.holdings),
+            }
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:research",
+                tool="set_holding_theme_tags",
+            )
+            try:
+                result = await _theme_tag_service(session).set_tags(workspace_id, payload.holdings)
+                await session.commit()
+            except APIError as exc:
+                await session.rollback()
+                return {"status": "error", "message": exc.detail}
+            return {
+                "status": "success",
+                **result.model_dump(mode="json"),
+                "summary": f"Updated theme tags on {len(payload.holdings)} holding(s).",
+            }
+
+    @mcp.tool
+    async def get_lookthrough_exposure(
+        workspace_id: int,
+        as_of_date: str | None = None,
+        group_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Get portfolio exposure rolled up by company, sector, country and theme.
+
+        ETF / mutual-fund holdings are decomposed through their single latest
+        stored constituent snapshot; direct stocks count as themselves. Value
+        not covered by a snapshot, `OTHER-` placeholders and unknown companies
+        are reported as "Not itemised" and never rescaled. Themes come from
+        holding theme tags (a holding counts fully toward each of its themes).
+        `group_by` is one of company, sector, country, theme (default: all).
+        Amounts are in the reporting currency; `warnings` lists excluded
+        holdings (missing price or FX rate).
+        """
+        if group_by is not None and group_by not in {"company", "sector", "country", "theme"}:
+            return {
+                "status": "error",
+                "message": "group_by must be one of: company, sector, country, theme.",
+            }
+        try:
+            as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
+        except ValueError:
+            return {"status": "error", "message": "Invalid as_of_date; use YYYY-MM-DD."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_lookthrough_exposure"
+            )
+            try:
+                result = await _theme_exposure_service(session).lookthrough_exposure(
+                    workspace_id,
+                    as_of,
+                    group_by,  # type: ignore[arg-type]
+                )
+            except APIError as exc:
+                return {"status": "error", "message": exc.detail}
+        return {"status": "success", **result.model_dump(mode="json")}
+
+    @mcp.tool
+    async def get_allocation_vs_target(
+        workspace_id: int,
+        new_cash: str = "0",
+        as_of_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Get theme drift vs target and how to deploy new cash without selling.
+
+        Per theme: current value and %, target %, `drift_pct` (current minus
+        target; negative = underweight) and `suggested_new_cash`. New cash
+        (reporting currency, at most 2 decimals) is split over under-weight
+        themes in proportion to their shortfall measured against the portfolio
+        INCLUDING the new cash, each capped at its shortfall; anything left is
+        `unallocated_cash`. Existing holdings are never trimmed or sold.
+        """
+        try:
+            cash = Decimal(new_cash)
+            as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
+        except (InvalidOperation, ValueError):
+            return {
+                "status": "error",
+                "message": "Invalid new_cash (decimal) or as_of_date (YYYY-MM-DD).",
+            }
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_allocation_vs_target"
+            )
+            try:
+                result = await _theme_exposure_service(session).allocation_vs_target(
+                    workspace_id, as_of, cash
+                )
+            except APIError as exc:
+                return {"status": "error", "message": exc.detail}
+        return {"status": "success", **result.model_dump(mode="json")}
 
     return mcp
 
