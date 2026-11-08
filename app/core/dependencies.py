@@ -21,6 +21,7 @@ from app.core.exceptions import ForbiddenError
 from app.exports.repository import ExportRepository
 from app.exports.service import ExportService
 from app.finance.activity_service import ActivityFeedService
+from app.finance.lrs_service import LrsService
 from app.finance.repository import (
     AccountRepository,
     CapitalTransferRepository,
@@ -671,6 +672,13 @@ async def get_finance_fx_rate_service(
     currency_repo: CurrencyRepository = Depends(get_finance_currency_repo),
 ) -> FxRateService:
     return FxRateService(fx_repo, currency_repo)
+
+
+async def get_finance_lrs_service(
+    transfer_repo: CapitalTransferRepository = Depends(get_finance_transfer_repo),
+    fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
+) -> LrsService:
+    return LrsService(transfer_repo, fx_rate_repo)
 
 
 async def get_finance_transfer_service(

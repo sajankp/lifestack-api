@@ -490,3 +490,52 @@ class UserNetWorthPointResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True, json_encoders={Decimal: str})
+
+
+# ---------------------------------------------------------------------------
+# LRS remittance summary + stored Rule 115 FX rate reads
+# ---------------------------------------------------------------------------
+
+
+class LrsSummaryResponse(BaseModel):
+    """FY outward-remittance total vs the USD 250,000 LRS cap, with TCS status.
+
+    Money fields are decimal strings. ``total_usd``/``total_inr`` cover only
+    this workspace's INR-funded transfers into foreign-currency investing
+    accounts; see ``assumptions``.
+    """
+
+    fy_label: str
+    fy_start: date
+    fy_end: date
+    transfer_count: int
+    total_usd: str
+    cap_usd: str
+    cap_remaining_usd: str
+    cap_exceeded: bool
+    pct_of_cap: str
+    total_inr: str
+    tcs_threshold_inr: str
+    tcs_rate_pct: str
+    tcs_applicable: bool
+    tcs_amount_inr: str
+    currency: str = "USD"
+    unconverted_transfer_ids: list[str]
+    assumptions: list[str]
+
+
+class FxRateReadResponse(BaseModel):
+    """One stored Rule 115 rate (INR per 1 unit) written via ``set_fx_rate``."""
+
+    date: date
+    currency: str
+    rate: str
+    source: str = "user_provided"
+
+
+class ListMissingFxRatesResponse(BaseModel):
+    from_date: date
+    to_date: date
+    currency: str
+    missing: list[date]
+    missing_count: int
