@@ -1,9 +1,10 @@
 import csv
+import re
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
@@ -68,6 +69,7 @@ from app.investing.schemas import (
     ExposureCompanyRow,
     HoldingResponse,
     HoldingUpdate,
+    InstrumentConstituentCreate,
     InstrumentConstituentResponse,
     InstrumentConstituentUpsert,
     InstrumentCreate,
@@ -76,6 +78,7 @@ from app.investing.schemas import (
     OverlapAnalyticsResponse,
     OverlapRow,
 )
+from app.investing.sectors import OTHER_NOT_ITEMISED, normalise_sector, sector_key
 from app.spending.models import (
     SpendingCategory,
     SpendingTransaction,
@@ -1711,6 +1714,9 @@ class ConstituentService:
                 ticker=item.company_ticker,
                 isin=item.company_isin,
             )
+            company = await self._apply_constituent_sector(
+                workspace_id, company, item, overwrite_existing=payload.overwrite_existing
+            )
             rows.append(
                 InstrumentConstituent(
                     instrument_id=instrument.id,  # type: ignore[arg-type]
@@ -1723,6 +1729,45 @@ class ConstituentService:
             )
         return await self.constituent_repo.create_many(rows)
 
+    async def _apply_constituent_sector(
+        self,
+        workspace_id: int,
+        company: Company,
+        item: InstrumentConstituentCreate,
+        *,
+        overwrite_existing: bool,
+    ) -> Company:
+        """Propagate a constituent row's sector/industry onto its company.
+
+        An empty company value is filled; an already-set value changes only
+        with ``overwrite_existing`` (so a later snapshot from another source
+        cannot clobber a sector set directly). A global company is never
+        edited in place: it is forked into a workspace copy first, and only
+        when a change is actually going to be made.
+        """
+
+        def wanted(current: Company) -> dict[str, str]:
+            changes: dict[str, str] = {}
+            for field, value in (("sector", item.sector), ("industry", item.industry)):
+                existing = getattr(current, field)
+                if value is None or existing == value:
+                    continue
+                if existing is None or overwrite_existing:
+                    changes[field] = value
+            return changes
+
+        if not wanted(company):
+            return company
+        if company.workspace_id is None:
+            company = await self.company_repo.fork_for_workspace(workspace_id, company)
+        changes = wanted(company)
+        if changes:
+            for field, value in changes.items():
+                setattr(company, field, value)
+            company.updated_at = datetime.now(UTC)
+            await self.company_repo.save(company)
+        return company
+
     async def get_constituents(
         self,
         workspace_id: int,
@@ -1733,11 +1778,13 @@ class ConstituentService:
         instrument = await self.instrument_repo.get_by_public_id(workspace_id, instrument_public_id)
         if instrument is None:
             raise NotFoundError(detail=f"Instrument '{instrument_public_id}' not found")
-        rows = await self.constituent_repo.list_snapshot(instrument.id, as_of, source=source)  # type: ignore[arg-type]
-        if not rows:
-            rows = await self.constituent_repo.get_latest_on_or_before(
-                instrument.id, as_of, source=source
-            )  # type: ignore[arg-type]
+        # Exactly one snapshot: newest by (as_of_date, fetched_at) on or before
+        # ``as_of`` (spec-100), never a mix of sources on the same date.
+        rows = await self.constituent_repo.get_latest_on_or_before(
+            instrument.id,  # type: ignore[arg-type]
+            as_of,
+            source=source,
+        )
 
         companies_by_id = await self.company_repo.get_by_ids([
             row.constituent_company_id for row in rows
@@ -1752,6 +1799,8 @@ class ConstituentService:
                     company_id=company.public_id,
                     company_name=company.name,
                     company_ticker=company.ticker,
+                    sector=company.sector,
+                    industry=company.industry,
                     weight=row.weight,
                     as_of_date=row.as_of_date,
                     source=row.source,
@@ -2069,3 +2118,264 @@ class ExposureAnalyticsService:
             duplicate_exposure_index=duplicate,
             overlaps=visible_overlaps,
         )
+
+    # ------------------------------------------------------------------
+    # Sector allocation (spec-100)
+    # ------------------------------------------------------------------
+
+    _PLACEHOLDER_SYMBOL_RE = re.compile(r"^OTHER-", re.IGNORECASE)
+
+    async def sector_allocation(
+        self,
+        workspace_id: int,
+        as_of: date,
+        *,
+        lookthrough: bool = True,
+    ) -> dict[str, Any]:
+        """Sector allocation of the portfolio's open holdings (no cash).
+
+        Sector names are free text; GICS names are recommended: Information
+        Technology, Health Care, Financials, Industrials, Energy, Consumer
+        Staples, Consumer Discretionary, Materials, Utilities, Communication
+        Services, Real Estate. Labels are grouped case/whitespace
+        insensitively, so "health care" and "Health Care" share a bucket.
+
+        With ``lookthrough`` (default) ETF/MF holdings are split across the
+        sectors of their latest constituent snapshot (exactly one snapshot per
+        instrument, newest by ``(as_of_date, fetched_at)``), direct stocks use
+        their own company's sector, and ``OTHER-<FUND>`` placeholder holdings,
+        the un-itemised remainder of a fund and any unmapped company land in
+        ``Other / not itemised`` (never rescaled). With ``lookthrough=False``
+        every holding is one bucket (company sector, ``ETFs & Funds`` or
+        ``Unclassified``).
+
+        Values are converted to the workspace reporting currency (setting,
+        else the single native currency, else USD with a warning). A holding
+        whose FX rate is missing is left out of the totals and reported in
+        ``warnings`` rather than counted as zero. Values and percentages are
+        rounded with the largest-remainder method so they sum exactly to the
+        total value and to 100.00 including the ``Other / not itemised``
+        bucket.
+        """
+        holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
+        holdings = [h for h in holdings if h.quantity != 0]
+        warnings: list[str] = []
+
+        used_currencies = sorted({holding.currency.upper() for holding in holdings})
+        reporting_currency: str | None = None
+        if self.finance_setting_repo is not None:
+            workspace_settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
+            if workspace_settings and workspace_settings.reporting_currency_code:
+                reporting_currency = workspace_settings.reporting_currency_code.upper()
+        if reporting_currency is None and len(used_currencies) == 1:
+            reporting_currency = used_currencies[0]
+        if reporting_currency is None:
+            reporting_currency = "USD"
+            if len(used_currencies) > 1:
+                warnings.append(
+                    "Reporting currency is not set for a multi-currency portfolio; "
+                    "values were converted to USD"
+                )
+
+        fx_lookup: dict[tuple[str, str], FxRate] = {}
+        fx_as_of: datetime | None = None
+        if self.fx_rate_repo is not None and any(
+            curr != reporting_currency for curr in used_currencies
+        ):
+            required_pairs = _build_required_pairs(used_currencies, reporting_currency)
+            fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
+                list(required_pairs),
+                effective_display_as_of(datetime.combine(as_of, datetime.max.time(), tzinfo=UTC)),
+            )
+            if fx_lookup:
+                fx_as_of = max(rate.as_of for rate in fx_lookup.values())
+
+        # Batch-load everything up front: no per-holding / per-row queries.
+        instruments_by_id = await self.instrument_repo.get_by_ids([
+            h.instrument_id for h in holdings if h.instrument_id is not None
+        ])
+        symbols = [h.symbol for h in holdings if h.instrument_id is None]
+        instruments_by_symbol = await self.instrument_repo.get_by_symbols(workspace_id, symbols)
+        all_instruments = list(instruments_by_id.values()) + list(instruments_by_symbol.values())
+
+        price_rows = (
+            await self.holding_price_repo.latest_prices_on_or_before_bulk(
+                workspace_id,
+                [h.id for h in holdings if h.id is not None],
+                as_of,
+            )
+            if self.holding_price_repo is not None
+            else {}
+        )
+
+        pooled_types = (InstrumentType.etf.value, InstrumentType.mutual_fund.value)
+        constituents_by_instrument = (
+            await self.constituent_repo.get_latest_on_or_before_many(
+                [
+                    inst.id
+                    for inst in all_instruments
+                    if inst.id and inst.instrument_type in pooled_types
+                ],
+                as_of,
+            )
+            if lookthrough
+            else {}
+        )
+
+        company_ids = {inst.company_id for inst in all_instruments if inst.company_id is not None}
+        for rows in constituents_by_instrument.values():
+            company_ids.update(
+                row.constituent_company_id for row in rows if row.constituent_company_id
+            )
+        companies_by_id = await self.company_repo.get_by_ids(sorted(company_ids))
+
+        # Buckets are keyed case/whitespace-insensitively; ``labels`` keeps the
+        # first spelling seen (writes already canonicalise GICS names).
+        sector_totals: dict[str, Decimal] = {}
+        labels: dict[str, str] = {}
+        fund_coverage: list[dict[str, Any]] = []
+        total_value = Decimal("0")
+
+        def add_sector(label: str, amount: Decimal) -> None:
+            key = sector_key(label)
+            labels.setdefault(key, normalise_sector(label) or OTHER_NOT_ITEMISED)
+            sector_totals[key] = sector_totals.get(key, Decimal("0")) + amount
+
+        def company_sector(company_id: int | None) -> str | None:
+            company = companies_by_id.get(company_id) if company_id is not None else None
+            return normalise_sector(company.sector) if company else None
+
+        for h in holdings:
+            instrument = None
+            if h.instrument_id is not None:
+                instrument = instruments_by_id.get(h.instrument_id)
+            if instrument is None:
+                instrument = instruments_by_symbol.get(h.symbol)
+            display_name = instrument.name if instrument and instrument.name else h.symbol
+
+            price_row = price_rows.get(h.id) if h.id is not None else None
+            if price_row is None:
+                warnings.append(
+                    f"No market price for {display_name} on or before {as_of.isoformat()}; "
+                    "valued at average cost"
+                )
+            native_value = h.quantity * (price_row.unit_price if price_row else h.avg_cost)
+            value = _convert_amount(native_value, h.currency.upper(), reporting_currency, fx_lookup)
+            if value is None:
+                warnings.append(
+                    f"FX rate from {h.currency.upper()} to {reporting_currency} is required "
+                    f"for {display_name}; excluded from the allocation"
+                )
+                continue
+            total_value += value
+
+            if self._PLACEHOLDER_SYMBOL_RE.match(h.symbol):
+                # The un-itemised remainder of a fund: never rescaled.
+                add_sector(OTHER_NOT_ITEMISED, value)
+                continue
+
+            is_pooled = instrument is not None and instrument.instrument_type in pooled_types
+
+            if not lookthrough:
+                if is_pooled:
+                    add_sector("ETFs & Funds", value)
+                else:
+                    sector = company_sector(instrument.company_id if instrument else None)
+                    add_sector(sector or "Unclassified", value)
+                continue
+
+            if not is_pooled:
+                # Direct stock: its own company's sector (unmapped -> Other).
+                sector = company_sector(instrument.company_id if instrument else None)
+                add_sector(sector or OTHER_NOT_ITEMISED, value)
+                continue
+
+            rows = constituents_by_instrument.get(instrument.id, [])  # type: ignore[arg-type]
+            fund = {
+                "instrument_public_id": str(instrument.public_id),
+                "symbol": instrument.symbol,
+                "name": instrument.name,
+                "instrument_type": instrument.instrument_type,
+                "value": str(value.quantize(Decimal("0.01"))),
+                "coverage_pct": 0.0,
+                "snapshot_date": None,
+                "source": None,
+                "constituent_rows": len(rows),
+            }
+            fund_coverage.append(fund)
+            if not rows:
+                add_sector(OTHER_NOT_ITEMISED, value)
+                warnings.append(f"No constituent snapshot for {display_name}")
+                continue
+
+            snapshot_date = rows[0].as_of_date
+            if (as_of - snapshot_date).days > self.staleness_window_days:
+                warnings.append(f"Stale constituent snapshot for {display_name}")
+            itemised_weight = min(sum((row.weight for row in rows), Decimal("0")), Decimal("1"))
+            fund["coverage_pct"] = round(float(itemised_weight * Decimal("100")), 2)
+            fund["snapshot_date"] = snapshot_date.isoformat()
+            fund["source"] = rows[0].source
+
+            # Rows are weighted by their raw weight; if provider weights exceed
+            # 1.0 they are scaled down so the fund never contributes more than
+            # its own value. The un-itemised remainder is never redistributed.
+            raw_weight = sum((row.weight for row in rows), Decimal("0"))
+            scale = Decimal("1") / raw_weight if raw_weight > 1 else Decimal("1")
+            for row in rows:
+                sector = company_sector(row.constituent_company_id)
+                add_sector(sector or OTHER_NOT_ITEMISED, value * row.weight * scale)
+            remainder = value * (Decimal("1") - itemised_weight)
+            if remainder > 0:
+                add_sector(OTHER_NOT_ITEMISED, remainder)
+
+        sectors = self._rounded_sector_rows(sector_totals, labels, total_value)
+        total_value = total_value.quantize(Decimal("0.01"))
+        return {
+            "as_of_date": as_of.isoformat(),
+            "currency": reporting_currency,
+            "lookthrough": lookthrough,
+            "total_portfolio_value": str(total_value),
+            "holdings_value": str(total_value),
+            "sectors": sectors,
+            "fund_coverage": fund_coverage,
+            "warnings": warnings,
+            "fx_as_of": fx_as_of.isoformat() if fx_as_of else None,
+            "fx_rates_used": _fx_rates_used(used_currencies, reporting_currency, fx_lookup),
+        }
+
+    @staticmethod
+    def _largest_remainder(amounts: dict[str, Decimal], total_units: int) -> dict[str, int]:
+        """Distribute ``total_units`` over ``amounts`` (proportional), exactly."""
+        weight_sum = sum(amounts.values(), Decimal("0"))
+        if weight_sum <= 0 or total_units <= 0:
+            return dict.fromkeys(amounts, 0)
+        exact = {key: amt / weight_sum * total_units for key, amt in amounts.items()}
+        floors = {key: int(val) for key, val in exact.items()}
+        leftover = total_units - sum(floors.values())
+        by_remainder = sorted(exact, key=lambda k: (exact[k] - floors[k], amounts[k]), reverse=True)
+        for key in by_remainder[:leftover]:
+            floors[key] += 1
+        return floors
+
+    def _rounded_sector_rows(
+        self,
+        sector_totals: dict[str, Decimal],
+        labels: dict[str, str],
+        total_value: Decimal,
+    ) -> list[dict[str, Any]]:
+        """Sector rows sorted by value, summing exactly to the total and 100.00."""
+        positive = {k: v for k, v in sector_totals.items() if v > 0}
+        total_cents = int((total_value * 100).to_integral_value())
+        if not positive or total_cents <= 0:
+            return []
+        cents = self._largest_remainder(positive, total_cents)
+        basis_points = self._largest_remainder(positive, 10000)
+        order = sorted(positive, key=lambda k: (cents[k], positive[k]), reverse=True)
+        return [
+            {
+                "sector": labels[key],
+                "value": str((Decimal(cents[key]) / 100).quantize(Decimal("0.01"))),
+                "pct": float(Decimal(basis_points[key]) / 100),
+            }
+            for key in order
+        ]

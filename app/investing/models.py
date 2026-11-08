@@ -36,6 +36,7 @@ class Company(SQLModel, table=True):
     ticker: str | None = Field(default=None, max_length=20, index=True)
     isin: str | None = Field(default=None, max_length=20)
     sector: str | None = Field(default=None, max_length=100)
+    industry: str | None = Field(default=None, max_length=100)
     country_code: str | None = Field(default=None, max_length=10)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)

@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.investing.models import CorporateActionType, InstrumentType, OrderType
+from app.investing.sectors import normalise_sector
 from app.spending.schemas import SourceMetadataResponse
 
 DIVIDEND_INCOME_TYPES = ("dividend", "interest", "coupon")
@@ -313,12 +314,21 @@ class InstrumentConstituentCreate(BaseModel):
     company_ticker: str | None = Field(default=None, min_length=1, max_length=20)
     company_isin: str | None = Field(default=None, min_length=1, max_length=20)
     company_exchange: str | None = Field(default=None, min_length=1, max_length=50)
+    sector: str | None = Field(default=None, min_length=1, max_length=100)
+    industry: str | None = Field(default=None, min_length=1, max_length=100)
     weight: Decimal = Field(..., gt=0, le=1, decimal_places=8)
 
     @field_validator("company_ticker", "company_isin", "company_exchange")
     @classmethod
     def normalize_company_identifiers(cls, value: str | None) -> str | None:
         return _normalize_identifier(value)
+
+    @field_validator("sector", "industry")
+    @classmethod
+    def normalize_sector_industry(cls, value: str | None) -> str | None:
+        # Blank / whitespace-only means "not provided"; GICS names are
+        # canonicalised so case variants never split an allocation bucket.
+        return normalise_sector(value)
 
     @model_validator(mode="after")
     def require_an_identifier(self) -> "InstrumentConstituentCreate":
@@ -343,12 +353,19 @@ class InstrumentConstituentUpsert(BaseModel):
     fetched_at: datetime
     constituents: list[InstrumentConstituentCreate] = Field(default_factory=list, min_length=1)
     renormalise: bool = False
+    overwrite_existing: bool = False
+    """When true, a row's sector/industry overwrites an existing value on the
+    constituent company. When false (default), an already-set company sector or
+    industry is left untouched by the write.
+    """
 
 
 class InstrumentConstituentResponse(BaseModel):
     company_id: uuid.UUID
     company_name: str
     company_ticker: str | None
+    sector: str | None = None
+    industry: str | None = None
     weight: Decimal
     as_of_date: date
     source: str
@@ -727,6 +744,20 @@ class SectorAllocationItem(BaseModel):
     model_config = ConfigDict(json_encoders={Decimal: str})
 
 
+class FundCoverageItem(BaseModel):
+    instrument_public_id: uuid.UUID
+    symbol: str
+    name: str
+    instrument_type: str
+    value: Decimal
+    coverage_pct: float
+    snapshot_date: date | None
+    source: str | None
+    constituent_rows: int
+
+    model_config = ConfigDict(json_encoders={Decimal: str})
+
+
 class PortfolioAllocationResponse(BaseModel):
     as_of_date: date
     currency: str
@@ -735,6 +766,9 @@ class PortfolioAllocationResponse(BaseModel):
     cash_value: Decimal
     asset_classes: list[AssetClassAllocationItem]
     sectors: list[SectorAllocationItem]
+    lookthrough: bool = False
+    fund_coverage: list[FundCoverageItem] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(json_encoders={Decimal: str})
 
@@ -756,3 +790,61 @@ class DividendHistoryResponse(BaseModel):
     monthly_history: list[MonthlyDividendPoint]
 
     model_config = ConfigDict(json_encoders={Decimal: str})
+
+
+class CompanySectorRow(BaseModel):
+    """One ``set_company_sector`` row (spec-100).
+
+    Exactly one company key: ``holding_public_id``, ``isin``, or
+    ``ticker`` + ``exchange``. ``sector`` is required (max 100 chars, GICS
+    names recommended; case/whitespace variants of GICS names are
+    canonicalised). ``industry`` / ``country_code`` are optional and only
+    written when provided.
+    """
+
+    holding_public_id: uuid.UUID | None = None
+    isin: str | None = Field(default=None, max_length=20)
+    ticker: str | None = Field(default=None, max_length=20)
+    exchange: str | None = Field(default=None, max_length=50)
+    sector: str | None = Field(default=None, max_length=100)
+    industry: str | None = Field(default=None, max_length=100)
+    country_code: str | None = Field(default=None, max_length=10)
+
+    @field_validator("isin", "ticker")
+    @classmethod
+    def _upper_identifier(cls, value: str | None) -> str | None:
+        return _normalize_identifier(value)
+
+    @field_validator("exchange")
+    @classmethod
+    def _strip_exchange(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+    @field_validator("sector", "industry")
+    @classmethod
+    def _normalise_free_text(cls, value: str | None) -> str | None:
+        return normalise_sector(value)
+
+    @field_validator("country_code")
+    @classmethod
+    def _upper_country(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip().upper() or None
+
+    @model_validator(mode="after")
+    def _require_sector_and_one_key(self) -> "CompanySectorRow":
+        if self.sector is None:
+            raise ValueError("sector is required")
+        keys = [
+            self.holding_public_id is not None,
+            self.isin is not None,
+            self.ticker is not None or self.exchange is not None,
+        ]
+        if sum(keys) != 1:
+            raise ValueError(
+                "supply exactly one of holding_public_id, isin, or ticker plus exchange"
+            )
+        if (self.ticker is None) != (self.exchange is None):
+            raise ValueError("ticker and exchange must be supplied together")
+        return self

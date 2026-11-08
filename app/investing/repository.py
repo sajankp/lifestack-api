@@ -541,6 +541,19 @@ class InstrumentRepository(BaseRepository[Instrument]):
         rows = result.scalars().all()
         return {row.id: row for row in rows if row.id is not None}
 
+    async def get_instruments_by_symbol_exchange(
+        self, workspace_id: int | None, symbol: str, exchange: str
+    ) -> Sequence[Instrument]:
+        """Instruments matching symbol+exchange visible to the workspace."""
+        result = await self.session.execute(
+            select(Instrument).where(
+                Instrument.symbol == symbol.strip().upper(),
+                func.upper(Instrument.exchange) == exchange.strip().upper(),
+                (Instrument.workspace_id == workspace_id) | (Instrument.workspace_id.is_(None)),
+            )
+        )
+        return result.scalars().all()
+
 
 class CompanyRepository(BaseRepository[Company]):
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> Company | None:
@@ -564,13 +577,170 @@ class CompanyRepository(BaseRepository[Company]):
         rows = result.scalars().all()
         return {row.id: row for row in rows if row.id is not None}
 
+    async def get_by_isin(self, workspace_id: int | None, isin: str) -> Company | None:
+        """Company by ISIN, visible to the workspace (workspace-scoped or global).
+
+        A workspace-scoped copy shadows the global row (same precedent as
+        instruments), so after a global company has been forked both rows
+        carry the ISIN and the workspace copy wins deterministically.
+        """
+        result = await self.session.execute(
+            select(Company)
+            .where(
+                Company.isin == isin.strip().upper(),
+                (Company.workspace_id == workspace_id) | (Company.workspace_id.is_(None)),
+            )
+            .order_by(Company.workspace_id.asc().nulls_last(), Company.id.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def _scope_candidates(self, workspace_id: int | None) -> Sequence[Company]:
         result = await self.session.execute(
-            select(Company).where(
-                (Company.workspace_id == workspace_id) | (Company.workspace_id.is_(None))
-            )
+            select(Company)
+            .where((Company.workspace_id == workspace_id) | (Company.workspace_id.is_(None)))
+            # Workspace-scoped rows first so a forked copy always shadows the
+            # global company it was copied from.
+            .order_by(Company.workspace_id.asc().nulls_last(), Company.id.asc())
         )
         return result.scalars().all()
+
+    async def fork_for_workspace(self, workspace_id: int, company: Company) -> Company:
+        """Return a company this workspace may edit, forking a global one.
+
+        Global companies (``workspace_id IS NULL``) are shared reference rows
+        and are never mutated in place. The fork is idempotent: an existing
+        workspace copy (same ISIN, else same name) is reused, so re-running a
+        write never creates a second copy. Everything this workspace owns that
+        pointed at the global row is re-pointed to the copy so reads stay
+        consistent: workspace instruments, workspace holdings (via a
+        workspace shadow of each global instrument) and the workspace's
+        constituent rows.
+        """
+        if company.workspace_id == workspace_id:
+            return company
+        if company.workspace_id is not None:
+            raise ValueError("company belongs to another workspace")
+        assert company.id is not None
+
+        copy: Company | None = None
+        if company.isin:
+            copy = (
+                (
+                    await self.session.execute(
+                        select(Company).where(
+                            Company.workspace_id == workspace_id, Company.isin == company.isin
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+        if copy is None:
+            by_name = (
+                (
+                    await self.session.execute(
+                        select(Company).where(
+                            Company.workspace_id == workspace_id, Company.name == company.name
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if by_name is not None:
+                if by_name.isin and company.isin and by_name.isin != company.isin:
+                    raise ValueError(
+                        f"workspace already has a different company named '{company.name}'"
+                    )
+                copy = by_name
+        if copy is None:
+            copy = await self.create(
+                Company(
+                    workspace_id=workspace_id,
+                    name=company.name,
+                    ticker=company.ticker,
+                    isin=company.isin,
+                    sector=company.sector,
+                    industry=company.industry,
+                    country_code=company.country_code,
+                )
+            )
+        assert copy.id is not None
+        await self._repoint_workspace_to_copy(workspace_id, company.id, copy.id)
+        return copy
+
+    async def _repoint_workspace_to_copy(
+        self, workspace_id: int, global_company_id: int, copy_id: int
+    ) -> None:
+        now = datetime.now(UTC)
+        # Workspace instruments linked to the global company.
+        await self.session.execute(
+            update(Instrument)
+            .where(
+                Instrument.workspace_id == workspace_id,
+                Instrument.company_id == global_company_id,
+            )
+            .values(company_id=copy_id, updated_at=now)
+        )
+        # Global instruments linked to it get a workspace shadow (reused when
+        # one already exists for the symbol) and this workspace's holdings
+        # move onto the shadow.
+        global_instruments = (
+            (
+                await self.session.execute(
+                    select(Instrument).where(
+                        Instrument.workspace_id.is_(None),
+                        Instrument.company_id == global_company_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for global_instrument in global_instruments:
+            shadow = (
+                await self.session.execute(
+                    select(Instrument).where(
+                        Instrument.workspace_id == workspace_id,
+                        Instrument.symbol == global_instrument.symbol,
+                    )
+                )
+            ).scalar_one_or_none()
+            if shadow is None:
+                shadow = Instrument(
+                    workspace_id=workspace_id,
+                    symbol=global_instrument.symbol,
+                    name=global_instrument.name,
+                    instrument_type=global_instrument.instrument_type,
+                    isin=global_instrument.isin,
+                    exchange=global_instrument.exchange,
+                    exchange_country_override=global_instrument.exchange_country_override,
+                    provider_key=global_instrument.provider_key,
+                    company_id=copy_id,
+                    is_active=global_instrument.is_active,
+                )
+                self.session.add(shadow)
+                await self.session.flush()
+            await self.session.execute(
+                update(Holding)
+                .where(
+                    Holding.workspace_id == workspace_id,
+                    Holding.instrument_id == global_instrument.id,
+                )
+                .values(instrument_id=shadow.id, updated_at=now)
+            )
+        # Constituent rows of this workspace's own instruments.
+        await self.session.execute(
+            update(InstrumentConstituent)
+            .where(
+                InstrumentConstituent.constituent_company_id == global_company_id,
+                InstrumentConstituent.instrument_id.in_(
+                    select(Instrument.id).where(Instrument.workspace_id == workspace_id)
+                ),
+            )
+            .values(constituent_company_id=copy_id)
+        )
 
     async def resolve_or_create_company(
         self,
@@ -741,20 +911,38 @@ class InstrumentConstituentRepository:
     async def get_latest_on_or_before(
         self, instrument_id: int, as_of_date: date, source: str | None = None
     ) -> Sequence[InstrumentConstituent]:
+        """Return the rows of exactly one snapshot per instrument.
+
+        The snapshot is the newest by ``(as_of_date, fetched_at)`` among rows
+        with ``as_of_date <= as_of_date`` (optionally pinned to ``source``).
+        Every row of that snapshot is returned; rows from any other snapshot
+        (older date, or same date but a different source with an older
+        ``fetched_at``) are not, so look-through reads never double count.
+        """
         conditions = [
             InstrumentConstituent.instrument_id == instrument_id,
             InstrumentConstituent.as_of_date <= as_of_date,
         ]
         if source is not None:
             conditions.append(InstrumentConstituent.source == source)
-        latest_date = (
-            await self.session.execute(
-                select(func.max(InstrumentConstituent.as_of_date)).where(*conditions)
+        result = await self.session.execute(
+            select(InstrumentConstituent)
+            .where(*conditions)
+            .order_by(
+                InstrumentConstituent.as_of_date.desc(),
+                InstrumentConstituent.fetched_at.desc(),
+                InstrumentConstituent.source.asc(),
             )
-        ).scalar_one_or_none()
-        if latest_date is None:
+        )
+        rows = result.scalars().all()
+        if not rows:
             return []
-        return await self.list_snapshot(instrument_id, latest_date, source=source)
+        chosen = rows[0]
+        return [
+            row
+            for row in rows
+            if row.as_of_date == chosen.as_of_date and row.source == chosen.source
+        ]
 
     async def get_latest_on_or_before_many(
         self, instrument_ids: Sequence[int], as_of_date: date
@@ -770,21 +958,24 @@ class InstrumentConstituentRepository:
             .order_by(
                 InstrumentConstituent.instrument_id.asc(),
                 InstrumentConstituent.as_of_date.desc(),
+                InstrumentConstituent.fetched_at.desc(),
+                InstrumentConstituent.source.asc(),
             )
         )
         rows = result.scalars().all()
-        latest_date_by_instrument: dict[int, date] = {}
         grouped: dict[int, list[InstrumentConstituent]] = {}
+        chosen_key: dict[int, tuple[date, str]] = {}
         for row in rows:
             iid = row.instrument_id
             if iid is None:
                 continue
-            latest = latest_date_by_instrument.get(iid)
-            if latest is None:
-                latest_date_by_instrument[iid] = row.as_of_date
+            if iid not in chosen_key:
+                # First row for this instrument is the newest snapshot by
+                # (as_of_date, fetched_at); only that snapshot's rows count.
+                chosen_key[iid] = (row.as_of_date, row.source)
                 grouped[iid] = [row]
                 continue
-            if row.as_of_date == latest:
+            if (row.as_of_date, row.source) == chosen_key[iid]:
                 grouped[iid].append(row)
         return grouped
 

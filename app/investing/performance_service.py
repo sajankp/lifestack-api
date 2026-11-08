@@ -44,6 +44,7 @@ from app.investing.repository import (
 from app.investing.schemas import (
     AssetClassAllocationItem,
     DividendHistoryResponse,
+    FundCoverageItem,
     HoldingPriceBulkCreate,
     InvestingSummaryResponse,
     MonthlyDividendPoint,
@@ -53,7 +54,7 @@ from app.investing.schemas import (
     PortfolioAllocationResponse,
     SectorAllocationItem,
 )
-from app.investing.service import MONEY_QUANT
+from app.investing.service import MONEY_QUANT, ExposureAnalyticsService
 
 
 def _value_change(current: Decimal, baseline: Decimal) -> tuple[Decimal, Decimal | None]:
@@ -73,6 +74,7 @@ class PerformanceService:
         fx_rate_repo: FxRateRepository | None = None,
         instrument_repo: InstrumentRepository | None = None,
         account_repo: AccountRepository | None = None,
+        analytics_service: ExposureAnalyticsService | None = None,
     ):
         self.holding_repo = holding_repo
         self.cash_repo = cash_repo
@@ -82,6 +84,7 @@ class PerformanceService:
         self.fx_rate_repo = fx_rate_repo
         self.instrument_repo = instrument_repo
         self.account_repo = account_repo
+        self.analytics_service = analytics_service
 
     async def refresh_workspace_prices(self, workspace_id: int) -> dict[str, Decimal]:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -468,6 +471,7 @@ class PerformanceService:
         self,
         workspace_id: int,
         as_of: date | None = None,
+        lookthrough: bool = False,
     ) -> PortfolioAllocationResponse:
         today = as_of or datetime.now(UTC).date()
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -550,14 +554,16 @@ class PerformanceService:
             class_buckets[inst_type]["value"] += val
             class_buckets[inst_type]["count"] += 1
 
-            # Sector
-            comp = companies.get(inst.company_id) if inst and inst.company_id else None
-            sector = (
-                comp.sector
-                if comp and comp.sector
-                else ("ETFs & Funds" if inst_type in ("etf", "mutual_fund") else "Unclassified")
-            )
-            sector_totals[sector] = sector_totals.get(sector, Decimal("0.00")) + val
+            # Sector (lookthrough mode computes sectors from the analytics
+            # service after the loop, so skip the per-holding bucket here).
+            if not (lookthrough and self.analytics_service is not None):
+                comp = companies.get(inst.company_id) if inst and inst.company_id else None
+                sector = (
+                    comp.sector
+                    if comp and comp.sector
+                    else ("ETFs & Funds" if inst_type in ("etf", "mutual_fund") else "Unclassified")
+                )
+                sector_totals[sector] = sector_totals.get(sector, Decimal("0.00")) + val
 
         # Cash balances
         total_cash_val = Decimal("0.00")
@@ -595,21 +601,39 @@ class PerformanceService:
 
         # Sector allocation list
         sectors: list[SectorAllocationItem] = []
-        for sector_name, s_val in sorted(
-            sector_totals.items(), key=lambda item: item[1], reverse=True
-        ):
-            s_pct = (
-                round(float((s_val / total_portfolio_val) * 100), 2)
-                if total_portfolio_val > 0
-                else 0.0
+        fund_coverage: list[FundCoverageItem] = []
+        lookthrough_warnings: list[str] = []
+        use_lookthrough = lookthrough and self.analytics_service is not None
+        if use_lookthrough and self.analytics_service is not None:
+            allocation = await self.analytics_service.sector_allocation(
+                workspace_id, today, lookthrough=True
             )
-            sectors.append(
-                SectorAllocationItem(
-                    sector=sector_name,
-                    value=s_val,
-                    pct=s_pct,
+            fund_coverage = [FundCoverageItem(**row) for row in allocation["fund_coverage"]]
+            lookthrough_warnings = list(allocation["warnings"])
+            for entry in allocation["sectors"]:
+                sectors.append(
+                    SectorAllocationItem(
+                        sector=entry["sector"],
+                        value=Decimal(entry["value"]),
+                        pct=entry["pct"],
+                    )
                 )
-            )
+        else:
+            for sector_name, s_val in sorted(
+                sector_totals.items(), key=lambda item: item[1], reverse=True
+            ):
+                s_pct = (
+                    round(float((s_val / total_portfolio_val) * 100), 2)
+                    if total_portfolio_val > 0
+                    else 0.0
+                )
+                sectors.append(
+                    SectorAllocationItem(
+                        sector=sector_name,
+                        value=s_val,
+                        pct=s_pct,
+                    )
+                )
 
         return PortfolioAllocationResponse(
             as_of_date=today,
@@ -619,6 +643,9 @@ class PerformanceService:
             cash_value=total_cash_val.quantize(Decimal("0.01")),
             asset_classes=asset_classes,
             sectors=sectors,
+            lookthrough=use_lookthrough,
+            fund_coverage=fund_coverage,
+            warnings=lookthrough_warnings,
         )
 
     async def get_dividend_history(self, workspace_id: int) -> DividendHistoryResponse:
