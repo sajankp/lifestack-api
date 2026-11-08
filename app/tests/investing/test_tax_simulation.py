@@ -11,7 +11,7 @@ of the pre-existing ``app.investing.router`` import blocker.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -189,10 +189,13 @@ class TestSimulateSale:
 
         [consumed] = result.consumed_lots
         assert consumed.is_long_term is False
+        # A sale is long-term only the day AFTER the anniversary ("more than
+        # 24 months"), so the countdown runs to mark + 1 day, not to the mark.
         assert (
             consumed.days_to_long_term
-            == (mark.date() - datetime(2026, 10, 16, tzinfo=UTC).date()).days
+            == (mark.date() - datetime(2026, 10, 16, tzinfo=UTC).date()).days + 1
         )
+        assert consumed.long_term_from == (mark + timedelta(days=1)).date()
         assert consumed.days_to_long_term > 0
 
     def test_partial_sale_consumes_lots_fifo(self):
@@ -329,7 +332,7 @@ class TestSimulateSale:
         assert r.fx_rate == Decimal("1")
         assert r.fx_source == "reporting_currency"
 
-    def test_indian_regime_applies_exemption_in_isolation(self):
+    def test_indian_regime_with_no_realised_gains_gets_the_full_exemption(self):
         h = holding(
             currency="INR",
             regime=INDIAN_REGIME.key,
@@ -347,8 +350,12 @@ class TestSimulateSale:
         assert result.gain_inr == Decimal("1000.00")
         # ₹1,000 gain is fully sheltered by the ₹1.25 lakh exemption.
         assert result.tax_inr == Decimal("0.00")
-        assert any("isolation" in a for a in result.assumptions)
-        assert any("1.25 lakh" in a for a in result.assumptions)
+        # No lots realised yet in the FY, so nothing has used the exemption:
+        # the full ₹1.25 lakh remains (the assumption states what was used).
+        assert result.fy_realised_lots == 0
+        assert result.ltcg_exemption_remaining_inr == Decimal("125000")
+        assert result.ltcg_exemption_used_inr == Decimal("1000.00")
+        assert any("Sec 112A exemption" in a and "125000" in a for a in result.assumptions)
 
     def test_non_positive_quantity_rejected(self):
         h = holding(lots=(lot(1, "10", "100", "2024-01-15T00:00:00+00:00"),))
@@ -385,12 +392,15 @@ class TestListTaxLots:
 
         views = list_tax_lots(h, as_of=before)
         assert views[0].is_long_term is False
-        assert views[0].days_to_long_term == (mark.date() - before.date()).days
+        assert views[0].days_to_long_term == (mark.date() - before.date()).days + 1
 
         views = list_tax_lots(h, as_of=on_mark)
-        # Exactly 24 months is still short-term ("more than 24 months").
+        # Exactly 24 months is still short-term ("more than 24 months"), so
+        # it is NOT yet long-term: one more day to go, never 0 (0 means
+        # "already long-term" and contradicted is_long_term=False).
         assert views[0].is_long_term is False
-        assert views[0].days_to_long_term == 0
+        assert views[0].days_to_long_term == 1
+        assert views[0].long_term_from == after.date()
 
         views = list_tax_lots(h, as_of=after)
         assert views[0].is_long_term is True
@@ -405,7 +415,7 @@ class TestListTaxLots:
         )
         views = list_tax_lots(h, as_of=datetime(2026, 1, 15, tzinfo=UTC))
         assert views[0].is_long_term is False
-        assert views[0].days_to_long_term == 0
+        assert views[0].days_to_long_term == 1
         views = list_tax_lots(h, as_of=datetime(2026, 1, 16, tzinfo=UTC))
         assert views[0].is_long_term is True
         assert views[0].days_to_long_term == 0
