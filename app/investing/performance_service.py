@@ -30,8 +30,13 @@ from app.core.currency import (
     fx_rates_used as _fx_rates_used,
 )
 from app.core.exceptions import NotFoundError, ValidationError
-from app.finance.models import FxRate
-from app.finance.repository import AccountRepository, FinanceSettingRepository, FxRateRepository
+from app.finance.models import FxRate, TransferModule
+from app.finance.repository import (
+    AccountRepository,
+    CapitalTransferRepository,
+    FinanceSettingRepository,
+    FxRateRepository,
+)
 from app.investing import service as core_service
 from app.investing.models import Company, Dividend, Instrument, InstrumentType, PortfolioSnapshot
 from app.investing.repository import (
@@ -73,7 +78,9 @@ class PerformanceService:
         fx_rate_repo: FxRateRepository | None = None,
         instrument_repo: InstrumentRepository | None = None,
         account_repo: AccountRepository | None = None,
+        transfer_repo: CapitalTransferRepository | None = None,
     ):
+        self.transfer_repo = transfer_repo
         self.holding_repo = holding_repo
         self.cash_repo = cash_repo
         self.holding_price_repo = holding_price_repo
@@ -463,6 +470,134 @@ class PerformanceService:
             benchmark_return_pct=benchmark_return_pct,
             alpha_pct=alpha_pct,
         )
+
+    async def get_time_weighted_return(
+        self, workspace_id: int, from_date: date | None, to_date: date
+    ) -> dict:
+        """Snapshot-linked time-weighted return over ``[from_date, to_date]``.
+
+        Sub-period returns between consecutive portfolio snapshots are
+        Modified-Dietz returns -- ``(V1 - V0 - F) / (V0 + sum(w_i * F_i))`` --
+        where ``F`` is the net external cash flow (capital transfers into/out of
+        the investing module) inside the sub-period, converted to the snapshot
+        currency with the later snapshot's stored FX rates. The sub-period
+        returns are chain-linked geometrically. Contributions therefore do NOT
+        inflate the result. Never raises for data problems: the returned
+        ``status`` is ``ok`` or a reason code with ``twr_pct = None``.
+        """
+        snapshots = sorted(
+            await self.snapshot_repo.list_range(workspace_id, from_date, to_date),
+            key=lambda s: s.snapshot_date,
+        )
+        result: dict[str, Any] = {
+            "status": "ok",
+            "method": "modified_dietz_chain_linked",
+            "currency": snapshots[-1].currency_code if snapshots else None,
+            "twr_pct": None,
+            "periods": 0,
+            "periods_skipped": 0,
+            "snapshot_count": len(snapshots),
+            "start_date": snapshots[0].snapshot_date.isoformat() if snapshots else None,
+            "end_date": snapshots[-1].snapshot_date.isoformat() if snapshots else None,
+            "start_value": str(snapshots[0].total_value) if snapshots else None,
+            "end_value": str(snapshots[-1].total_value) if snapshots else None,
+            "net_external_flows": None,
+            "warnings": [],
+        }
+        if len(snapshots) < 2:
+            result["status"] = "insufficient_snapshots"
+            result["warnings"].append("need at least two portfolio snapshots in the window")
+            return result
+        if len({s.currency_code for s in snapshots}) > 1:
+            result["status"] = "mixed_snapshot_currency"
+            result["warnings"].append(
+                "snapshots in the window use different currencies; time-weighted return is "
+                "not computed across a reporting-currency change"
+            )
+            return result
+
+        snap_currency = snapshots[-1].currency_code
+        transfers: list = []
+        if self.transfer_repo is not None:
+            window_start = datetime.combine(
+                snapshots[0].snapshot_date + timedelta(days=1), datetime.min.time(), UTC
+            )
+            window_end = datetime.combine(
+                snapshots[-1].snapshot_date + timedelta(days=1), datetime.min.time(), UTC
+            )
+            transfers = list(
+                await self.transfer_repo.list_investing_flows_in_period(
+                    workspace_id, window_start, window_end
+                )
+            )
+        else:
+            result["warnings"].append(
+                "external cash flows were not available; return is not adjusted for contributions"
+            )
+
+        growth = Decimal("1")
+        used = 0
+        skipped = 0
+        net_flows = Decimal("0")
+        missing_fx: set[str] = set()
+        for prev, cur in zip(snapshots, snapshots[1:], strict=False):
+            span = (cur.snapshot_date - prev.snapshot_date).days
+            rates = cur.fx_rates_used or {}
+            flow_total = Decimal("0")
+            weighted = Decimal("0")
+            for t in transfers:
+                t_date = t.occurred_at.astimezone(UTC).date()
+                if not prev.snapshot_date < t_date <= cur.snapshot_date:
+                    continue
+                signed: list[tuple[Decimal, str]] = []
+                if t.to_module == TransferModule.investing:
+                    signed.append((t.net_amount_received, t.to_currency_code.upper()))
+                if t.from_module == TransferModule.investing:
+                    signed.append((-t.gross_amount, t.from_currency_code.upper()))
+                for amount, ccy in signed:
+                    if ccy == snap_currency.upper():
+                        rate: Decimal | None = Decimal("1")
+                    else:
+                        raw_rate = rates.get(ccy)
+                        rate = Decimal(str(raw_rate)) if raw_rate else None
+                    if rate is None:
+                        missing_fx.add(ccy)
+                        continue
+                    converted = amount * rate
+                    flow_total += converted
+                    weight = Decimal(span - (t_date - prev.snapshot_date).days) / Decimal(span)
+                    weighted += weight * converted
+            denominator = prev.total_value + weighted
+            if denominator <= 0:
+                skipped += 1
+                continue
+            growth *= Decimal("1") + (cur.total_value - prev.total_value - flow_total) / denominator
+            net_flows += flow_total
+            used += 1
+
+        result["periods"] = used
+        result["periods_skipped"] = skipped
+        result["net_external_flows"] = str(net_flows.quantize(MONEY_QUANT))
+        if missing_fx:
+            result["status"] = "missing_fx_for_flows"
+            result["warnings"].append(
+                "no stored FX rate to "
+                f"{snap_currency} for transfer currencies {sorted(missing_fx)}; "
+                "time-weighted return not computed"
+            )
+            return result
+        if used == 0:
+            result["status"] = "no_computable_periods"
+            result["warnings"].append(
+                "every sub-period had a non-positive opening value; nothing to link"
+            )
+            return result
+        if skipped:
+            result["warnings"].append(
+                f"{skipped} sub-period(s) with non-positive opening value were skipped"
+            )
+        result["twr_pct"] = str(((growth - Decimal("1")) * Decimal("100")).quantize(MONEY_QUANT))
+        return result
 
     async def get_allocation_breakdown(
         self,
