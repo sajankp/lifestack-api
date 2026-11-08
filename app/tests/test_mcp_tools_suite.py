@@ -53,58 +53,58 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
     registered_tools = {t.name for t in tools}
 
     expected_tools = {
-        # Todo tools
-        "create_todo",
-        "list_todos",
-        "get_todo_summary",
-        "create_todo_task",
-        "create_recurring_todo",
-        "get_todo",
-        "update_todo",
-        "delete_todo",
-        "list_next_due_items",
-        # Finance / Net worth / Budgets
-        "get_net_worth",
-        "get_spending_budgets",
-        "get_account_balances",
-        # Spending transactions
-        "log_spending_transaction",
-        "list_spending_transactions",
-        "find_spending_transactions",
-        "update_spending_transaction",
-        "delete_spending_transaction",
-        # Transfers
-        "list_transfers",
-        "find_transfers",
-        "create_transfer",
-        "update_transfer",
-        "delete_transfer",
-        # Investing
-        "list_investment_holdings",
-        "get_investment_constituents",
-        "write_investment_constituent_snapshot",
-        "delete_investment_constituent_snapshot",
-        "list_investment_dividends",
         "create_investment_dividend",
+        "create_recurring_todo",
+        "create_todo",
+        "create_todo_task",
+        "create_transfer",
+        "delete_investment_constituent_snapshot",
+        "delete_spending_transaction",
+        "delete_todo",
+        "delete_transfer",
+        "find_spending_transactions",
+        "find_transfers",
+        "get_account_balances",
+        "get_fx_rate",
         "get_investing_summary",
+        "get_investment_constituents",
+        "get_investment_sector_allocation",
+        "get_lrs_summary",
+        "get_net_worth",
+        "get_performance",
+        "get_spending_budgets",
         "get_tax_profile",
-        "update_tax_profile",
-        "set_fx_rate",
         "get_tax_summary",
-        "set_holding_compliance",
-        "get_holding_compliance",
-        "get_purification_estimate",
-        # Health
-        "log_weight",
-        "log_medication_event",
-        # Workspace discovery
+        "get_todo",
+        "get_todo_summary",
+        "get_weight_history",
         "get_workspace_reference_data",
+        "list_investment_dividends",
+        "list_investment_holdings",
+        "list_medication_events",
+        "list_missing_fx_rates",
+        "list_next_due_items",
+        "list_recent_changes",
+        "list_spending_transactions",
+        "list_todos",
+        "list_transfers",
         "list_workspaces",
+        "log_medication_event",
+        "log_spending_transaction",
+        "log_weight",
+        "reconcile_holdings",
+        "set_company_sector",
+        "set_fx_rate",
+        "update_spending_transaction",
+        "update_tax_profile",
+        "update_todo",
+        "update_transfer",
+        "write_investment_constituent_snapshot",
     }
 
     missing = expected_tools - registered_tools
     assert not missing, f"Missing MCP tools from server: {missing}"
-    assert len(expected_tools) == 40
+    assert len(expected_tools) == 47
 
 
 @pytest.mark.anyio
