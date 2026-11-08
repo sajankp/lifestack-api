@@ -390,6 +390,37 @@ class LotRepository:
         await self.session.execute(delete(OrderLot).where(OrderLot.holding_id == holding_id))
         await self.session.flush()
 
+    async def list_open_for_holdings(
+        self, workspace_id: int, holding_ids: Sequence[int]
+    ) -> dict[int, list[OrderLot]]:
+        """Open lots (``remaining_quantity > 0``) for many holdings in ONE query.
+
+        Workspace-scoped on the lot row itself, oldest acquisition first
+        (FIFO), so a caller never issues one query per holding.
+        """
+        ids = {i for i in holding_ids if i is not None}
+        if not ids:
+            return {}
+        rows = (
+            (
+                await self.session.execute(
+                    select(OrderLot)
+                    .where(
+                        OrderLot.workspace_id == workspace_id,
+                        OrderLot.holding_id.in_(ids),
+                        OrderLot.remaining_quantity > 0,
+                    )
+                    .order_by(OrderLot.holding_id, OrderLot.acquired_at, OrderLot.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_holding: dict[int, list[OrderLot]] = {}
+        for row in rows:
+            by_holding.setdefault(row.holding_id, []).append(row)
+        return by_holding
+
     async def create_lots(self, lots: list[OrderLot]) -> list[OrderLot]:
         # flush() already populates auto-generated PKs; no refresh() needed.
         self.session.add_all(lots)
@@ -843,6 +874,19 @@ class ReferenceSecurityRepository(BaseRepository[ReferenceSecurity]):
             select(ReferenceSecurity).where(ReferenceSecurity.ticker == ticker.strip().upper())
         )
         return result.scalars().all()
+
+    async def list_by_tickers(self, tickers: Sequence[str]) -> dict[str, list[ReferenceSecurity]]:
+        """Reference rows for many tickers in one query, keyed by upper-case ticker."""
+        normalized = {t.strip().upper() for t in tickers if t and t.strip()}
+        if not normalized:
+            return {}
+        result = await self.session.execute(
+            select(ReferenceSecurity).where(ReferenceSecurity.ticker.in_(normalized))
+        )
+        grouped: dict[str, list[ReferenceSecurity]] = {}
+        for row in result.scalars().all():
+            grouped.setdefault(row.ticker.upper(), []).append(row)
+        return grouped
 
     async def get_by_amfi_code(self, amfi_code: str) -> ReferenceSecurity | None:
         result = await self.session.execute(
