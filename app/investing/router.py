@@ -90,6 +90,7 @@ from app.investing.tax_schemas import (
     TaxSummaryResponse,
 )
 from app.investing.tax_service import TaxService
+from app.investing.theme_router import router as theme_router
 
 router = APIRouter(prefix="/investing", tags=["investing"])
 
@@ -1218,3 +1219,6 @@ async def update_tax_profile(
         fx_overrides=dict(row.fx_overrides or {}),
         notes=row.notes,
     )
+
+
+router.include_router(theme_router)

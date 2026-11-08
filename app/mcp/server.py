@@ -3,6 +3,7 @@
 import json
 import re
 import uuid
+import decimal
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -12,6 +13,7 @@ import structlog
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_access_token
 from pydantic import ValidationError as PydanticValidationError
+from app.core.exceptions import ValidationError as AppValidationError
 
 from app.auth.models import User
 from app.capture.tools import AgentTools
@@ -54,16 +56,27 @@ from app.investing.repository import (
     PortfolioSnapshotRepository,
     ReferenceSecurityRepository,
 )
+from app.investing.theme_repository import HoldingThemeTagRepository, LatestConstituentSnapshotRepository
+
 from app.investing.schemas import (
     CompanySectorRow,
     DividendCreate,
     DividendResponse,
     HoldingComplianceUpsert,
+    HoldingComplianceResponse,
+    PurificationEstimateResponse,
+    ComplianceVerdict,
+    ComplianceSource,
     InstrumentConstituentUpsert,
     InstrumentType,
     InvestingOrderCreate,
     InvestingOrderUpdate,
     OrderType,
+)
+from app.investing.theme_schemas import (
+    HoldingThemeTagsBulkRequest,
+    HoldingThemeTagsInput,
+    ThemeTagInput,
 )
 from app.investing.service import (
     ConstituentService,
@@ -72,6 +85,7 @@ from app.investing.service import (
     HoldingService,
     InstrumentService,
 )
+from app.investing.theme_service import HoldingThemeTagService, ThemeExposureService
 from app.investing.tax.exchanges import resolve_exchange
 from app.investing.tax_service import TaxService
 from app.mcp.auth import LifestackTokenVerifier
@@ -188,6 +202,28 @@ def _compliance_service(session: Any) -> HoldingComplianceService:
         HoldingComplianceRepository(session),
         DividendRepository(session),
     )
+
+
+
+
+def _theme_exposure_service(session: Any) -> ThemeExposureService:
+    return ThemeExposureService(
+        HoldingRepository(session),
+        InstrumentRepository(session),
+        CompanyRepository(session),
+        LatestConstituentSnapshotRepository(session),
+        HoldingPriceRepository(session),
+        FinanceSettingRepository(session),
+        FxRateRepository(session),
+        HoldingThemeTagRepository(session),
+    )
+
+
+def _theme_tag_service(session: Any) -> HoldingThemeTagService:
+    return HoldingThemeTagService(
+        HoldingThemeTagRepository(session),
+    )
+
 
 
 def _dividend_service(session: Any) -> DividendService:
@@ -438,7 +474,7 @@ async def _load_workspace_choices(session: Any, user_id: int) -> list[dict[str, 
         raw_selected = (token.claims or {}).get("default_workspace_id")
         try:
             selected_workspace_id = int(raw_selected) if raw_selected is not None else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             selected_workspace_id = None
 
     active_workspaces = [workspace for workspace in workspaces if workspace.is_active]
@@ -684,7 +720,7 @@ def create_mcp_server() -> FastMCP:
                 return {"status": "error", "message": "Invalid valuation_currency."}
         try:
             account_public_id = uuid.UUID(account_id) if account_id else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid account_id."}
 
         async with postgres.async_session_maker() as session:
@@ -861,7 +897,7 @@ def create_mcp_server() -> FastMCP:
         try:
             instrument_id = uuid.UUID(instrument_public_id)
             as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid instrument_public_id or as_of_date."}
 
         async with postgres.async_session_maker() as session:
@@ -991,7 +1027,7 @@ def create_mcp_server() -> FastMCP:
         try:
             instrument_id = uuid.UUID(instrument_public_id)
             snapshot_date = date.fromisoformat(as_of_date)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid instrument_public_id or as_of_date."}
 
         async with postgres.async_session_maker() as session:
@@ -1138,7 +1174,7 @@ def create_mcp_server() -> FastMCP:
         """
         try:
             as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid as_of_date. Use YYYY-MM-DD."}
 
         async with postgres.async_session_maker() as session:
@@ -1178,7 +1214,7 @@ def create_mcp_server() -> FastMCP:
         validate_page(limit, offset)
         try:
             account_public_id = uuid.UUID(account_id) if account_id else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid account_id."}
 
         async with postgres.async_session_maker() as session:
@@ -1225,7 +1261,7 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "order_type must be 'buy' or 'sell'."}
         try:
             account_public_id = uuid.UUID(account_id) if account_id else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid account_id."}
 
         async with postgres.async_session_maker() as session:
@@ -1486,7 +1522,7 @@ def create_mcp_server() -> FastMCP:
             }
         try:
             order_public_id = uuid.UUID(public_id)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid public_id."}
         async with postgres.async_session_maker() as session:
             user_id = await authorize_workspace(
@@ -1619,7 +1655,7 @@ def create_mcp_server() -> FastMCP:
 
         try:
             div_public_id = uuid.UUID(public_id)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid public_id."}
 
         async with postgres.async_session_maker() as session:
@@ -2491,7 +2527,7 @@ def create_mcp_server() -> FastMCP:
         """
         try:
             holding_public_id = uuid.UUID(holding_id)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid holding_id."}
         async with postgres.async_session_maker() as session:
             await authorize_workspace(
@@ -2537,7 +2573,7 @@ def create_mcp_server() -> FastMCP:
             dividend_public_id = uuid.UUID(dividend_id) if dividend_id else None
             start = date.fromisoformat(from_date) if from_date else None
             end = date.fromisoformat(to_date) if to_date else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {
                 "status": "error",
                 "message": "Invalid holding_id, dividend_id, from_date or to_date.",
@@ -2564,6 +2600,118 @@ def create_mcp_server() -> FastMCP:
                 "workspace_id": workspace_id,
                 "estimate": estimate.model_dump(mode="json"),
             }
+
+
+    @mcp.tool
+    async def set_holding_theme_tags(
+        workspace_id: int,
+        holdings: list[dict[str, Any]],
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Set theme tags on holdings.
+
+        Requires mcp:research scope and explicit confirmation.
+        Each holding entry: {"holding_id": str, "tags": [{"theme": str, "target_weight_pct": float?}]}
+        """
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": f"Set theme tags on {len(holdings)} holdings? Confirm to continue.",
+                "holdings": holdings,
+            }
+        if not 1 <= len(holdings) <= 200:
+            return {"status": "error", "message": "holdings must contain between 1 and 200 entries."}
+
+        validated = []
+        for i, h in enumerate(holdings):
+            try:
+                holding_public_id = uuid.UUID(h["holding_id"])
+                tag_list = h.get("tags", [])
+                if not isinstance(tag_list, list) or len(tag_list) > 20:
+                    return {"status": "error", "message": f"holding {i}: tags must be a list of 0-20 items."}
+                tags = []
+                for t in tag_list:
+                    tag = str(t["theme"]).strip()
+                    if not tag or len(tag) > 64:
+                        return {"status": "error", "message": f"holding {i}: theme must be 1-64 chars."}
+                    tw = t.get("target_weight_pct")
+                    if tw is not None:
+                        tw = float(tw)
+                        if tw < 0 or tw > 100:
+                            return {"status": "error", "message": f"holding {i}: target_weight_pct must be 0-100."}
+                    tags.append(ThemeTagInput(theme=tag, target_weight_pct=tw))
+                validated.append(HoldingThemeTagsInput(holding_id=holding_public_id, tags=tags))
+            except (KeyError, TypeError, ValueError) as exc:
+                return {"status": "error", "message": f"holding {i}: invalid entry: {exc}"}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(session, workspace_id, required_scope="mcp:research", tool="set_holding_theme_tags")
+            try:
+                result = await _theme_tag_service(session).set_tags(workspace_id, validated)
+                await session.commit()
+            except (APIError, ValueError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+            return {
+                "status": "success",
+                **result.model_dump(mode="json"),
+                "summary": f"Updated theme tags on {len(validated)} holding(s).",
+            }
+
+
+
+
+    @mcp.tool
+    async def get_lookthrough_exposure(
+        workspace_id: int,
+        as_of_date: str | None = None,
+        group_by: str = "theme",
+    ) -> dict[str, Any]:
+        """Get look-through exposure by theme/company/sector/country.
+
+        Uses exactly one latest constituent snapshot per fund (newest by as_of_date, fetched_at).
+        OTHER-* placeholder rows and unmapped companies go to "not itemised" (never rescaled).
+        """
+        try:
+            as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
+            return {"status": "error", "message": "Invalid as_of_date. Use YYYY-MM-DD."}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(session, workspace_id, required_scope="mcp:read", tool="get_lookthrough_exposure")
+            try:
+                result = await _theme_exposure_service(session).lookthrough_exposure(workspace_id, as_of, group_by=group_by)
+            except PydanticValidationError as exc:
+                return {"status": "error", "message": str(exc)}
+            return {"status": "success", "workspace_id": workspace_id, **result.model_dump(mode="json")}
+
+
+    @mcp.tool
+    async def get_allocation_vs_target(
+        workspace_id: int,
+        new_cash: str | None = None,
+        as_of_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Allocation vs target with optional new-cash deployment.
+
+        If new_cash provided, computes buy-only deployment to underweight themes.
+        Never suggests sells. Largest-remainder rounding ensures exact sums.
+        """
+        try:
+            as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
+            cash = Decimal(new_cash) if new_cash else None
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError, AppValidationError):
+            return {"status": "error", "message": "Invalid as_of_date or new_cash."}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(session, workspace_id, required_scope="mcp:read", tool="get_allocation_vs_target")
+            try:
+                result = await _theme_exposure_service(session).allocation_vs_target(workspace_id, as_of, new_cash=cash)
+                return {"status": "success", "workspace_id": workspace_id, **result.model_dump(mode="json")}
+            except AppValidationError as exc:
+                return {"status": "error", "message": exc.detail}
+
 
     return mcp
 
