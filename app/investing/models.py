@@ -220,7 +220,6 @@ class HoldingThemeTag(SQLModel, table=True):
     )
 
 
-
 class CashBalance(SQLModel, table=True):
     __tablename__ = "investing_cash_balances"
 

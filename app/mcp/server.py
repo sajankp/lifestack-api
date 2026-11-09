@@ -1,9 +1,9 @@
 """Authenticated MCP tools and resources for Lifestack."""
 
+import decimal
 import json
 import re
 import uuid
-import decimal
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -13,7 +13,6 @@ import structlog
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_access_token
 from pydantic import ValidationError as PydanticValidationError
-from app.core.exceptions import ValidationError as AppValidationError
 
 from app.auth.models import User
 from app.auth.repository import UserRepository
@@ -30,6 +29,7 @@ from app.core.currency import (
 )
 from app.core.database import postgres
 from app.core.exceptions import APIError, ValidationError
+from app.core.exceptions import ValidationError as AppValidationError
 from app.finance.lrs_service import LrsService
 from app.finance.models import AccountType
 from app.finance.repository import (
@@ -78,26 +78,16 @@ from app.investing.repository import (
     ReferenceSecurityRepository,
 )
 from app.investing.return_metrics_service import ReturnMetricsService
-from app.investing.theme_repository import HoldingThemeTagRepository, LatestConstituentSnapshotRepository
 from app.investing.schemas import (
     CompanySectorRow,
     DividendCreate,
     DividendResponse,
     HoldingComplianceUpsert,
-    HoldingComplianceResponse,
-    PurificationEstimateResponse,
-    ComplianceVerdict,
-    ComplianceSource,
     InstrumentConstituentUpsert,
     InstrumentType,
     InvestingOrderCreate,
     InvestingOrderUpdate,
     OrderType,
-)
-from app.investing.theme_schemas import (
-    HoldingThemeTagsBulkRequest,
-    HoldingThemeTagsInput,
-    ThemeTagInput,
 )
 from app.investing.service import (
     ConstituentService,
@@ -106,7 +96,6 @@ from app.investing.service import (
     HoldingService,
     InstrumentService,
 )
-from app.investing.theme_service import HoldingThemeTagService, ThemeExposureService
 from app.investing.tax.exchanges import resolve_exchange
 from app.investing.tax_service import TaxService, normalize_currency_code
 from app.investing.tax_whatif_service import (
@@ -121,6 +110,15 @@ from app.investing.tax_whatif_views import (
     lot_listing_response,
     simulation_response,
 )
+from app.investing.theme_repository import (
+    HoldingThemeTagRepository,
+    LatestConstituentSnapshotRepository,
+)
+from app.investing.theme_schemas import (
+    HoldingThemeTagsInput,
+    ThemeTagInput,
+)
+from app.investing.theme_service import HoldingThemeTagService, ThemeExposureService
 from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.security import authorize_user, authorize_workspace, validate_page
 from app.platform.repository import MembershipRepository, WorkspaceRepository
@@ -237,8 +235,6 @@ def _compliance_service(session: Any) -> HoldingComplianceService:
     )
 
 
-
-
 def _theme_exposure_service(session: Any) -> ThemeExposureService:
     return ThemeExposureService(
         HoldingRepository(session),
@@ -256,7 +252,6 @@ def _theme_tag_service(session: Any) -> HoldingThemeTagService:
     return HoldingThemeTagService(
         HoldingThemeTagRepository(session),
     )
-
 
 
 def _dividend_service(session: Any) -> DividendService:
@@ -3510,7 +3505,6 @@ def create_mcp_server() -> FastMCP:
                 "estimate": estimate.model_dump(mode="json"),
             }
 
-
     @mcp.tool
     async def set_holding_theme_tags(
         workspace_id: int,
@@ -3568,9 +3562,6 @@ def create_mcp_server() -> FastMCP:
                 "summary": f"Updated theme tags on {len(validated)} holding(s).",
             }
 
-
-
-
     @mcp.tool
     async def get_lookthrough_exposure(
         workspace_id: int,
@@ -3594,7 +3585,6 @@ def create_mcp_server() -> FastMCP:
             except PydanticValidationError as exc:
                 return {"status": "error", "message": str(exc)}
             return {"status": "success", "workspace_id": workspace_id, **result.model_dump(mode="json")}
-
 
     @mcp.tool
     async def get_allocation_vs_target(
@@ -3620,7 +3610,6 @@ def create_mcp_server() -> FastMCP:
                 return {"status": "success", "workspace_id": workspace_id, **result.model_dump(mode="json")}
             except AppValidationError as exc:
                 return {"status": "error", "message": exc.detail}
-
 
     return mcp
 
