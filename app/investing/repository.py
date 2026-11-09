@@ -32,6 +32,9 @@ from app.investing.models import (
 _PUNCTUATION_RE = re.compile(r"[^\w\s]", re.UNICODE)
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# Advisory-lock namespace for order writes (first int4 of pg_advisory_xact_lock(int, int)).
+_ORDER_WRITE_LOCK_NAMESPACE = 1_330_597_700
+
 
 def normalize_company_name(name: str) -> str:
     """Collapse "Apple Inc" / "Apple Inc." to the same key (spec-083 §4.2)."""
@@ -304,12 +307,59 @@ class InvestingOrderRepository(BaseRepository[InvestingOrder]):
 
     async def get_by_source_ref(self, workspace_id: int, source_ref: str) -> InvestingOrder | None:
         result = await self.session.execute(
-            select(InvestingOrder).where(
+            select(InvestingOrder)
+            .where(
                 InvestingOrder.workspace_id == workspace_id,
                 InvestingOrder.source_ref == source_ref,
             )
+            .order_by(InvestingOrder.id.asc())
+            .limit(1)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
+
+    async def lock_idempotent_writes(self, workspace_id: int) -> None:
+        """Serialise order creates per workspace (transaction-scoped advisory lock).
+
+        ``source_ref`` has no unique index, so check-then-insert is otherwise
+        racy. See ``TransactionRepository.lock_idempotent_writes``.
+        """
+        await self.session.execute(
+            select(func.pg_advisory_xact_lock(_ORDER_WRITE_LOCK_NAMESPACE, workspace_id))
+        )
+
+    async def find_possible_duplicate_orders(
+        self,
+        workspace_id: int,
+        *,
+        account_id: int,
+        symbol: str,
+        order_type: str,
+        quantity: Decimal,
+        price_per_unit: Decimal,
+        from_date: datetime,
+        to_date: datetime,
+    ) -> Sequence[InvestingOrder]:
+        """Orders matching account + symbol + side + quantity + price in a window.
+
+        ``to_date`` is exclusive; callers pass the workspace-local calendar day
+        converted to UTC. Used only to surface a ``possible_duplicate`` warning,
+        never to skip a write silently (fees and rounding differ too much).
+        """
+        result = await self.session.execute(
+            select(InvestingOrder)
+            .where(
+                InvestingOrder.workspace_id == workspace_id,
+                InvestingOrder.account_id == account_id,
+                InvestingOrder.symbol == symbol.strip().upper(),
+                InvestingOrder.order_type == order_type,
+                InvestingOrder.quantity == quantity,
+                InvestingOrder.price_per_unit == price_per_unit,
+                InvestingOrder.occurred_at >= from_date,
+                InvestingOrder.occurred_at < to_date,
+            )
+            .order_by(InvestingOrder.id.asc())
+        )
+        return result.scalars().all()
 
     async def list_by_workspace(
         self,

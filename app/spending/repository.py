@@ -23,6 +23,10 @@ from app.spending.models import (
     TransactionSort,
 )
 
+# Advisory-lock namespace (first int4 of pg_advisory_xact_lock(int, int)); the
+# second key is the workspace id. Arbitrary but fixed.
+_IDEMPOTENT_WRITE_LOCK_NAMESPACE = 1_397_772_356
+
 
 def _transaction_order_by(sort: TransactionSort | None) -> list:  # type: ignore[type-arg]
     """Build the ORDER BY clause for a transaction listing.
@@ -415,14 +419,87 @@ class TransactionRepository(BaseRepository[SpendingTransaction]):
     async def get_by_source_ref(
         self, workspace_id: int, source_type: str, source_ref: str
     ) -> SpendingTransaction | None:
+        # There is no unique index on (workspace, source_type, source_ref), so a
+        # historic race could have left two rows. Return the oldest rather than
+        # raising MultipleResultsFound and wedging every retry of that ref.
         result = await self.session.execute(
-            select(SpendingTransaction).where(
+            select(SpendingTransaction)
+            .where(
                 SpendingTransaction.workspace_id == workspace_id,
                 SpendingTransaction.source_type == source_type,
                 SpendingTransaction.source_ref == source_ref,
             )
+            .order_by(SpendingTransaction.id.asc())
+            .limit(1)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
+
+    async def get_by_source_refs(
+        self, workspace_id: int, source_type: str, source_refs: Sequence[str]
+    ) -> dict[str, SpendingTransaction]:
+        """Batch lookup: ``source_ref -> oldest matching transaction`` (one query)."""
+        if not source_refs:
+            return {}
+        result = await self.session.execute(
+            select(SpendingTransaction)
+            .where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.source_type == source_type,
+                SpendingTransaction.source_ref.in_(list(source_refs)),
+            )
+            .order_by(SpendingTransaction.id.asc())
+        )
+        found: dict[str, SpendingTransaction] = {}
+        for transaction in result.scalars().all():
+            if transaction.source_ref is not None:
+                found.setdefault(transaction.source_ref, transaction)
+        return found
+
+    async def lock_idempotent_writes(self, workspace_id: int) -> None:
+        """Serialise idempotent spending writes for one workspace.
+
+        ``source_ref`` and natural-key dedupe are check-then-insert, and there is
+        no unique index to arbitrate a race (adding one needs a data migration).
+        A transaction-scoped Postgres advisory lock closes the window instead:
+        a concurrent writer blocks here until this transaction commits or rolls
+        back, and under READ COMMITTED its next lookup then sees our rows.
+        The lock is released automatically at transaction end.
+        """
+        await self.session.execute(
+            select(func.pg_advisory_xact_lock(_IDEMPOTENT_WRITE_LOCK_NAMESPACE, workspace_id))
+        )
+
+    async def find_natural_key_candidates(
+        self,
+        workspace_id: int,
+        *,
+        account_ids: Sequence[int],
+        amounts: Sequence[Decimal],
+        transaction_types: Sequence[str],
+        from_date: datetime,
+        to_date: datetime,
+    ) -> Sequence[SpendingTransaction]:
+        """Existing transactions that could natural-key match any batch item.
+
+        One query for the whole batch (no per-item round trip). ``to_date`` is
+        exclusive. The caller buckets rows by local day + normalised
+        description, because both depend on the user's timezone.
+        """
+        if not account_ids or not amounts:
+            return []
+        result = await self.session.execute(
+            select(SpendingTransaction)
+            .where(
+                SpendingTransaction.workspace_id == workspace_id,
+                SpendingTransaction.account_id.in_(list(account_ids)),
+                SpendingTransaction.amount.in_(list(amounts)),
+                SpendingTransaction.type.in_(list(transaction_types)),
+                SpendingTransaction.occurred_at >= from_date,
+                SpendingTransaction.occurred_at < to_date,
+            )
+            .order_by(SpendingTransaction.occurred_at.asc(), SpendingTransaction.id.asc())
+        )
+        return result.scalars().all()
 
     async def find_same_day_duplicates(
         self,

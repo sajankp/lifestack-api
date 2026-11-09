@@ -16,7 +16,8 @@ from pydantic import ValidationError as PydanticValidationError
 from app.core.exceptions import ValidationError as AppValidationError
 
 from app.auth.models import User
-from app.capture.tools import AgentTools
+from app.capture.spending_batch import local_day_range_utc
+from app.capture.tools import AgentTools, _safe_timezone
 from app.config import settings
 from app.core.audit import AuditLogger
 from app.core.currency import (
@@ -246,6 +247,56 @@ def _dividend_service(session: Any) -> DividendService:
         HoldingRepository(session),
         CurrencyRepository(session),
     )
+
+
+async def _possible_duplicate_orders(
+    session: Any, workspace_id: int, user_id: int, payload: InvestingOrderCreate
+) -> list[Any]:
+    """Orders that look like ``payload``: same account + symbol + side + qty + price
+    on the same workspace-local calendar day. Used for the ``possible_duplicate``
+    warning (orders without a ``source_ref``); never to skip a write silently.
+    """
+    account = await AccountRepository(session).get_by_public_id(workspace_id, payload.account_id)
+    if account is None or account.id is None:
+        return []
+    user = await session.get(User, user_id)
+    tz = _safe_timezone(user.timezone if user and user.timezone else "UTC")
+    occurred_at = payload.occurred_at
+    if occurred_at.tzinfo is None:
+        occurred_at = occurred_at.replace(tzinfo=UTC)
+    local_day = occurred_at.astimezone(tz).date()
+    day_start, day_end = local_day_range_utc(local_day, local_day, tz)
+    return list(
+        await InvestingOrderRepository(session).find_possible_duplicate_orders(
+            workspace_id,
+            account_id=account.id,
+            symbol=payload.symbol,
+            order_type=payload.order_type.value,
+            quantity=payload.quantity,
+            price_per_unit=payload.price_per_unit,
+            from_date=day_start,
+            to_date=day_end,
+        )
+    )
+
+
+def _order_preview_fields(payload: InvestingOrderCreate, gross: Decimal, net: Decimal) -> dict:
+    return {
+        "entity_type": "investing_order",
+        "account_id": str(payload.account_id),
+        "order_type": payload.order_type.value,
+        "symbol": payload.symbol,
+        "quantity": str(payload.quantity),
+        "price_per_unit": str(payload.price_per_unit),
+        "gross_amount": str(gross),
+        "brokerage_fee": str(payload.brokerage_fee),
+        "tax_amount": str(payload.tax_amount),
+        "other_fees": str(payload.other_fees),
+        "net_amount": str(net),
+        "currency": payload.currency,
+        "occurred_at": payload.occurred_at.isoformat(),
+        "source_ref": payload.source_ref,
+    }
 
 
 def _order_service(session: Any) -> InvestingOrderService:
@@ -1337,6 +1388,70 @@ def create_mcp_server() -> FastMCP:
                 "offset": offset,
             }
 
+    async def _preview_order(
+        workspace_id: int, payload: InvestingOrderCreate, gross: Decimal, net: Decimal
+    ) -> dict[str, Any]:
+        """``create_investment_order`` dry run: validate + dedupe, persist nothing."""
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session, workspace_id, required_scope="mcp:write", tool="create_investment_order"
+            )
+            status, match_reason, existing_id = "would_create", None, None
+            errors: list[str] = []
+            order_repo = InvestingOrderRepository(session)
+            if payload.source_ref:
+                existing = await order_repo.get_by_source_ref(workspace_id, payload.source_ref)
+                if existing is not None:
+                    status, match_reason, existing_id = (
+                        "duplicate",
+                        "source_ref",
+                        str(existing.public_id),
+                    )
+            else:
+                similar = await _possible_duplicate_orders(session, workspace_id, user_id, payload)
+                if similar:
+                    status, match_reason, existing_id = (
+                        "possible_duplicate",
+                        "possible_duplicate",
+                        str(similar[0].public_id),
+                    )
+            if status == "would_create":
+                # Run the real business validation (account, currency, cash, holdings)
+                # inside a SAVEPOINT that is always rolled back -- nothing persists.
+                nested = await session.begin_nested()
+                try:
+                    await _order_service(session).place_order(
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                        order_in=payload,
+                        audit_logger=AuditLogger(session),
+                        source_type="mcp_agent",
+                    )
+                except (APIError, ValueError) as exc:
+                    status = "invalid"
+                    errors = [str(getattr(exc, "detail", None) or exc)]
+                finally:
+                    await nested.rollback()
+            await session.rollback()
+            counts = {"create": 0, "duplicate": 0, "possible_duplicate": 0, "invalid": 0}
+            counts["create" if status == "would_create" else status] += 1
+            return {
+                "status": "success",
+                "dry_run": True,
+                "counts": counts,
+                "items": [
+                    {
+                        "index": 0,
+                        "status": status,
+                        "match_reason": match_reason,
+                        "existing_id": existing_id,
+                        "errors": errors,
+                        "warnings": [],
+                    }
+                ],
+                **_order_preview_fields(payload, gross, net),
+            }
+
     @mcp.tool
     async def create_investment_order(
         workspace_id: int,
@@ -1356,11 +1471,25 @@ def create_mcp_server() -> FastMCP:
         notes: str | None = None,
         source_ref: str | None = None,
         confirmed: bool = False,
+        dry_run: bool = False,
+        allow_duplicate: bool = False,
     ) -> dict[str, Any]:
         """Record a historical buy or sell order after explicit confirmation.
 
         This records the trade in Lifestack and updates holdings and brokerage
         cash; it does not submit a live order to a broker.
+
+        Idempotency: a repeated ``source_ref`` returns the existing order and
+        writes nothing. Without a ``source_ref``, an order with the same
+        account + symbol + side + quantity + price on the same local day is
+        reported as ``possible_duplicate`` (with the existing order's ID) and is
+        NOT recorded -- fees and rounding differ too much to skip it silently;
+        set ``allow_duplicate=true`` to record a genuine repeat.
+
+        ``dry_run=true`` runs every validation (including cash and holding
+        checks) and the duplicate checks, writes nothing, needs no confirmation,
+        and returns ``{counts, items:[{index, status, match_reason, existing_id,
+        errors}]}`` with the calculated amounts.
         """
         try:
             payload = InvestingOrderCreate(
@@ -1390,6 +1519,10 @@ def create_mcp_server() -> FastMCP:
         )
         if net_amount <= 0:
             return {"status": "error", "message": "Fees must leave a positive net amount."}
+
+        if dry_run:
+            return await _preview_order(workspace_id, payload, gross_amount, net_amount)
+
         if not confirmed:
             return {
                 "status": "needs_confirmation",
@@ -1420,6 +1553,9 @@ def create_mcp_server() -> FastMCP:
                 session, workspace_id, required_scope="mcp:write", tool="create_investment_order"
             )
             order_repo = InvestingOrderRepository(session)
+            # Check-then-insert below: hold a per-workspace lock until commit so a
+            # concurrent identical request waits and then sees this order.
+            await order_repo.lock_idempotent_writes(workspace_id)
             if payload.source_ref:
                 existing = await order_repo.get_by_source_ref(workspace_id, payload.source_ref)
                 if existing is not None:
@@ -1429,9 +1565,26 @@ def create_mcp_server() -> FastMCP:
                     return {
                         "status": "success",
                         "idempotent": True,
+                        "match_reason": "source_ref",
+                        "existing_id": str(existing.public_id),
                         "entity_type": "investing_order",
                         "entity_public_id": str(existing.public_id),
                         "item": _order_response(existing, account),
+                    }
+            elif not allow_duplicate:
+                similar = await _possible_duplicate_orders(session, workspace_id, user_id, payload)
+                if similar:
+                    return {
+                        "status": "possible_duplicate",
+                        "match_reason": "possible_duplicate",
+                        "existing_id": str(similar[0].public_id),
+                        "possible_duplicate_count": len(similar),
+                        "message": (
+                            "An order with the same account, symbol, side, quantity and price "
+                            "already exists on this day. Nothing was recorded. If this is a "
+                            "genuine second order, retry with allow_duplicate=true; otherwise "
+                            "pass a source_ref to make retries idempotent."
+                        ),
                     }
             try:
                 order = await _order_service(session).place_order(
@@ -1724,13 +1877,24 @@ def create_mcp_server() -> FastMCP:
         account_name: str | None = None,
         transaction_type: str | None = "expense",
         limit: int = 10,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        """Find bounded transaction candidates in an authorized workspace."""
+        """Find transaction candidates in an authorized workspace.
+
+        ``from_date``/``to_date`` (YYYY-MM-DD) are inclusive workspace-local calendar
+        days (``from_day``/``to_day`` are aliases). Returns ``total_count`` and
+        ``next_cursor``; pass it back as ``cursor`` for the next page.
+        """
         return await _run_capture_tool(
             workspace_id,
             "mcp:read",
             "find_spending_transactions",
             {
+                "from_date": from_date,
+                "to_date": to_date,
+                "cursor": cursor,
                 "from_day": from_day,
                 "to_day": to_day,
                 "category_name": category_name,
@@ -2031,13 +2195,24 @@ def create_mcp_server() -> FastMCP:
         allow_duplicate: bool = False,
         transaction_type: str = "expense",
         source_ref: str | None = None,
+        dry_run: bool = False,
+        skip_duplicates: bool = False,
     ) -> dict[str, Any]:
-        """Create a transaction (expense or income) in an authorized workspace."""
+        """Create a transaction (expense or income) in an authorized workspace.
+
+        A repeated ``source_ref`` returns the existing transaction (idempotent).
+        ``dry_run=true`` writes nothing and returns ``{counts, items:[{index,
+        status, match_reason, existing_id, errors}]}``. ``skip_duplicates=true``
+        reports a same-day/amount/account/description match as a duplicate
+        instead of refusing.
+        """
         return await _run_capture_tool(
             workspace_id,
             "mcp:write",
             "log_spending_transaction",
             {
+                "dry_run": dry_run,
+                "skip_duplicates": skip_duplicates,
                 "amount": amount,
                 "category_name": category_name,
                 "description": description,
@@ -2051,6 +2226,39 @@ def create_mcp_server() -> FastMCP:
         )
 
     @mcp.tool
+    async def log_spending_transactions_batch(
+        workspace_id: int,
+        items: list[dict[str, Any]],
+        atomic: bool = False,
+        dry_run: bool = False,
+        skip_duplicates: bool = False,
+    ) -> dict[str, Any]:
+        """Create up to 50 transactions idempotently in an authorized workspace.
+
+        Each item: {amount, category_name, description?, account_name?, occurred_at?,
+        tags?, transaction_type?, source_ref?, allow_duplicate?}. An exact
+        ``source_ref`` match returns the existing record. Items without one are matched
+        on local day + amount + account + normalised description, multiplicity-aware
+        (the ledger already holding 1 of 2 identical purchases creates 1, skips 1):
+        ``duplicate`` with ``skip_duplicates=true``, else ``possible_duplicate`` (not
+        written). Default is per-item partial success; ``atomic=true`` is all-or-nothing.
+        ``dry_run=true`` writes nothing and returns the same structure with
+        ``would_create``. Returns ``{counts, items:[{index, status, match_reason,
+        existing_id, errors, warnings}]}``.
+        """
+        return await _run_capture_tool(
+            workspace_id,
+            "mcp:write",
+            "log_spending_transactions_batch",
+            {
+                "items": items,
+                "atomic": atomic,
+                "dry_run": dry_run,
+                "skip_duplicates": skip_duplicates,
+            },
+        )
+
+    @mcp.tool
     async def list_spending_transactions(
         workspace_id: int,
         day: str | None = None,
@@ -2060,13 +2268,24 @@ def create_mcp_server() -> FastMCP:
         account_name: str | None = None,
         transaction_type: str | None = "expense",
         limit: int = 10,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        """List transactions for one local calendar day in an authorized workspace."""
+        """List transactions for a local day or inclusive date range in an authorized workspace.
+
+        ``from_date``/``to_date`` (YYYY-MM-DD) are inclusive workspace-local calendar
+        days. Returns ``total_count`` and ``next_cursor``; pass it back as ``cursor``
+        for the next page.
+        """
         return await _run_capture_tool(
             workspace_id,
             "mcp:read",
             "list_spending_transactions",
             {
+                "from_date": from_date,
+                "to_date": to_date,
+                "cursor": cursor,
                 "day": day,
                 "category_name": category_name,
                 "amount": amount,
