@@ -34,7 +34,7 @@ def _mcp_settings(monkeypatch):
 @pytest.fixture
 def authorize(monkeypatch):
     mock = AsyncMock(return_value=ALICE)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", mock)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", mock)
     return mock
 
 
@@ -301,7 +301,7 @@ async def test_both_tools_stop_when_authorization_fails(
     override_database_url, monkeypatch, tool, kwargs
 ):
     monkeypatch.setattr(
-        "app.mcp.server.authorize_workspace",
+        "app.mcp.security.authorize_workspace",
         AsyncMock(side_effect=ForbiddenError(detail="no access")),
     )
     await _seed_workspaces()

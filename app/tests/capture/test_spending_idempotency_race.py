@@ -242,7 +242,7 @@ async def _call_order_tool(monkeypatch, engine, seed, **kwargs) -> dict:
         return seed["user_id"]
 
     monkeypatch.setattr(postgres, "async_session_maker", maker)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", authorize)
     monkeypatch.setattr(settings, "MCP_BASE_URL", "https://api.lifestack.test")
     tools = {t.name: t.fn for t in await create_mcp_server().list_tools()}
     return await tools["create_investment_order"](

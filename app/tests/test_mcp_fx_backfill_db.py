@@ -36,7 +36,7 @@ def _mcp_settings(monkeypatch):
 @pytest.fixture
 def authorize(monkeypatch):
     mock = AsyncMock(return_value=ALICE)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", mock)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", mock)
     return mock
 
 
@@ -263,7 +263,7 @@ async def test_concurrent_backfills_do_not_lose_each_others_entries(race_engine,
         session.add(WorkspaceMembership(workspace_id=workspace.id, user_id=user.id, role="owner"))
         user_id, workspace_id = user.id, workspace.id
     monkeypatch.setattr(postgres, "async_session_maker", maker)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=user_id))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=user_id))
     monkeypatch.setattr(settings, "MCP_BASE_URL", "https://api.lifestack.test")
     tools = await _tools()
     # The profile row exists first, so this exercises the merge race (not first-row creation).
@@ -312,7 +312,7 @@ async def test_single_set_fx_rate_shares_the_locked_merge_and_still_overwrites(
 @pytest.mark.asyncio
 async def test_authorization_failure_writes_nothing(override_database_url, monkeypatch):
     monkeypatch.setattr(
-        "app.mcp.server.authorize_workspace",
+        "app.mcp.security.authorize_workspace",
         AsyncMock(side_effect=ForbiddenError(detail="no access")),
     )
     await _seed()

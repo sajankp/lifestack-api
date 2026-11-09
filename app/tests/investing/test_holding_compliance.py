@@ -499,7 +499,7 @@ async def test_mcp_compliance_tools_end_to_end(client: AsyncClient, monkeypatch,
         workspace_id, user_id = holding.workspace_id, holding.user_id
 
     auth = AsyncMock(return_value=user_id)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", auth)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", auth)
     tools = await _tool_map()
     sources = [_source(verdict="halal"), _source(screener_name="S&P Shariah", verdict="non_halal")]
 
@@ -552,7 +552,7 @@ async def test_mcp_compliance_tools_errors(client: AsyncClient, monkeypatch, mcp
             await session.execute(select(Holding).where(Holding.public_id == UUID(holding_id)))
         ).scalar_one()
         workspace_id, user_id = holding.workspace_id, holding.user_id
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=user_id))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=user_id))
     tools = await _tool_map()
 
     bad = await tools["set_holding_compliance"](

@@ -941,7 +941,7 @@ async def test_mcp_batch_runs_through_the_real_runner_with_mcp_agent_source(seed
         return USER
 
     monkeypatch.setattr(settings, "MCP_BASE_URL", "https://api.lifestack.test")
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", authorize)
     tools = {t.name: t.fn for t in await create_mcp_server().list_tools()}
     res = await tools["log_spending_transactions_batch"](
         workspace_id=WS, items=[_chai(source_ref="mcp-1")]

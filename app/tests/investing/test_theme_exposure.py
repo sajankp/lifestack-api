@@ -659,7 +659,7 @@ async def test_mcp_theme_tools_end_to_end_with_scopes(client: AsyncClient, monke
     async with postgres.async_session_maker() as session:
         workspace_id = (await session.execute(select(Workspace.id))).scalars().first()
     auth = AsyncMock(return_value=1)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", auth)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", auth)
     tools = await _tool_map()
 
     payload = [

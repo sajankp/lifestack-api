@@ -48,7 +48,7 @@ async def tools(monkeypatch):
     monkeypatch.setattr(settings, "MCP_BASE_URL", "https://api.lifestack.test")
     server = create_mcp_server()
     tool_map = {t.name: t.fn for t in await server.list_tools()}
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=1))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=1))
     return tool_map
 
 
@@ -578,7 +578,7 @@ async def test_set_company_details_rename_and_isin_confirmed(client, tools, monk
     # authorize_workspace is mocked to return 1 by the `tools` fixture, but the
     # registered user's id is sequence-assigned and not reliably 1. The real user
     # id is required because set_company_details writes to audit_logs (FK -> users).
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=user_id))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=user_id))
 
     async with postgres.async_session_maker() as session:
         company = Company(workspace_id=ws, name="Old Name", ticker="OLD", isin=None)
@@ -618,7 +618,7 @@ async def test_set_company_details_forks_global_never_mutates(client, tools, mon
     ws = (await _workspace_ids())[0]
     async with postgres.async_session_maker() as session:
         user_id = await _registered_user_id(session, "company-details-fork@example.com")
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=user_id))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=user_id))
 
     async with postgres.async_session_maker() as session:
         company = Company(workspace_id=None, name="Global Co", ticker="GLBL", isin="USGLBL0000001")
@@ -695,7 +695,7 @@ async def test_set_company_details_idempotent_noop(client, tools, monkeypatch):
     ws = (await _workspace_ids())[0]
     async with postgres.async_session_maker() as session:
         user_id = await _registered_user_id(session, "company-details-noop@example.com")
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=user_id))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=user_id))
 
     async with postgres.async_session_maker() as session:
         company = Company(workspace_id=ws, name="Same Name", ticker="SAME", isin="USSAME0000001")

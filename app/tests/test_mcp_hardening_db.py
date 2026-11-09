@@ -33,7 +33,7 @@ def _mcp_settings(monkeypatch):
 @pytest.fixture
 def authorize(monkeypatch):
     mock = AsyncMock(return_value=ALICE)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", mock)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", mock)
     return mock
 
 

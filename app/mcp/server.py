@@ -40,24 +40,19 @@ from app.finance.repository import (
     FxRateRepository,
     NetWorthSnapshotRepository,
 )
-from app.finance.service import AccountService, FxRateService, NetWorthService
+from app.finance.service import AccountService, NetWorthService
 from app.health.repository import (
     MedicationEventRepository,
     MedicationRepository,
-    WeightEntryRepository,
 )
-from app.health.service import HealthService
-from app.investing.company_sector_service import CompanySectorService, SectorRowError
-from app.investing.compliance_service import HoldingComplianceService
-from app.investing.order_service import InvestingOrderService
+from app.investing.company_sector_service import SectorRowError
 from app.investing.performance_report import (
     VALID_PERIODS,
     build_performance_report,
     period_start,
 )
-from app.investing.performance_service import InvestingSummaryService, PerformanceService
+from app.investing.performance_service import InvestingSummaryService
 from app.investing.reconciliation import (
-    HoldingReconciliationService,
     ReconciliationInputError,
     parse_external_list,
     parse_tolerances,
@@ -65,19 +60,12 @@ from app.investing.reconciliation import (
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
-    CorporateActionRepository,
-    DividendRepository,
-    HoldingComplianceRepository,
     HoldingPriceRepository,
     HoldingRepository,
-    InstrumentConstituentRepository,
     InstrumentRepository,
     InvestingOrderRepository,
-    LotRepository,
     PortfolioSnapshotRepository,
-    ReferenceSecurityRepository,
 )
-from app.investing.return_metrics_service import ReturnMetricsService
 from app.investing.schemas import (
     CompanySectorRow,
     DividendCreate,
@@ -89,18 +77,9 @@ from app.investing.schemas import (
     InvestingOrderUpdate,
     OrderType,
 )
-from app.investing.service import (
-    ConstituentService,
-    DividendService,
-    ExposureAnalyticsService,
-    HoldingService,
-    InstrumentService,
-    PortfolioReportService,
-)
 from app.investing.tax.exchanges import resolve_exchange
-from app.investing.tax_service import TaxService, normalize_currency_code, parse_fx_entries
+from app.investing.tax_service import normalize_currency_code, parse_fx_entries
 from app.investing.tax_whatif_service import (
-    TaxWhatIfService,
     WhatIfError,
     parse_decimal,
     parse_sale_date,
@@ -111,18 +90,14 @@ from app.investing.tax_whatif_views import (
     lot_listing_response,
     simulation_response,
 )
-from app.investing.theme_repository import (
-    HoldingThemeTagRepository,
-    LatestConstituentSnapshotRepository,
-)
 from app.investing.theme_schemas import (
     GroupBy,
     HoldingThemeTagsInput,
     ThemeTagInput,
 )
-from app.investing.theme_service import HoldingThemeTagService, ThemeExposureService
+from app.mcp import security
 from app.mcp.auth import LifestackTokenVerifier
-from app.mcp.security import authorize_user, authorize_workspace, validate_page
+from app.mcp.support import services
 from app.platform.repository import MembershipRepository, WorkspaceRepository
 from app.spending.repository import (
     BudgetRepository,
@@ -163,7 +138,7 @@ async def _run_capture_tool(
 ) -> dict[str, Any]:
     """Run a voice-compatible tool behind MCP's workspace and scope checks."""
     async with postgres.async_session_maker() as session:
-        user_id = await authorize_workspace(
+        user_id = await security.authorize_workspace(
             session,
             workspace_id,
             required_scope=required_scope,
@@ -186,84 +161,6 @@ async def _run_capture_tool(
 
 
 logger = structlog.get_logger(__name__)
-
-
-def _holding_service(session: Any) -> HoldingService:
-    """Build the investing holding service with the same repositories as REST."""
-    return HoldingService(
-        HoldingRepository(session),
-        InstrumentRepository(session),
-        CompanyRepository(session),
-        AccountRepository(session),
-        CurrencyRepository(session),
-        HoldingPriceRepository(session),
-        InvestingOrderRepository(session),
-    )
-
-
-def _constituent_service(session: Any) -> ConstituentService:
-    return ConstituentService(
-        InstrumentRepository(session),
-        CompanyRepository(session),
-        InstrumentConstituentRepository(session),
-    )
-
-
-def _analytics_service(session: Any) -> ExposureAnalyticsService:
-    return ExposureAnalyticsService(
-        HoldingRepository(session),
-        InstrumentRepository(session),
-        CompanyRepository(session),
-        InstrumentConstituentRepository(session),
-        HoldingPriceRepository(session),
-        FinanceSettingRepository(session),
-        FxRateRepository(session),
-    )
-
-
-def _company_sector_service(session: Any) -> CompanySectorService:
-    return CompanySectorService(
-        HoldingRepository(session),
-        InstrumentRepository(session),
-        CompanyRepository(session),
-    )
-
-
-def _compliance_service(session: Any) -> HoldingComplianceService:
-    return HoldingComplianceService(
-        HoldingRepository(session),
-        HoldingComplianceRepository(session),
-        DividendRepository(session),
-    )
-
-
-def _theme_exposure_service(session: Any) -> ThemeExposureService:
-    return ThemeExposureService(
-        HoldingRepository(session),
-        InstrumentRepository(session),
-        CompanyRepository(session),
-        LatestConstituentSnapshotRepository(session),
-        HoldingPriceRepository(session),
-        FinanceSettingRepository(session),
-        FxRateRepository(session),
-        HoldingThemeTagRepository(session),
-    )
-
-
-def _theme_tag_service(session: Any) -> HoldingThemeTagService:
-    return HoldingThemeTagService(
-        HoldingThemeTagRepository(session),
-    )
-
-
-def _dividend_service(session: Any) -> DividendService:
-    return DividendService(
-        DividendRepository(session),
-        CashBalanceRepository(session),
-        AccountRepository(session),
-        HoldingRepository(session),
-        CurrencyRepository(session),
-    )
 
 
 async def _possible_duplicate_orders(
@@ -349,45 +246,8 @@ def _order_preview_fields(payload: InvestingOrderCreate, gross: Decimal, net: De
     }
 
 
-def _order_service(session: Any) -> InvestingOrderService:
-    return InvestingOrderService(
-        InvestingOrderRepository(session),
-        HoldingRepository(session),
-        CashBalanceRepository(session),
-        AccountRepository(session),
-        CurrencyRepository(session),
-        InstrumentService(InstrumentRepository(session), CompanyRepository(session)),
-        LotRepository(session),
-        CorporateActionRepository(session),
-    )
-
-
 MAX_PORTFOLIO_REPORT_CHARS = 2_000_000
 MAX_LRS_HEADROOM_INR = Decimal("1e16")  # numeric(18,2) holds < 10^16
-
-
-def _portfolio_report_service(session: Any) -> PortfolioReportService:
-    return PortfolioReportService(session=session)
-
-
-def _tax_service(session: Any) -> TaxService:
-    return TaxService(
-        session=session,
-        order_repository=InvestingOrderRepository(session),
-        reference_repository=ReferenceSecurityRepository(session),
-        account_repository=AccountRepository(session),
-        instrument_repository=InstrumentRepository(session),
-        fx_rate_repository=FxRateRepository(session),
-    )
-
-
-def _tax_whatif_service(session: Any) -> TaxWhatIfService:
-    return TaxWhatIfService(
-        _tax_service(session),
-        HoldingRepository(session),
-        LotRepository(session),
-        HoldingPriceRepository(session),
-    )
 
 
 async def _user_timezone_name(session: Any, user_id: int) -> str | None:
@@ -397,50 +257,6 @@ async def _user_timezone_name(session: Any, user_id: int) -> str | None:
 
 def _what_if_error(exc: WhatIfError) -> dict[str, Any]:
     return {"status": "error", "code": exc.code, "message": exc.message, **exc.details}
-
-
-def _reconciliation_service(session: Any) -> HoldingReconciliationService:
-    return HoldingReconciliationService(
-        HoldingRepository(session),
-        InstrumentRepository(session),
-        CompanyRepository(session),
-        AccountRepository(session),
-    )
-
-
-def _return_metrics_service(session: Any) -> ReturnMetricsService:
-    return ReturnMetricsService(
-        InvestingOrderRepository(session),
-        HoldingRepository(session),
-        HoldingPriceRepository(session),
-        DividendRepository(session),
-        AccountRepository(session),
-        NetWorthSnapshotRepository(session),
-        FxRateService(FxRateRepository(session), CurrencyRepository(session)),
-        FinanceSettingRepository(session),
-    )
-
-
-def _performance_service(session: Any) -> PerformanceService:
-    return PerformanceService(
-        HoldingRepository(session),
-        CashBalanceRepository(session),
-        HoldingPriceRepository(session),
-        PortfolioSnapshotRepository(session),
-        FinanceSettingRepository(session),
-        FxRateRepository(session),
-        InstrumentRepository(session),
-        AccountRepository(session),
-        transfer_repo=CapitalTransferRepository(session),
-    )
-
-
-def _health_service(session: Any) -> HealthService:
-    return HealthService(
-        MedicationRepository(session),
-        MedicationEventRepository(session),
-        WeightEntryRepository(session),
-    )
 
 
 def _parse_iso_datetime(value: str | None, label: str) -> datetime | None:
@@ -697,7 +513,7 @@ def create_mcp_server() -> FastMCP:
     ) -> dict[str, Any]:
         """Create a todo in a workspace the authenticated user belongs to."""
         async with postgres.async_session_maker() as session, session.begin():
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:write", tool="create_todo"
             )
             due = datetime.fromisoformat(due_date) if due_date else None
@@ -713,9 +529,9 @@ def create_mcp_server() -> FastMCP:
         workspace_id: int, completed: bool | None = None, limit: int = 20, offset: int = 0
     ) -> dict[str, Any]:
         """List todos for an authorized workspace."""
-        validate_page(limit, offset)
+        security.validate_page(limit, offset)
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="list_todos"
             )
             todos, total = await TodoService(TodoRepository(session)).list_todos(
@@ -732,7 +548,7 @@ def create_mcp_server() -> FastMCP:
     async def get_todo_summary(workspace_id: int) -> dict[str, Any]:
         """Get todo counts and due items for an authorized workspace."""
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="get_todo_summary"
             )
             service = TodoService(TodoRepository(session))
@@ -753,7 +569,7 @@ def create_mcp_server() -> FastMCP:
     async def get_net_worth(workspace_id: int) -> dict[str, Any]:
         """Get the current net worth for an authorized workspace."""
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="get_net_worth"
             )
             account_repo = AccountRepository(session)
@@ -785,7 +601,7 @@ def create_mcp_server() -> FastMCP:
     async def get_spending_budgets(workspace_id: int) -> dict[str, Any]:
         """Get budgets and spending details for an authorized workspace."""
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="get_spending_budgets"
             )
             service = BudgetService(
@@ -809,7 +625,7 @@ def create_mcp_server() -> FastMCP:
         persisted timezone that the voice surface uses for disambiguation.
         """
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:read",
@@ -824,7 +640,7 @@ def create_mcp_server() -> FastMCP:
         Call this before workspace-scoped tools when the workspace is not already
         supplied by the host application. Never guess a workspace identifier.
         """
-        user_id = authorize_user(required_scope="mcp:read", tool="list_workspaces")
+        user_id = security.authorize_user(required_scope="mcp:read", tool="list_workspaces")
         async with postgres.async_session_maker() as session:
             workspaces = await _load_workspace_choices(session, user_id)
             return {"workspaces": workspaces}
@@ -837,7 +653,7 @@ def create_mcp_server() -> FastMCP:
     )
     async def my_workspaces() -> str:
         """Expose workspace discovery as a passive authenticated resource."""
-        user_id = authorize_user(required_scope="mcp:read", tool="my_workspaces")
+        user_id = security.authorize_user(required_scope="mcp:read", tool="my_workspaces")
         async with postgres.async_session_maker() as session:
             workspaces = await _load_workspace_choices(session, user_id)
             return json.dumps({"workspaces": workspaces}, separators=(",", ":"))
@@ -854,7 +670,7 @@ def create_mcp_server() -> FastMCP:
     async def workspace_reference_data(workspace_id: int) -> str:
         """Return authenticated workspace context as a JSON MCP resource."""
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:read",
@@ -883,7 +699,7 @@ def create_mcp_server() -> FastMCP:
         values use ``valuation_currency`` when supplied, otherwise the workspace
         reporting currency, or the sole holding currency when unambiguous.
         """
-        validate_page(limit, offset)
+        security.validate_page(limit, offset)
         if quantity_state not in _HOLDINGS_QUANTITY_STATES:
             return {
                 "status": "error",
@@ -918,7 +734,7 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Invalid account_id."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:read",
@@ -934,7 +750,7 @@ def create_mcp_server() -> FastMCP:
                     return {"status": "error", "message": "Account not found in this workspace."}
                 account_filter_id = account.id
 
-            service = _holding_service(session)
+            service = services.holding_service(session)
             requires_value_sort = sort_by in _HOLDINGS_VALUE_SORT_FIELDS
             query_limit = None if requires_value_sort else limit
             query_offset = 0 if requires_value_sort else offset
@@ -1095,13 +911,13 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Invalid instrument_public_id or as_of_date."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:read",
                 tool="get_investment_constituents",
             )
-            items = await _constituent_service(session).get_constituents(
+            items = await services.constituent_service(session).get_constituents(
                 workspace_id, instrument_id, as_of, source=source
             )
             return {
@@ -1169,14 +985,14 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": f"Invalid constituent snapshot: {exc}"}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:research",
                 tool="write_investment_constituent_snapshot",
             )
             try:
-                service = _constituent_service(session)
+                service = services.constituent_service(session)
                 await service.upsert_constituents(workspace_id, instrument_id, payload)
                 items = await service.get_constituents(
                     workspace_id,
@@ -1225,14 +1041,14 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Invalid instrument_public_id or as_of_date."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:research",
                 tool="delete_investment_constituent_snapshot",
             )
             try:
-                deleted = await _constituent_service(session).delete_snapshot(
+                deleted = await services.constituent_service(session).delete_snapshot(
                     workspace_id, instrument_id, snapshot_date, source
                 )
                 await session.commit()
@@ -1301,7 +1117,7 @@ def create_mcp_server() -> FastMCP:
                 return {"status": "error", "message": f"row {idx}: {detail}"}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:research",
@@ -1327,7 +1143,9 @@ def create_mcp_server() -> FastMCP:
                     ],
                 }
             try:
-                outcome = await _company_sector_service(session).set_sectors(workspace_id, parsed)
+                outcome = await services.company_sector_service(session).set_sectors(
+                    workspace_id, parsed
+                )
                 await session.commit()
             except Exception:
                 await session.rollback()
@@ -1382,7 +1200,7 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Invalid company_public_id."}
 
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:write",
@@ -1402,7 +1220,7 @@ def create_mcp_server() -> FastMCP:
                     "requested_isin": isin,
                 }
             try:
-                outcome = await _company_sector_service(session).set_company_details(
+                outcome = await services.company_sector_service(session).set_company_details(
                     workspace_id,
                     public_id,
                     name=name,
@@ -1476,13 +1294,13 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Invalid as_of_date. Use YYYY-MM-DD."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:read",
                 tool="get_investment_sector_allocation",
             )
-            result = await _analytics_service(session).sector_allocation(
+            result = await services.analytics_service(session).sector_allocation(
                 workspace_id, as_of, lookthrough=lookthrough
             )
             return {
@@ -1509,20 +1327,20 @@ def create_mcp_server() -> FastMCP:
         offset: int = 0,
     ) -> dict[str, Any]:
         """List bounded dividend, interest, and coupon events."""
-        validate_page(limit, offset)
+        security.validate_page(limit, offset)
         try:
             account_public_id = uuid.UUID(account_id) if account_id else None
         except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid account_id."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:read",
                 tool="list_investment_dividends",
             )
-            rows, total, accounts = await _dividend_service(session).list_dividends(
+            rows, total, accounts = await services.dividend_service(session).list_dividends(
                 workspace_id,
                 limit,
                 offset,
@@ -1554,7 +1372,7 @@ def create_mcp_server() -> FastMCP:
         offset: int = 0,
     ) -> dict[str, Any]:
         """List recorded stock, ETF, and mutual-fund orders."""
-        validate_page(limit, offset)
+        security.validate_page(limit, offset)
         if order_type is not None and order_type not in {"buy", "sell"}:
             return {"status": "error", "message": "order_type must be 'buy' or 'sell'."}
         try:
@@ -1563,7 +1381,7 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Invalid account_id."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="list_investment_orders"
             )
             account_repo = AccountRepository(session)
@@ -1614,7 +1432,7 @@ def create_mcp_server() -> FastMCP:
     ) -> dict[str, Any]:
         """``create_investment_order`` dry run: validate + dedupe, persist nothing."""
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:write", tool="create_investment_order"
             )
             status, match_reason, existing_id = "would_create", None, None
@@ -1647,7 +1465,7 @@ def create_mcp_server() -> FastMCP:
                 # inside a SAVEPOINT that is always rolled back -- nothing persists.
                 nested = await session.begin_nested()
                 try:
-                    await _order_service(session).place_order(
+                    await services.order_service(session).place_order(
                         workspace_id=workspace_id,
                         user_id=user_id,
                         order_in=payload,
@@ -1778,7 +1596,7 @@ def create_mcp_server() -> FastMCP:
             }
 
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:write", tool="create_investment_order"
             )
             order_repo = InvestingOrderRepository(session)
@@ -1826,7 +1644,7 @@ def create_mcp_server() -> FastMCP:
                         ),
                     }
             try:
-                order = await _order_service(session).place_order(
+                order = await services.order_service(session).place_order(
                     workspace_id=workspace_id,
                     user_id=user_id,
                     order_in=payload,
@@ -1895,11 +1713,11 @@ def create_mcp_server() -> FastMCP:
                 "changes": payload.model_dump(exclude_unset=True, mode="json"),
             }
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:write", tool="update_investment_order"
             )
             try:
-                order = await _order_service(session).update_order(
+                order = await services.order_service(session).update_order(
                     workspace_id=workspace_id,
                     user_id=user_id,
                     order_public_id=order_public_id,
@@ -1947,11 +1765,11 @@ def create_mcp_server() -> FastMCP:
         except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid public_id."}
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:write", tool="delete_investment_order"
             )
             try:
-                await _order_service(session).delete_order(
+                await services.order_service(session).delete_order(
                     workspace_id=workspace_id,
                     user_id=user_id,
                     order_public_id=order_public_id,
@@ -2030,14 +1848,14 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": f"Invalid dividend: {exc}"}
 
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:write",
                 tool="create_investment_dividend",
             )
             try:
-                dividend, account = await _dividend_service(session).create_dividend(
+                dividend, account = await services.dividend_service(session).create_dividend(
                     workspace_id=workspace_id,
                     user_id=user_id,
                     dividend_in=payload,
@@ -2081,14 +1899,14 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Invalid public_id."}
 
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:write",
                 tool="delete_investment_dividend",
             )
             try:
-                await _dividend_service(session).delete_dividend(
+                await services.dividend_service(session).delete_dividend(
                     workspace_id=workspace_id,
                     public_id=div_public_id,
                     actor_id=user_id,
@@ -2594,11 +2412,11 @@ def create_mcp_server() -> FastMCP:
         except (TypeError, ValueError):
             return {"status": "error", "message": "Invalid account_id."}
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="reconcile_holdings"
             )
             try:
-                result = await _reconciliation_service(session).reconcile(
+                result = await services.reconciliation_service(session).reconcile(
                     workspace_id,
                     external,
                     account_public_id=account_public_id,
@@ -2637,7 +2455,7 @@ def create_mcp_server() -> FastMCP:
         ``since``/``until`` are ISO-8601 (naive values are read as UTC).
         Read-only.
         """
-        validate_page(limit, offset)
+        security.validate_page(limit, offset)
         try:
             since_dt = _parse_iso_datetime(since, "since")
             until_dt = _parse_iso_datetime(until, "until")
@@ -2646,7 +2464,7 @@ def create_mcp_server() -> FastMCP:
         if since_dt and until_dt and since_dt > until_dt:
             return {"status": "error", "message": "since must not be after until."}
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="list_recent_changes"
             )
             rows, total = await AuditLogRepository(session).list_by_workspace(
@@ -2726,7 +2544,7 @@ def create_mcp_server() -> FastMCP:
         today = datetime.now(UTC).date()
         from_date = period_start(period, today)
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="get_performance"
             )
             if account_public_id is not None:
@@ -2735,10 +2553,10 @@ def create_mcp_server() -> FastMCP:
                 )
                 if account is None:
                     return {"status": "error", "message": "Account not found in this workspace."}
-            metrics, positions = await _return_metrics_service(session).get_performance_metrics(
-                workspace_id
-            )
-            twr = await _performance_service(session).get_time_weighted_return(
+            metrics, positions = await services.return_metrics_service(
+                session
+            ).get_performance_metrics(workspace_id)
+            twr = await services.performance_service(session).get_time_weighted_return(
                 workspace_id, from_date, today
             )
             used = {r.currency.upper() for r in metrics.by_account}
@@ -2793,7 +2611,7 @@ def create_mcp_server() -> FastMCP:
         ``start``/``end`` are ISO-8601 bounds on ``measured_at`` (naive values
         are read as UTC). ``limit`` is capped at 100. Weights are strings in kg.
         """
-        validate_page(limit, offset)
+        security.validate_page(limit, offset)
         try:
             start_dt = _parse_iso_datetime(start, "start")
             end_dt = _parse_iso_datetime(end, "end")
@@ -2802,10 +2620,10 @@ def create_mcp_server() -> FastMCP:
         if start_dt and end_dt and start_dt > end_dt:
             return {"status": "error", "message": "start must not be after end."}
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="get_weight_history"
             )
-            items, total = await _health_service(session).list_weight_entries(
+            items, total = await services.health_service(session).list_weight_entries(
                 workspace_id, start_dt, end_dt, limit, offset
             )
         return {
@@ -2830,7 +2648,7 @@ def create_mcp_server() -> FastMCP:
         of log_medication_event). Filter by ``medication_id`` (UUID) and/or
         ``status`` (``taken`` | ``skipped``). ``limit`` is capped at 100.
         """
-        validate_page(limit, offset)
+        security.validate_page(limit, offset)
         status_filter = status.strip().lower() if status else None
         if status_filter is not None and status_filter not in {"taken", "skipped"}:
             return {"status": "error", "message": "status must be 'taken' or 'skipped'."}
@@ -2839,7 +2657,7 @@ def create_mcp_server() -> FastMCP:
         except ValueError:
             return {"status": "error", "message": "Invalid medication_id."}
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="list_medication_events"
             )
             medication_repo = MedicationRepository(session)
@@ -2917,10 +2735,10 @@ def create_mcp_server() -> FastMCP:
         defaults to the current one.
         """
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="get_tax_summary"
             )
-            estimate = await _tax_service(session).compute(
+            estimate = await services.tax_service(session).compute(
                 workspace_id, fy=fy, account_id=account_id
             )
         if estimate.status == "reconciliation_failed":
@@ -3018,13 +2836,13 @@ def create_mcp_server() -> FastMCP:
         except WhatIfError as exc:
             return _what_if_error(exc)
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="simulate_sale"
             )
             timezone_name = await _user_timezone_name(session, user_id)
             try:
                 sale_dt = parse_sale_date(date, resolve_zone(timezone_name))
-                outcome = await _tax_whatif_service(session).simulate_sale(
+                outcome = await services.tax_whatif_service(session).simulate_sale(
                     workspace_id,
                     holding_ref=holding,
                     account_id=account_id,
@@ -3065,11 +2883,11 @@ def create_mcp_server() -> FastMCP:
                 "message": "limit must be 1-500 and offset non-negative.",
             }
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="list_tax_lots"
             )
             try:
-                listing = await _tax_whatif_service(session).list_lots(
+                listing = await services.tax_whatif_service(session).list_lots(
                     workspace_id,
                     holding_ref=holding,
                     account_id=account_id,
@@ -3123,10 +2941,10 @@ def create_mcp_server() -> FastMCP:
                     "message": "stcg_rate_percent must be between 0 and 100.",
                 }
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="harvest_candidates"
             )
-            report = await _tax_whatif_service(session).harvest(
+            report = await services.tax_whatif_service(session).harvest(
                 workspace_id,
                 stcg_rate_percent=stcg_value,
                 timezone_name=await _user_timezone_name(session, user_id),
@@ -3193,10 +3011,10 @@ def create_mcp_server() -> FastMCP:
                 "message": f"report payload exceeds {MAX_PORTFOLIO_REPORT_CHARS} characters.",
             }
         async with postgres.async_session_maker() as session, session.begin():
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:write", tool="create_portfolio_report"
             )
-            recorded = await _portfolio_report_service(session).record_portfolio_report(
+            recorded = await services.portfolio_report_service(session).record_portfolio_report(
                 workspace_id=workspace_id,
                 as_of=as_of_date,
                 run_id=run_id,
@@ -3254,10 +3072,12 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "from_date/to_date must be ISO dates."}
         offset = cursor or 0
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="list_portfolio_reports"
             )
-            items, total = await _portfolio_report_service(session).repo.list_by_workspace_range(
+            items, total = await services.portfolio_report_service(
+                session
+            ).repo.list_by_workspace_range(
                 workspace_id, from_date=from_d, to_date=to_d, limit=limit, offset=offset
             )
         next_cursor = offset + len(items) if offset + len(items) < total else None
@@ -3295,10 +3115,10 @@ def create_mcp_server() -> FastMCP:
     async def get_tax_profile(workspace_id: int) -> dict[str, Any]:
         """Get the workspace's capital gains tax configuration."""
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="get_tax_profile"
             )
-            profile = await _tax_service(session).get_profile(workspace_id)
+            profile = await services.tax_service(session).get_profile(workspace_id)
         return {
             "public_id": str(profile.public_id),
             "resident_status": profile.resident_status,
@@ -3370,10 +3190,10 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "No fields to update."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:write", tool="update_tax_profile"
             )
-            profile = await _tax_service(session).update_profile(workspace_id, changes)
+            profile = await services.tax_service(session).update_profile(workspace_id, changes)
             await session.commit()
         return {
             "public_id": str(profile.public_id),
@@ -3439,10 +3259,10 @@ def create_mcp_server() -> FastMCP:
         rate_text = format(rate_value, "f")
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:write", tool="set_fx_rate"
             )
-            service = _tax_service(session)
+            service = services.tax_service(session)
             # A deliberate correction: replace any existing value. The merge runs under a
             # row lock so a concurrent writer's entries are not lost.
             await service.set_fx_overrides(workspace_id, {composite_key: rate_text}, overwrite=True)
@@ -3483,10 +3303,10 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": exc.detail}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:write", tool="set_fx_rates"
             )
-            service = _tax_service(session)
+            service = services.tax_service(session)
             if not confirmed:
                 preview = await service.set_fx_overrides(
                     workspace_id, entries, overwrite=overwrite_existing, apply=False
@@ -3536,7 +3356,7 @@ def create_mcp_server() -> FastMCP:
         Money values are decimal strings. See `assumptions` for limits.
         """
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="get_lrs_summary"
             )
             service = LrsService(
@@ -3573,12 +3393,12 @@ def create_mcp_server() -> FastMCP:
         if parsed.isoformat() != date_str:
             return {"status": "error", "message": "date_str must be YYYY-MM-DD format."}
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="get_fx_rate"
             )
             try:
                 code = normalize_currency_code(currency)
-                rate = await _tax_service(session).get_fx_rate(workspace_id, parsed, code)
+                rate = await services.tax_service(session).get_fx_rate(workspace_id, parsed, code)
             except ValidationError as exc:
                 return {"status": "error", "message": exc.detail}
         if rate is None:
@@ -3608,12 +3428,12 @@ def create_mcp_server() -> FastMCP:
         except ValueError:
             return {"status": "error", "message": "dates must be valid YYYY-MM-DD dates."}
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="list_missing_fx_rates"
             )
             try:
                 code = normalize_currency_code(currency)
-                missing = await _tax_service(session).list_missing_fx_rates(
+                missing = await services.tax_service(session).list_missing_fx_rates(
                     workspace_id, from_d, to_d, code
                 )
             except ValidationError as exc:
@@ -3676,13 +3496,13 @@ def create_mcp_server() -> FastMCP:
                 "symbol": symbol,
             }
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:write",
                 tool="update_investing_account_status",
             )
-            service = _tax_service(session)
+            service = services.tax_service(session)
             try:
                 account = await service.set_account_market_scope(
                     workspace_id, account_id, market_scope
@@ -3792,14 +3612,14 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": f"Invalid compliance record: {exc}"}
 
         async with postgres.async_session_maker() as session:
-            user_id = await authorize_workspace(
+            user_id = await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:research",
                 tool="set_holding_compliance",
             )
             try:
-                compliance = await _compliance_service(session).set_compliance(
+                compliance = await services.compliance_service(session).set_compliance(
                     workspace_id,
                     holding_public_id,
                     payload,
@@ -3832,14 +3652,14 @@ def create_mcp_server() -> FastMCP:
         except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid holding_id."}
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:read",
                 tool="get_holding_compliance",
             )
             try:
-                compliance = await _compliance_service(session).get_compliance(
+                compliance = await services.compliance_service(session).get_compliance(
                     workspace_id, holding_public_id
                 )
             except (APIError, ValueError) as exc:
@@ -3881,14 +3701,14 @@ def create_mcp_server() -> FastMCP:
                 "message": "Invalid holding_id, dividend_id, from_date or to_date.",
             }
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session,
                 workspace_id,
                 required_scope="mcp:read",
                 tool="get_purification_estimate",
             )
             try:
-                estimate = await _compliance_service(session).get_purification_estimate(
+                estimate = await services.compliance_service(session).get_purification_estimate(
                     workspace_id,
                     holding_public_id=holding_public_id,
                     dividend_public_id=dividend_public_id,
@@ -3959,11 +3779,11 @@ def create_mcp_server() -> FastMCP:
                 return {"status": "error", "message": f"holding {i}: invalid entry: {exc}"}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:research", tool="set_holding_theme_tags"
             )
             try:
-                result = await _theme_tag_service(session).set_tags(workspace_id, validated)
+                result = await services.theme_tag_service(session).set_tags(workspace_id, validated)
                 await session.commit()
             except (APIError, ValueError) as exc:
                 await session.rollback()
@@ -3994,11 +3814,11 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Invalid as_of_date. Use YYYY-MM-DD."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="get_lookthrough_exposure"
             )
             try:
-                result = await _theme_exposure_service(session).lookthrough_exposure(
+                result = await services.theme_exposure_service(session).lookthrough_exposure(
                     workspace_id, as_of, group_by=group_by
                 )
             except PydanticValidationError as exc:
@@ -4034,11 +3854,11 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Invalid as_of_date or new_cash."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(
+            await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="get_allocation_vs_target"
             )
             try:
-                result = await _theme_exposure_service(session).allocation_vs_target(
+                result = await services.theme_exposure_service(session).allocation_vs_target(
                     workspace_id, as_of, new_cash=cash
                 )
                 return {
