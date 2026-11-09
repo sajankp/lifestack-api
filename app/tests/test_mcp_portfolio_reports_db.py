@@ -103,7 +103,7 @@ async def test_create_then_list_round_trips_every_column(override_database_url, 
     assert created["run_id"] == "2026-11-07_abc12345"
     assert created["as_of"] == "2026-11-07"
 
-    listed = await tools["list_portfolio_reports"](workspace_id=WS)
+    listed = await tools["list_portfolio_reports"](workspace_id=WS, include_payload=True)
     assert listed["status"] == "success"
     assert listed["total"] == 1
     assert listed["next_cursor"] is None
@@ -115,6 +115,7 @@ async def test_create_then_list_round_trips_every_column(override_database_url, 
     assert item["tax_buckets"]["total_tax_inr"] == "12.50"
     assert item["foundation_json"] == {"themes": ["semis_ai"]}
     assert item["actions_md"] == "# Actions\n- hold"
+    assert item["scalars_json"] == {"equity_inr": "120000.00"}
 
 
 @pytest.mark.asyncio
@@ -130,7 +131,9 @@ async def test_create_is_append_only_same_run_id_never_overwrites(override_datab
     assert again["status"] == "success"
     assert again["public_id"] == first["public_id"]
     assert await _row_count() == 1
-    stored = (await tools["list_portfolio_reports"](workspace_id=WS))["items"][0]
+    stored = (await tools["list_portfolio_reports"](workspace_id=WS, include_payload=True))[
+        "items"
+    ][0]
     assert stored["actions_md"] == "# Actions\n- hold"
     assert stored["lrs_headroom_inr"] == "45000.50"
     assert stored["theme_weights"] == {"semis_ai": "0.25"}
@@ -307,3 +310,100 @@ async def test_both_tools_stop_when_authorization_fails(
     with pytest.raises(ForbiddenError):
         await tools[tool](workspace_id=WS, **kwargs)
     assert await _row_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_resend_reports_whether_the_run_was_created_and_whether_content_matched(
+    override_database_url, authorize
+):
+    await _seed_workspaces()
+    tools = await _tools()
+
+    first = await tools["create_portfolio_report"](**_report())
+    assert first["created"] is True and first["content_matches"] is True
+    assert "warning" not in first
+
+    same = await tools["create_portfolio_report"](**_report())
+    assert same["created"] is False and same["content_matches"] is True
+    assert same["public_id"] == first["public_id"] and "warning" not in same
+
+    changed = await tools["create_portfolio_report"](**_report(actions_md="CORRECTED"))
+    assert changed["status"] == "success"
+    assert changed["created"] is False and changed["content_matches"] is False
+    assert changed["public_id"] == first["public_id"]
+    assert "new run_id" in changed["warning"], "a dropped correction must be visible to the caller"
+
+
+@pytest.mark.asyncio
+async def test_omitted_fields_are_stored_as_empty_containers_not_json_null(
+    override_database_url, authorize
+):
+    await _seed_workspaces()
+    tools = await _tools()
+
+    await tools["create_portfolio_report"](workspace_id=WS, as_of="2026-11-07", run_id="bare")
+
+    item = (await tools["list_portfolio_reports"](workspace_id=WS, include_payload=True))["items"][
+        0
+    ]
+    assert item["scalars_json"] == {} and item["foundation_json"] == {}
+    assert item["theme_weights"] == {} and item["tax_buckets"] == {}
+    assert item["harvest_candidates"] == []
+    assert item["lrs_headroom_inr"] is None and item["actions_md"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity", "1e20", "10000000000000000"])
+async def test_non_finite_or_overflowing_headroom_is_rejected_cleanly(
+    override_database_url, authorize, bad
+):
+    await _seed_workspaces()
+    tools = await _tools()
+
+    res = await tools["create_portfolio_report"](**_report(lrs_headroom_inr=bad))
+
+    assert res["status"] == "error" and "lrs_headroom_inr" in res["message"], (bad, res)
+    assert await _row_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_headroom_is_rounded_to_the_column_scale(override_database_url, authorize):
+    await _seed_workspaces()
+    tools = await _tools()
+    await tools["create_portfolio_report"](**_report(lrs_headroom_inr="12.345"))
+
+    item = (await tools["list_portfolio_reports"](workspace_id=WS))["items"][0]
+    assert item["lrs_headroom_inr"] == "12.35"
+
+
+@pytest.mark.asyncio
+async def test_tax_buckets_count_towards_the_payload_cap(override_database_url, authorize):
+    await _seed_workspaces()
+    tools = await _tools()
+
+    res = await tools["create_portfolio_report"](
+        **_report(tax_buckets={"note": "x" * (MAX_PORTFOLIO_REPORT_CHARS + 1)})
+    )
+
+    assert res["status"] == "error" and "exceeds" in res["message"]
+    assert await _row_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_list_returns_summaries_by_default_and_the_payload_on_request(
+    override_database_url, authorize
+):
+    await _seed_workspaces()
+    tools = await _tools()
+    await tools["create_portfolio_report"](**_report())
+
+    summary = (await tools["list_portfolio_reports"](workspace_id=WS))["items"][0]
+    full = (await tools["list_portfolio_reports"](workspace_id=WS, include_payload=True))["items"][
+        0
+    ]
+
+    for heavy in ("foundation_json", "actions_md", "scalars_json"):
+        assert heavy not in summary, f"{heavy} must be opt-in"
+        assert heavy in full
+    assert summary["theme_weights"] == {"semis_ai": "0.25"}
+    assert summary["lrs_headroom_inr"] == "45000.50"

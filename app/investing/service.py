@@ -2,8 +2,9 @@ import csv
 import re
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -2384,6 +2385,15 @@ class ExposureAnalyticsService:
         ]
 
 
+@dataclass(frozen=True)
+class RecordedPortfolioReport:
+    """Outcome of ``PortfolioReportService.record_portfolio_report``."""
+
+    report: PortfolioReport
+    created: bool
+    content_matches: bool
+
+
 class PortfolioReportService:
     """Service layer for the append-only portfolio report history (spec-107).
 
@@ -2427,3 +2437,54 @@ class PortfolioReportService:
             lrs_headroom_inr=lrs_headroom_inr,
             tax_buckets=tax_buckets,
         )
+
+    async def record_portfolio_report(
+        self,
+        *,
+        workspace_id: int,
+        as_of: date,
+        run_id: str,
+        scalars_json: dict | None = None,
+        foundation_json: dict | None = None,
+        actions_md: str | None = None,
+        theme_weights: dict | None = None,
+        harvest_candidates: list | None = None,
+        lrs_headroom_inr: Decimal | None = None,
+        tax_buckets: dict | None = None,
+    ) -> "RecordedPortfolioReport":
+        """Like ``create_portfolio_report`` but also says what happened to the input.
+
+        ``created`` is False when the run already existed; ``content_matches`` is False
+        when that existing row holds different content from what was sent -- the new
+        content was NOT stored (append-only), and the caller must use a new ``run_id``.
+        """
+        report, created = await self.repo.create_if_absent(
+            workspace_id=workspace_id,
+            as_of=as_of,
+            run_id=run_id,
+            scalars_json=scalars_json,
+            foundation_json=foundation_json,
+            actions_md=actions_md,
+            theme_weights=theme_weights,
+            harvest_candidates=harvest_candidates,
+            lrs_headroom_inr=lrs_headroom_inr,
+            tax_buckets=tax_buckets,
+        )
+        if created:
+            return RecordedPortfolioReport(report, created=True, content_matches=True)
+        sent = {
+            "scalars_json": scalars_json if scalars_json is not None else {},
+            "foundation_json": foundation_json if foundation_json is not None else {},
+            "actions_md": actions_md,
+            "theme_weights": theme_weights if theme_weights is not None else {},
+            "harvest_candidates": harvest_candidates if harvest_candidates is not None else [],
+            "tax_buckets": tax_buckets if tax_buckets is not None else {},
+        }
+        matches = all(getattr(report, key) == value for key, value in sent.items())
+        if lrs_headroom_inr is None:
+            matches = matches and report.lrs_headroom_inr is None
+        else:
+            matches = matches and report.lrs_headroom_inr == lrs_headroom_inr.quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        return RecordedPortfolioReport(report, created=False, content_matches=matches)
