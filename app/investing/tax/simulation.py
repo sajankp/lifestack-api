@@ -40,6 +40,7 @@ from app.investing.tax.engine import (
 )
 from app.investing.tax.fy import add_months, fy_label_for_date, months_between
 from app.investing.tax.gains import OrderView, TaxLot, order_total_fees
+from app.investing.tax.holding_period import as_day
 from app.investing.tax.regime import REGIMES as REGIME_SPECS
 from app.investing.tax.regime import RegimeSpec, RegimeType
 from app.investing.tax.tax_profile import TaxProfile
@@ -48,18 +49,7 @@ MONEY = Decimal("0.01")
 ZERO = Decimal("0")
 
 
-def _as_day(value: datetime) -> datetime:
-    """Collapse a timezone-aware timestamp to its calendar day.
-
-    Returns midnight of the date the timestamp carries *in its own
-    timezone*, as a UTC-tagged carrier so every derived value is a plain
-    comparable datetime. Naive datetimes are rejected: comparing naive and
-    aware values raises ``TypeError`` deep in the engine, and silently
-    assuming a zone would shift the tax year / FX month near midnight.
-    """
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise ValueError("datetimes must be timezone-aware")
-    return datetime(value.year, value.month, value.day, tzinfo=UTC)
+_as_day = as_day  # shared rule; datetimes arrive in the user's timezone
 
 
 @dataclass(frozen=True)
