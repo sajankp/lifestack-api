@@ -25,6 +25,7 @@ from app.investing.models import (
     InvestingOrder,
     LotConsumption,
     OrderLot,
+    PortfolioReport,
     PortfolioSnapshot,
     ReferenceSecurity,
 )
@@ -1488,3 +1489,100 @@ class HoldingComplianceRepository(BaseRepository[HoldingCompliance]):
             .execution_options(populate_existing=True)
         )
         return (await self.session.execute(stmt)).scalar_one()
+
+
+class PortfolioReportRepository:
+    """Append-only report history (spec-107).
+
+    ``create`` upserts with ON CONFLICT DO NOTHING on
+    ``(workspace_id, as_of, run_id)``: a biweekly re-run never overwrites an
+    existing row, and returns the existing record when present.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def create(
+        self,
+        *,
+        workspace_id: int,
+        as_of: date,
+        run_id: str,
+        scalars_json: dict | None = None,
+        foundation_json: dict | None = None,
+        actions_md: str | None = None,
+        theme_weights: dict | None = None,
+        harvest_candidates: list | None = None,
+        lrs_headroom_inr: Decimal | None = None,
+        tax_buckets: dict | None = None,
+    ) -> PortfolioReport:
+        """Insert one report row, or return the existing one for the run.
+
+        Idempotent on ``(workspace_id, as_of, run_id)`` — append-only
+        semantics: conflicting inserts are silently dropped, so a biweekly
+        re-run never overwrites an existing row.
+        """
+        stmt = (
+            pg_insert(PortfolioReport)
+            .values(
+                workspace_id=workspace_id,
+                as_of=as_of,
+                run_id=run_id,
+                scalars_json=scalars_json,
+                foundation_json=foundation_json,
+                actions_md=actions_md,
+                theme_weights=theme_weights,
+                harvest_candidates=harvest_candidates,
+                lrs_headroom_inr=lrs_headroom_inr,
+                tax_buckets=tax_buckets,
+            )
+            .on_conflict_do_nothing(index_elements=["workspace_id", "as_of", "run_id"])
+        )
+        await self.session.execute(stmt)
+        # populate_existing: ON CONFLICT DO NOTHING is raw Core DML that
+        # bypasses the unit-of-work, so re-select to return the row that
+        # actually landed (new or pre-existing), complete with server-side
+        # defaults (id, public_id, created_at).
+        result = await self.session.execute(
+            select(PortfolioReport)
+            .where(
+                PortfolioReport.workspace_id == workspace_id,
+                PortfolioReport.as_of == as_of,
+                PortfolioReport.run_id == run_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one()
+
+    async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> PortfolioReport | None:
+        result = await self.session.execute(
+            select(PortfolioReport).where(
+                PortfolioReport.workspace_id == workspace_id,
+                PortfolioReport.public_id == public_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_by_workspace_range(
+        self,
+        workspace_id: int,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Sequence[PortfolioReport], int]:
+        base = select(PortfolioReport).where(PortfolioReport.workspace_id == workspace_id)
+        if from_date is not None:
+            base = base.where(PortfolioReport.as_of >= from_date)
+        if to_date is not None:
+            base = base.where(PortfolioReport.as_of <= to_date)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        result = await self.session.execute(
+            base
+            .order_by(PortfolioReport.as_of.desc(), PortfolioReport.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return result.scalars().all(), total
