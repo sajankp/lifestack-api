@@ -25,6 +25,7 @@ from app.investing.models import (  # noqa: F401
     HoldingPrice,
     Instrument,
     InstrumentConstituent,
+    PortfolioReport,
     PortfolioSnapshot,
 )
 from app.notifications.models import (  # noqa: F401

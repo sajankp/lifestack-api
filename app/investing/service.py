@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from app.imports.models import ImportBatch
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.audit import AuditLogger, snapshot_columns
@@ -44,6 +45,7 @@ from app.investing.models import (
     Instrument,
     InstrumentConstituent,
     InstrumentType,
+    PortfolioReport,
 )
 from app.investing.repository import (
     CashBalanceRepository,
@@ -54,6 +56,7 @@ from app.investing.repository import (
     InstrumentConstituentRepository,
     InstrumentRepository,
     InvestingOrderRepository,
+    PortfolioReportRepository,
     PortfolioSnapshotRepository,
 )
 from app.investing.response_helpers import instrument_response, populate_valuation_fields
@@ -2379,3 +2382,48 @@ class ExposureAnalyticsService:
             }
             for key in order
         ]
+
+
+class PortfolioReportService:
+    """Service layer for the append-only portfolio report history (spec-107).
+
+    Used by the indexer script, which calls this directly (not via the MCP
+    transport). ``create_portfolio_report`` is append-only and idempotent on
+    ``(workspace_id, as_of, run_id)``: a re-run with the same run_id returns
+    the existing row; a new run_id on the same day creates a new row.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.repo = PortfolioReportRepository(session)
+
+    async def create_portfolio_report(
+        self,
+        *,
+        workspace_id: int,
+        as_of: date,
+        run_id: str,
+        scalars_json: dict | None = None,
+        foundation_json: dict | None = None,
+        actions_md: str | None = None,
+        theme_weights: dict | None = None,
+        harvest_candidates: list | None = None,
+        lrs_headroom_inr: Decimal | None = None,
+        tax_buckets: dict | None = None,
+    ) -> PortfolioReport:
+        """Create one report row for the run, or return the existing one.
+
+        Returns the landed row (id, public_id, created_at included).
+        """
+        return await self.repo.create(
+            workspace_id=workspace_id,
+            as_of=as_of,
+            run_id=run_id,
+            scalars_json=scalars_json,
+            foundation_json=foundation_json,
+            actions_md=actions_md,
+            theme_weights=theme_weights,
+            harvest_candidates=harvest_candidates,
+            lrs_headroom_inr=lrs_headroom_inr,
+            tax_buckets=tax_buckets,
+        )

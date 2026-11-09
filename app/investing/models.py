@@ -6,6 +6,7 @@ from typing import Any
 
 import sqlalchemy as sa
 from pydantic import field_validator
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 
@@ -804,5 +805,61 @@ class ReferenceSecurity(SQLModel, table=True):
             "amfi_code",
             unique=True,
             postgresql_where=sa.text("amfi_code IS NOT NULL"),
+        ),
+    )
+
+
+class PortfolioReport(SQLModel, table=True):
+    """An append-only snapshot of one biweekly portfolio report run.
+
+    One row per ``(workspace_id, as_of, run_id)``. Re-running with the same
+    ``run_id`` is a no-op that returns the existing row; a new ``run_id`` on the
+    same day creates a new row. Rows are never modified or deleted — this is an
+    append-only history table.
+
+    Denormalised columns (``theme_weights``, ``harvest_candidates``,
+    ``lrs_headroom_inr``, ``tax_buckets``) are extracted from ``foundation_json``
+    by the indexer so dashboard queries run against typed columns instead of
+    parsing JSON.
+    """
+
+    __tablename__ = "portfolio_reports"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    as_of: date = Field(sa_type=sa.Date(), nullable=False)
+    run_id: str = Field(max_length=128, nullable=False)
+    scalars_json: dict = Field(default_factory=dict, sa_type=JSONB())
+    foundation_json: dict = Field(default_factory=dict, sa_type=JSONB())
+    actions_md: str | None = Field(default=None, sa_type=sa.Text, nullable=True)
+    theme_weights: dict = Field(default_factory=dict, sa_type=JSONB())
+    harvest_candidates: list = Field(default_factory=list, sa_type=JSONB())
+    lrs_headroom_inr: Decimal | None = Field(
+        default=None, sa_type=sa.Numeric(precision=18, scale=2), nullable=True
+    )
+    tax_buckets: dict = Field(default_factory=dict, sa_type=JSONB())
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_type=sa.DateTime(timezone=True),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["workspace_id"],
+            ["workspaces.id"],
+            name="fk_portfolio_reports_workspace",
+        ),
+        sa.UniqueConstraint(
+            "workspace_id",
+            "as_of",
+            "run_id",
+            name="uq_portfolio_reports_workspace_asof_runid",
+        ),
+        sa.Index(
+            "ix_portfolio_reports_workspace_as_of",
+            "workspace_id",
+            "as_of",
         ),
     )
