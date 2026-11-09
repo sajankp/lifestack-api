@@ -95,6 +95,7 @@ from app.investing.service import (
     ExposureAnalyticsService,
     HoldingService,
     InstrumentService,
+    PortfolioReportService,
 )
 from app.investing.tax.exchanges import resolve_exchange
 from app.investing.tax_service import TaxService, normalize_currency_code
@@ -325,6 +326,13 @@ def _order_service(session: Any) -> InvestingOrderService:
         LotRepository(session),
         CorporateActionRepository(session),
     )
+
+
+MAX_PORTFOLIO_REPORT_CHARS = 2_000_000
+
+
+def _portfolio_report_service(session: Any) -> PortfolioReportService:
+    return PortfolioReportService(session=session)
 
 
 def _tax_service(session: Any) -> TaxService:
@@ -2963,6 +2971,131 @@ def create_mcp_server() -> FastMCP:
                 timezone_name=await _user_timezone_name(session, user_id),
             )
         return harvest_response(report, limit)
+
+    @mcp.tool
+    async def create_portfolio_report(
+        workspace_id: int,
+        as_of: str,
+        run_id: str,
+        scalars_json: dict[str, Any] | None = None,
+        foundation_json: dict[str, Any] | None = None,
+        actions_md: str | None = None,
+        theme_weights: dict[str, Any] | None = None,
+        harvest_candidates: list[Any] | None = None,
+        lrs_headroom_inr: str | None = None,
+        tax_buckets: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record one portfolio report run in the append-only history (cron use).
+
+        Idempotent on ``(workspace_id, as_of, run_id)``: re-sending the same run
+        returns the existing row's ``public_id`` and never overwrites it; a new
+        ``run_id`` on the same day adds a new row. ``as_of`` is an ISO date;
+        ``lrs_headroom_inr`` a decimal string. The denormalised columns
+        (``theme_weights``, ``harvest_candidates``, ``lrs_headroom_inr``,
+        ``tax_buckets``) are stored as given so dashboards need not parse
+        ``foundation_json``.
+        """
+        try:
+            as_of_date = date.fromisoformat(as_of)
+        except ValueError:
+            return {"status": "error", "message": "as_of must be an ISO date (YYYY-MM-DD)."}
+        if not 1 <= len(run_id) <= 128:
+            return {"status": "error", "message": "run_id must be 1-128 characters."}
+        headroom: Decimal | None = None
+        if lrs_headroom_inr is not None:
+            try:
+                headroom = Decimal(lrs_headroom_inr)
+            except InvalidOperation:
+                return {"status": "error", "message": "lrs_headroom_inr must be a decimal string."}
+        payload_size = len(
+            json.dumps(
+                [scalars_json, foundation_json, actions_md, theme_weights, harvest_candidates],
+                default=str,
+            )
+        )
+        if payload_size > MAX_PORTFOLIO_REPORT_CHARS:
+            return {
+                "status": "error",
+                "message": f"report payload exceeds {MAX_PORTFOLIO_REPORT_CHARS} characters.",
+            }
+        async with postgres.async_session_maker() as session, session.begin():
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:write", tool="create_portfolio_report"
+            )
+            report = await _portfolio_report_service(session).create_portfolio_report(
+                workspace_id=workspace_id,
+                as_of=as_of_date,
+                run_id=run_id,
+                scalars_json=scalars_json,
+                foundation_json=foundation_json,
+                actions_md=actions_md,
+                theme_weights=theme_weights,
+                harvest_candidates=harvest_candidates,
+                lrs_headroom_inr=headroom,
+                tax_buckets=tax_buckets,
+            )
+            return {
+                "status": "success",
+                "public_id": str(report.public_id),
+                "as_of": report.as_of.isoformat(),
+                "run_id": report.run_id,
+                "created_at": report.created_at.isoformat() if report.created_at else None,
+            }
+
+    @mcp.tool
+    async def list_portfolio_reports(
+        workspace_id: int,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        limit: int = 20,
+        cursor: int | None = None,
+    ) -> dict[str, Any]:
+        """List portfolio report history for a workspace, newest ``as_of`` first.
+
+        Filters on ``as_of`` (inclusive). Cursor-paginated with a total count so
+        callers can verify no page was cut off. Each item carries the
+        denormalised columns plus the full ``foundation_json`` and ``actions_md``.
+        """
+        if limit < 1 or limit > 100:
+            return {"status": "error", "message": "limit must be between 1 and 100."}
+        if cursor is not None and cursor < 0:
+            return {"status": "error", "message": "cursor must be a non-negative integer."}
+        try:
+            from_d = date.fromisoformat(from_date) if from_date else None
+            to_d = date.fromisoformat(to_date) if to_date else None
+        except ValueError:
+            return {"status": "error", "message": "from_date/to_date must be ISO dates."}
+        offset = cursor or 0
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="list_portfolio_reports"
+            )
+            items, total = await _portfolio_report_service(session).repo.list_by_workspace_range(
+                workspace_id, from_date=from_d, to_date=to_d, limit=limit, offset=offset
+            )
+        next_cursor = offset + len(items) if offset + len(items) < total else None
+        return {
+            "status": "success",
+            "total": total,
+            "next_cursor": next_cursor,
+            "items": [
+                {
+                    "public_id": str(item.public_id),
+                    "as_of": item.as_of.isoformat() if item.as_of else None,
+                    "run_id": item.run_id,
+                    "theme_weights": item.theme_weights,
+                    "harvest_candidates": item.harvest_candidates,
+                    "lrs_headroom_inr": (
+                        str(item.lrs_headroom_inr) if item.lrs_headroom_inr is not None else None
+                    ),
+                    "tax_buckets": item.tax_buckets,
+                    "foundation_json": item.foundation_json,
+                    "actions_md": item.actions_md,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                }
+                for item in items
+            ],
+        }
 
     @mcp.tool
     async def get_tax_profile(workspace_id: int) -> dict[str, Any]:
