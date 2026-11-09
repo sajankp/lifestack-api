@@ -16,6 +16,7 @@ from app.finance.models import (
     CurrencyDisplayPreference,
     FxRate,
     NetWorthSnapshot,
+    TransferModule,
     UserFinanceSetting,
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
@@ -856,6 +857,27 @@ class CapitalTransferRepository(BaseRepository[CapitalTransfer]):
             base.order_by(CapitalTransfer.occurred_at.desc()).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
+
+    async def list_investing_flows_in_period(
+        self, workspace_id: int, start: datetime, end: datetime
+    ) -> Sequence[CapitalTransfer]:
+        """Transfers touching the investing module with ``start <= occurred_at < end``.
+
+        Deterministic oldest-first order (``occurred_at``, ``id``). Used to
+        neutralise external contributions/withdrawals in time-weighted return.
+        """
+        result = await self.session.execute(
+            select(CapitalTransfer)
+            .where(
+                CapitalTransfer.workspace_id == workspace_id,
+                CapitalTransfer.occurred_at >= start,
+                CapitalTransfer.occurred_at < end,
+                (CapitalTransfer.from_module == TransferModule.investing)
+                | (CapitalTransfer.to_module == TransferModule.investing),
+            )
+            .order_by(CapitalTransfer.occurred_at.asc(), CapitalTransfer.id.asc())
+        )
+        return result.scalars().all()
 
     async def find_transfers(
         self,

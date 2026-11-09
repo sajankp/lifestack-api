@@ -6,9 +6,11 @@ from typing import Any
 
 import sqlalchemy as sa
 import structlog
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Field, SQLModel
+
+from app.core.repository import BaseRepository
 
 logger = structlog.get_logger(__name__)
 
@@ -50,14 +52,39 @@ SENSITIVE_KEYS = {
 }
 
 
+# Substrings that mark a key as sensitive wherever they appear, so compound
+# names (``password_hash``, ``client_secret``, ``stripe_api_key``,
+# ``refresh_token_value``) are caught without having to enumerate them.
+SENSITIVE_KEY_FRAGMENTS = (
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "private_key",
+    "hash",
+    "authorization",
+    "credential",
+    "card_number",
+    "cvv",
+)
+
+
+def is_sensitive_key(key: Any) -> bool:
+    key_lower = str(key).lower()
+    return key_lower in SENSITIVE_KEYS or any(
+        fragment in key_lower for fragment in SENSITIVE_KEY_FRAGMENTS
+    )
+
+
 def redact_details(data: Any) -> Any:
     """Recursively redact sensitive keys from dictionaries/lists and convert
     non-JSON primitives (UUID, Decimal, datetime, date, Enum) to serializable types."""
     if isinstance(data, dict):
         redacted = {}
         for key, value in data.items():
-            key_lower = str(key).lower()
-            if key_lower in SENSITIVE_KEYS:
+            if is_sensitive_key(key):
                 redacted[key] = "[REDACTED]"
             else:
                 redacted[key] = redact_details(value)
@@ -97,6 +124,59 @@ class AuditLog(SQLModel, table=True):
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True), index=True
     )
+
+
+# ---------------------------------------------------------------------------
+# Read Repository
+# ---------------------------------------------------------------------------
+
+
+class AuditLogRepository(BaseRepository[AuditLog]):
+    """Read access to the append-only audit trail (no update/delete helpers)."""
+
+    async def list_by_workspace(
+        self,
+        workspace_id: int,
+        *,
+        module: str | None = None,
+        action: str | None = None,
+        entity_type: str | None = None,
+        entity_public_id: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> tuple[list[AuditLog], int]:
+        """Newest-first page of one workspace's audit rows (``id`` breaks ties)."""
+        base = select(AuditLog).where(AuditLog.workspace_id == workspace_id)
+        if module is not None:
+            base = base.where(AuditLog.module == module)
+        if action is not None:
+            base = base.where(AuditLog.action == action)
+        if entity_type is not None:
+            base = base.where(AuditLog.entity_type == entity_type)
+        if entity_public_id is not None:
+            base = base.where(AuditLog.details["entity_public_id"].as_string() == entity_public_id)
+        if since is not None:
+            base = base.where(AuditLog.timestamp >= since)
+        if until is not None:
+            base = base.where(AuditLog.timestamp <= until)
+        total = (
+            await self.session.execute(select(func.count()).select_from(base.subquery()))
+        ).scalar_one()
+        rows = (
+            (
+                await self.session.execute(
+                    base
+                    .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return list(rows), int(total)
 
 
 # ---------------------------------------------------------------------------

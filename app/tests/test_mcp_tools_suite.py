@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config import settings
-from app.core.exceptions import ValidationError
+from app.core.exceptions import ForbiddenError, ValidationError
 from app.mcp.server import (
     _decimal_string,
     _dividend_response,
@@ -78,18 +78,22 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
         "get_lookthrough_exposure",
         "get_lrs_summary",
         "get_net_worth",
+        "get_performance",
         "get_purification_estimate",
         "get_spending_budgets",
         "get_tax_profile",
         "get_tax_summary",
         "get_todo",
         "get_todo_summary",
+        "get_weight_history",
         "get_workspace_reference_data",
         "harvest_candidates",
         "list_investment_dividends",
         "list_investment_holdings",
+        "list_medication_events",
         "list_missing_fx_rates",
         "list_next_due_items",
+        "list_recent_changes",
         "list_spending_transactions",
         "list_tax_lots",
         "list_todos",
@@ -99,6 +103,7 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
         "log_spending_transaction",
         "log_spending_transactions_batch",
         "log_weight",
+        "reconcile_holdings",
         "set_company_sector",
         "set_fx_rate",
         "set_holding_compliance",
@@ -113,7 +118,7 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
 
     missing = expected_tools - registered_tools
     assert not missing, f"Missing MCP tools from server: {missing}"
-    assert len(expected_tools) == 52
+    assert len(expected_tools) == 57
 
 
 @pytest.mark.anyio
@@ -922,3 +927,90 @@ async def test_mcp_list_missing_fx_rates(monkeypatch):
         workspace_id=202, from_date="2020-01-01", to_date="2026-02-02", currency="USD"
     )
     assert too_long == {"status": "error", "message": "range too long"}
+
+
+SPEC_103_READ_TOOLS = (
+    "reconcile_holdings",
+    "list_recent_changes",
+    "get_performance",
+    "get_weight_history",
+    "list_medication_events",
+)
+
+
+@pytest.mark.anyio
+async def test_spec_103_tools_are_registered_read_only_and_existing_writers_kept():
+    """The 5 new tools exist alongside the pre-existing write-only log_* tools."""
+    server = create_mcp_server()
+    names = {t.name for t in await server.list_tools()}
+    assert set(SPEC_103_READ_TOOLS) <= names
+    assert {"log_weight", "log_medication_event"} <= names
+    # log_medication_event is not duplicated by this card.
+    all_names = [t.name for t in await server.list_tools()]
+    assert all_names.count("log_medication_event") == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "tool,kwargs",
+    [
+        ("reconcile_holdings", {"external_list": [{"symbol": "X", "quantity": "1"}]}),
+        ("list_recent_changes", {}),
+        ("get_performance", {}),
+        ("get_weight_history", {}),
+        ("list_medication_events", {}),
+    ],
+)
+async def test_spec_103_tools_authorize_with_read_scope_before_touching_data(
+    monkeypatch, tool, kwargs
+):
+    """Every new tool authorizes via authorize_workspace(mcp:read, <own name>); a
+    denial propagates and nothing is read (the mocked session has no query API)."""
+    authorize = AsyncMock(side_effect=ForbiddenError(detail="denied"))
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    server = create_mcp_server()
+    tool_map = {t.name: t.fn for t in await server.list_tools()}
+
+    with pytest.raises(ForbiddenError):
+        await tool_map[tool](workspace_id=202, **kwargs)
+
+    authorize.assert_awaited_once()
+    assert authorize.await_args.args[1] == 202
+    assert authorize.await_args.kwargs == {"required_scope": "mcp:read", "tool": tool}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "tool", ["list_recent_changes", "get_weight_history", "list_medication_events"]
+)
+@pytest.mark.parametrize("page", [{"limit": 101}, {"limit": 0}, {"limit": -3}, {"offset": -1}])
+async def test_spec_103_paginated_tools_cap_page_size(monkeypatch, tool, page):
+    authorize = AsyncMock(return_value=101)
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    server = create_mcp_server()
+    tool_map = {t.name: t.fn for t in await server.list_tools()}
+
+    with pytest.raises(ValidationError):
+        await tool_map[tool](workspace_id=202, **page)
+    authorize.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_spec_103_input_validation_happens_before_authorization(monkeypatch):
+    authorize = AsyncMock(return_value=101)
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    server = create_mcp_server()
+    tool_map = {t.name: t.fn for t in await server.list_tools()}
+
+    oversize = [{"symbol": f"S{i}", "quantity": "1"} for i in range(501)]
+    res = await tool_map["reconcile_holdings"](workspace_id=202, external_list=oversize)
+    assert res["status"] == "error" and "500" in res["message"]
+    res = await tool_map["get_performance"](workspace_id=202, period="forever")
+    assert res["status"] == "error"
+    res = await tool_map["get_weight_history"](workspace_id=202, start="not-a-date")
+    assert res["status"] == "error"
+    res = await tool_map["list_recent_changes"](workspace_id=202, until="not-a-date")
+    assert res["status"] == "error"
+    res = await tool_map["list_medication_events"](workspace_id=202, status="bogus")
+    assert res["status"] == "error"
+    authorize.assert_not_awaited()

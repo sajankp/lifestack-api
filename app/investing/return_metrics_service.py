@@ -266,11 +266,72 @@ class ReturnMetricsService:
 
     async def get_return_metrics(self, workspace_id: int) -> ReturnMetricsResponse:
         positions, account_level_dividend_flows = await self._build_positions(workspace_id)
+        account_by_id = await self._account_by_id(workspace_id)
+        return await self._response_from_positions(
+            workspace_id, positions, account_level_dividend_flows, account_by_id
+        )
 
+    async def get_performance_metrics(
+        self, workspace_id: int
+    ) -> tuple[ReturnMetricsResponse, list[dict]]:
+        """Scope metrics AND per-position metrics from ONE load of orders,
+        holdings, prices and dividends (avoids building positions twice)."""
+        positions, account_level_dividend_flows = await self._build_positions(workspace_id)
+        account_by_id = await self._account_by_id(workspace_id)
+        # _response_from_positions appends synthetic account-income positions to
+        # the list it is given; snapshot the real per-holding rows first.
+        position_rows = self._position_rows(positions, account_by_id)
+        response = await self._response_from_positions(
+            workspace_id, positions, account_level_dividend_flows, account_by_id
+        )
+        return response, position_rows
+
+    async def get_position_metrics(self, workspace_id: int) -> list[dict]:
+        """Per-position (account + symbol) XIRR / return metrics."""
+        positions, _ = await self._build_positions(workspace_id)
+        account_by_id = await self._account_by_id(workspace_id)
+        return self._position_rows(positions, account_by_id)
+
+    async def _account_by_id(self, workspace_id: int) -> dict:
         accounts, _ = await self.account_repo.list_workspace_accounts(
             workspace_id, limit=10000, offset=0
         )
-        account_by_id = {a.id: a for a in accounts if a.id is not None}
+        return {a.id: a for a in accounts if a.id is not None}
+
+    @staticmethod
+    def _position_rows(positions: Sequence[_Position], account_by_id: dict) -> list[dict]:
+        rows: list[dict] = []
+        for p in positions:
+            account = account_by_id.get(p.account_id)
+            if account is None:
+                continue
+            m = _position_metrics(p.flows, p.realized, p.market_value, p.book_value)
+            rows.append({
+                "account_id": account.public_id,
+                "account_name": account.name,
+                "symbol": p.symbol,
+                "currency": p.currency,
+                "is_open": p.is_open,
+                "xirr": m.xirr,
+                "annualized_return_pct": m.annualized_return_pct,
+                "annualization_reliable": m.annualization_reliable,
+                "holding_days": m.holding_days,
+                "total_return_pct": m.total_return_pct,
+                "realized": m.realized,
+                "unrealized": m.unrealized,
+                "market_value": m.market_value,
+                "invested": m.invested,
+            })
+        rows.sort(key=lambda r: (r["account_name"], r["symbol"], str(r["account_id"])))
+        return rows
+
+    async def _response_from_positions(
+        self,
+        workspace_id: int,
+        positions: list[_Position],
+        account_level_dividend_flows: dict[int, list[_Flow]],
+        account_by_id: dict,
+    ) -> ReturnMetricsResponse:
 
         # Account-level income (interest -- no symbol) becomes a synthetic
         # closed "position" merged into the main list so it flows into ALL
