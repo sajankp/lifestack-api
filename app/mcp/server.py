@@ -3524,7 +3524,10 @@ def create_mcp_server() -> FastMCP:
                 "holdings": holdings,
             }
         if not 1 <= len(holdings) <= 200:
-            return {"status": "error", "message": "holdings must contain between 1 and 200 entries."}
+            return {
+                "status": "error",
+                "message": "holdings must contain between 1 and 200 entries.",
+            }
 
         validated = []
         for i, h in enumerate(holdings):
@@ -3532,24 +3535,35 @@ def create_mcp_server() -> FastMCP:
                 holding_public_id = uuid.UUID(h["holding_id"])
                 tag_list = h.get("tags", [])
                 if not isinstance(tag_list, list) or len(tag_list) > 20:
-                    return {"status": "error", "message": f"holding {i}: tags must be a list of 0-20 items."}
+                    return {
+                        "status": "error",
+                        "message": f"holding {i}: tags must be a list of 0-20 items.",
+                    }
                 tags = []
                 for t in tag_list:
                     tag = str(t["theme"]).strip()
                     if not tag or len(tag) > 64:
-                        return {"status": "error", "message": f"holding {i}: theme must be 1-64 chars."}
+                        return {
+                            "status": "error",
+                            "message": f"holding {i}: theme must be 1-64 chars.",
+                        }
                     tw = t.get("target_weight_pct")
                     if tw is not None:
                         tw = float(tw)
                         if tw < 0 or tw > 100:
-                            return {"status": "error", "message": f"holding {i}: target_weight_pct must be 0-100."}
+                            return {
+                                "status": "error",
+                                "message": f"holding {i}: target_weight_pct must be 0-100.",
+                            }
                     tags.append(ThemeTagInput(theme=tag, target_weight_pct=tw))
                 validated.append(HoldingThemeTagsInput(holding_id=holding_public_id, tags=tags))
             except (KeyError, TypeError, ValueError) as exc:
                 return {"status": "error", "message": f"holding {i}: invalid entry: {exc}"}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(session, workspace_id, required_scope="mcp:research", tool="set_holding_theme_tags")
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:research", tool="set_holding_theme_tags"
+            )
             try:
                 result = await _theme_tag_service(session).set_tags(workspace_id, validated)
                 await session.commit()
@@ -3579,12 +3593,20 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Invalid as_of_date. Use YYYY-MM-DD."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(session, workspace_id, required_scope="mcp:read", tool="get_lookthrough_exposure")
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_lookthrough_exposure"
+            )
             try:
-                result = await _theme_exposure_service(session).lookthrough_exposure(workspace_id, as_of, group_by=group_by)
+                result = await _theme_exposure_service(session).lookthrough_exposure(
+                    workspace_id, as_of, group_by=group_by
+                )
             except PydanticValidationError as exc:
                 return {"status": "error", "message": str(exc)}
-            return {"status": "success", "workspace_id": workspace_id, **result.model_dump(mode="json")}
+            return {
+                "status": "success",
+                "workspace_id": workspace_id,
+                **result.model_dump(mode="json"),
+            }
 
     @mcp.tool
     async def get_allocation_vs_target(
@@ -3600,14 +3622,28 @@ def create_mcp_server() -> FastMCP:
         try:
             as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
             cash = Decimal(new_cash) if new_cash else None
-        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError, AppValidationError):
+        except (
+            TypeError,
+            ValueError,
+            decimal.InvalidOperation,
+            PydanticValidationError,
+            AppValidationError,
+        ):
             return {"status": "error", "message": "Invalid as_of_date or new_cash."}
 
         async with postgres.async_session_maker() as session:
-            await authorize_workspace(session, workspace_id, required_scope="mcp:read", tool="get_allocation_vs_target")
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_allocation_vs_target"
+            )
             try:
-                result = await _theme_exposure_service(session).allocation_vs_target(workspace_id, as_of, new_cash=cash)
-                return {"status": "success", "workspace_id": workspace_id, **result.model_dump(mode="json")}
+                result = await _theme_exposure_service(session).allocation_vs_target(
+                    workspace_id, as_of, new_cash=cash
+                )
+                return {
+                    "status": "success",
+                    "workspace_id": workspace_id,
+                    **result.model_dump(mode="json"),
+                }
             except AppValidationError as exc:
                 return {"status": "error", "message": exc.detail}
 
