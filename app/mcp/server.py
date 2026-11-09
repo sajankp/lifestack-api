@@ -47,7 +47,7 @@ from app.health.repository import (
     WeightEntryRepository,
 )
 from app.health.service import HealthService
-from app.investing.company_sector_service import CompanySectorService
+from app.investing.company_sector_service import CompanySectorService, SectorRowError
 from app.investing.compliance_service import HoldingComplianceService
 from app.investing.order_service import InvestingOrderService
 from app.investing.performance_report import (
@@ -98,7 +98,7 @@ from app.investing.service import (
     PortfolioReportService,
 )
 from app.investing.tax.exchanges import resolve_exchange
-from app.investing.tax_service import TaxService, normalize_currency_code
+from app.investing.tax_service import TaxService, normalize_currency_code, parse_fx_entries
 from app.investing.tax_whatif_service import (
     TaxWhatIfService,
     WhatIfError,
@@ -1346,6 +1346,110 @@ def create_mcp_server() -> FastMCP:
             "summary": (
                 f"Set sector on {len(updated)} company(ies)"
                 + (f"; {len(errors)} row(s) failed" if errors else "")
+                + "."
+            ),
+        }
+
+    @mcp.tool
+    async def set_company_details(
+        workspace_id: int,
+        company_public_id: str,
+        name: str | None = None,
+        isin: str | None = None,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Rename a company and/or set its ISIN, workspace-scoped.
+
+        Edits one company visible in this workspace (global or a workspace
+        copy). A global company is forked into a workspace copy first, so the
+        global record is never mutated in place. At least one of ``name`` or
+        ``isin`` must be provided. An ISIN or name already used by another
+        visible company is rejected.
+
+        Without ``confirmed`` the call returns ``needs_confirmation`` and
+        writes nothing. With it, the change is applied in a transaction and
+        recorded in the audit trail (before/after plus changed fields).
+        Requires the mcp:write scope.
+        """
+        if name is None and isin is None:
+            return {
+                "status": "error",
+                "message": "provide at least one of name or isin",
+            }
+        try:
+            public_id = uuid.UUID(company_public_id)
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
+            return {"status": "error", "message": "Invalid company_public_id."}
+
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:write",
+                tool="set_company_details",
+            )
+            if not confirmed:
+                return {
+                    "status": "needs_confirmation",
+                    "needs_confirmation": True,
+                    "message": (
+                        f"This will rename and/or set the ISIN of company "
+                        f"{company_public_id} in workspace {workspace_id}. "
+                        "Confirm to continue."
+                    ),
+                    "company_public_id": company_public_id,
+                    "requested_name": name,
+                    "requested_isin": isin,
+                }
+            try:
+                outcome = await _company_sector_service(session).set_company_details(
+                    workspace_id,
+                    public_id,
+                    name=name,
+                    isin=isin,
+                )
+                await AuditLogger(session).log(
+                    workspace_id=workspace_id,
+                    actor_id=user_id,
+                    action="update",
+                    module="investing",
+                    entity_type="company",
+                    entity_id=outcome["company_id"],
+                    details={
+                        "entity_public_id": str(public_id),
+                        "before": outcome["before"],
+                        "after": outcome["after"],
+                        "changed_fields": [
+                            k
+                            for k in ("name", "isin")
+                            if outcome["before"][k] != outcome["after"][k]
+                        ],
+                    },
+                )
+                await session.commit()
+            except (APIError, ValueError, SectorRowError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+        return {
+            "status": "success",
+            "entity_type": "company",
+            "entity_public_id": company_public_id,
+            "workspace_id": workspace_id,
+            "forked_from_global": outcome["forked_from_global"],
+            "changed": outcome["changed"],
+            "before": outcome["before"],
+            "after": outcome["after"],
+            "summary": (
+                f"Updated company {company_public_id}"
+                + (", forked from the global record" if outcome["forked_from_global"] else "")
+                + (
+                    "; changed: "
+                    + ", ".join(
+                        k for k in ("name", "isin") if outcome["before"][k] != outcome["after"][k]
+                    )
+                    if outcome["changed"]
+                    else ""
+                )
                 + "."
             ),
         }
@@ -3338,12 +3442,11 @@ def create_mcp_server() -> FastMCP:
             await authorize_workspace(
                 session, workspace_id, required_scope="mcp:write", tool="set_fx_rate"
             )
-            profile = await _tax_service(session).get_profile(workspace_id)
-            fx_overrides = dict(profile.fx_overrides or {})
-            fx_overrides[composite_key] = rate_text
-            profile = await _tax_service(session).update_profile(
-                workspace_id, {"fx_overrides": fx_overrides}
-            )
+            service = _tax_service(session)
+            # A deliberate correction: replace any existing value. The merge runs under a
+            # row lock so a concurrent writer's entries are not lost.
+            await service.set_fx_overrides(workspace_id, {composite_key: rate_text}, overwrite=True)
+            profile = await service.get_profile(workspace_id)
             await session.commit()
 
         return {
@@ -3352,6 +3455,71 @@ def create_mcp_server() -> FastMCP:
             "key": composite_key,
             "rate": rate_text,
             "fx_overrides": dict(profile.fx_overrides or {}),
+        }
+
+    @mcp.tool
+    async def set_fx_rates(
+        workspace_id: int,
+        rates: list[dict[str, str]],
+        overwrite_existing: bool = False,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Backfill many daily Rule 115 FX rates in one call.
+
+        ``rates`` is a list of ``{"date": "YYYY-MM-DD", "currency": "USD", "rate": "83.4"}``
+        (up to 400 -- a financial year of daily rates). Use ``list_missing_fx_rates`` to find
+        the gaps. Everything is validated first and nothing is written if any entry is bad;
+        the error names the entry (``rates[3]: ...``). Dates may not be in the future.
+
+        A rate already stored for the same date + currency is **kept** (reported under
+        ``skipped_existing``) unless ``overwrite_existing=true``; an identical value is
+        ``unchanged``. Without ``confirmed=true`` nothing is written and the result is a
+        preview of the counts (``add`` / ``update`` / ``skip_existing`` / ``unchanged``).
+        Concurrent calls merge safely.
+        """
+        try:
+            entries = parse_fx_entries(rates)
+        except AppValidationError as exc:
+            return {"status": "error", "message": exc.detail}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:write", tool="set_fx_rates"
+            )
+            service = _tax_service(session)
+            if not confirmed:
+                preview = await service.set_fx_overrides(
+                    workspace_id, entries, overwrite=overwrite_existing, apply=False
+                )
+                return {
+                    "status": "needs_confirmation",
+                    "needs_confirmation": True,
+                    "message": (
+                        f"Store {len(entries)} FX rate(s)? "
+                        f"{len(preview.added)} new, {len(preview.updated)} replaced, "
+                        f"{len(preview.skipped_existing)} kept as already set, "
+                        f"{len(preview.unchanged)} identical. Confirm to continue."
+                    ),
+                    "counts": {
+                        "add": len(preview.added),
+                        "update": len(preview.updated),
+                        "skip_existing": len(preview.skipped_existing),
+                        "unchanged": len(preview.unchanged),
+                    },
+                }
+            result = await service.set_fx_overrides(
+                workspace_id, entries, overwrite=overwrite_existing
+            )
+            await session.commit()
+        return {
+            "status": "success",
+            "counts": {
+                "added": len(result.added),
+                "updated": len(result.updated),
+                "skipped_existing": len(result.skipped_existing),
+                "unchanged": len(result.unchanged),
+            },
+            "skipped_existing": result.skipped_existing,
         }
 
     @mcp.tool

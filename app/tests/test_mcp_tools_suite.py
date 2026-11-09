@@ -106,8 +106,10 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
         "log_spending_transactions_batch",
         "log_weight",
         "reconcile_holdings",
+        "set_company_details",
         "set_company_sector",
         "set_fx_rate",
+        "set_fx_rates",
         "set_holding_compliance",
         "set_holding_theme_tags",
         "simulate_sale",
@@ -120,7 +122,7 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
 
     missing = expected_tools - registered_tools
     assert not missing, f"Missing MCP tools from server: {missing}"
-    assert len(expected_tools) == 59
+    assert len(expected_tools) == 61
 
 
 @pytest.mark.anyio

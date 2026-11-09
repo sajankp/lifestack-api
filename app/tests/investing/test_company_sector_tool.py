@@ -13,6 +13,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 
+from app.auth.repository import UserRepository
 from app.config import settings
 from app.core.database import postgres
 from app.investing.company_sector_service import SectorRowError
@@ -55,6 +56,12 @@ async def _workspace_ids() -> list[int]:
     async with postgres.async_session_maker() as session:
         rows = (await session.execute(select(Workspace.id).order_by(Workspace.id))).all()
         return [r[0] for r in rows]
+
+
+async def _registered_user_id(session, email: str) -> int:
+    user = await UserRepository(session).get_by_email(email)
+    assert user is not None and user.id is not None, f"no user with email {email}"
+    return user.id
 
 
 async def _holding_company(holding_public_id: str) -> tuple[Holding, Instrument, Company]:
@@ -475,3 +482,231 @@ async def test_constituents_read_uses_single_newest_snapshot(client):
     async with postgres.async_session_maker() as session:
         total = await session.scalar(select(func.count()).select_from(InstrumentConstituent))
     assert total == 2  # both snapshots stored; only the newest is read
+
+
+@pytest.mark.asyncio
+async def test_fork_repoints_workspace_constituent_rows_to_copy(client, tools):
+    """Bug 4: forking a global company via set_company_sector re-points this
+    workspace's constituent rows (on workspace-owned instruments) to the copy,
+    so look-through doesn't keep pointing at the now-stale global record.
+    """
+    brokerage = await _register(client, "sector-fork-repoint")
+    ws = (await _workspace_ids())[0]
+    async with postgres.async_session_maker() as session:
+        fan = Company(workspace_id=None, name="FANUY Corp", ticker="FANUY", isin=None)
+        session.add(fan)
+        await session.flush()
+        fan_id = fan.id
+        await session.commit()
+
+    fund_id = await _create_instrument(client, "FUNDF", instrument_type="mutual_fund")
+    holding = await _buy(
+        client,
+        brokerage,
+        "FUNDF",
+        "1",
+        "1000.00",
+        instrument_type="mutual_fund",
+        instrument_name="Fan fund",
+    )
+    await _submit_holding_price(client, holding, "1000.00")
+
+    async with postgres.async_session_maker() as session:
+        instrument = await session.get(
+            Instrument,
+            (
+                await session.execute(
+                    select(Holding.instrument_id).where(Holding.public_id == uuid.UUID(holding))
+                )
+            ).scalar_one(),
+        )
+        instrument.company_id = fan_id
+        await session.commit()
+
+    await _write_snapshot(
+        client,
+        fund_id,
+        [_constituent("FANUY Corp", "FANUY", "1.0", "Industrials")],
+    )
+
+    # Bug 4: the snapshot write forks the global company into this workspace and
+    # re-points this workspace's constituent rows (on workspace-owned
+    # instruments) to the copy, so look-through doesn't keep pointing at the
+    # now-stale global record.
+    async with postgres.async_session_maker() as session:
+        fund = await session.execute(select(Instrument.id).where(Instrument.public_id == fund_id))
+        rows = (
+            (
+                await session.execute(
+                    select(InstrumentConstituent.constituent_company_id).where(
+                        InstrumentConstituent.instrument_id == fund.scalar_one()
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        copies = (
+            (await session.execute(select(Company.workspace_id).where(Company.id.in_(rows))))
+            .scalars()
+            .all()
+        )
+    assert rows, "constituent rows were written"
+    assert all(wid == ws for wid in copies), copies  # all point at a workspace copy
+
+    # Re-running set_company_sector resolves to the workspace copy (idempotent,
+    # not a re-fork) and is a no-op.
+    res = await tools["set_company_sector"](
+        workspace_id=ws,
+        rows=[{"holding_public_id": holding, "sector": "Energy"}],
+        confirmed=True,
+    )
+    assert res["status"] == "success", res
+    assert res["updated"][0]["forked_from_global"] is False
+    # The snapshot write already set Industrials on the copy, so this re-sets
+    # it to Energy: a real change, not a re-fork.
+    assert res["updated"][0]["changed"] is True
+    assert res["updated"][0]["after"]["sector"] == "Energy"
+
+
+@pytest.mark.asyncio
+async def test_set_company_details_rename_and_isin_confirmed(client, tools, monkeypatch):
+    await _register(client, "company-details")
+    ws = (await _workspace_ids())[0]
+    async with postgres.async_session_maker() as session:
+        user_id = await _registered_user_id(session, "company-details@example.com")
+    # authorize_workspace is mocked to return 1 by the `tools` fixture, but the
+    # registered user's id is sequence-assigned and not reliably 1. The real user
+    # id is required because set_company_details writes to audit_logs (FK -> users).
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=user_id))
+
+    async with postgres.async_session_maker() as session:
+        company = Company(workspace_id=ws, name="Old Name", ticker="OLD", isin=None)
+        session.add(company)
+        await session.flush()
+        public_id = str(company.public_id)
+        await session.commit()
+
+    preview = await tools["set_company_details"](
+        workspace_id=ws, company_public_id=public_id, name="New Name", confirmed=False
+    )
+    assert preview["status"] == "needs_confirmation"
+    async with postgres.async_session_maker() as session:
+        row = await session.get(Company, company.id)
+        assert row.name == "Old Name"  # preview wrote nothing
+
+    res = await tools["set_company_details"](
+        workspace_id=ws,
+        company_public_id=public_id,
+        name="New Name",
+        isin="USNEW0000001",
+        confirmed=True,
+    )
+    assert res["status"] == "success", res
+    assert res["changed"] is True
+    assert res["before"] == {"name": "Old Name", "isin": None}
+    assert res["after"] == {"name": "New Name", "isin": "USNEW0000001"}
+    async with postgres.async_session_maker() as session:
+        row = await session.get(Company, company.id)
+        assert row.name == "New Name"
+        assert row.isin == "USNEW0000001"
+
+
+@pytest.mark.asyncio
+async def test_set_company_details_forks_global_never_mutates(client, tools, monkeypatch):
+    await _register(client, "company-details-fork")
+    ws = (await _workspace_ids())[0]
+    async with postgres.async_session_maker() as session:
+        user_id = await _registered_user_id(session, "company-details-fork@example.com")
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=user_id))
+
+    async with postgres.async_session_maker() as session:
+        company = Company(workspace_id=None, name="Global Co", ticker="GLBL", isin="USGLBL0000001")
+        session.add(company)
+        await session.flush()
+        public_id = str(company.public_id)
+        global_id = company.id
+        await session.commit()
+
+    res = await tools["set_company_details"](
+        workspace_id=ws, company_public_id=public_id, name="Workspace Co", confirmed=True
+    )
+    assert res["status"] == "success", res
+    assert res["forked_from_global"] is True
+    assert res["changed"] is True
+    assert res["after"]["name"] == "Workspace Co"
+    assert res["after"]["isin"] == "USGLBL0000001"
+
+    async with postgres.async_session_maker() as session:
+        global_row = await session.get(Company, global_id)
+        assert global_row.workspace_id is None
+        assert global_row.name == "Global Co"  # global untouched
+        copies = (
+            (
+                await session.execute(
+                    select(Company).where(
+                        Company.workspace_id == ws, Company.name == "Workspace Co"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(copies) == 1
+
+
+@pytest.mark.asyncio
+async def test_set_company_details_rejects_duplicate_isin_and_name(client, tools):
+    await _register(client, "company-details-conflict")
+    ws = (await _workspace_ids())[0]
+    async with postgres.async_session_maker() as session:
+        a = Company(workspace_id=ws, name="Company A", ticker="A", isin="USA0000000001")
+        b = Company(workspace_id=ws, name="Company B", ticker="B", isin="USB0000000002")
+        session.add_all([a, b])
+        await session.flush()
+        aid = str(a.public_id)
+        await session.commit()
+
+    # ISIN already used by Company B.
+    res = await tools["set_company_details"](
+        workspace_id=ws, company_public_id=aid, isin="USB0000000002", confirmed=True
+    )
+    assert res["status"] == "error", res
+    assert "already used" in res["message"]
+
+    # Name already used by Company B.
+    res = await tools["set_company_details"](
+        workspace_id=ws, company_public_id=aid, name="Company B", confirmed=True
+    )
+    assert res["status"] == "error", res
+    assert "already named" in res["message"]
+
+    # Unknown company.
+    res = await tools["set_company_details"](
+        workspace_id=ws, company_public_id=str(uuid.uuid4()), name="Nope", confirmed=True
+    )
+    assert res["status"] == "error", res
+    assert "not found in this workspace" in res["message"]
+
+
+@pytest.mark.asyncio
+async def test_set_company_details_idempotent_noop(client, tools, monkeypatch):
+    await _register(client, "company-details-noop")
+    ws = (await _workspace_ids())[0]
+    async with postgres.async_session_maker() as session:
+        user_id = await _registered_user_id(session, "company-details-noop@example.com")
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=user_id))
+
+    async with postgres.async_session_maker() as session:
+        company = Company(workspace_id=ws, name="Same Name", ticker="SAME", isin="USSAME0000001")
+        session.add(company)
+        await session.flush()
+        public_id = str(company.public_id)
+        await session.commit()
+
+    res = await tools["set_company_details"](
+        workspace_id=ws, company_public_id=public_id, name="Same Name", confirmed=True
+    )
+    assert res["status"] == "success", res
+    assert res["changed"] is False
+    assert res["before"] == res["after"] == {"name": "Same Name", "isin": "USSAME0000001"}

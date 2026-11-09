@@ -1710,7 +1710,13 @@ class ConstituentService:
         await self.constituent_repo.delete_snapshot(
             instrument.id, payload.as_of_date, payload.source
         )  # type: ignore[arg-type]
-        rows: list[InstrumentConstituent] = []
+        # Aggregate constituents that resolve to the same company (share
+        # classes such as GOOGL/GOOG, ROP/RO, Atlas Copco A/B, common/pref or
+        # two ISINs for one issuer) by summing their weights. Writing one row
+        # per (instrument, company, as_of_date, source) avoids the raw
+        # uq_investing_constituent_snapshot IntegrityError and keeps look
+        # -through math exact.
+        merged: dict[int, dict[str, Any]] = {}
         for item in constituents:
             company = await self.company_repo.resolve_or_create_company(
                 workspace_id,
@@ -1721,16 +1727,26 @@ class ConstituentService:
             company = await self._apply_constituent_sector(
                 workspace_id, company, item, overwrite_existing=payload.overwrite_existing
             )
-            rows.append(
-                InstrumentConstituent(
-                    instrument_id=instrument.id,  # type: ignore[arg-type]
-                    constituent_company_id=company.id,  # type: ignore[arg-type]
-                    weight=item.weight,
-                    as_of_date=payload.as_of_date,
-                    source=payload.source,
-                    fetched_at=payload.fetched_at,
-                )
+            assert company.id is not None
+            entry = merged.get(company.id)
+            if entry is None:
+                merged[company.id] = {
+                    "company": company,
+                    "weight": item.weight,
+                }
+            else:
+                entry["weight"] += item.weight
+        rows: list[InstrumentConstituent] = [
+            InstrumentConstituent(
+                instrument_id=instrument.id,  # type: ignore[arg-type]
+                constituent_company_id=entry["company"].id,  # type: ignore[arg-type]
+                weight=entry["weight"],
+                as_of_date=payload.as_of_date,
+                source=payload.source,
+                fetched_at=payload.fetched_at,
             )
+            for entry in merged.values()
+        ]
         return await self.constituent_repo.create_many(rows)
 
     async def _apply_constituent_sector(
