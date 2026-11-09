@@ -172,13 +172,21 @@ def build_performance_report(
     # Overall: workspace-wide (or the one requested account). Amounts are the
     # sum of per-account amounts each converted at the latest FX rate; XIRR is
     # a rate (currency-neutral) from the service.
-    source = account_rows[0] if account_public_id is not None and account_rows else metrics.overall
-    overall_xirr = source.xirr
+    # An account with no investing activity has no row: report "not computable",
+    # never the workspace-wide figures under an account label.
+    if account_public_id is None:
+        source = metrics.overall
+    else:
+        source = account_rows[0] if account_rows else None
+        if source is None:
+            warnings.append(
+                "The requested account has no investing activity, so no return can be computed."
+            )
     overall: dict[str, Any] = {
         "scope": "account" if account_public_id is not None else "workspace",
-        **_xirr_fields(overall_xirr),
-        "annualized_return_pct": _opt(source.annualized_return_pct),
-        "total_return_pct": _opt(source.total_return_pct),
+        **_xirr_fields(source.xirr if source is not None else None),
+        "annualized_return_pct": _opt(source.annualized_return_pct if source else None),
+        "total_return_pct": _opt(source.total_return_pct if source else None),
         "converted": {
             "currency": reporting_currency,
             **{
@@ -209,6 +217,11 @@ def build_performance_report(
         "net_external_flows": _money(conv.convert(flows, twr_currency)),
     }
     twr_out["warnings"] = list(twr.get("warnings") or [])
+    if account_public_id is not None:
+        twr_out["warnings"].append(
+            "Time-weighted return is computed for the whole workspace; portfolio snapshots "
+            "are not stored per account."
+        )
 
     if conv.missing:
         warnings.append(

@@ -325,3 +325,60 @@ async def test_tool_exposes_the_new_parameters(order_tool):
     assert "atomic" in tools["log_spending_transactions_batch"].parameters["properties"]
     for name in ("list_spending_transactions", "find_spending_transactions"):
         assert {"from_date", "to_date", "cursor"} <= set(tools[name].parameters["properties"])
+
+
+@pytest.mark.asyncio
+async def test_source_ref_reused_with_different_details_is_a_conflict_not_a_silent_success(
+    order_tool,
+):
+    first = await order_tool(source_ref="op-conflict", confirmed=True)
+    assert first["status"] == "success"
+    after_first = await _snapshot()
+
+    changed = await order_tool(source_ref="op-conflict", confirmed=True, quantity="5")
+
+    assert changed["status"] == "error"
+    assert "source_ref" in changed["message"]
+    assert changed["existing_id"] == first["entity_public_id"]
+    assert await _snapshot() == after_first, "the changed order must not be recorded either"
+    assert len(await _orders()) == 1
+
+    for override in ({"symbol": "MSFT"}, {"price_per_unit": "101"}, {"order_type": "sell"}):
+        res = await order_tool(source_ref="op-conflict", confirmed=True, **override)
+        assert res["status"] == "error", override
+
+
+@pytest.mark.asyncio
+async def test_source_ref_replay_with_identical_details_still_succeeds(order_tool):
+    first = await order_tool(source_ref="op-same", confirmed=True)
+    again = await order_tool(source_ref="op-same", confirmed=True)
+    assert again["status"] == "success" and again["idempotent"] is True
+    assert again["existing_id"] == first["entity_public_id"]
+
+
+@pytest.mark.asyncio
+async def test_dry_run_reports_a_changed_source_ref_replay_as_invalid(order_tool):
+    await order_tool(source_ref="op-dry", confirmed=True)
+
+    preview = await order_tool(dry_run=True, source_ref="op-dry", quantity="9")
+
+    item = preview["items"][0]
+    assert item["status"] == "invalid"
+    assert item["match_reason"] == "source_ref"
+    assert preview["counts"]["invalid"] == 1
+    assert len(await _orders()) == 1
+
+
+@pytest.mark.asyncio
+async def test_dry_run_honours_allow_duplicate_like_the_real_run(order_tool):
+    await order_tool(confirmed=True)
+
+    without = await order_tool(dry_run=True)
+    assert without["items"][0]["status"] == "possible_duplicate"
+
+    forced = await order_tool(dry_run=True, allow_duplicate=True)
+    assert forced["items"][0]["status"] == "would_create"
+    assert forced["counts"]["possible_duplicate"] == 0
+
+    real = await order_tool(confirmed=True, allow_duplicate=True)
+    assert real["status"] == "success", "the dry run must predict the real outcome"

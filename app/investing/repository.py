@@ -1502,7 +1502,7 @@ class PortfolioReportRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(
+    async def create_if_absent(
         self,
         *,
         workspace_id: int,
@@ -1515,8 +1515,10 @@ class PortfolioReportRepository:
         harvest_candidates: list | None = None,
         lrs_headroom_inr: Decimal | None = None,
         tax_buckets: dict | None = None,
-    ) -> PortfolioReport:
+    ) -> tuple[PortfolioReport, bool]:
         """Insert one report row, or return the existing one for the run.
+
+        Returns ``(row, created)``; ``created`` is False when the run already existed.
 
         Idempotent on ``(workspace_id, as_of, run_id)`` — append-only
         semantics: conflicting inserts are silently dropped, so a biweekly
@@ -1528,17 +1530,18 @@ class PortfolioReportRepository:
                 workspace_id=workspace_id,
                 as_of=as_of,
                 run_id=run_id,
-                scalars_json=scalars_json,
-                foundation_json=foundation_json,
+                scalars_json=scalars_json if scalars_json is not None else {},
+                foundation_json=foundation_json if foundation_json is not None else {},
                 actions_md=actions_md,
-                theme_weights=theme_weights,
-                harvest_candidates=harvest_candidates,
+                theme_weights=theme_weights if theme_weights is not None else {},
+                harvest_candidates=harvest_candidates if harvest_candidates is not None else [],
                 lrs_headroom_inr=lrs_headroom_inr,
-                tax_buckets=tax_buckets,
+                tax_buckets=tax_buckets if tax_buckets is not None else {},
             )
             .on_conflict_do_nothing(index_elements=["workspace_id", "as_of", "run_id"])
+            .returning(PortfolioReport.id)
         )
-        await self.session.execute(stmt)
+        created = (await self.session.execute(stmt)).scalar_one_or_none() is not None
         # populate_existing: ON CONFLICT DO NOTHING is raw Core DML that
         # bypasses the unit-of-work, so re-select to return the row that
         # actually landed (new or pre-existing), complete with server-side
@@ -1552,7 +1555,12 @@ class PortfolioReportRepository:
             )
             .execution_options(populate_existing=True)
         )
-        return result.scalar_one()
+        return result.scalar_one(), created
+
+    async def create(self, **fields: Any) -> PortfolioReport:
+        """Insert one report row, or return the existing one (see ``create_if_absent``)."""
+        row, _ = await self.create_if_absent(**fields)
+        return row
 
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> PortfolioReport | None:
         result = await self.session.execute(

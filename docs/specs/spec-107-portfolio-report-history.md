@@ -63,8 +63,16 @@ rejected: a corrected report is a new `run_id`.
 
 | Tool | Scope | Args | Returns |
 |---|---|---|---|
-| `create_portfolio_report` | `mcp:write` | `workspace_id`, `as_of` (ISO date), `run_id` (1-128 chars), optional `scalars_json`, `foundation_json`, `actions_md`, `theme_weights`, `harvest_candidates`, `lrs_headroom_inr` (decimal string), `tax_buckets` | `{status, public_id, as_of, run_id, created_at}` |
-| `list_portfolio_reports` | `mcp:read` | `workspace_id`, `from_date?`, `to_date?` (inclusive on `as_of`), `limit=20` (1-100), `cursor?` (offset, >= 0) | `{status, total, next_cursor, items[]}`, newest `as_of` first; items carry the denormalised columns plus `foundation_json` and `actions_md` |
+| `create_portfolio_report` | `mcp:write` | `workspace_id`, `as_of` (ISO date), `run_id` (1-128 chars), optional `scalars_json`, `foundation_json`, `actions_md`, `theme_weights`, `harvest_candidates`, `lrs_headroom_inr` (decimal string), `tax_buckets` | `{status, created, content_matches, public_id, as_of, run_id, created_at, warning?}` |
+| `list_portfolio_reports` | `mcp:read` | `workspace_id`, `from_date?`, `to_date?` (inclusive on `as_of`), `limit=20` (1-100), `cursor?` (offset, >= 0), `include_payload=false` | `{status, total, next_cursor, items[]}`, newest `as_of` first; items carry the denormalised columns, plus `scalars_json`, `foundation_json` and `actions_md` only when `include_payload=true` |
+
+`created` is false when the run already existed. `content_matches` is false when that
+existing row holds different content from what was sent: nothing is changed (append-only)
+and `warning` tells the caller to send the correction under a new `run_id`, so a dropped
+correction is never silent. `lrs_headroom_inr` must be finite and below 10^16 and is rounded
+half-up to 2 dp. Omitted JSON fields are stored as `{}` / `[]`, never JSON null. The list
+omits the heavy payload fields by default because a page of 100 full reports could reach
+hundreds of MB.
 
 Validation failures return `{"status": "error", "message": ...}` and write nothing. The
 create payload is capped at 2,000,000 characters of JSON. `total` is returned so a caller

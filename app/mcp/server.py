@@ -5,7 +5,7 @@ import json
 import re
 import uuid
 from datetime import UTC, date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlparse
 
@@ -116,6 +116,7 @@ from app.investing.theme_repository import (
     LatestConstituentSnapshotRepository,
 )
 from app.investing.theme_schemas import (
+    GroupBy,
     HoldingThemeTagsInput,
     ThemeTagInput,
 )
@@ -296,6 +297,39 @@ async def _possible_duplicate_orders(
     )
 
 
+async def _source_ref_replay_mismatches(
+    session: Any, workspace_id: int, existing: Any, payload: InvestingOrderCreate
+) -> list[str]:
+    """Fields on which a ``source_ref`` replay differs from the order it matches.
+
+    A retry must be byte-for-byte the same order. If the caller reuses a
+    ``source_ref`` for a *different* order, reporting success would make it
+    believe the new order exists while nothing was recorded.
+    """
+    account = await AccountRepository(session).get_by_id(workspace_id, existing.account_id)
+    occurred_at = payload.occurred_at
+    if occurred_at.tzinfo is None:
+        occurred_at = occurred_at.replace(tzinfo=UTC)
+    comparisons = {
+        "account_id": account is not None and account.public_id == payload.account_id,
+        "order_type": existing.order_type == payload.order_type.value,
+        "symbol": existing.symbol == payload.symbol,
+        "quantity": existing.quantity == payload.quantity,
+        "price_per_unit": existing.price_per_unit == payload.price_per_unit,
+        "currency": existing.currency == payload.currency,
+        "occurred_at": existing.occurred_at == occurred_at,
+    }
+    return [name for name, same in comparisons.items() if not same]
+
+
+def _source_ref_conflict_message(source_ref: str, fields: list[str]) -> str:
+    return (
+        f"source_ref '{source_ref}' already belongs to a different order "
+        f"(differs in: {', '.join(fields)}). Nothing was recorded. Use a new "
+        "source_ref for a new order, or resend the original details to retry it."
+    )
+
+
 def _order_preview_fields(payload: InvestingOrderCreate, gross: Decimal, net: Decimal) -> dict:
     return {
         "entity_type": "investing_order",
@@ -329,6 +363,7 @@ def _order_service(session: Any) -> InvestingOrderService:
 
 
 MAX_PORTFOLIO_REPORT_CHARS = 2_000_000
+MAX_LRS_HEADROOM_INR = Decimal("1e16")  # numeric(18,2) holds < 10^16
 
 
 def _portfolio_report_service(session: Any) -> PortfolioReportService:
@@ -1467,7 +1502,11 @@ def create_mcp_server() -> FastMCP:
             }
 
     async def _preview_order(
-        workspace_id: int, payload: InvestingOrderCreate, gross: Decimal, net: Decimal
+        workspace_id: int,
+        payload: InvestingOrderCreate,
+        gross: Decimal,
+        net: Decimal,
+        allow_duplicate: bool = False,
     ) -> dict[str, Any]:
         """``create_investment_order`` dry run: validate + dedupe, persist nothing."""
         async with postgres.async_session_maker() as session:
@@ -1485,7 +1524,13 @@ def create_mcp_server() -> FastMCP:
                         "source_ref",
                         str(existing.public_id),
                     )
-            else:
+                    mismatches = await _source_ref_replay_mismatches(
+                        session, workspace_id, existing, payload
+                    )
+                    if mismatches:
+                        status = "invalid"
+                        errors = [_source_ref_conflict_message(payload.source_ref, mismatches)]
+            elif not allow_duplicate:
                 similar = await _possible_duplicate_orders(session, workspace_id, user_id, payload)
                 if similar:
                     status, match_reason, existing_id = (
@@ -1599,7 +1644,9 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "Fees must leave a positive net amount."}
 
         if dry_run:
-            return await _preview_order(workspace_id, payload, gross_amount, net_amount)
+            return await _preview_order(
+                workspace_id, payload, gross_amount, net_amount, allow_duplicate
+            )
 
         if not confirmed:
             return {
@@ -1637,6 +1684,16 @@ def create_mcp_server() -> FastMCP:
             if payload.source_ref:
                 existing = await order_repo.get_by_source_ref(workspace_id, payload.source_ref)
                 if existing is not None:
+                    mismatches = await _source_ref_replay_mismatches(
+                        session, workspace_id, existing, payload
+                    )
+                    if mismatches:
+                        return {
+                            "status": "error",
+                            "match_reason": "source_ref",
+                            "existing_id": str(existing.public_id),
+                            "message": _source_ref_conflict_message(payload.source_ref, mismatches),
+                        }
                     account = await AccountRepository(session).get_by_id(
                         workspace_id, existing.account_id
                     )
@@ -3007,9 +3064,22 @@ def create_mcp_server() -> FastMCP:
                 headroom = Decimal(lrs_headroom_inr)
             except InvalidOperation:
                 return {"status": "error", "message": "lrs_headroom_inr must be a decimal string."}
+            if not headroom.is_finite() or abs(headroom) >= MAX_LRS_HEADROOM_INR:
+                return {
+                    "status": "error",
+                    "message": "lrs_headroom_inr must be a finite amount below 10^16.",
+                }
+            headroom = headroom.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         payload_size = len(
             json.dumps(
-                [scalars_json, foundation_json, actions_md, theme_weights, harvest_candidates],
+                [
+                    scalars_json,
+                    foundation_json,
+                    actions_md,
+                    theme_weights,
+                    harvest_candidates,
+                    tax_buckets,
+                ],
                 default=str,
             )
         )
@@ -3022,7 +3092,7 @@ def create_mcp_server() -> FastMCP:
             await authorize_workspace(
                 session, workspace_id, required_scope="mcp:write", tool="create_portfolio_report"
             )
-            report = await _portfolio_report_service(session).create_portfolio_report(
+            recorded = await _portfolio_report_service(session).record_portfolio_report(
                 workspace_id=workspace_id,
                 as_of=as_of_date,
                 run_id=run_id,
@@ -3034,13 +3104,23 @@ def create_mcp_server() -> FastMCP:
                 lrs_headroom_inr=headroom,
                 tax_buckets=tax_buckets,
             )
-            return {
+            report = recorded.report
+            result: dict[str, Any] = {
                 "status": "success",
+                "created": recorded.created,
+                "content_matches": recorded.content_matches,
                 "public_id": str(report.public_id),
                 "as_of": report.as_of.isoformat(),
                 "run_id": report.run_id,
                 "created_at": report.created_at.isoformat() if report.created_at else None,
             }
+            if not recorded.content_matches:
+                result["warning"] = (
+                    "A report for this run_id already exists with different content; nothing "
+                    "was changed (reports are append-only). Send a corrected report under a "
+                    "new run_id."
+                )
+            return result
 
     @mcp.tool
     async def list_portfolio_reports(
@@ -3049,12 +3129,15 @@ def create_mcp_server() -> FastMCP:
         to_date: str | None = None,
         limit: int = 20,
         cursor: int | None = None,
+        include_payload: bool = False,
     ) -> dict[str, Any]:
         """List portfolio report history for a workspace, newest ``as_of`` first.
 
         Filters on ``as_of`` (inclusive). Cursor-paginated with a total count so
-        callers can verify no page was cut off. Each item carries the
-        denormalised columns plus the full ``foundation_json`` and ``actions_md``.
+        callers can verify no page was cut off. Items carry the denormalised
+        columns; set ``include_payload=true`` to also get ``scalars_json``,
+        ``foundation_json`` and ``actions_md`` (large -- narrow the date range and
+        lower ``limit`` first).
         """
         if limit < 1 or limit > 100:
             return {"status": "error", "message": "limit must be between 1 and 100."}
@@ -3089,9 +3172,16 @@ def create_mcp_server() -> FastMCP:
                         str(item.lrs_headroom_inr) if item.lrs_headroom_inr is not None else None
                     ),
                     "tax_buckets": item.tax_buckets,
-                    "foundation_json": item.foundation_json,
-                    "actions_md": item.actions_md,
                     "created_at": item.created_at.isoformat() if item.created_at else None,
+                    **(
+                        {
+                            "scalars_json": item.scalars_json,
+                            "foundation_json": item.foundation_json,
+                            "actions_md": item.actions_md,
+                        }
+                        if include_payload
+                        else {}
+                    ),
                 }
                 for item in items
             ],
@@ -3180,6 +3270,7 @@ def create_mcp_server() -> FastMCP:
                 session, workspace_id, required_scope="mcp:write", tool="update_tax_profile"
             )
             profile = await _tax_service(session).update_profile(workspace_id, changes)
+            await session.commit()
         return {
             "public_id": str(profile.public_id),
             "resident_status": profile.resident_status,
@@ -3240,6 +3331,8 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "rate must be finite and between 0 and 1000."}
 
         composite_key = f"{date_str}:{currency}"
+        # Canonical text (no exponent / padding forms) so get_fx_rate returns what was meant.
+        rate_text = format(rate_value, "f")
 
         async with postgres.async_session_maker() as session:
             await authorize_workspace(
@@ -3247,16 +3340,17 @@ def create_mcp_server() -> FastMCP:
             )
             profile = await _tax_service(session).get_profile(workspace_id)
             fx_overrides = dict(profile.fx_overrides or {})
-            fx_overrides[composite_key] = rate
+            fx_overrides[composite_key] = rate_text
             profile = await _tax_service(session).update_profile(
                 workspace_id, {"fx_overrides": fx_overrides}
             )
+            await session.commit()
 
         return {
             "status": "success",
-            "message": f"FX rate set for {date} ({currency}): {rate}",
+            "message": f"FX rate set for {date_str} ({currency}): {rate_text}",
             "key": composite_key,
-            "rate": rate,
+            "rate": rate_text,
             "fx_overrides": dict(profile.fx_overrides or {}),
         }
 
@@ -3459,6 +3553,9 @@ def create_mcp_server() -> FastMCP:
                     })
                 await session.flush()
 
+            # Error returns above leave the transaction uncommitted (the session closes
+            # and rolls back); only a fully applied change is committed.
+            await session.commit()
             return {
                 "status": "success",
                 "account": {
@@ -3713,9 +3810,12 @@ def create_mcp_server() -> FastMCP:
     async def get_lookthrough_exposure(
         workspace_id: int,
         as_of_date: str | None = None,
-        group_by: str = "theme",
+        group_by: GroupBy | None = None,
     ) -> dict[str, Any]:
         """Get look-through exposure by theme/company/sector/country.
+
+        Omit ``group_by`` for every grouping, or pass one of company, sector,
+        country, theme to limit the response to it.
 
         Uses exactly one latest constituent snapshot per fund (newest by as_of_date, fetched_at).
         OTHER-* placeholder rows and unmapped companies go to "not itemised" (never rescaled).
@@ -3744,17 +3844,18 @@ def create_mcp_server() -> FastMCP:
     @mcp.tool
     async def get_allocation_vs_target(
         workspace_id: int,
-        new_cash: str | None = None,
+        new_cash: str = "0",
         as_of_date: str | None = None,
     ) -> dict[str, Any]:
         """Allocation vs target with optional new-cash deployment.
 
-        If new_cash provided, computes buy-only deployment to underweight themes.
+        ``new_cash`` defaults to 0. If positive, computes buy-only deployment to
+        underweight themes.
         Never suggests sells. Largest-remainder rounding ensures exact sums.
         """
         try:
             as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
-            cash = Decimal(new_cash) if new_cash else None
+            cash = Decimal(new_cash)
         except (
             TypeError,
             ValueError,

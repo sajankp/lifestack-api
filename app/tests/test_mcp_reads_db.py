@@ -887,3 +887,67 @@ async def test_every_new_tool_stops_when_authorization_fails(
     tools = await _tools()
     with pytest.raises(ForbiddenError):
         await tools[tool](workspace_id=WS, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_get_performance_for_an_account_with_no_activity_never_shows_workspace_figures(
+    override_database_url, authorize
+):
+    async with postgres.async_session_maker() as session:
+        accounts = await _seed_base(session)
+        now = datetime.now(UTC)
+        infy = _holding(WS, accounts["inr"], "INFY", "10", "100", "INR")
+        session.add(infy)
+        await session.flush()
+        session.add_all([
+            HoldingPrice(
+                workspace_id=WS,
+                holding_id=infy.id,
+                price_date=now.date(),
+                unit_price=Decimal("120"),
+            ),
+            _order(
+                WS, accounts["inr"], "INFY", "buy", "10", "100", now - timedelta(days=365), "INR"
+            ),
+        ])
+        empty = Account(
+            workspace_id=WS,
+            name="Empty Broker",
+            account_type="brokerage",
+            default_currency_code="INR",
+        )
+        session.add(empty)
+        await session.commit()
+        empty_public = empty.public_id
+    tools = await _tools()
+
+    workspace = await tools["get_performance"](workspace_id=WS)
+    res = await tools["get_performance"](workspace_id=WS, account_id=str(empty_public))
+
+    # Precondition: the workspace itself has a computable return (+20% over a year),
+    # so a leak of that figure into the empty account would be visible.
+    assert workspace["overall"]["xirr"] == "0.2000", workspace["overall"]
+    assert res["status"] == "success", res
+    overall = res["overall"]
+    assert overall["scope"] == "account"
+    assert overall["xirr"] is None and overall["xirr_status"] == "not_computable"
+    assert overall["annualized_return_pct"] is None
+    assert overall["total_return_pct"] is None
+    assert res["by_holding"] == []
+    assert any("no investing activity" in w.lower() for w in res["warnings"]), res["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_get_performance_flags_that_twr_is_workspace_wide_when_an_account_is_requested(
+    override_database_url, authorize
+):
+    async with postgres.async_session_maker() as session:
+        accounts = await _seed_performance(session, with_fx=True)
+        usd_public = accounts["usd"].public_id
+    tools = await _tools()
+
+    scoped = await tools["get_performance"](workspace_id=WS, account_id=str(usd_public))
+    whole = await tools["get_performance"](workspace_id=WS)
+
+    assert any("whole workspace" in w.lower() for w in scoped["time_weighted"]["warnings"])
+    assert not any("whole workspace" in w.lower() for w in whole["time_weighted"]["warnings"])
