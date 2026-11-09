@@ -388,7 +388,7 @@ def _performance_service(session: Any) -> PerformanceService:
         FxRateRepository(session),
         InstrumentRepository(session),
         AccountRepository(session),
-        CapitalTransferRepository(session),
+        transfer_repo=CapitalTransferRepository(session),
     )
 
 
