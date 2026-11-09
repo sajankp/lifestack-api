@@ -27,10 +27,12 @@ from app.core.currency import (
     fx_rates_used,
 )
 from app.core.database import postgres
-from app.core.exceptions import APIError
+from app.core.exceptions import APIError, ValidationError
+from app.finance.lrs_service import LrsService
 from app.finance.models import AccountType
 from app.finance.repository import (
     AccountRepository,
+    CapitalTransferRepository,
     CurrencyRepository,
     FinanceSettingRepository,
     FxRateRepository,
@@ -88,7 +90,7 @@ from app.investing.service import (
 )
 from app.investing.theme_service import HoldingThemeTagService, ThemeExposureService
 from app.investing.tax.exchanges import resolve_exchange
-from app.investing.tax_service import TaxService
+from app.investing.tax_service import TaxService, normalize_currency_code
 from app.investing.tax_whatif_service import (
     TaxWhatIfService,
     WhatIfError,
@@ -2727,6 +2729,112 @@ def create_mcp_server() -> FastMCP:
             "key": composite_key,
             "rate": rate,
             "fx_overrides": dict(profile.fx_overrides or {}),
+        }
+
+    @mcp.tool
+    async def get_lrs_summary(
+        workspace_id: int,
+        fy: str | None = None,
+    ) -> dict[str, Any]:
+        """FY outward remittance vs the USD 250,000 LRS cap, with TCS status.
+
+        Built from INR-funded transfers into foreign-currency investing accounts
+        (e.g. Paasa / a US brokerage) in the workspace; repatriations and INR
+        brokerage funding are excluded. `fy` is an Indian financial year label
+        such as "2026-27" (1 Apr - 31 Mar, IST) and defaults to the current one.
+        Money values are decimal strings. See `assumptions` for limits.
+        """
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_lrs_summary"
+            )
+            service = LrsService(
+                CapitalTransferRepository(session), fx_rate_repository=FxRateRepository(session)
+            )
+            try:
+                summary = await service.get_lrs_summary(workspace_id, fy)
+            except ValidationError as exc:
+                return {"status": "error", "message": exc.detail}
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            **summary,
+            "fy_start": summary["fy_start"].isoformat(),
+            "fy_end": summary["fy_end"].isoformat(),
+        }
+
+    @mcp.tool
+    async def get_fx_rate(
+        workspace_id: int,
+        date_str: str,
+        currency: str,
+    ) -> dict[str, Any]:
+        """Read the stored Rule 115 FX rate for a date + currency.
+
+        Reads the user-provided rate written via `set_fx_rate` (key
+        "YYYY-MM-DD:CURRENCY"). Returns status "not_found" (the REST 404) when no
+        rate is stored for that exact date and currency.
+        """
+        try:
+            parsed = date.fromisoformat(date_str)
+        except ValueError:
+            return {"status": "error", "message": "date_str must be a valid YYYY-MM-DD date."}
+        if parsed.isoformat() != date_str:
+            return {"status": "error", "message": "date_str must be YYYY-MM-DD format."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_fx_rate"
+            )
+            try:
+                code = normalize_currency_code(currency)
+                rate = await _tax_service(session).get_fx_rate(workspace_id, parsed, code)
+            except ValidationError as exc:
+                return {"status": "error", "message": exc.detail}
+        if rate is None:
+            return {
+                "status": "not_found",
+                "message": f"No FX rate stored for {date_str} ({code}).",
+            }
+        return {
+            "status": "success",
+            "date": date_str,
+            "currency": code,
+            "rate": rate,
+            "source": "user_provided",
+        }
+
+    @mcp.tool
+    async def list_missing_fx_rates(
+        workspace_id: int,
+        from_date: str,
+        to_date: str,
+        currency: str,
+    ) -> dict[str, Any]:
+        """Dates in [from_date, to_date] (YYYY-MM-DD, max 366 days) with no stored Rule 115 rate."""
+        try:
+            from_d = date.fromisoformat(from_date)
+            to_d = date.fromisoformat(to_date)
+        except ValueError:
+            return {"status": "error", "message": "dates must be valid YYYY-MM-DD dates."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="list_missing_fx_rates"
+            )
+            try:
+                code = normalize_currency_code(currency)
+                missing = await _tax_service(session).list_missing_fx_rates(
+                    workspace_id, from_d, to_d, code
+                )
+            except ValidationError as exc:
+                return {"status": "error", "message": exc.detail}
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "from_date": from_d.isoformat(),
+            "to_date": to_d.isoformat(),
+            "currency": code,
+            "missing": [d.isoformat() for d in missing],
+            "missing_count": len(missing),
         }
 
     @mcp.tool

@@ -15,10 +15,12 @@ from app.core.dependencies import (
     get_finance_activity_feed_service,
     get_finance_currency_service,
     get_finance_fx_rate_service,
+    get_finance_lrs_service,
     get_finance_net_worth_service,
     get_finance_setting_service,
     get_finance_statement_service,
     get_finance_transfer_service,
+    get_investing_tax_service,
     get_response_cache,
     get_spending_kpi_service,
     require_min_role,
@@ -27,6 +29,7 @@ from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.finance.activity_schemas import ActivityFeedResponse
 from app.finance.activity_service import ActivityFeedService
+from app.finance.lrs_service import LrsService
 from app.finance.models import CurrencyDisplayPreference
 from app.finance.schemas import (
     AccountBalanceResponse,
@@ -37,7 +40,10 @@ from app.finance.schemas import (
     CapitalTransferResponse,
     CapitalTransferUpdate,
     CurrencyResponse,
+    FxRateReadResponse,
     FxRateResponse,
+    ListMissingFxRatesResponse,
+    LrsSummaryResponse,
     NetWorthHistoryItem,
     NetWorthResponse,
     ReconciliationSummary,
@@ -58,6 +64,7 @@ from app.finance.service import (
 )
 from app.finance.statement_schemas import AccountStatementResponse
 from app.finance.statement_service import StatementService
+from app.investing.tax_service import TaxService, normalize_currency_code
 from app.spending.service import KpiService
 
 router = APIRouter(prefix="/finance", tags=["finance"])
@@ -306,6 +313,68 @@ async def get_fx_rate(
     if rate_row is None:
         raise NotFoundError(detail=f"FX rate not found for pair {base.upper()}/{quote.upper()}")
     return FxRateResponse.model_validate(rate_row)
+
+
+# NOTE: ``/fx-rates/missing`` must be registered before ``/fx-rates/{as_of_date}``
+# so the literal segment is not parsed as a date.
+@router.get("/fx-rates/missing", response_model=ListMissingFxRatesResponse)
+async def list_missing_fx_rates(
+    from_date: date,
+    to_date: date,
+    currency: str,
+    tax_service: Annotated[TaxService, Depends(get_investing_tax_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    """Dates in [from_date, to_date] with no stored Rule 115 rate for ``currency``.
+
+    Audits the user-provided rates written via ``set_fx_rate`` (keyed
+    ``YYYY-MM-DD:CURRENCY``). 422 on a bad currency, ``to_date < from_date`` or
+    a range longer than 366 days.
+    """
+    code = normalize_currency_code(currency)
+    missing = await tax_service.list_missing_fx_rates(workspace_id, from_date, to_date, code)
+    return ListMissingFxRatesResponse(
+        from_date=from_date,
+        to_date=to_date,
+        currency=code,
+        missing=missing,
+        missing_count=len(missing),
+    )
+
+
+@router.get("/fx-rates/{as_of_date}", response_model=FxRateReadResponse)
+async def get_stored_fx_rate(
+    as_of_date: date,
+    currency: str,
+    tax_service: Annotated[TaxService, Depends(get_investing_tax_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+):
+    """The stored Rule 115 rate for a date + currency (the ``set_fx_rate`` store).
+
+    404 when no rate is stored for that exact date/currency.
+    """
+    code = normalize_currency_code(currency)
+    rate = await tax_service.get_fx_rate(workspace_id, as_of_date, code)
+    if rate is None:
+        raise NotFoundError(detail=f"No FX rate stored for {as_of_date.isoformat()} {code}")
+    return FxRateReadResponse(date=as_of_date, currency=code, rate=rate)
+
+
+@router.get("/lrs/summary", response_model=LrsSummaryResponse)
+async def get_lrs_summary(
+    lrs_service: Annotated[LrsService, Depends(get_finance_lrs_service)],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    fy: str | None = None,
+):
+    """FY outward remittance vs the USD 250,000 LRS cap, with TCS status.
+
+    ``fy`` is an Indian financial-year label such as ``2026-27`` (1 Apr - 31 Mar,
+    IST); defaults to the current FY. 422 on a malformed label.
+    """
+    return await lrs_service.get_lrs_summary(workspace_id, fy)
 
 
 @router.get("/fx/history", response_model=PaginatedResponse[UserFxRateResponse])
