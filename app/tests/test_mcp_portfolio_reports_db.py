@@ -17,7 +17,8 @@ from app.config import settings
 from app.core.database import postgres
 from app.core.exceptions import ForbiddenError
 from app.investing.models import PortfolioReport
-from app.mcp.server import MAX_PORTFOLIO_REPORT_CHARS, create_mcp_server
+from app.mcp.server import create_mcp_server
+from app.mcp.tools.portfolio import MAX_PORTFOLIO_REPORT_CHARS
 from app.platform.models import Workspace, WorkspaceMembership
 
 WS = 8201

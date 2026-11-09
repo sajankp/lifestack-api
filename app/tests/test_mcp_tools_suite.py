@@ -10,11 +10,9 @@ import pytest
 
 from app.config import settings
 from app.core.exceptions import ForbiddenError, ValidationError
-from app.mcp.server import (
-    _decimal_string,
-    _dividend_response,
-    create_mcp_server,
-)
+from app.mcp.server import create_mcp_server
+from app.mcp.tools.orders import _dividend_response
+from app.mcp.tools.portfolio import _decimal_string
 
 
 class MockAsyncSession:
@@ -44,7 +42,7 @@ def mock_mcp_environment(monkeypatch):
     """Set MCP environment and mock DB session maker."""
     monkeypatch.setattr(settings, "MCP_BASE_URL", "https://api.lifestack.test")
     monkeypatch.setattr(
-        "app.mcp.server.postgres.async_session_maker",
+        "app.core.database.postgres.async_session_maker",
         lambda: MockAsyncSession(),
     )
 
@@ -203,7 +201,7 @@ async def test_mcp_todo_tools(monkeypatch):
         updated_at=datetime(2026, 10, 4, 10, 0, tzinfo=UTC),
     )
 
-    with patch("app.mcp.server.TodoService") as mock_todo_svc_cls:
+    with patch("app.mcp.tools.todos.TodoService") as mock_todo_svc_cls:
         mock_todo_svc = mock_todo_svc_cls.return_value
         mock_todo_svc.create_todo = AsyncMock(return_value=fake_todo)
         mock_todo_svc.list_todos = AsyncMock(return_value=([fake_todo], 1))
@@ -264,7 +262,7 @@ async def test_mcp_create_todo_passes_user_and_workspace_in_correct_order(monkey
         updated_at=datetime(2026, 10, 4, 10, 0, tzinfo=UTC),
     )
 
-    with patch("app.mcp.server.TodoService") as mock_todo_svc_cls:
+    with patch("app.mcp.tools.todos.TodoService") as mock_todo_svc_cls:
         mock_todo_svc = mock_todo_svc_cls.return_value
         mock_todo_svc.create_todo = AsyncMock(return_value=fake_todo)
 
@@ -290,7 +288,7 @@ async def test_mcp_net_worth_and_spending_budgets(monkeypatch):
     monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
 
     # 1. get_net_worth
-    with patch("app.mcp.server.NetWorthService") as mock_nw_cls:
+    with patch("app.mcp.tools.finance.NetWorthService") as mock_nw_cls:
         mock_nw_svc = mock_nw_cls.return_value
         mock_nw_svc.get_net_worth = AsyncMock(
             return_value={"total_net_worth": "50000.00", "currency": "USD"}
@@ -299,7 +297,7 @@ async def test_mcp_net_worth_and_spending_budgets(monkeypatch):
         assert nw["total_net_worth"] == "50000.00"
 
     # 2. get_spending_budgets
-    with patch("app.mcp.server.BudgetService") as mock_b_cls:
+    with patch("app.mcp.tools.spending.BudgetService") as mock_b_cls:
         mock_b_svc = mock_b_cls.return_value
         fake_b = SimpleNamespace(
             model_dump=lambda: {"id": 1, "category": "Groceries", "amount": "500.00"}
@@ -322,7 +320,7 @@ async def test_mcp_workspace_discovery_and_resources(monkeypatch):
 
     mock_choices = [{"id": 202, "name": "Primary Workspace", "role": "owner"}]
     monkeypatch.setattr(
-        "app.mcp.server._load_workspace_choices",
+        "app.mcp.tools.workspace._load_workspace_choices",
         AsyncMock(return_value=mock_choices),
     )
 
@@ -334,7 +332,7 @@ async def test_mcp_workspace_discovery_and_resources(monkeypatch):
         "timezone": "UTC",
     }
     monkeypatch.setattr(
-        "app.mcp.server._load_workspace_reference_data",
+        "app.mcp.tools.workspace._load_workspace_reference_data",
         AsyncMock(return_value=mock_ref),
     )
 
@@ -528,7 +526,7 @@ async def test_mcp_delegated_capture_tools(monkeypatch):
             "workspace_id": workspace_id,
         }
 
-    monkeypatch.setattr("app.mcp.server._run_capture_tool", fake_run_capture_tool)
+    monkeypatch.setattr("app.mcp.support.common.run_capture_tool", fake_run_capture_tool)
 
     # 1. find_spending_transactions
     res = await tool_map["find_spending_transactions"](workspace_id=202, search="coffee", limit=5)
@@ -717,7 +715,9 @@ async def test_mcp_set_company_sector_confirmed_and_failure_rolls_back(monkeypat
         async def rollback(self):
             commits.append("rollback")
 
-    monkeypatch.setattr("app.mcp.server.postgres.async_session_maker", lambda: RecordingSession())
+    monkeypatch.setattr(
+        "app.core.database.postgres.async_session_maker", lambda: RecordingSession()
+    )
 
     outcome = {
         "updated": [{"row_index": 0, "before": {"sector": None}, "after": {"sector": "Energy"}}],
@@ -812,7 +812,7 @@ async def test_mcp_fx_and_lrs_tools_require_read_scope_on_the_workspace(monkeypa
     tax.get_fx_rate = AsyncMock(return_value=None)
     tax.list_missing_fx_rates = AsyncMock(return_value=[])
     monkeypatch.setattr("app.mcp.support.services.tax_service", lambda session: tax)
-    with patch("app.mcp.server.LrsService") as lrs_cls:
+    with patch("app.mcp.tools.finance.LrsService") as lrs_cls:
         lrs_cls.return_value.get_lrs_summary = AsyncMock(
             return_value={"fy_start": date(2026, 4, 1), "fy_end": date(2027, 3, 31)}
         )
@@ -849,7 +849,7 @@ async def test_mcp_get_lrs_summary(monkeypatch):
         "tcs_amount_inr": "0.00",
         "assumptions": ["x"],
     }
-    with patch("app.mcp.server.LrsService") as lrs_cls:
+    with patch("app.mcp.tools.finance.LrsService") as lrs_cls:
         svc = lrs_cls.return_value
         svc.get_lrs_summary = AsyncMock(return_value=summary)
         res = await tool_map["get_lrs_summary"](workspace_id=202, fy="2026-27")
@@ -860,7 +860,7 @@ async def test_mcp_get_lrs_summary(monkeypatch):
     assert res["total_usd"] == "3000.00" and res["cap_remaining_usd"] == "247000.00"
     assert res["tcs_applicable"] is False
 
-    with patch("app.mcp.server.LrsService") as lrs_cls:
+    with patch("app.mcp.tools.finance.LrsService") as lrs_cls:
         lrs_cls.return_value.get_lrs_summary = AsyncMock(
             side_effect=ValidationError(detail="Invalid FY label 'bad'")
         )

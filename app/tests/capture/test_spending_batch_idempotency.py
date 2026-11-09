@@ -904,7 +904,7 @@ async def test_mcp_wrappers_forward_new_parameters(monkeypatch):
         return {"status": "success"}
 
     monkeypatch.setattr(settings, "MCP_BASE_URL", "https://api.lifestack.test")
-    monkeypatch.setattr("app.mcp.server._run_capture_tool", fake_run)
+    monkeypatch.setattr("app.mcp.support.common.run_capture_tool", fake_run)
     tools = {t.name: t.fn for t in await create_mcp_server().list_tools()}
 
     await tools["log_spending_transactions_batch"](

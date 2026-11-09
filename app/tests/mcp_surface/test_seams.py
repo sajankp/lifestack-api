@@ -1,7 +1,7 @@
 """Architecture guard for app/mcp: every patchable seam has exactly one home.
 
 Tests patch ``app.mcp.security.authorize_workspace`` and
-``app.mcp.support.services.<factory>``. That only works if tools reach those names through
+``app.mcp.support.services.<factory>`` (and ``app.mcp.support.common.<helper>``). That only works if tools reach those names through
 the module at call time. A ``from app.mcp.security import authorize_workspace`` binds a private
 copy: patching the seam would then silently not affect that tool, and the test would hit real
 authorization or a real service. These checks fail the build when that happens.
@@ -11,8 +11,12 @@ import ast
 from pathlib import Path
 
 MCP_DIR = Path(__file__).resolve().parents[2] / "mcp"
-SEAM_MODULES = {"app.mcp.security", "app.mcp.support.services"}
-SEAM_HOMES = {MCP_DIR / "security.py", MCP_DIR / "support" / "services.py"}
+SEAM_MODULES = {"app.mcp.security", "app.mcp.support.services", "app.mcp.support.common"}
+SEAM_HOMES = {
+    MCP_DIR / "security.py",
+    MCP_DIR / "support" / "services.py",
+    MCP_DIR / "support" / "common.py",
+}
 
 
 def _modules():
