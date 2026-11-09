@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config import settings
+from app.core.exceptions import ForbiddenError, ValidationError
 from app.mcp.server import (
     _decimal_string,
     _dividend_response,
@@ -56,60 +57,68 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
     registered_tools = {t.name for t in tools}
 
     expected_tools = {
-        # Todo tools
-        "create_todo",
-        "list_todos",
-        "get_todo_summary",
-        "create_todo_task",
-        "create_recurring_todo",
-        "get_todo",
-        "update_todo",
-        "delete_todo",
-        "list_next_due_items",
-        # Finance / Net worth / Budgets
-        "get_net_worth",
-        "get_spending_budgets",
-        "get_account_balances",
-        # Spending transactions
-        "log_spending_transaction",
-        "list_spending_transactions",
-        "find_spending_transactions",
-        "update_spending_transaction",
-        "delete_spending_transaction",
-        # Transfers
-        "list_transfers",
-        "find_transfers",
-        "create_transfer",
-        "update_transfer",
-        "delete_transfer",
-        # Investing
-        "list_investment_holdings",
-        "get_investment_constituents",
-        "write_investment_constituent_snapshot",
-        "delete_investment_constituent_snapshot",
-        "set_company_sector",
-        "get_investment_sector_allocation",
-        "list_investment_dividends",
         "create_investment_dividend",
-        "get_investing_summary",
-        "get_tax_profile",
-        "update_tax_profile",
-        "set_fx_rate",
-        "get_tax_summary",
+        "create_recurring_todo",
+        "create_todo",
+        "create_todo_task",
+        "create_transfer",
+        "delete_investment_constituent_snapshot",
+        "delete_spending_transaction",
+        "delete_todo",
+        "delete_transfer",
+        "find_spending_transactions",
+        "find_transfers",
+        "get_account_balances",
+        "get_allocation_vs_target",
+        "get_fx_rate",
         "get_holding_compliance",
+        "get_investing_summary",
+        "get_investment_constituents",
+        "get_investment_sector_allocation",
+        "get_lookthrough_exposure",
+        "get_lrs_summary",
+        "get_net_worth",
+        "get_performance",
         "get_purification_estimate",
-        "set_holding_compliance",
-        # Health
-        "log_weight",
-        "log_medication_event",
-        # Workspace discovery
+        "get_spending_budgets",
+        "get_tax_profile",
+        "get_tax_summary",
+        "get_todo",
+        "get_todo_summary",
+        "get_weight_history",
         "get_workspace_reference_data",
+        "harvest_candidates",
+        "list_investment_dividends",
+        "list_investment_holdings",
+        "list_medication_events",
+        "list_missing_fx_rates",
+        "list_next_due_items",
+        "list_recent_changes",
+        "list_spending_transactions",
+        "list_tax_lots",
+        "list_todos",
+        "list_transfers",
         "list_workspaces",
+        "log_medication_event",
+        "log_spending_transaction",
+        "log_spending_transactions_batch",
+        "log_weight",
+        "reconcile_holdings",
+        "set_company_sector",
+        "set_fx_rate",
+        "set_holding_compliance",
+        "set_holding_theme_tags",
+        "simulate_sale",
+        "update_spending_transaction",
+        "update_tax_profile",
+        "update_todo",
+        "update_transfer",
+        "write_investment_constituent_snapshot",
     }
 
     missing = expected_tools - registered_tools
     assert not missing, f"Missing MCP tools from server: {missing}"
-    assert len(expected_tools) == 42
+    assert len(expected_tools) == 57
 
 
 @pytest.mark.anyio
@@ -778,3 +787,230 @@ async def test_mcp_get_investment_sector_allocation(monkeypatch):
     args, kwargs = fake_service.sector_allocation.call_args
     assert args == (202, date(2026, 11, 8))
     assert kwargs["lookthrough"] is True
+
+
+# ---------------------------------------------------------------------------
+# LRS summary + stored Rule 115 FX rate reads
+# ---------------------------------------------------------------------------
+
+
+async def _tool_map():
+    server = create_mcp_server()
+    return {t.name: t.fn for t in await server.list_tools()}
+
+
+@pytest.mark.anyio
+async def test_mcp_fx_and_lrs_tools_require_read_scope_on_the_workspace(monkeypatch):
+    tool_map = await _tool_map()
+    authorize = AsyncMock(return_value=101)
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    tax = MagicMock()
+    tax.get_fx_rate = AsyncMock(return_value=None)
+    tax.list_missing_fx_rates = AsyncMock(return_value=[])
+    monkeypatch.setattr("app.mcp.server._tax_service", lambda session: tax)
+    with patch("app.mcp.server.LrsService") as lrs_cls:
+        lrs_cls.return_value.get_lrs_summary = AsyncMock(
+            return_value={"fy_start": date(2026, 4, 1), "fy_end": date(2027, 3, 31)}
+        )
+        await tool_map["get_lrs_summary"](workspace_id=202)
+    await tool_map["get_fx_rate"](workspace_id=202, date_str="2026-01-31", currency="USD")
+    await tool_map["list_missing_fx_rates"](
+        workspace_id=202, from_date="2026-01-01", to_date="2026-01-02", currency="USD"
+    )
+
+    assert authorize.await_count == 3
+    for call, tool in zip(
+        authorize.await_args_list,
+        ["get_lrs_summary", "get_fx_rate", "list_missing_fx_rates"],
+        strict=True,
+    ):
+        assert call.args[1] == 202
+        assert call.kwargs == {"required_scope": "mcp:read", "tool": tool}
+
+
+@pytest.mark.anyio
+async def test_mcp_get_lrs_summary(monkeypatch):
+    tool_map = await _tool_map()
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    summary = {
+        "fy_label": "2026-27",
+        "fy_start": date(2026, 4, 1),
+        "fy_end": date(2027, 3, 31),
+        "transfer_count": 2,
+        "total_usd": "3000.00",
+        "cap_usd": "250000.00",
+        "cap_remaining_usd": "247000.00",
+        "cap_exceeded": False,
+        "tcs_applicable": False,
+        "tcs_amount_inr": "0.00",
+        "assumptions": ["x"],
+    }
+    with patch("app.mcp.server.LrsService") as lrs_cls:
+        svc = lrs_cls.return_value
+        svc.get_lrs_summary = AsyncMock(return_value=summary)
+        res = await tool_map["get_lrs_summary"](workspace_id=202, fy="2026-27")
+        svc.get_lrs_summary.assert_awaited_once_with(202, "2026-27")
+    assert res["status"] == "success"
+    assert res["workspace_id"] == 202
+    assert res["fy_start"] == "2026-04-01" and res["fy_end"] == "2027-03-31"
+    assert res["total_usd"] == "3000.00" and res["cap_remaining_usd"] == "247000.00"
+    assert res["tcs_applicable"] is False
+
+    with patch("app.mcp.server.LrsService") as lrs_cls:
+        lrs_cls.return_value.get_lrs_summary = AsyncMock(
+            side_effect=ValidationError(detail="Invalid FY label 'bad'")
+        )
+        bad = await tool_map["get_lrs_summary"](workspace_id=202, fy="bad")
+    assert bad == {"status": "error", "message": "Invalid FY label 'bad'"}
+
+
+@pytest.mark.anyio
+async def test_mcp_get_fx_rate(monkeypatch):
+    tool_map = await _tool_map()
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    tax = MagicMock()
+    tax.get_fx_rate = AsyncMock(return_value="86.50")
+    monkeypatch.setattr("app.mcp.server._tax_service", lambda session: tax)
+
+    ok = await tool_map["get_fx_rate"](workspace_id=202, date_str="2026-01-31", currency="usd")
+    assert ok == {
+        "status": "success",
+        "date": "2026-01-31",
+        "currency": "USD",
+        "rate": "86.50",
+        "source": "user_provided",
+    }
+    tax.get_fx_rate.assert_awaited_once_with(202, date(2026, 1, 31), "USD")
+
+    tax.get_fx_rate = AsyncMock(return_value=None)
+    nf = await tool_map["get_fx_rate"](workspace_id=202, date_str="2026-01-30", currency="USD")
+    assert nf["status"] == "not_found"
+
+    for bad_date in ("2026-02-30", "31-01-2026", "2026-1-31"):
+        res = await tool_map["get_fx_rate"](workspace_id=202, date_str=bad_date, currency="USD")
+        assert res["status"] == "error", bad_date
+    bad_ccy = await tool_map["get_fx_rate"](workspace_id=202, date_str="2026-01-31", currency="US")
+    assert bad_ccy["status"] == "error"
+
+
+@pytest.mark.anyio
+async def test_mcp_list_missing_fx_rates(monkeypatch):
+    tool_map = await _tool_map()
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    tax = MagicMock()
+    tax.list_missing_fx_rates = AsyncMock(return_value=[date(2026, 2, 1), date(2026, 2, 2)])
+    monkeypatch.setattr("app.mcp.server._tax_service", lambda session: tax)
+
+    res = await tool_map["list_missing_fx_rates"](
+        workspace_id=202, from_date="2026-01-31", to_date="2026-02-02", currency="usd"
+    )
+    assert res == {
+        "status": "success",
+        "workspace_id": 202,
+        "from_date": "2026-01-31",
+        "to_date": "2026-02-02",
+        "currency": "USD",
+        "missing": ["2026-02-01", "2026-02-02"],
+        "missing_count": 2,
+    }
+    tax.list_missing_fx_rates.assert_awaited_once_with(
+        202, date(2026, 1, 31), date(2026, 2, 2), "USD"
+    )
+
+    bad_date = await tool_map["list_missing_fx_rates"](
+        workspace_id=202, from_date="nope", to_date="2026-02-02", currency="USD"
+    )
+    assert bad_date["status"] == "error"
+
+    tax.list_missing_fx_rates = AsyncMock(side_effect=ValidationError(detail="range too long"))
+    too_long = await tool_map["list_missing_fx_rates"](
+        workspace_id=202, from_date="2020-01-01", to_date="2026-02-02", currency="USD"
+    )
+    assert too_long == {"status": "error", "message": "range too long"}
+
+
+SPEC_103_READ_TOOLS = (
+    "reconcile_holdings",
+    "list_recent_changes",
+    "get_performance",
+    "get_weight_history",
+    "list_medication_events",
+)
+
+
+@pytest.mark.anyio
+async def test_spec_103_tools_are_registered_read_only_and_existing_writers_kept():
+    """The 5 new tools exist alongside the pre-existing write-only log_* tools."""
+    server = create_mcp_server()
+    names = {t.name for t in await server.list_tools()}
+    assert set(SPEC_103_READ_TOOLS) <= names
+    assert {"log_weight", "log_medication_event"} <= names
+    # log_medication_event is not duplicated by this card.
+    all_names = [t.name for t in await server.list_tools()]
+    assert all_names.count("log_medication_event") == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "tool,kwargs",
+    [
+        ("reconcile_holdings", {"external_list": [{"symbol": "X", "quantity": "1"}]}),
+        ("list_recent_changes", {}),
+        ("get_performance", {}),
+        ("get_weight_history", {}),
+        ("list_medication_events", {}),
+    ],
+)
+async def test_spec_103_tools_authorize_with_read_scope_before_touching_data(
+    monkeypatch, tool, kwargs
+):
+    """Every new tool authorizes via authorize_workspace(mcp:read, <own name>); a
+    denial propagates and nothing is read (the mocked session has no query API)."""
+    authorize = AsyncMock(side_effect=ForbiddenError(detail="denied"))
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    server = create_mcp_server()
+    tool_map = {t.name: t.fn for t in await server.list_tools()}
+
+    with pytest.raises(ForbiddenError):
+        await tool_map[tool](workspace_id=202, **kwargs)
+
+    authorize.assert_awaited_once()
+    assert authorize.await_args.args[1] == 202
+    assert authorize.await_args.kwargs == {"required_scope": "mcp:read", "tool": tool}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "tool", ["list_recent_changes", "get_weight_history", "list_medication_events"]
+)
+@pytest.mark.parametrize("page", [{"limit": 101}, {"limit": 0}, {"limit": -3}, {"offset": -1}])
+async def test_spec_103_paginated_tools_cap_page_size(monkeypatch, tool, page):
+    authorize = AsyncMock(return_value=101)
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    server = create_mcp_server()
+    tool_map = {t.name: t.fn for t in await server.list_tools()}
+
+    with pytest.raises(ValidationError):
+        await tool_map[tool](workspace_id=202, **page)
+    authorize.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_spec_103_input_validation_happens_before_authorization(monkeypatch):
+    authorize = AsyncMock(return_value=101)
+    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    server = create_mcp_server()
+    tool_map = {t.name: t.fn for t in await server.list_tools()}
+
+    oversize = [{"symbol": f"S{i}", "quantity": "1"} for i in range(501)]
+    res = await tool_map["reconcile_holdings"](workspace_id=202, external_list=oversize)
+    assert res["status"] == "error" and "500" in res["message"]
+    res = await tool_map["get_performance"](workspace_id=202, period="forever")
+    assert res["status"] == "error"
+    res = await tool_map["get_weight_history"](workspace_id=202, start="not-a-date")
+    assert res["status"] == "error"
+    res = await tool_map["list_recent_changes"](workspace_id=202, until="not-a-date")
+    assert res["status"] == "error"
+    res = await tool_map["list_medication_events"](workspace_id=202, status="bogus")
+    assert res["status"] == "error"
+    authorize.assert_not_awaited()

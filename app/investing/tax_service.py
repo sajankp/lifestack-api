@@ -7,14 +7,16 @@ pure engine, and shapes the result for the API and the MCP tools.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import ValidationError
 from app.finance.models import Account, WorkspaceTaxProfile
 from app.investing.models import Instrument
 from app.investing.repository import (
@@ -31,7 +33,7 @@ from app.investing.tax.engine import (
 from app.investing.tax.exchanges import resolve_exchange
 from app.investing.tax.fy import current_fy_label, parse_fy_label
 from app.investing.tax.gains import OrderView
-from app.investing.tax.regime import RegimeType, classify_regime
+from app.investing.tax.regime import RegimeSpec, RegimeType, classify_regime
 from app.investing.tax.tax_profile import TaxProfile
 
 
@@ -40,6 +42,18 @@ class TaxProfileRecord:
     """A tax profile row plus its public id."""
 
     row: WorkspaceTaxProfile
+
+
+MAX_FX_AUDIT_DAYS = 366  # one Indian FY, inclusive (leap year)
+_CURRENCY_RE = re.compile(r"[A-Z]{3}")
+
+
+def normalize_currency_code(currency: str) -> str:
+    """Upper-case a 3-letter currency code or raise a 422 ``ValidationError``."""
+    code = (currency or "").strip().upper()
+    if not _CURRENCY_RE.fullmatch(code):
+        raise ValidationError(detail="currency must be a 3-letter code (e.g., USD)")
+    return code
 
 
 class TaxProfileRepository:
@@ -59,6 +73,13 @@ class TaxProfileRepository:
         self.session.add(row)
         await self.session.flush()
         return row
+
+    async def get(self, workspace_id: int) -> WorkspaceTaxProfile | None:
+        """Read-only lookup: unlike ``get_or_create`` it never inserts a row."""
+        result = await self.session.execute(
+            select_workspace_tax_profile().where(WorkspaceTaxProfile.workspace_id == workspace_id)
+        )
+        return result.scalar_one_or_none()
 
     async def update(self, row: WorkspaceTaxProfile, **changes) -> WorkspaceTaxProfile:
         for key, value in changes.items():
@@ -109,6 +130,39 @@ def profile_to_domain(row: WorkspaceTaxProfile) -> TaxProfile:
         fx_overrides=overrides,
         notes=row.notes,
     )
+
+
+def country_from_reference_rows(rows) -> str | None:
+    """The country of a ticker's reference row; None if unresolved or ambiguous."""
+    if len(rows) != 1:
+        # Unresolved or ambiguous — do not guess (spec-083 §6.1).
+        return None
+    return rows[0].country_code
+
+
+def classify_symbol(
+    *,
+    profile: TaxProfile,
+    instrument: Instrument | None,
+    country: str | None,
+    account: Account | None,
+    currency: str,
+) -> tuple[RegimeSpec, str, str]:
+    """``(regime spec, classification source, detail)`` for one symbol in one account.
+
+    The single place the regime inputs (workspace override, instrument
+    override, security master, account market scope, currency) are wired
+    into :func:`classify_regime` — shared by the estimate and the what-if
+    tools so a simulation can never classify differently from the filing.
+    """
+    classification = classify_regime(
+        explicit_regime=profile.explicit_regime,
+        instrument_country_override=(instrument.exchange_country_override if instrument else None),
+        security_country_code=country,
+        account_market_scope=(account.market_scope if account else None),
+        holding_currency=currency,
+    )
+    return classification.regime, classification.source.value, classification.detail
 
 
 class TaxService:
@@ -195,12 +249,44 @@ class TaxService:
 
     async def _security_country(self, symbol: str) -> str | None:
         rows = await self.reference_repository.list_by_ticker(symbol)
-        if len(rows) != 1:
-            # Unresolved or ambiguous — do not guess (spec-083 §6.1).
-            return None
-        return rows[0].country_code
+        return country_from_reference_rows(rows)
 
-    async def _app_fx_rates(self, months: list[tuple[str, str]]) -> dict[tuple[str, str], Decimal]:
+    async def security_countries(self, symbols) -> dict[str, str | None]:
+        """Security-master country per symbol, resolved in ONE query."""
+        grouped = await self.reference_repository.list_by_tickers(list(symbols))
+        return {
+            symbol.upper(): country_from_reference_rows(grouped.get(symbol.upper(), []))
+            for symbol in symbols
+        }
+
+    async def load_profile(self, workspace_id: int) -> TaxProfile:
+        """The workspace's tax profile as the engine's domain object."""
+        return profile_to_domain(await self.profile_repository.get_or_create(workspace_id))
+
+    async def regimes_for_holdings(
+        self,
+        workspace_id: int,
+        profile: TaxProfile,
+        holdings,
+        accounts: dict[int, Account],
+    ) -> dict[int, tuple[RegimeSpec, str, str]]:
+        """Classify many holdings (keyed by holding id) with two queries total."""
+        symbols = sorted({h.symbol.upper() for h in holdings})
+        instruments = await self.instrument_repository.get_by_symbols(workspace_id, symbols)
+        instrument_by_symbol = {i.symbol.upper(): i for i in instruments.values()}
+        countries = await self.security_countries(symbols)
+        return {
+            h.id: classify_symbol(
+                profile=profile,
+                instrument=instrument_by_symbol.get(h.symbol.upper()),
+                country=countries.get(h.symbol.upper()),
+                account=accounts.get(h.account_id),
+                currency=h.currency,
+            )
+            for h in holdings
+        }
+
+    async def app_fx_rates(self, months: list[tuple[str, str]]) -> dict[tuple[str, str], Decimal]:
         """The app's stored rates, keyed ``(month, currency)``.
 
         Rule 115 uses the SBI TT buying rate on the last day of the month
@@ -269,20 +355,12 @@ class TaxService:
             if symbol not in country_cache:
                 country_cache[symbol] = await self._security_country(symbol)
             instrument = instrument_by_symbol.get(symbol)
-            account = accounts.get(order.account_id)
-            classification = classify_regime(
-                explicit_regime=profile.explicit_regime,
-                instrument_country_override=(
-                    instrument.exchange_country_override if instrument else None
-                ),
-                security_country_code=country_cache.get(symbol),
-                account_market_scope=(account.market_scope if account else None),
-                holding_currency=order.currency,
-            )
-            return (
-                classification.regime,
-                classification.source.value,
-                classification.detail,
+            return classify_symbol(
+                profile=profile,
+                instrument=instrument,
+                country=country_cache.get(symbol),
+                account=accounts.get(order.account_id),
+                currency=order.currency,
             )
 
         # The engine is pure and synchronous (spec-099 §2.1), so resolve
@@ -308,7 +386,7 @@ class TaxService:
             for o in orders
             if o.order_type == "sell"
         })
-        app_fx = await self._app_fx_rates(sell_pairs)
+        app_fx = await self.app_fx_rates(sell_pairs)
         return compute_tax_estimate(
             orders=orders,
             fy_label=fy_label,
@@ -325,6 +403,43 @@ class TaxService:
     async def update_profile(self, workspace_id: int, changes: dict) -> WorkspaceTaxProfile:
         row = await self.profile_repository.get_or_create(workspace_id)
         return await self.profile_repository.update(row, **changes)
+
+    # ---------------------------------------------------- Rule 115 FX reads
+    # ``set_fx_rate`` writes user-provided Rule 115 rates into the workspace tax
+    # profile (``fx_overrides``), keyed ``YYYY-MM-DD:CURRENCY``. These make every
+    # stored rate queryable. Reads never create a profile row.
+
+    async def _fx_overrides(self, workspace_id: int) -> dict:
+        profile = await self.profile_repository.get(workspace_id)
+        return dict(profile.fx_overrides or {}) if profile is not None else {}
+
+    async def get_fx_rate(self, workspace_id: int, on_date: date, currency: str) -> str | None:
+        """Stored Rule 115 rate (INR per 1 unit) for ``on_date`` + ``currency``, or None.
+
+        Exact ``YYYY-MM-DD:CURRENCY`` match only -- no nearest-date fallback; the
+        caller maps None to 404 / "not found".
+        """
+        code = normalize_currency_code(currency)
+        value = (await self._fx_overrides(workspace_id)).get(f"{on_date.isoformat()}:{code}")
+        return None if value is None else str(value)
+
+    async def list_missing_fx_rates(
+        self, workspace_id: int, from_date: date, to_date: date, currency: str
+    ) -> list[date]:
+        """Dates in ``[from_date, to_date]`` with no stored rate, ascending."""
+        code = normalize_currency_code(currency)
+        if to_date < from_date:
+            raise ValidationError(detail="to_date must not be before from_date")
+        if (to_date - from_date).days + 1 > MAX_FX_AUDIT_DAYS:
+            raise ValidationError(detail=f"date range must not exceed {MAX_FX_AUDIT_DAYS} days")
+        stored = await self._fx_overrides(workspace_id)
+        missing: list[date] = []
+        current = from_date
+        while current <= to_date:
+            if f"{current.isoformat()}:{code}" not in stored:
+                missing.append(current)
+            current += timedelta(days=1)
+        return missing
 
     # ------------------------------------------------- account / holding flags
 

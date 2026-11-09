@@ -1,5 +1,6 @@
 """Authenticated MCP tools and resources for Lifestack."""
 
+import decimal
 import json
 import re
 import uuid
@@ -14,31 +15,53 @@ from fastmcp.server.dependencies import get_access_token
 from pydantic import ValidationError as PydanticValidationError
 
 from app.auth.models import User
-from app.capture.tools import AgentTools
+from app.auth.repository import UserRepository
+from app.capture.spending_batch import local_day_range_utc
+from app.capture.tools import AgentTools, _safe_timezone
 from app.config import settings
-from app.core.audit import AuditLogger
+from app.core.audit import AuditLogger, AuditLogRepository, redact_details
 from app.core.currency import (
     build_required_pairs,
+    conversion_rate,
     convert_amount,
     effective_display_as_of,
     fx_rates_used,
 )
 from app.core.database import postgres
-from app.core.exceptions import APIError
+from app.core.exceptions import APIError, ValidationError
+from app.core.exceptions import ValidationError as AppValidationError
+from app.finance.lrs_service import LrsService
 from app.finance.models import AccountType
 from app.finance.repository import (
     AccountRepository,
+    CapitalTransferRepository,
     CurrencyRepository,
     FinanceSettingRepository,
     FxRateRepository,
     NetWorthSnapshotRepository,
 )
-from app.finance.service import AccountService, NetWorthService
-from app.health.repository import MedicationRepository
+from app.finance.service import AccountService, FxRateService, NetWorthService
+from app.health.repository import (
+    MedicationEventRepository,
+    MedicationRepository,
+    WeightEntryRepository,
+)
+from app.health.service import HealthService
 from app.investing.company_sector_service import CompanySectorService
 from app.investing.compliance_service import HoldingComplianceService
 from app.investing.order_service import InvestingOrderService
-from app.investing.performance_service import InvestingSummaryService
+from app.investing.performance_report import (
+    VALID_PERIODS,
+    build_performance_report,
+    period_start,
+)
+from app.investing.performance_service import InvestingSummaryService, PerformanceService
+from app.investing.reconciliation import (
+    HoldingReconciliationService,
+    ReconciliationInputError,
+    parse_external_list,
+    parse_tolerances,
+)
 from app.investing.repository import (
     CashBalanceRepository,
     CompanyRepository,
@@ -54,6 +77,7 @@ from app.investing.repository import (
     PortfolioSnapshotRepository,
     ReferenceSecurityRepository,
 )
+from app.investing.return_metrics_service import ReturnMetricsService
 from app.investing.schemas import (
     CompanySectorRow,
     DividendCreate,
@@ -73,7 +97,28 @@ from app.investing.service import (
     InstrumentService,
 )
 from app.investing.tax.exchanges import resolve_exchange
-from app.investing.tax_service import TaxService
+from app.investing.tax_service import TaxService, normalize_currency_code
+from app.investing.tax_whatif_service import (
+    TaxWhatIfService,
+    WhatIfError,
+    parse_decimal,
+    parse_sale_date,
+    resolve_zone,
+)
+from app.investing.tax_whatif_views import (
+    harvest_response,
+    lot_listing_response,
+    simulation_response,
+)
+from app.investing.theme_repository import (
+    HoldingThemeTagRepository,
+    LatestConstituentSnapshotRepository,
+)
+from app.investing.theme_schemas import (
+    HoldingThemeTagsInput,
+    ThemeTagInput,
+)
+from app.investing.theme_service import HoldingThemeTagService, ThemeExposureService
 from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.security import authorize_user, authorize_workspace, validate_page
 from app.platform.repository import MembershipRepository, WorkspaceRepository
@@ -190,6 +235,25 @@ def _compliance_service(session: Any) -> HoldingComplianceService:
     )
 
 
+def _theme_exposure_service(session: Any) -> ThemeExposureService:
+    return ThemeExposureService(
+        HoldingRepository(session),
+        InstrumentRepository(session),
+        CompanyRepository(session),
+        LatestConstituentSnapshotRepository(session),
+        HoldingPriceRepository(session),
+        FinanceSettingRepository(session),
+        FxRateRepository(session),
+        HoldingThemeTagRepository(session),
+    )
+
+
+def _theme_tag_service(session: Any) -> HoldingThemeTagService:
+    return HoldingThemeTagService(
+        HoldingThemeTagRepository(session),
+    )
+
+
 def _dividend_service(session: Any) -> DividendService:
     return DividendService(
         DividendRepository(session),
@@ -198,6 +262,56 @@ def _dividend_service(session: Any) -> DividendService:
         HoldingRepository(session),
         CurrencyRepository(session),
     )
+
+
+async def _possible_duplicate_orders(
+    session: Any, workspace_id: int, user_id: int, payload: InvestingOrderCreate
+) -> list[Any]:
+    """Orders that look like ``payload``: same account + symbol + side + qty + price
+    on the same workspace-local calendar day. Used for the ``possible_duplicate``
+    warning (orders without a ``source_ref``); never to skip a write silently.
+    """
+    account = await AccountRepository(session).get_by_public_id(workspace_id, payload.account_id)
+    if account is None or account.id is None:
+        return []
+    user = await session.get(User, user_id)
+    tz = _safe_timezone(user.timezone if user and user.timezone else "UTC")
+    occurred_at = payload.occurred_at
+    if occurred_at.tzinfo is None:
+        occurred_at = occurred_at.replace(tzinfo=UTC)
+    local_day = occurred_at.astimezone(tz).date()
+    day_start, day_end = local_day_range_utc(local_day, local_day, tz)
+    return list(
+        await InvestingOrderRepository(session).find_possible_duplicate_orders(
+            workspace_id,
+            account_id=account.id,
+            symbol=payload.symbol,
+            order_type=payload.order_type.value,
+            quantity=payload.quantity,
+            price_per_unit=payload.price_per_unit,
+            from_date=day_start,
+            to_date=day_end,
+        )
+    )
+
+
+def _order_preview_fields(payload: InvestingOrderCreate, gross: Decimal, net: Decimal) -> dict:
+    return {
+        "entity_type": "investing_order",
+        "account_id": str(payload.account_id),
+        "order_type": payload.order_type.value,
+        "symbol": payload.symbol,
+        "quantity": str(payload.quantity),
+        "price_per_unit": str(payload.price_per_unit),
+        "gross_amount": str(gross),
+        "brokerage_fee": str(payload.brokerage_fee),
+        "tax_amount": str(payload.tax_amount),
+        "other_fees": str(payload.other_fees),
+        "net_amount": str(net),
+        "currency": payload.currency,
+        "occurred_at": payload.occurred_at.isoformat(),
+        "source_ref": payload.source_ref,
+    }
 
 
 def _order_service(session: Any) -> InvestingOrderService:
@@ -222,6 +336,79 @@ def _tax_service(session: Any) -> TaxService:
         instrument_repository=InstrumentRepository(session),
         fx_rate_repository=FxRateRepository(session),
     )
+
+
+def _tax_whatif_service(session: Any) -> TaxWhatIfService:
+    return TaxWhatIfService(
+        _tax_service(session),
+        HoldingRepository(session),
+        LotRepository(session),
+        HoldingPriceRepository(session),
+    )
+
+
+async def _user_timezone_name(session: Any, user_id: int) -> str | None:
+    user = await session.get(User, user_id)
+    return user.timezone if user is not None and user.timezone else None
+
+
+def _what_if_error(exc: WhatIfError) -> dict[str, Any]:
+    return {"status": "error", "code": exc.code, "message": exc.message, **exc.details}
+
+
+def _reconciliation_service(session: Any) -> HoldingReconciliationService:
+    return HoldingReconciliationService(
+        HoldingRepository(session),
+        InstrumentRepository(session),
+        CompanyRepository(session),
+        AccountRepository(session),
+    )
+
+
+def _return_metrics_service(session: Any) -> ReturnMetricsService:
+    return ReturnMetricsService(
+        InvestingOrderRepository(session),
+        HoldingRepository(session),
+        HoldingPriceRepository(session),
+        DividendRepository(session),
+        AccountRepository(session),
+        NetWorthSnapshotRepository(session),
+        FxRateService(FxRateRepository(session), CurrencyRepository(session)),
+        FinanceSettingRepository(session),
+    )
+
+
+def _performance_service(session: Any) -> PerformanceService:
+    return PerformanceService(
+        HoldingRepository(session),
+        CashBalanceRepository(session),
+        HoldingPriceRepository(session),
+        PortfolioSnapshotRepository(session),
+        FinanceSettingRepository(session),
+        FxRateRepository(session),
+        InstrumentRepository(session),
+        AccountRepository(session),
+        transfer_repo=CapitalTransferRepository(session),
+    )
+
+
+def _health_service(session: Any) -> HealthService:
+    return HealthService(
+        MedicationRepository(session),
+        MedicationEventRepository(session),
+        WeightEntryRepository(session),
+    )
+
+
+def _parse_iso_datetime(value: str | None, label: str) -> datetime | None:
+    """ISO-8601 -> aware UTC datetime (naive input is read as UTC)."""
+    if value is None or not str(value).strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip())
+    except ValueError as exc:
+        raise ValueError(f"{label} must be an ISO-8601 date or datetime.") from exc
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 def _order_response(order: Any, account: Any, instrument: Any | None = None) -> dict[str, Any]:
@@ -438,7 +625,7 @@ async def _load_workspace_choices(session: Any, user_id: int) -> list[dict[str, 
         raw_selected = (token.claims or {}).get("default_workspace_id")
         try:
             selected_workspace_id = int(raw_selected) if raw_selected is not None else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             selected_workspace_id = None
 
     active_workspaces = [workspace for workspace in workspaces if workspace.is_active]
@@ -684,7 +871,7 @@ def create_mcp_server() -> FastMCP:
                 return {"status": "error", "message": "Invalid valuation_currency."}
         try:
             account_public_id = uuid.UUID(account_id) if account_id else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid account_id."}
 
         async with postgres.async_session_maker() as session:
@@ -861,7 +1048,7 @@ def create_mcp_server() -> FastMCP:
         try:
             instrument_id = uuid.UUID(instrument_public_id)
             as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid instrument_public_id or as_of_date."}
 
         async with postgres.async_session_maker() as session:
@@ -991,7 +1178,7 @@ def create_mcp_server() -> FastMCP:
         try:
             instrument_id = uuid.UUID(instrument_public_id)
             snapshot_date = date.fromisoformat(as_of_date)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid instrument_public_id or as_of_date."}
 
         async with postgres.async_session_maker() as session:
@@ -1138,7 +1325,7 @@ def create_mcp_server() -> FastMCP:
         """
         try:
             as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid as_of_date. Use YYYY-MM-DD."}
 
         async with postgres.async_session_maker() as session:
@@ -1178,7 +1365,7 @@ def create_mcp_server() -> FastMCP:
         validate_page(limit, offset)
         try:
             account_public_id = uuid.UUID(account_id) if account_id else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid account_id."}
 
         async with postgres.async_session_maker() as session:
@@ -1225,7 +1412,7 @@ def create_mcp_server() -> FastMCP:
             return {"status": "error", "message": "order_type must be 'buy' or 'sell'."}
         try:
             account_public_id = uuid.UUID(account_id) if account_id else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid account_id."}
 
         async with postgres.async_session_maker() as session:
@@ -1271,6 +1458,70 @@ def create_mcp_server() -> FastMCP:
                 "offset": offset,
             }
 
+    async def _preview_order(
+        workspace_id: int, payload: InvestingOrderCreate, gross: Decimal, net: Decimal
+    ) -> dict[str, Any]:
+        """``create_investment_order`` dry run: validate + dedupe, persist nothing."""
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session, workspace_id, required_scope="mcp:write", tool="create_investment_order"
+            )
+            status, match_reason, existing_id = "would_create", None, None
+            errors: list[str] = []
+            order_repo = InvestingOrderRepository(session)
+            if payload.source_ref:
+                existing = await order_repo.get_by_source_ref(workspace_id, payload.source_ref)
+                if existing is not None:
+                    status, match_reason, existing_id = (
+                        "duplicate",
+                        "source_ref",
+                        str(existing.public_id),
+                    )
+            else:
+                similar = await _possible_duplicate_orders(session, workspace_id, user_id, payload)
+                if similar:
+                    status, match_reason, existing_id = (
+                        "possible_duplicate",
+                        "possible_duplicate",
+                        str(similar[0].public_id),
+                    )
+            if status == "would_create":
+                # Run the real business validation (account, currency, cash, holdings)
+                # inside a SAVEPOINT that is always rolled back -- nothing persists.
+                nested = await session.begin_nested()
+                try:
+                    await _order_service(session).place_order(
+                        workspace_id=workspace_id,
+                        user_id=user_id,
+                        order_in=payload,
+                        audit_logger=AuditLogger(session),
+                        source_type="mcp_agent",
+                    )
+                except (APIError, ValueError) as exc:
+                    status = "invalid"
+                    errors = [str(getattr(exc, "detail", None) or exc)]
+                finally:
+                    await nested.rollback()
+            await session.rollback()
+            counts = {"create": 0, "duplicate": 0, "possible_duplicate": 0, "invalid": 0}
+            counts["create" if status == "would_create" else status] += 1
+            return {
+                "status": "success",
+                "dry_run": True,
+                "counts": counts,
+                "items": [
+                    {
+                        "index": 0,
+                        "status": status,
+                        "match_reason": match_reason,
+                        "existing_id": existing_id,
+                        "errors": errors,
+                        "warnings": [],
+                    }
+                ],
+                **_order_preview_fields(payload, gross, net),
+            }
+
     @mcp.tool
     async def create_investment_order(
         workspace_id: int,
@@ -1290,11 +1541,25 @@ def create_mcp_server() -> FastMCP:
         notes: str | None = None,
         source_ref: str | None = None,
         confirmed: bool = False,
+        dry_run: bool = False,
+        allow_duplicate: bool = False,
     ) -> dict[str, Any]:
         """Record a historical buy or sell order after explicit confirmation.
 
         This records the trade in Lifestack and updates holdings and brokerage
         cash; it does not submit a live order to a broker.
+
+        Idempotency: a repeated ``source_ref`` returns the existing order and
+        writes nothing. Without a ``source_ref``, an order with the same
+        account + symbol + side + quantity + price on the same local day is
+        reported as ``possible_duplicate`` (with the existing order's ID) and is
+        NOT recorded -- fees and rounding differ too much to skip it silently;
+        set ``allow_duplicate=true`` to record a genuine repeat.
+
+        ``dry_run=true`` runs every validation (including cash and holding
+        checks) and the duplicate checks, writes nothing, needs no confirmation,
+        and returns ``{counts, items:[{index, status, match_reason, existing_id,
+        errors}]}`` with the calculated amounts.
         """
         try:
             payload = InvestingOrderCreate(
@@ -1324,6 +1589,10 @@ def create_mcp_server() -> FastMCP:
         )
         if net_amount <= 0:
             return {"status": "error", "message": "Fees must leave a positive net amount."}
+
+        if dry_run:
+            return await _preview_order(workspace_id, payload, gross_amount, net_amount)
+
         if not confirmed:
             return {
                 "status": "needs_confirmation",
@@ -1354,6 +1623,9 @@ def create_mcp_server() -> FastMCP:
                 session, workspace_id, required_scope="mcp:write", tool="create_investment_order"
             )
             order_repo = InvestingOrderRepository(session)
+            # Check-then-insert below: hold a per-workspace lock until commit so a
+            # concurrent identical request waits and then sees this order.
+            await order_repo.lock_idempotent_writes(workspace_id)
             if payload.source_ref:
                 existing = await order_repo.get_by_source_ref(workspace_id, payload.source_ref)
                 if existing is not None:
@@ -1363,9 +1635,26 @@ def create_mcp_server() -> FastMCP:
                     return {
                         "status": "success",
                         "idempotent": True,
+                        "match_reason": "source_ref",
+                        "existing_id": str(existing.public_id),
                         "entity_type": "investing_order",
                         "entity_public_id": str(existing.public_id),
                         "item": _order_response(existing, account),
+                    }
+            elif not allow_duplicate:
+                similar = await _possible_duplicate_orders(session, workspace_id, user_id, payload)
+                if similar:
+                    return {
+                        "status": "possible_duplicate",
+                        "match_reason": "possible_duplicate",
+                        "existing_id": str(similar[0].public_id),
+                        "possible_duplicate_count": len(similar),
+                        "message": (
+                            "An order with the same account, symbol, side, quantity and price "
+                            "already exists on this day. Nothing was recorded. If this is a "
+                            "genuine second order, retry with allow_duplicate=true; otherwise "
+                            "pass a source_ref to make retries idempotent."
+                        ),
                     }
             try:
                 order = await _order_service(session).place_order(
@@ -1486,7 +1775,7 @@ def create_mcp_server() -> FastMCP:
             }
         try:
             order_public_id = uuid.UUID(public_id)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid public_id."}
         async with postgres.async_session_maker() as session:
             user_id = await authorize_workspace(
@@ -1619,7 +1908,7 @@ def create_mcp_server() -> FastMCP:
 
         try:
             div_public_id = uuid.UUID(public_id)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid public_id."}
 
         async with postgres.async_session_maker() as session:
@@ -1658,13 +1947,24 @@ def create_mcp_server() -> FastMCP:
         account_name: str | None = None,
         transaction_type: str | None = "expense",
         limit: int = 10,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        """Find bounded transaction candidates in an authorized workspace."""
+        """Find transaction candidates in an authorized workspace.
+
+        ``from_date``/``to_date`` (YYYY-MM-DD) are inclusive workspace-local calendar
+        days (``from_day``/``to_day`` are aliases). Returns ``total_count`` and
+        ``next_cursor``; pass it back as ``cursor`` for the next page.
+        """
         return await _run_capture_tool(
             workspace_id,
             "mcp:read",
             "find_spending_transactions",
             {
+                "from_date": from_date,
+                "to_date": to_date,
+                "cursor": cursor,
                 "from_day": from_day,
                 "to_day": to_day,
                 "category_name": category_name,
@@ -1965,13 +2265,24 @@ def create_mcp_server() -> FastMCP:
         allow_duplicate: bool = False,
         transaction_type: str = "expense",
         source_ref: str | None = None,
+        dry_run: bool = False,
+        skip_duplicates: bool = False,
     ) -> dict[str, Any]:
-        """Create a transaction (expense or income) in an authorized workspace."""
+        """Create a transaction (expense or income) in an authorized workspace.
+
+        A repeated ``source_ref`` returns the existing transaction (idempotent).
+        ``dry_run=true`` writes nothing and returns ``{counts, items:[{index,
+        status, match_reason, existing_id, errors}]}``. ``skip_duplicates=true``
+        reports a same-day/amount/account/description match as a duplicate
+        instead of refusing.
+        """
         return await _run_capture_tool(
             workspace_id,
             "mcp:write",
             "log_spending_transaction",
             {
+                "dry_run": dry_run,
+                "skip_duplicates": skip_duplicates,
                 "amount": amount,
                 "category_name": category_name,
                 "description": description,
@@ -1985,6 +2296,39 @@ def create_mcp_server() -> FastMCP:
         )
 
     @mcp.tool
+    async def log_spending_transactions_batch(
+        workspace_id: int,
+        items: list[dict[str, Any]],
+        atomic: bool = False,
+        dry_run: bool = False,
+        skip_duplicates: bool = False,
+    ) -> dict[str, Any]:
+        """Create up to 50 transactions idempotently in an authorized workspace.
+
+        Each item: {amount, category_name, description?, account_name?, occurred_at?,
+        tags?, transaction_type?, source_ref?, allow_duplicate?}. An exact
+        ``source_ref`` match returns the existing record. Items without one are matched
+        on local day + amount + account + normalised description, multiplicity-aware
+        (the ledger already holding 1 of 2 identical purchases creates 1, skips 1):
+        ``duplicate`` with ``skip_duplicates=true``, else ``possible_duplicate`` (not
+        written). Default is per-item partial success; ``atomic=true`` is all-or-nothing.
+        ``dry_run=true`` writes nothing and returns the same structure with
+        ``would_create``. Returns ``{counts, items:[{index, status, match_reason,
+        existing_id, errors, warnings}]}``.
+        """
+        return await _run_capture_tool(
+            workspace_id,
+            "mcp:write",
+            "log_spending_transactions_batch",
+            {
+                "items": items,
+                "atomic": atomic,
+                "dry_run": dry_run,
+                "skip_duplicates": skip_duplicates,
+            },
+        )
+
+    @mcp.tool
     async def list_spending_transactions(
         workspace_id: int,
         day: str | None = None,
@@ -1994,13 +2338,24 @@ def create_mcp_server() -> FastMCP:
         account_name: str | None = None,
         transaction_type: str | None = "expense",
         limit: int = 10,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
-        """List transactions for one local calendar day in an authorized workspace."""
+        """List transactions for a local day or inclusive date range in an authorized workspace.
+
+        ``from_date``/``to_date`` (YYYY-MM-DD) are inclusive workspace-local calendar
+        days. Returns ``total_count`` and ``next_cursor``; pass it back as ``cursor``
+        for the next page.
+        """
         return await _run_capture_tool(
             workspace_id,
             "mcp:read",
             "list_spending_transactions",
             {
+                "from_date": from_date,
+                "to_date": to_date,
+                "cursor": cursor,
                 "day": day,
                 "category_name": category_name,
                 "amount": amount,
@@ -2037,6 +2392,334 @@ def create_mcp_server() -> FastMCP:
             "log_medication_event",
             {"name": name, "status": status, "dose_time": dose_time},
         )
+
+    @mcp.tool
+    async def reconcile_holdings(
+        workspace_id: int,
+        external_list: list[dict[str, Any]],
+        account_id: str | None = None,
+        quantity_tolerance: str = "0.0001",
+        cost_tolerance_pct: str = "0.5",
+    ) -> dict[str, Any]:
+        """Diff an external holdings list (INDmoney/Paasa/broker) against LifeStack.
+
+        ``external_list`` entries (max 500): ``symbol`` and/or ``isin``,
+        ``quantity`` (required), optional ``avg_cost``, ``currency``,
+        ``account_id`` (LifeStack account UUID), ``source``, ``external_ref``.
+        Symbols are normalised (``NSE:RELIANCE``, ``RELIANCE.NS`` and
+        ``RELIANCE-EQ`` match ``RELIANCE``) and ISIN wins over symbol when both
+        sides have one. Returns per-position status -- matched, quantity_drift,
+        cost_basis_drift, missing_in_lifestack, missing_at_depository -- with an
+        actionable suggestion for each non-match (record a missed order, review
+        fees on mis-fee'd orders, remove a stale holding). Pass ``account_id``
+        when the external list covers a single account. ``quantity_tolerance``
+        is an absolute share count (float noise); ``cost_tolerance_pct`` is the
+        allowed relative difference in average cost. Read-only.
+        """
+        try:
+            external = parse_external_list(external_list)
+            quantity_tol, cost_tol = parse_tolerances(quantity_tolerance, cost_tolerance_pct)
+            account_public_id = uuid.UUID(account_id) if account_id else None
+        except ReconciliationInputError as exc:
+            return {"status": "error", "message": str(exc)}
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "Invalid account_id."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="reconcile_holdings"
+            )
+            try:
+                result = await _reconciliation_service(session).reconcile(
+                    workspace_id,
+                    external,
+                    account_public_id=account_public_id,
+                    quantity_tolerance=quantity_tol,
+                    cost_tolerance_pct=cost_tol,
+                )
+            except ReconciliationInputError as exc:
+                return {"status": "error", "message": str(exc)}
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "account_id": account_id,
+            "quantity_tolerance": str(quantity_tol),
+            "cost_tolerance_pct": str(cost_tol),
+            **result,
+        }
+
+    @mcp.tool
+    async def list_recent_changes(
+        workspace_id: int,
+        limit: int = 25,
+        offset: int = 0,
+        module: str | None = None,
+        action: str | None = None,
+        entity_type: str | None = None,
+        entity_public_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict[str, Any]:
+        """Paginated, filterable read of the append-only audit log (newest first).
+
+        Each row has the actor's name, the entity, and the redacted
+        ``details.before`` / ``details.after`` / ``details.changed_fields`` --
+        enough to verify a write or to reconstruct an undo. Secrets (passwords,
+        tokens, API keys, hashes, ...) are redacted. ``limit`` is capped at 100.
+        ``since``/``until`` are ISO-8601 (naive values are read as UTC).
+        Read-only.
+        """
+        validate_page(limit, offset)
+        try:
+            since_dt = _parse_iso_datetime(since, "since")
+            until_dt = _parse_iso_datetime(until, "until")
+        except ValueError as exc:
+            return {"status": "error", "message": str(exc)}
+        if since_dt and until_dt and since_dt > until_dt:
+            return {"status": "error", "message": "since must not be after until."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="list_recent_changes"
+            )
+            rows, total = await AuditLogRepository(session).list_by_workspace(
+                workspace_id,
+                module=module,
+                action=action,
+                entity_type=entity_type,
+                entity_public_id=entity_public_id,
+                since=since_dt,
+                until=until_dt,
+                limit=limit,
+                offset=offset,
+            )
+            actors = await UserRepository(session).get_summaries_by_ids([
+                r.actor_id for r in rows if r.actor_id is not None
+            ])
+        items = []
+        for r in rows:
+            details = redact_details(r.details or {})
+            actor = actors.get(r.actor_id)
+            items.append({
+                "public_id": str(r.public_id),
+                "timestamp": r.timestamp.isoformat(),
+                "module": r.module,
+                "action": r.action,
+                "entity_type": r.entity_type,
+                "entity_public_id": details.get("entity_public_id"),
+                "actor_public_id": str(actor[0]) if actor else None,
+                "actor_name": actor[1] if actor else None,
+                "details": details,
+            })
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "items": items,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(items) < total,
+        }
+
+    @mcp.tool
+    async def get_performance(
+        workspace_id: int,
+        account_id: str | None = None,
+        period: str = "all",
+        reporting_currency: str = "INR",
+    ) -> dict[str, Any]:
+        """XIRR (money-weighted) and time-weighted return, converted to INR.
+
+        XIRR is reported overall, per brokerage account and per holding, since
+        inception, as a fraction (``0.1234`` = 12.34%) plus ``xirr_pct``; a
+        position whose flows cannot yield one gets ``xirr: null`` and
+        ``xirr_status: "not_computable"`` (never an error). Time-weighted return
+        is chain-linked from portfolio snapshots over ``period`` (all, 1m, 3m,
+        6m, 1y, 3y, 5y, ytd) with external contributions/withdrawals neutralised.
+        Amounts are given natively and converted to ``reporting_currency``
+        (default INR) at the latest FX; a currency with no rate yields null
+        converted values and an explicit warning, never zero. Read-only.
+        """
+        period = period.strip().lower()
+        if period not in VALID_PERIODS:
+            return {
+                "status": "error",
+                "message": f"period must be one of: {', '.join(VALID_PERIODS)}.",
+            }
+        reporting_currency = reporting_currency.strip().upper()
+        if not re.fullmatch(r"[A-Z]{3}", reporting_currency):
+            return {
+                "status": "error",
+                "message": "reporting_currency must be a 3-letter currency code.",
+            }
+        try:
+            account_public_id = uuid.UUID(account_id) if account_id else None
+        except ValueError:
+            return {"status": "error", "message": "Invalid account_id."}
+        today = datetime.now(UTC).date()
+        from_date = period_start(period, today)
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_performance"
+            )
+            if account_public_id is not None:
+                account = await AccountRepository(session).get_by_public_id(
+                    workspace_id, account_public_id
+                )
+                if account is None:
+                    return {"status": "error", "message": "Account not found in this workspace."}
+            metrics, positions = await _return_metrics_service(session).get_performance_metrics(
+                workspace_id
+            )
+            twr = await _performance_service(session).get_time_weighted_return(
+                workspace_id, from_date, today
+            )
+            used = {r.currency.upper() for r in metrics.by_account}
+            used |= {p["currency"].upper() for p in positions}
+            if twr.get("currency"):
+                used.add(twr["currency"].upper())
+            used.discard(reporting_currency)
+            fx_as_of = effective_display_as_of()
+            fx_lookup = (
+                await FxRateRepository(session).get_latest_rates_for_pairs(
+                    list(build_required_pairs(sorted(used), reporting_currency)), as_of=fx_as_of
+                )
+                if used
+                else {}
+            )
+        report = build_performance_report(
+            metrics=metrics,
+            positions=positions,
+            twr=twr,
+            rate_for=lambda ccy: conversion_rate(ccy, reporting_currency, fx_lookup),
+            reporting_currency=reporting_currency,
+            account_public_id=account_public_id,
+        )
+        rates_used = {
+            ccy: str(rate)
+            for ccy in sorted(used)
+            if (rate := conversion_rate(ccy, reporting_currency, fx_lookup)) is not None
+        }
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "account_id": account_id,
+            "period": period,
+            "from_date": from_date.isoformat() if from_date else None,
+            "to_date": today.isoformat(),
+            "reporting_currency": reporting_currency,
+            "fx_as_of": fx_as_of.isoformat() if used else None,
+            "fx_rates_used": rates_used,
+            **report,
+        }
+
+    @mcp.tool
+    async def get_weight_history(
+        workspace_id: int,
+        start: str | None = None,
+        end: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Paginated body-weight history, newest first (read counterpart of log_weight).
+
+        ``start``/``end`` are ISO-8601 bounds on ``measured_at`` (naive values
+        are read as UTC). ``limit`` is capped at 100. Weights are strings in kg.
+        """
+        validate_page(limit, offset)
+        try:
+            start_dt = _parse_iso_datetime(start, "start")
+            end_dt = _parse_iso_datetime(end, "end")
+        except ValueError as exc:
+            return {"status": "error", "message": str(exc)}
+        if start_dt and end_dt and start_dt > end_dt:
+            return {"status": "error", "message": "start must not be after end."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_weight_history"
+            )
+            items, total = await _health_service(session).list_weight_entries(
+                workspace_id, start_dt, end_dt, limit, offset
+            )
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "items": [item.model_dump(mode="json") for item in items],
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(items) < int(total),
+        }
+
+    @mcp.tool
+    async def list_medication_events(
+        workspace_id: int,
+        medication_id: str | None = None,
+        status: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Paginated medication dose-event history, newest first (read counterpart
+        of log_medication_event). Filter by ``medication_id`` (UUID) and/or
+        ``status`` (``taken`` | ``skipped``). ``limit`` is capped at 100.
+        """
+        validate_page(limit, offset)
+        status_filter = status.strip().lower() if status else None
+        if status_filter is not None and status_filter not in {"taken", "skipped"}:
+            return {"status": "error", "message": "status must be 'taken' or 'skipped'."}
+        try:
+            medication_public_id = uuid.UUID(medication_id) if medication_id else None
+        except ValueError:
+            return {"status": "error", "message": "Invalid medication_id."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="list_medication_events"
+            )
+            medication_repo = MedicationRepository(session)
+            medication_internal_id: int | None = None
+            if medication_public_id is not None:
+                medication = await medication_repo.get_by_public_id(
+                    workspace_id, medication_public_id
+                )
+                if medication is None:
+                    return {"status": "error", "message": "Medication not found in this workspace."}
+                medication_internal_id = medication.id
+            events, total = await MedicationEventRepository(session).list_by_workspace(
+                workspace_id,
+                medication_id=medication_internal_id,
+                status=status_filter,
+                limit=limit,
+                offset=offset,
+            )
+            medications = await medication_repo.get_by_ids(
+                workspace_id, [e.medication_id for e in events]
+            )
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "medication_id": medication_id,
+            "status_filter": status_filter,
+            "items": [
+                {
+                    "public_id": str(e.public_id),
+                    "medication_public_id": str(medications[e.medication_id].public_id)
+                    if e.medication_id in medications
+                    else None,
+                    "medication_name": medications[e.medication_id].name
+                    if e.medication_id in medications
+                    else None,
+                    "scheduled_for": e.scheduled_for.isoformat(),
+                    "status": e.status,
+                    "logged_at": e.logged_at.isoformat(),
+                    "taken_at": e.taken_at.isoformat() if e.taken_at else None,
+                    "note": e.note,
+                    "source_type": e.source_type,
+                }
+                for e in events
+            ],
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(events) < int(total),
+        }
 
     @mcp.tool
     async def get_investing_summary(workspace_id: int) -> dict[str, Any]:
@@ -2129,6 +2812,157 @@ def create_mcp_server() -> FastMCP:
             "assumptions": estimate.assumptions,
             "disclaimers": estimate.disclaimers,
         }
+
+    @mcp.tool
+    async def simulate_sale(
+        workspace_id: int,
+        holding: str,
+        qty: str,
+        date: str,
+        price: str,
+        sell_fees: str = "0",
+        account_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Read-only what-if: the capital-gains tax of selling `qty` units of a holding.
+
+        Nothing is sold or changed. FIFO open lots are consumed oldest first;
+        each lot is classified long-term/short-term on calendar days (more
+        than 12 months for Indian-listed, 24 for foreign). The tax is
+        INCREMENTAL: the estimated tax for the sale's financial year with the
+        sale minus without it, on top of the gains already realised that FY
+        (the same data get_tax_summary uses), so the Rs 1.25 lakh Sec 112A
+        exemption is only what is left. Returns per-lot gains, the Rule 115
+        FX rate and its source, a status (success, insufficient_quantity,
+        missing_fx_rate, reconciliation_failed) and the assumptions used.
+
+        `holding` is a holding public_id (from list_investment_holdings), or
+        a symbol; a symbol held in several accounts is rejected with the
+        candidates unless `account_id` (account public_id) narrows it.
+        `date` is the sale day, YYYY-MM-DD in your timezone. `qty`, `price`
+        and `sell_fees` are decimal strings (price and fees in the holding's
+        currency).
+        """
+        try:
+            qty_value = parse_decimal("qty", qty, allow_zero=False, max_places=8)
+            price_value = parse_decimal("price", price, allow_zero=True, max_places=8)
+            fees_value = parse_decimal("sell_fees", sell_fees, allow_zero=True, max_places=4)
+        except WhatIfError as exc:
+            return _what_if_error(exc)
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="simulate_sale"
+            )
+            timezone_name = await _user_timezone_name(session, user_id)
+            try:
+                sale_dt = parse_sale_date(date, resolve_zone(timezone_name))
+                outcome = await _tax_whatif_service(session).simulate_sale(
+                    workspace_id,
+                    holding_ref=holding,
+                    account_id=account_id,
+                    qty=qty_value,
+                    sale_date=sale_dt,
+                    sale_price=price_value,
+                    sell_fees=fees_value,
+                    timezone_name=timezone_name,
+                )
+            except WhatIfError as exc:
+                return _what_if_error(exc)
+            return simulation_response(outcome)
+
+    @mcp.tool
+    async def list_tax_lots(
+        workspace_id: int,
+        holding: str,
+        account_id: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Read-only: a holding's open FIFO tax lots with their long-term countdown.
+
+        Per lot: acquired date, quantity, cost per unit (fee-inclusive),
+        whether it is long-term today, and `days_to_long_term` (calendar
+        days until the first day a sale is long-term; 0 = already). The
+        threshold is 12 months for Indian-listed holdings and 24 for foreign
+        ones. Unrealised P&L is included when a stored price exists.
+
+        `holding` is a holding public_id or a symbol (use `account_id` to
+        disambiguate a symbol held in several accounts). Lots are paged:
+        `limit` 1-500, `offset` >= 0.
+        """
+        if not 1 <= limit <= 500 or offset < 0:
+            return {
+                "status": "error",
+                "code": "invalid_page",
+                "message": "limit must be 1-500 and offset non-negative.",
+            }
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="list_tax_lots"
+            )
+            try:
+                listing = await _tax_whatif_service(session).list_lots(
+                    workspace_id,
+                    holding_ref=holding,
+                    account_id=account_id,
+                    timezone_name=await _user_timezone_name(session, user_id),
+                )
+            except WhatIfError as exc:
+                return _what_if_error(exc)
+        response = lot_listing_response(listing)
+        total = len(response["lots"])
+        response["lot_count"] = total
+        response["lots"] = response["lots"][offset : offset + limit]
+        response["offset"] = offset
+        response["has_more"] = offset + limit < total
+        return response
+
+    @mcp.tool
+    async def harvest_candidates(
+        workspace_id: int,
+        stcg_rate_percent: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Read-only: unrealised-loss lots worth realising for tax, best first.
+
+        Scans every non-zero holding's open lots against its latest stored
+        price, ranks loss lots by the tax the loss would save (converted to
+        INR so mixed currencies compare), and reports each lot's price date
+        and whether that price is stale. Holdings with no stored price or no
+        open lots are listed under `skipped_holdings`, never guessed. A
+        foreign short-term loss follows your slab, so it is ranked last
+        unless you pass `stcg_rate_percent` (e.g. "30").
+
+        `limit` 1-200 caps the returned candidates (candidate_count is the
+        total).
+        """
+        if not 1 <= limit <= 200:
+            return {
+                "status": "error",
+                "code": "invalid_page",
+                "message": "limit must be between 1 and 200.",
+            }
+        stcg_value = None
+        if stcg_rate_percent is not None:
+            try:
+                stcg_value = parse_decimal("stcg_rate_percent", stcg_rate_percent, allow_zero=True)
+            except WhatIfError as exc:
+                return _what_if_error(exc)
+            if stcg_value > 100:
+                return {
+                    "status": "error",
+                    "code": "invalid_number",
+                    "message": "stcg_rate_percent must be between 0 and 100.",
+                }
+        async with postgres.async_session_maker() as session:
+            user_id = await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="harvest_candidates"
+            )
+            report = await _tax_whatif_service(session).harvest(
+                workspace_id,
+                stcg_rate_percent=stcg_value,
+                timezone_name=await _user_timezone_name(session, user_id),
+            )
+        return harvest_response(report, limit)
 
     @mcp.tool
     async def get_tax_profile(workspace_id: int) -> dict[str, Any]:
@@ -2291,6 +3125,112 @@ def create_mcp_server() -> FastMCP:
             "key": composite_key,
             "rate": rate,
             "fx_overrides": dict(profile.fx_overrides or {}),
+        }
+
+    @mcp.tool
+    async def get_lrs_summary(
+        workspace_id: int,
+        fy: str | None = None,
+    ) -> dict[str, Any]:
+        """FY outward remittance vs the USD 250,000 LRS cap, with TCS status.
+
+        Built from INR-funded transfers into foreign-currency investing accounts
+        (e.g. Paasa / a US brokerage) in the workspace; repatriations and INR
+        brokerage funding are excluded. `fy` is an Indian financial year label
+        such as "2026-27" (1 Apr - 31 Mar, IST) and defaults to the current one.
+        Money values are decimal strings. See `assumptions` for limits.
+        """
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_lrs_summary"
+            )
+            service = LrsService(
+                CapitalTransferRepository(session), fx_rate_repository=FxRateRepository(session)
+            )
+            try:
+                summary = await service.get_lrs_summary(workspace_id, fy)
+            except ValidationError as exc:
+                return {"status": "error", "message": exc.detail}
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            **summary,
+            "fy_start": summary["fy_start"].isoformat(),
+            "fy_end": summary["fy_end"].isoformat(),
+        }
+
+    @mcp.tool
+    async def get_fx_rate(
+        workspace_id: int,
+        date_str: str,
+        currency: str,
+    ) -> dict[str, Any]:
+        """Read the stored Rule 115 FX rate for a date + currency.
+
+        Reads the user-provided rate written via `set_fx_rate` (key
+        "YYYY-MM-DD:CURRENCY"). Returns status "not_found" (the REST 404) when no
+        rate is stored for that exact date and currency.
+        """
+        try:
+            parsed = date.fromisoformat(date_str)
+        except ValueError:
+            return {"status": "error", "message": "date_str must be a valid YYYY-MM-DD date."}
+        if parsed.isoformat() != date_str:
+            return {"status": "error", "message": "date_str must be YYYY-MM-DD format."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_fx_rate"
+            )
+            try:
+                code = normalize_currency_code(currency)
+                rate = await _tax_service(session).get_fx_rate(workspace_id, parsed, code)
+            except ValidationError as exc:
+                return {"status": "error", "message": exc.detail}
+        if rate is None:
+            return {
+                "status": "not_found",
+                "message": f"No FX rate stored for {date_str} ({code}).",
+            }
+        return {
+            "status": "success",
+            "date": date_str,
+            "currency": code,
+            "rate": rate,
+            "source": "user_provided",
+        }
+
+    @mcp.tool
+    async def list_missing_fx_rates(
+        workspace_id: int,
+        from_date: str,
+        to_date: str,
+        currency: str,
+    ) -> dict[str, Any]:
+        """Dates in [from_date, to_date] (YYYY-MM-DD, max 366 days) with no stored Rule 115 rate."""
+        try:
+            from_d = date.fromisoformat(from_date)
+            to_d = date.fromisoformat(to_date)
+        except ValueError:
+            return {"status": "error", "message": "dates must be valid YYYY-MM-DD dates."}
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="list_missing_fx_rates"
+            )
+            try:
+                code = normalize_currency_code(currency)
+                missing = await _tax_service(session).list_missing_fx_rates(
+                    workspace_id, from_d, to_d, code
+                )
+            except ValidationError as exc:
+                return {"status": "error", "message": exc.detail}
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "from_date": from_d.isoformat(),
+            "to_date": to_d.isoformat(),
+            "currency": code,
+            "missing": [d.isoformat() for d in missing],
+            "missing_count": len(missing),
         }
 
     @mcp.tool
@@ -2491,7 +3431,7 @@ def create_mcp_server() -> FastMCP:
         """
         try:
             holding_public_id = uuid.UUID(holding_id)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {"status": "error", "message": "Invalid holding_id."}
         async with postgres.async_session_maker() as session:
             await authorize_workspace(
@@ -2537,7 +3477,7 @@ def create_mcp_server() -> FastMCP:
             dividend_public_id = uuid.UUID(dividend_id) if dividend_id else None
             start = date.fromisoformat(from_date) if from_date else None
             end = date.fromisoformat(to_date) if to_date else None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
             return {
                 "status": "error",
                 "message": "Invalid holding_id, dividend_id, from_date or to_date.",
@@ -2564,6 +3504,148 @@ def create_mcp_server() -> FastMCP:
                 "workspace_id": workspace_id,
                 "estimate": estimate.model_dump(mode="json"),
             }
+
+    @mcp.tool
+    async def set_holding_theme_tags(
+        workspace_id: int,
+        holdings: list[dict[str, Any]],
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Set theme tags on holdings.
+
+        Requires mcp:research scope and explicit confirmation.
+        Each holding entry: {"holding_id": str, "tags": [{"theme": str, "target_weight_pct": float?}]}
+        """
+        if not confirmed:
+            return {
+                "status": "needs_confirmation",
+                "needs_confirmation": True,
+                "message": f"Set theme tags on {len(holdings)} holdings? Confirm to continue.",
+                "holdings": holdings,
+            }
+        if not 1 <= len(holdings) <= 200:
+            return {
+                "status": "error",
+                "message": "holdings must contain between 1 and 200 entries.",
+            }
+
+        validated = []
+        for i, h in enumerate(holdings):
+            try:
+                holding_public_id = uuid.UUID(h["holding_id"])
+                tag_list = h.get("tags", [])
+                if not isinstance(tag_list, list) or len(tag_list) > 20:
+                    return {
+                        "status": "error",
+                        "message": f"holding {i}: tags must be a list of 0-20 items.",
+                    }
+                tags = []
+                for t in tag_list:
+                    tag = str(t["theme"]).strip()
+                    if not tag or len(tag) > 64:
+                        return {
+                            "status": "error",
+                            "message": f"holding {i}: theme must be 1-64 chars.",
+                        }
+                    tw = t.get("target_weight_pct")
+                    if tw is not None:
+                        tw = float(tw)
+                        if tw < 0 or tw > 100:
+                            return {
+                                "status": "error",
+                                "message": f"holding {i}: target_weight_pct must be 0-100.",
+                            }
+                    tags.append(ThemeTagInput(theme=tag, target_weight_pct=tw))
+                validated.append(HoldingThemeTagsInput(holding_id=holding_public_id, tags=tags))
+            except (KeyError, TypeError, ValueError) as exc:
+                return {"status": "error", "message": f"holding {i}: invalid entry: {exc}"}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:research", tool="set_holding_theme_tags"
+            )
+            try:
+                result = await _theme_tag_service(session).set_tags(workspace_id, validated)
+                await session.commit()
+            except (APIError, ValueError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+            return {
+                "status": "success",
+                **result.model_dump(mode="json"),
+                "summary": f"Updated theme tags on {len(validated)} holding(s).",
+            }
+
+    @mcp.tool
+    async def get_lookthrough_exposure(
+        workspace_id: int,
+        as_of_date: str | None = None,
+        group_by: str = "theme",
+    ) -> dict[str, Any]:
+        """Get look-through exposure by theme/company/sector/country.
+
+        Uses exactly one latest constituent snapshot per fund (newest by as_of_date, fetched_at).
+        OTHER-* placeholder rows and unmapped companies go to "not itemised" (never rescaled).
+        """
+        try:
+            as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
+            return {"status": "error", "message": "Invalid as_of_date. Use YYYY-MM-DD."}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_lookthrough_exposure"
+            )
+            try:
+                result = await _theme_exposure_service(session).lookthrough_exposure(
+                    workspace_id, as_of, group_by=group_by
+                )
+            except PydanticValidationError as exc:
+                return {"status": "error", "message": str(exc)}
+            return {
+                "status": "success",
+                "workspace_id": workspace_id,
+                **result.model_dump(mode="json"),
+            }
+
+    @mcp.tool
+    async def get_allocation_vs_target(
+        workspace_id: int,
+        new_cash: str | None = None,
+        as_of_date: str | None = None,
+    ) -> dict[str, Any]:
+        """Allocation vs target with optional new-cash deployment.
+
+        If new_cash provided, computes buy-only deployment to underweight themes.
+        Never suggests sells. Largest-remainder rounding ensures exact sums.
+        """
+        try:
+            as_of = date.fromisoformat(as_of_date) if as_of_date else datetime.now(UTC).date()
+            cash = Decimal(new_cash) if new_cash else None
+        except (
+            TypeError,
+            ValueError,
+            decimal.InvalidOperation,
+            PydanticValidationError,
+            AppValidationError,
+        ):
+            return {"status": "error", "message": "Invalid as_of_date or new_cash."}
+
+        async with postgres.async_session_maker() as session:
+            await authorize_workspace(
+                session, workspace_id, required_scope="mcp:read", tool="get_allocation_vs_target"
+            )
+            try:
+                result = await _theme_exposure_service(session).allocation_vs_target(
+                    workspace_id, as_of, new_cash=cash
+                )
+                return {
+                    "status": "success",
+                    "workspace_id": workspace_id,
+                    **result.model_dump(mode="json"),
+                }
+            except AppValidationError as exc:
+                return {"status": "error", "message": exc.detail}
 
     return mcp
 

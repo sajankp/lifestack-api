@@ -21,6 +21,7 @@ from app.core.exceptions import ForbiddenError
 from app.exports.repository import ExportRepository
 from app.exports.service import ExportService
 from app.finance.activity_service import ActivityFeedService
+from app.finance.lrs_service import LrsService
 from app.finance.repository import (
     AccountRepository,
     CapitalTransferRepository,
@@ -76,6 +77,11 @@ from app.investing.service import (
     InstrumentService,
 )
 from app.investing.tax_service import TaxService
+from app.investing.theme_repository import (
+    HoldingThemeTagRepository,
+    LatestConstituentSnapshotRepository,
+)
+from app.investing.theme_service import HoldingThemeTagService, ThemeExposureService
 from app.notifications.repository import NotificationRepository, PushSubscriptionRepository
 from app.notifications.service import NotificationService, PushSubscriptionService
 from app.platform.repository import MembershipRepository, WorkspaceRepository
@@ -691,6 +697,13 @@ async def get_finance_fx_rate_service(
     return FxRateService(fx_repo, currency_repo)
 
 
+async def get_finance_lrs_service(
+    transfer_repo: CapitalTransferRepository = Depends(get_finance_transfer_repo),
+    fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
+) -> LrsService:
+    return LrsService(transfer_repo, fx_rate_repo)
+
+
 async def get_finance_transfer_service(
     transfer_repo: CapitalTransferRepository = Depends(get_finance_transfer_repo),
     account_repo: AccountRepository = Depends(get_finance_account_repo),
@@ -1000,4 +1013,36 @@ async def get_morning_briefing_workflow(
         weekly_summary_repo=weekly_summary_repo,
         finance_setting_repo=finance_setting_repo,
         health_service=health_service,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Theme tags / look-through exposure / allocation vs target (spec-105)
+# ---------------------------------------------------------------------------
+
+
+async def get_investing_theme_tag_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> HoldingThemeTagService:
+    return HoldingThemeTagService(HoldingThemeTagRepository(session))
+
+
+async def get_investing_theme_exposure_service(
+    session: AsyncSession = Depends(get_db_session),
+    holding_repo: HoldingRepository = Depends(get_investing_holding_repo),
+    instrument_repo: InstrumentRepository = Depends(get_investing_instrument_repo),
+    company_repo: CompanyRepository = Depends(get_investing_company_repo),
+    holding_price_repo: HoldingPriceRepository = Depends(get_investing_holding_price_repo),
+    finance_setting_repo: FinanceSettingRepository = Depends(get_finance_setting_repo),
+    fx_rate_repo: FxRateRepository = Depends(get_finance_fx_rate_repo),
+) -> ThemeExposureService:
+    return ThemeExposureService(
+        holding_repo,
+        instrument_repo,
+        company_repo,
+        LatestConstituentSnapshotRepository(session),
+        holding_price_repo,
+        finance_setting_repo,
+        fx_rate_repo,
+        HoldingThemeTagRepository(session),
     )

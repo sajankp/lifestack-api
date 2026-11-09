@@ -16,6 +16,7 @@ from app.finance.models import (
     CurrencyDisplayPreference,
     FxRate,
     NetWorthSnapshot,
+    TransferModule,
     UserFinanceSetting,
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
@@ -857,6 +858,27 @@ class CapitalTransferRepository(BaseRepository[CapitalTransfer]):
         )
         return result.scalars().all(), total
 
+    async def list_investing_flows_in_period(
+        self, workspace_id: int, start: datetime, end: datetime
+    ) -> Sequence[CapitalTransfer]:
+        """Transfers touching the investing module with ``start <= occurred_at < end``.
+
+        Deterministic oldest-first order (``occurred_at``, ``id``). Used to
+        neutralise external contributions/withdrawals in time-weighted return.
+        """
+        result = await self.session.execute(
+            select(CapitalTransfer)
+            .where(
+                CapitalTransfer.workspace_id == workspace_id,
+                CapitalTransfer.occurred_at >= start,
+                CapitalTransfer.occurred_at < end,
+                (CapitalTransfer.from_module == TransferModule.investing)
+                | (CapitalTransfer.to_module == TransferModule.investing),
+            )
+            .order_by(CapitalTransfer.occurred_at.asc(), CapitalTransfer.id.asc())
+        )
+        return result.scalars().all()
+
     async def find_transfers(
         self,
         workspace_id: int,
@@ -898,6 +920,32 @@ class CapitalTransferRepository(BaseRepository[CapitalTransfer]):
             .offset(offset)
         )
         return result.scalars().all(), total
+
+    async def list_outward_remittances(
+        self, workspace_id: int, *, start: datetime, end_exclusive: datetime
+    ) -> Sequence[CapitalTransfer]:
+        """INR-funded transfers into a foreign-currency investing account.
+
+        These are the LRS outward remittances: money moving from the spending
+        side (an INR account) to the investing side in a non-INR currency.
+        ``start <= occurred_at < end_exclusive``; scoped to ``workspace_id``.
+        Domestic (INR -> INR) brokerage funding and investing -> spending
+        repatriations are excluded in SQL.
+        """
+        result = await self.session.execute(
+            select(CapitalTransfer)
+            .where(
+                CapitalTransfer.workspace_id == workspace_id,
+                CapitalTransfer.from_module == "spending",
+                CapitalTransfer.to_module == "investing",
+                CapitalTransfer.from_currency_code == "INR",
+                CapitalTransfer.to_currency_code != "INR",
+                CapitalTransfer.occurred_at >= start,
+                CapitalTransfer.occurred_at < end_exclusive,
+            )
+            .order_by(CapitalTransfer.occurred_at, CapitalTransfer.id)
+        )
+        return result.scalars().all()
 
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> CapitalTransfer | None:
         result = await self.session.execute(

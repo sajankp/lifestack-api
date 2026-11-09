@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import calendar
 from collections import defaultdict
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 
@@ -177,6 +178,7 @@ def compute_tax_estimate(
     profile: TaxProfile,
     regime_resolver,
     app_fx_rates: dict[tuple[str, str], Decimal] | None = None,
+    realised_lots: Sequence[TaxLot] = (),
 ) -> TaxEstimate:
     """Compute the capital gains tax estimate for one FY.
 
@@ -186,6 +188,13 @@ def compute_tax_estimate(
     ``app_fx_rates`` maps ``(month, currency)`` to the INR rate for that
     sale month. The currency is part of the key because a USD sale and a
     GBP sale in the same month need different rates.
+
+    ``realised_lots`` are already-classified lots (``TaxEstimate.lots`` of
+    another run) that join the FY's buckets as if the replay had produced
+    them, so the exemption, slab, surcharge and rebate see the whole FY.
+    They are copied (the engine writes ``gain_inr`` back onto lots) and
+    only those sold inside ``fy_label`` count. The what-if simulator uses
+    this to price a hypothetical sale on top of the gains already booked.
     """
     start, end = fy_bounds(fy_label)
     app_fx_rates = app_fx_rates or {}
@@ -205,6 +214,7 @@ def compute_tax_estimate(
         )
         all_lots.extend(replay.lots)
         reconciliations.append(replay)
+    all_lots.extend(replace(lot) for lot in realised_lots if start <= lot.sold_at <= end)
 
     estimate = TaxEstimate(status="success", fy_label=fy_label)
 

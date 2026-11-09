@@ -185,6 +185,41 @@ class Holding(SQLModel, table=True):
     )
 
 
+class HoldingThemeTag(SQLModel, table=True):
+    """A theme tag (e.g. "AI power/grid", "battery", "robotics") on a holding.
+
+    ``target_weight_pct`` is the share of the whole portfolio (0-100) this
+    holding is meant to contribute to the theme; it is optional (a tag with
+    no target only groups exposure). A holding may carry several themes and a
+    theme may span several holdings; a theme's target is the sum of its tags'
+    targets. Unique per (holding, theme).
+    """
+
+    __tablename__ = "investing_holding_theme_tags"
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: uuid.UUID = Field(default_factory=uuid.uuid4, index=True, unique=True)
+    workspace_id: int = Field(foreign_key="workspaces.id", index=True)
+    holding_id: int = Field(foreign_key="investing_holdings.id", index=True, ondelete="CASCADE")
+    theme: str = Field(max_length=64)
+    target_weight_pct: Decimal | None = Field(
+        default=None, sa_type=sa.Numeric(precision=5, scale=2), ge=0, le=100
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), sa_type=sa.DateTime(timezone=True)
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "holding_id", "theme", name="uq_investing_holding_theme_tag_holding_theme"
+        ),
+        sa.Index("ix_investing_holding_theme_tags_workspace_theme", "workspace_id", "theme"),
+    )
+
+
 class CashBalance(SQLModel, table=True):
     __tablename__ = "investing_cash_balances"
 

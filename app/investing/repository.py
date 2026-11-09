@@ -32,6 +32,9 @@ from app.investing.models import (
 _PUNCTUATION_RE = re.compile(r"[^\w\s]", re.UNICODE)
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# Advisory-lock namespace for order writes (first int4 of pg_advisory_xact_lock(int, int)).
+_ORDER_WRITE_LOCK_NAMESPACE = 1_330_597_700
+
 
 def normalize_company_name(name: str) -> str:
     """Collapse "Apple Inc" / "Apple Inc." to the same key (spec-083 §4.2)."""
@@ -304,12 +307,59 @@ class InvestingOrderRepository(BaseRepository[InvestingOrder]):
 
     async def get_by_source_ref(self, workspace_id: int, source_ref: str) -> InvestingOrder | None:
         result = await self.session.execute(
-            select(InvestingOrder).where(
+            select(InvestingOrder)
+            .where(
                 InvestingOrder.workspace_id == workspace_id,
                 InvestingOrder.source_ref == source_ref,
             )
+            .order_by(InvestingOrder.id.asc())
+            .limit(1)
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
+
+    async def lock_idempotent_writes(self, workspace_id: int) -> None:
+        """Serialise order creates per workspace (transaction-scoped advisory lock).
+
+        ``source_ref`` has no unique index, so check-then-insert is otherwise
+        racy. See ``TransactionRepository.lock_idempotent_writes``.
+        """
+        await self.session.execute(
+            select(func.pg_advisory_xact_lock(_ORDER_WRITE_LOCK_NAMESPACE, workspace_id))
+        )
+
+    async def find_possible_duplicate_orders(
+        self,
+        workspace_id: int,
+        *,
+        account_id: int,
+        symbol: str,
+        order_type: str,
+        quantity: Decimal,
+        price_per_unit: Decimal,
+        from_date: datetime,
+        to_date: datetime,
+    ) -> Sequence[InvestingOrder]:
+        """Orders matching account + symbol + side + quantity + price in a window.
+
+        ``to_date`` is exclusive; callers pass the workspace-local calendar day
+        converted to UTC. Used only to surface a ``possible_duplicate`` warning,
+        never to skip a write silently (fees and rounding differ too much).
+        """
+        result = await self.session.execute(
+            select(InvestingOrder)
+            .where(
+                InvestingOrder.workspace_id == workspace_id,
+                InvestingOrder.account_id == account_id,
+                InvestingOrder.symbol == symbol.strip().upper(),
+                InvestingOrder.order_type == order_type,
+                InvestingOrder.quantity == quantity,
+                InvestingOrder.price_per_unit == price_per_unit,
+                InvestingOrder.occurred_at >= from_date,
+                InvestingOrder.occurred_at < to_date,
+            )
+            .order_by(InvestingOrder.id.asc())
+        )
+        return result.scalars().all()
 
     async def list_by_workspace(
         self,
@@ -389,6 +439,37 @@ class LotRepository:
             raise ValueError("holding_id must not be None")
         await self.session.execute(delete(OrderLot).where(OrderLot.holding_id == holding_id))
         await self.session.flush()
+
+    async def list_open_for_holdings(
+        self, workspace_id: int, holding_ids: Sequence[int]
+    ) -> dict[int, list[OrderLot]]:
+        """Open lots (``remaining_quantity > 0``) for many holdings in ONE query.
+
+        Workspace-scoped on the lot row itself, oldest acquisition first
+        (FIFO), so a caller never issues one query per holding.
+        """
+        ids = {i for i in holding_ids if i is not None}
+        if not ids:
+            return {}
+        rows = (
+            (
+                await self.session.execute(
+                    select(OrderLot)
+                    .where(
+                        OrderLot.workspace_id == workspace_id,
+                        OrderLot.holding_id.in_(ids),
+                        OrderLot.remaining_quantity > 0,
+                    )
+                    .order_by(OrderLot.holding_id, OrderLot.acquired_at, OrderLot.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_holding: dict[int, list[OrderLot]] = {}
+        for row in rows:
+            by_holding.setdefault(row.holding_id, []).append(row)
+        return by_holding
 
     async def create_lots(self, lots: list[OrderLot]) -> list[OrderLot]:
         # flush() already populates auto-generated PKs; no refresh() needed.
@@ -843,6 +924,19 @@ class ReferenceSecurityRepository(BaseRepository[ReferenceSecurity]):
             select(ReferenceSecurity).where(ReferenceSecurity.ticker == ticker.strip().upper())
         )
         return result.scalars().all()
+
+    async def list_by_tickers(self, tickers: Sequence[str]) -> dict[str, list[ReferenceSecurity]]:
+        """Reference rows for many tickers in one query, keyed by upper-case ticker."""
+        normalized = {t.strip().upper() for t in tickers if t and t.strip()}
+        if not normalized:
+            return {}
+        result = await self.session.execute(
+            select(ReferenceSecurity).where(ReferenceSecurity.ticker.in_(normalized))
+        )
+        grouped: dict[str, list[ReferenceSecurity]] = {}
+        for row in result.scalars().all():
+            grouped.setdefault(row.ticker.upper(), []).append(row)
+        return grouped
 
     async def get_by_amfi_code(self, amfi_code: str) -> ReferenceSecurity | None:
         result = await self.session.execute(
