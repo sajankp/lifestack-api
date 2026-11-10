@@ -901,7 +901,7 @@ async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
     instrument_res = await client.post(
         "/v1/investing/instruments",
         json={
-            "symbol": "VTI",
+            "symbol": "CUSTOMIVV",
             "name": "Vanguard Total Market ETF",
             "instrument_type": "etf",
         },
@@ -930,7 +930,7 @@ async def test_investing_lookthrough_exposure_and_overlap(client: AsyncClient):
     assert len(constituent_res.json()) == 2
 
     vti_holding_id = await _create_holding_via_order(
-        client, account_map["brokerage"], "VTI", "10.00000000", "100.00", "USD", "etf"
+        client, account_map["brokerage"], "CUSTOMIVV", "10.00000000", "100.00", "USD", "etf"
     )
     aapl_holding_id = await _create_holding_via_order(
         client, account_map["wallet"], "AAPL", "2.00000000", "150.00", "USD"
@@ -1008,7 +1008,7 @@ async def test_investing_lookthrough_converts_holdings_to_reporting_currency(cli
     instrument_res = await client.post(
         "/v1/investing/instruments",
         json={
-            "symbol": "VTI",
+            "symbol": "CUSTOMIVV",
             "name": "Vanguard Total Market ETF",
             "instrument_type": "etf",
         },
@@ -1032,7 +1032,7 @@ async def test_investing_lookthrough_converts_holdings_to_reporting_currency(cli
     # One account, one currency (spec-050): the GBP holding needs its own account.
     gbp_broker_id = await _create_brokerage_account(client, "GBP Brokerage", "GBP")
     vti_holding_id = await _create_holding_via_order(
-        client, gbp_broker_id, "VTI", "10.00000000", "100.00", "GBP", "etf"
+        client, gbp_broker_id, "CUSTOMIVV", "10.00000000", "100.00", "GBP", "etf"
     )
     aapl_holding_id = await _create_holding_via_order(
         client, account_map["wallet"], "AAPL", "2.00000000", "150.00", "USD"
@@ -1267,7 +1267,7 @@ async def test_investing_constituent_weights_validation(client: AsyncClient):
     instrument_res = await client.post(
         "/v1/investing/instruments",
         json={
-            "symbol": "VTI",
+            "symbol": "CUSTOMIVV",
             "name": "Vanguard Total Market ETF",
             "instrument_type": "etf",
         },

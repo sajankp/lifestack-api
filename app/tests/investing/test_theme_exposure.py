@@ -128,7 +128,7 @@ async def _seed(client: AsyncClient, email: str) -> dict[str, str]:
     await _use_reporting_currency(client, "USD")
     inst = await client.post(
         "/v1/investing/instruments",
-        json={"symbol": "VTI", "name": "Vanguard Total Market ETF", "instrument_type": "etf"},
+        json={"symbol": "CUSTOMIVV", "name": "Vanguard Total Market ETF", "instrument_type": "etf"},
     )
     assert inst.status_code == 201, inst.text
     instrument_id = inst.json()["public_id"]
@@ -161,7 +161,7 @@ async def _seed(client: AsyncClient, email: str) -> dict[str, str]:
         as_of=TODAY - timedelta(days=30),
     )
     vti = await _create_holding_via_order(
-        client, accounts["brokerage"], "VTI", "10.00000000", "100.00", "USD", "etf"
+        client, accounts["brokerage"], "CUSTOMIVV", "10.00000000", "100.00", "USD", "etf"
     )
     aapl = await _create_holding_via_order(
         client, accounts["wallet"], "AAPL", "2.00000000", "100.00", "USD"

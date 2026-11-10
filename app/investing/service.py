@@ -1691,6 +1691,18 @@ class ConstituentService:
         instrument = await self.instrument_repo.get_by_public_id(workspace_id, instrument_public_id)
         if instrument is None:
             raise NotFoundError(detail=f"Instrument '{instrument_public_id}' not found")
+        if instrument.workspace_id != workspace_id:
+            owner = (
+                "the platform (global security master)"
+                if instrument.workspace_id is None
+                else f"workspace {instrument.workspace_id}"
+            )
+            raise ForbiddenError(
+                detail=(
+                    f"Instrument '{instrument_public_id}' is owned by {owner}, not workspace {workspace_id}; "
+                    "constituent snapshots of global instruments are read-only in every workspace"
+                ),
+            )
         if instrument.instrument_type == InstrumentType.stock.value:
             raise ValidationError(detail="Stock instruments cannot have constituent snapshots")
 
@@ -1840,6 +1852,18 @@ class ConstituentService:
         instrument = await self.instrument_repo.get_by_public_id(workspace_id, instrument_public_id)
         if instrument is None:
             raise NotFoundError(detail=f"Instrument '{instrument_public_id}' not found")
+        if instrument.workspace_id != workspace_id:
+            owner = (
+                "the platform (global security master)"
+                if instrument.workspace_id is None
+                else f"workspace {instrument.workspace_id}"
+            )
+            raise ForbiddenError(
+                detail=(
+                    f"Instrument '{instrument_public_id}' is owned by {owner}, not workspace {workspace_id}; "
+                    "constituent snapshots of global instruments are read-only in every workspace"
+                ),
+            )
         deleted = await self.constituent_repo.delete_snapshot(
             instrument.id,
             as_of,
