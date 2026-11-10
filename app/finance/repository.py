@@ -544,6 +544,7 @@ class FinanceSettingRepository:
         reporting_currency_code: str | None,
         currency_display_preference: CurrencyDisplayPreference | None,
         lookthrough_min_weight_pct: Decimal = Decimal("0.5"),
+        stale_price_days: int | None = None,
         default_spending_account_id: int | None = None,
         locale: str = "en-US",
         decimal_places: int = 2,
@@ -555,6 +556,8 @@ class FinanceSettingRepository:
             if currency_display_preference is not None:
                 existing.currency_display_preference = currency_display_preference
             existing.lookthrough_min_weight_pct = lookthrough_min_weight_pct
+            if stale_price_days is not None:
+                existing.stale_price_days = stale_price_days
             existing.default_spending_account_id = default_spending_account_id
             existing.locale = locale
             existing.decimal_places = decimal_places

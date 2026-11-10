@@ -121,6 +121,7 @@ class WorkspaceFinanceSetting(SQLModel, table=True):
     locale: str = Field(default="en-US", sa_type=sa.String(length=16))
     decimal_places: int = Field(default=2)
     lookthrough_min_weight_pct: Decimal = Field(default=Decimal("0.5"), sa_type=sa.Numeric(7, 4))
+    stale_price_days: int = Field(default=7)
 
     # Fallback account for spending-transaction creates that don't specify one
     # (spec-054) — every new transaction must resolve to an account somehow.

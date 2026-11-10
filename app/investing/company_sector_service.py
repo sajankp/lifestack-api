@@ -198,8 +198,7 @@ class CompanySectorService:
                             select(Company).where(
                                 Company.name == name,
                                 Company.id != company.id,
-                                (Company.workspace_id == workspace_id)
-                                | (Company.workspace_id.is_(None)),
+                                Company.workspace_id == workspace_id,
                             )
                         )
                     )

@@ -18,6 +18,7 @@ from app.core.currency import (
     effective_display_as_of,
     fx_rates_used,
 )
+from app.core.audit import AuditLogger
 from app.core.database import postgres
 from app.finance.repository import (
     AccountRepository,
@@ -36,6 +37,7 @@ from app.investing.repository import (
     HoldingPriceRepository,
     HoldingRepository,
     InstrumentRepository,
+    PortfolioSnapshotRepository,
 )
 from app.investing.tax.exchanges import resolve_exchange
 from app.mcp import security
@@ -84,6 +86,7 @@ def _add_holding_reporting_valuation(
     reporting_currency: str | None,
     fx_lookup: dict[tuple[str, str], Any],
     fx_as_of: datetime | None,
+    stale_days: int | None = None,
 ) -> None:
     """Add explicit reporting-currency values without changing REST fields."""
     quantity = Decimal(str(holding.quantity))
@@ -130,6 +133,12 @@ def _add_holding_reporting_valuation(
         status = "missing_price"
     else:
         status = "current"
+        # A price is only "current" while it is within the workspace's
+        # stale-price window; an old NAV or close must not read as fresh.
+        if stale_days is not None:
+            age = (datetime.now(UTC).date() - price_row.price_date).days
+            if age > stale_days:
+                status = "stale"
 
     converted_gain_loss = (
         converted_market - converted_book
@@ -309,6 +318,11 @@ def register(mcp: FastMCP) -> None:
                 if finance_settings and finance_settings.reporting_currency_code
                 else None
             )
+            stale_days = (
+                finance_settings.stale_price_days
+                if finance_settings and finance_settings.stale_price_days is not None
+                else 7
+            )
             if valuation_currency:
                 currency_row = await CurrencyRepository(session).get_by_code(valuation_currency)
                 if currency_row is None or not currency_row.is_active:
@@ -357,6 +371,7 @@ def register(mcp: FastMCP) -> None:
                         reporting_currency,
                         fx_lookup,
                         fx_as_of,
+                        stale_days=stale_days,
                     )
                 items.append(data)
 
@@ -544,6 +559,120 @@ def register(mcp: FastMCP) -> None:
     async def get_investing_summary(workspace_id: int) -> dict[str, Any]:
         """Get a read-only investing summary for an authorized workspace."""
         return await common.run_capture_tool(workspace_id, "mcp:read", "get_investing_summary", {})
+
+    @mcp.tool
+    async def set_instrument_price(
+        workspace_id: int,
+        holding_public_id: str,
+        price_date: str,
+        unit_price: str,
+        source: str = "manual",
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Manually override one holding's price for a date (feed down, stale NAV).
+
+        ``unit_price`` is a decimal string in the holding's currency and
+        ``price_date`` an ISO date (YYYY-MM-DD). ``source`` labels the
+        provenance (1-16 characters, default ``manual``). The price is
+        upserted on ``(holding, price_date)``; when ``price_date`` is today,
+        that day's portfolio snapshot is invalidated so performance reads
+        recompute against the new price. Without ``confirmed`` the call
+        previews and writes nothing. Recorded in the audit trail. Requires
+        the mcp:write scope.
+        """
+        try:
+            holding_public = uuid.UUID(holding_public_id)
+            price_day = date.fromisoformat(price_date.strip())
+            price = Decimal(unit_price.strip())
+            if not price.is_finite() or price < 0:
+                raise InvalidOperation("price must be a non-negative finite decimal")
+            src = (source or "manual").strip()
+            if not src or len(src) > 16:
+                raise ValueError("source must be 1-16 characters")
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError, InvalidOperation) as exc:
+            return {"status": "error", "message": f"Invalid price input: {exc}"}
+
+        async with postgres.async_session_maker() as session:
+            user_id = await security.authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:write",
+                tool="set_instrument_price",
+            )
+            holding = await HoldingRepository(session).get_by_public_id(
+                workspace_id, holding_public
+            )
+            if holding is None or holding.id is None:
+                return {"status": "error", "message": "Holding not found in this workspace."}
+            price_repo = HoldingPriceRepository(session)
+            existing = await price_repo.latest_price_on_or_before(
+                workspace_id, holding.id, price_day
+            )
+            before = (
+                str(existing.unit_price)
+                if existing is not None and existing.price_date == price_day
+                else None
+            )
+
+            if not confirmed:
+                return {
+                    "status": "needs_confirmation",
+                    "needs_confirmation": True,
+                    "message": (
+                        f"Set the price of holding {holding_public_id} to "
+                        f"{price} {holding.currency} as of {price_day} (source "
+                        f"{src})? Confirm to continue."
+                    ),
+                    "workspace_id": workspace_id,
+                    "holding_public_id": holding_public_id,
+                    "price_date": price_day.isoformat(),
+                    "unit_price": str(price),
+                    "source": src,
+                    "before": before,
+                }
+
+            await price_repo.upsert_price(
+                workspace_id=workspace_id,
+                holding_id=holding.id,
+                price_date=price_day,
+                unit_price=price,
+                source=src,
+            )
+            if price_day == datetime.now(UTC).date():
+                await PortfolioSnapshotRepository(session).delete_for_date(
+                    workspace_id, price_day
+                )
+            await AuditLogger(session).log(
+                workspace_id=workspace_id,
+                actor_id=user_id,
+                action="update",
+                module="investing",
+                entity_type="holding_price",
+                entity_id=holding.id,
+                details={
+                    "entity_public_id": str(holding_public),
+                    "holding_symbol": holding.symbol,
+                    "price_date": price_day.isoformat(),
+                    "before": before,
+                    "after": str(price),
+                    "source": src,
+                },
+            )
+            await session.commit()
+        return {
+            "status": "success",
+            "entity_type": "holding_price",
+            "workspace_id": workspace_id,
+            "holding_public_id": holding_public_id,
+            "price_date": price_day.isoformat(),
+            "unit_price": str(price),
+            "source": src,
+            "changed": before is not None and before != str(price),
+            "summary": (
+                f"Price for {holding_public_id} on {price_day} set to {price} "
+                f"{holding.currency} (source {src})."
+            ),
+        }
 
     @mcp.tool
     async def create_portfolio_report(

@@ -14,7 +14,17 @@ from app.core.audit import AuditLogger
 from app.core.database import postgres
 from app.core.exceptions import APIError
 from app.core.exceptions import ValidationError as AppValidationError
+from app.investing.company_merge_service import (
+    CompanyMergeService,
+    MergeConflictError,
+)
 from app.investing.company_sector_service import SectorRowError
+from app.investing.models import Instrument, InstrumentConstituent
+from app.investing.repository import (
+    CompanyRepository,
+    InstrumentConstituentRepository,
+    InstrumentRepository,
+)
 from app.investing.schemas import (
     CompanySectorRow,
     HoldingComplianceUpsert,
@@ -23,6 +33,8 @@ from app.investing.schemas import (
 from app.investing.theme_schemas import GroupBy, HoldingThemeTagsInput, ThemeTagInput
 from app.mcp import security
 from app.mcp.support import services
+
+from sqlalchemy import select
 
 logger = structlog.get_logger(__name__)
 
@@ -321,8 +333,9 @@ def register(mcp: FastMCP) -> None:
         Edits one company visible in this workspace (global or a workspace
         copy). A global company is forked into a workspace copy first, so the
         global record is never mutated in place. At least one of ``name`` or
-        ``isin`` must be provided. An ISIN or name already used by another
-        visible company is rejected.
+        ``isin`` must be provided. An ISIN already used by another company in
+        this workspace is rejected; a name may shadow a global record's name
+        (the workspace copy takes precedence for this workspace).
 
         Without ``confirmed`` the call returns ``needs_confirmation`` and
         writes nothing. With it, the change is applied in a transaction and
@@ -409,6 +422,154 @@ def register(mcp: FastMCP) -> None:
                     else ""
                 )
                 + "."
+            ),
+        }
+
+    @mcp.tool
+    async def merge_companies(
+        workspace_id: int,
+        keep_company_public_id: str,
+        drop_company_public_id: str,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Merge one duplicate company into another inside this workspace.
+
+        Re-points this workspace's instruments and constituent snapshot rows
+        from the drop company to the keep company (summing weights when both
+        companies already carry a row for one instrument snapshot), copies
+        ISIN/ticker/sector onto the keep company when empty, then retires the
+        drop company. Returns before/after snapshots. Both companies must be
+        visible in the workspace; global companies are never merged or retired
+        by this tool.
+
+        Without ``confirmed`` the call returns ``needs_confirmation`` and
+        writes nothing. The change is recorded in the audit trail with
+        before/after values. Requires the mcp:write scope.
+        """
+        try:
+            keep_id = uuid.UUID(keep_company_public_id)
+            drop_id = uuid.UUID(drop_company_public_id)
+        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError):
+            return {"status": "error", "message": "Invalid company_public_id."}
+
+        if keep_id == drop_id:
+            return {
+                "status": "error",
+                "message": "keep and drop must be different companies.",
+            }
+
+        async with postgres.async_session_maker() as session:
+            user_id = await security.authorize_workspace(
+                session,
+                workspace_id,
+                required_scope="mcp:write",
+                tool="merge_companies",
+            )
+
+            service = CompanyMergeService(
+                session,
+                CompanyRepository(session),
+                InstrumentRepository(session),
+                InstrumentConstituentRepository(session),
+            )
+            keep = await service.company_repo.get_by_public_id(workspace_id, keep_id)
+            drop = await service.company_repo.get_by_public_id(workspace_id, drop_id)
+            preview: dict[str, Any] = {
+                "keep": {
+                    "company_public_id": keep_company_public_id,
+                    "name": keep.name if keep else None,
+                    "ticker": keep.ticker if keep else None,
+                    "isin": keep.isin if keep else None,
+                    "sector": keep.sector if keep else None,
+                },
+                "drop": {
+                    "company_public_id": drop_company_public_id,
+                    "name": drop.name if drop else None,
+                    "ticker": drop.ticker if drop else None,
+                    "isin": drop.isin if drop else None,
+                    "sector": drop.sector if drop else None,
+                },
+            }
+            if keep is not None and drop is not None and keep.workspace_id == workspace_id:
+                instruments = await service.instrument_repo.get_by_company(
+                    workspace_id, drop.id
+                )
+                preview["instruments_repointed"] = len(instruments)
+                result = await session.execute(
+                    select(InstrumentConstituent)
+                    .join(Instrument, Instrument.id == InstrumentConstituent.instrument_id)
+                    .where(
+                        Instrument.workspace_id == workspace_id,
+                        InstrumentConstituent.constituent_company_id == drop.id,
+                    )
+                )
+                preview["constituent_rows_repointed"] = len(
+                    list(result.scalars().all())
+                )
+            else:
+                preview["error"] = (
+                    "both companies must be visible in this workspace"
+                    if keep is not None and drop is not None
+                    else "company not found in this workspace"
+                )
+
+            if not confirmed:
+                return {
+                    "status": "needs_confirmation",
+                    "needs_confirmation": True,
+                    "message": (
+                        f"Merge company {drop_company_public_id} into "
+                        f"{keep_company_public_id} in workspace {workspace_id}? "
+                        "Confirm to continue."
+                    ),
+                    "workspace_id": workspace_id,
+                    "keep_company_public_id": keep_company_public_id,
+                    "drop_company_public_id": drop_company_public_id,
+                    **preview,
+                }
+
+            if "error" in preview:
+                return {"status": "error", "message": preview["error"]}
+
+            try:
+                outcome = await service.merge_companies(
+                    workspace_id, keep_id, drop_id, actor_id=user_id
+                )
+                await AuditLogger(session).log(
+                    workspace_id=workspace_id,
+                    actor_id=user_id,
+                    action="merge",
+                    module="investing",
+                    entity_type="company",
+                    entity_id=outcome["company_id"],
+                    details={
+                        "entity_public_id": str(keep_id),
+                        "before": outcome["before"],
+                        "after": outcome["after"],
+                        "changed_fields": outcome["changed_fields"],
+                        "summary": outcome["summary"],
+                    },
+                )
+                await session.commit()
+            except (APIError, ValueError, MergeConflictError) as exc:
+                await session.rollback()
+                return {"status": "error", "message": str(exc)}
+        return {
+            "status": "success",
+            "entity_type": "company",
+            "workspace_id": workspace_id,
+            "keep_company_public_id": keep_company_public_id,
+            "drop_company_public_id": drop_company_public_id,
+            "changed": outcome["changed"],
+            "before": outcome["before"],
+            "after": outcome["after"],
+            "summary": outcome["summary"],
+            "summary_text": (
+                f"Merged {drop_company_public_id} into {keep_company_public_id}: "
+                f"{outcome['summary']['instruments_repointed']} instrument(s) re-pointed, "
+                f"{outcome['summary']['constituent_rows_repointed']} constituent row(s) re-pointed, "
+                f"{outcome['summary']['constituent_weights_summed']} weight(s) summed, "
+                "drop retired."
             ),
         }
 

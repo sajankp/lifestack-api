@@ -648,6 +648,16 @@ class InstrumentRepository(BaseRepository[Instrument]):
         )
         return result.scalars().all()
 
+    async def get_by_company(self, workspace_id: int, company_id: int) -> list[Instrument]:
+        """Workspace-scoped instruments linked to one company."""
+        result = await self.session.execute(
+            select(Instrument).where(
+                Instrument.workspace_id == workspace_id,
+                Instrument.company_id == company_id,
+            )
+        )
+        return list(result.scalars().all())
+
 
 class CompanyRepository(BaseRepository[Company]):
     async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> Company | None:
