@@ -36,8 +36,15 @@ def _instrument(id_, symbol, kind="stock", company_id=None):
     )
 
 
-def _company(id_, sector):
-    return SimpleNamespace(id=id_, sector=sector)
+def _company(id_, sector, public_id=None, name=None, ticker=None, country_code=None):
+    return SimpleNamespace(
+        id=id_,
+        public_id=public_id or uuid.uuid4(),
+        name=name or f"Company {id_}",
+        ticker=ticker,
+        sector=sector,
+        country_code=country_code,
+    )
 
 
 def _snapshot_row(company_id, weight, as_of=date(2026, 11, 1), source="sec"):
@@ -61,7 +68,7 @@ def _service(
     queries = {"constituents": 0, "companies": 0, "instruments": 0}
 
     class Holdings:
-        async def get_all(self, workspace_id, limit, offset):
+        async def get_all(self, workspace_id, limit=None, offset=0, quantity_state=None):
             return holdings, len(holdings)
 
     class Instruments:
@@ -81,6 +88,10 @@ def _service(
         async def get_latest_on_or_before_many(self, ids, as_of):
             queries["constituents"] += 1
             return {i: rows for i, rows in (snapshots or {}).items() if i in set(ids)}
+
+        # Same query as LatestConstituentSnapshotRepository.get_single_latest_many:
+        # exactly one snapshot per instrument, newest by (as_of_date, fetched_at).
+        get_single_latest_many = get_latest_on_or_before_many
 
     class Prices:
         async def latest_prices_on_or_before_bulk(self, workspace_id, holding_ids, as_of):
@@ -134,35 +145,62 @@ async def test_fx_conversion_and_missing_fx_warns_instead_of_zero():
     assert by_sector["Financials"]["value"] == "10.00"  # 1000 INR * 0.01
     assert "Utilities" not in by_sector  # excluded, not silently zero
     assert result["holdings_value"] == "110.00"
-    assert any("GBP to USD" in w and "GBSTK" in w for w in result["warnings"])
+    assert any("no FX rate" in w and "GBSTK" in w for w in result["warnings"])
     assert sum(Decimal(str(s["pct"])) for s in result["sectors"]) == Decimal("100.00")
 
 
 @pytest.mark.asyncio
-async def test_missing_price_falls_back_to_cost_with_warning():
+async def test_missing_price_excludes_instead_of_valuing_at_cost() -> None:
+    """A holding with no market price is excluded with an explicit warning;
+    it is never silently re-based to average cost. That keeps sector_allocation
+    and lookthrough_exposure on the same market-value basis."""
     holdings = [_holding(1, "NOPRICE", "2", avg_cost="25")]
     service, _ = _service(
         holdings, [_instrument(1, "NOPRICE", company_id=1)], [_company(1, "Energy")]
     )
     result = await service.sector_allocation(1, AS_OF)
-    assert result["sectors"] == [{"sector": "Energy", "value": "50.00", "pct": 100.0}]
-    assert any("No market price for NOPRICE" in w for w in result["warnings"])
+    assert result["sectors"] == []
+    assert result["holdings_value"] == "0.00"
+    assert result["currency"] == "USD"
+    assert any("no market price" in w for w in result["warnings"])
 
 
 @pytest.mark.asyncio
-async def test_multi_currency_without_reporting_currency_warns():
+async def test_multi_currency_without_reporting_currency_defaults_to_inr() -> None:
+    """With no reporting currency set on a multi-currency portfolio the
+    valuation defaults to INR (the look-through engine's default) and converts
+    every holding, instead of defaulting to USD."""
     holdings = [_holding(1, "A", "1", "USD"), _holding(2, "B", "1", "EUR")]
     service, _ = _service(
         holdings,
         [_instrument(1, "A", company_id=1), _instrument(2, "B", company_id=1)],
         [_company(1, "Energy")],
         prices={1: "10", 2: "10"},
+        fx={("EUR", "INR"): "2", ("USD", "INR"): "80"},
+    )
+    result = await service.sector_allocation(1, AS_OF)
+    assert result["currency"] == "INR"
+    assert result["holdings_value"] == "820.00"  # 10 USD x 80 + 10 EUR x 2
+    assert any("No reporting currency configured; valuing in INR" in w for w in result["warnings"])
+    by_sector = {s["sector"]: Decimal(s["value"]) for s in result["sectors"]}
+    assert by_sector == {"Energy": Decimal("820.00")}
+
+
+@pytest.mark.asyncio
+async def test_multi_currency_with_explicit_usd_setting() -> None:
+    """An explicit workspace reporting currency still wins over the default."""
+    holdings = [_holding(1, "A", "1", "USD"), _holding(2, "B", "1", "EUR")]
+    service, _ = _service(
+        holdings,
+        [_instrument(1, "A", company_id=1), _instrument(2, "B", company_id=1)],
+        [_company(1, "Energy")],
+        prices={1: "10", 2: "10"},
+        reporting_currency="USD",
         fx={("EUR", "USD"): "2"},
     )
     result = await service.sector_allocation(1, AS_OF)
     assert result["currency"] == "USD"
-    assert result["holdings_value"] == "30.00"
-    assert any("Reporting currency is not set" in w for w in result["warnings"])
+    assert result["holdings_value"] == "30.00"  # 10 USD + 10 EUR x 2
 
 
 @pytest.mark.asyncio
@@ -177,7 +215,9 @@ async def test_overweight_snapshot_never_exceeds_fund_value_and_unmapped_goes_to
     assert sum(Decimal(s["value"]) for s in result["sectors"]) == Decimal("1000.00")
     by_sector = {s["sector"]: Decimal(s["value"]) for s in result["sectors"]}
     assert set(by_sector) == {"Energy", OTHER}  # unmapped company -> Other
-    assert result["fund_coverage"][0]["coverage_pct"] == 100.0
+    assert (
+        result["fund_coverage"][0]["coverage_pct"] == 100.0
+    )  # every row resolves to a known company
 
 
 @pytest.mark.asyncio
@@ -212,7 +252,7 @@ async def test_stale_snapshot_warns_and_placeholder_not_in_coverage():
         prices={10: "100", 11: "50"},
     )
     result = await service.sector_allocation(1, AS_OF)
-    assert any("Stale constituent snapshot" in w for w in result["warnings"])
+    assert any("is stale" in w for w in result["warnings"])
     assert [f["symbol"] for f in result["fund_coverage"]] == ["FUND"]
     assert {s["sector"]: s["value"] for s in result["sectors"]} == {
         "Energy": "100.00",

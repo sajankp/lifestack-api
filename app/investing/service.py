@@ -83,6 +83,7 @@ from app.investing.schemas import (
     OverlapRow,
 )
 from app.investing.sectors import OTHER_NOT_ITEMISED, normalise_sector, sector_key
+from app.investing.theme_service import ThemeExposureService
 from app.spending.models import (
     SpendingCategory,
     SpendingTransaction,
@@ -2179,180 +2180,106 @@ class ExposureAnalyticsService:
         """
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
         holdings = [h for h in holdings if h.quantity != 0]
-        warnings: list[str] = []
 
-        used_currencies = sorted({holding.currency.upper() for holding in holdings})
-        reporting_currency: str | None = None
-        if self.finance_setting_repo is not None:
-            workspace_settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
-            if workspace_settings and workspace_settings.reporting_currency_code:
-                reporting_currency = workspace_settings.reporting_currency_code.upper()
-        if reporting_currency is None and len(used_currencies) == 1:
-            reporting_currency = used_currencies[0]
-        if reporting_currency is None:
-            reporting_currency = "USD"
-            if len(used_currencies) > 1:
-                warnings.append(
-                    "Reporting currency is not set for a multi-currency portfolio; "
-                    "values were converted to USD"
-                )
-
-        fx_lookup: dict[tuple[str, str], FxRate] = {}
-        fx_as_of: datetime | None = None
-        if self.fx_rate_repo is not None and any(
-            curr != reporting_currency for curr in used_currencies
-        ):
-            required_pairs = _build_required_pairs(used_currencies, reporting_currency)
-            fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
-                list(required_pairs),
-                effective_display_as_of(datetime.combine(as_of, datetime.max.time(), tzinfo=UTC)),
-            )
-            if fx_lookup:
-                fx_as_of = max(rate.as_of for rate in fx_lookup.values())
-
-        # Batch-load everything up front: no per-holding / per-row queries.
-        instruments_by_id = await self.instrument_repo.get_by_ids([
-            h.instrument_id for h in holdings if h.instrument_id is not None
-        ])
-        symbols = [h.symbol for h in holdings if h.instrument_id is None]
-        instruments_by_symbol = await self.instrument_repo.get_by_symbols(workspace_id, symbols)
-        all_instruments = list(instruments_by_id.values()) + list(instruments_by_symbol.values())
-
-        price_rows = (
-            await self.holding_price_repo.latest_prices_on_or_before_bulk(
-                workspace_id,
-                [h.id for h in holdings if h.id is not None],
-                as_of,
-            )
-            if self.holding_price_repo is not None
-            else {}
+        # Valuation (price, FX, reporting currency, exclusions) belongs to the
+        # single look-through engine (ThemeExposureService.lookthrough_exposure,
+        # spec-105). This service delegates to it and only rolls the result up
+        # into sector buckets, so the two engines can never disagree.
+        theme = ThemeExposureService(
+            self.holding_repo,
+            self.instrument_repo,
+            self.company_repo,
+            self.constituent_repo,
+            self.holding_price_repo,
+            self.finance_setting_repo,
+            self.fx_rate_repo,
+            None,  # theme tags are not needed for sector roll-up
+            self.staleness_window_days,
         )
 
-        pooled_types = (InstrumentType.etf.value, InstrumentType.mutual_fund.value)
-        constituents_by_instrument = (
-            await self.constituent_repo.get_latest_on_or_before_many(
-                [
-                    inst.id
-                    for inst in all_instruments
-                    if inst.id and inst.instrument_type in pooled_types
-                ],
-                as_of,
-            )
-            if lookthrough
-            else {}
-        )
-
-        company_ids = {inst.company_id for inst in all_instruments if inst.company_id is not None}
-        for rows in constituents_by_instrument.values():
-            company_ids.update(
-                row.constituent_company_id for row in rows if row.constituent_company_id
-            )
-        companies_by_id = await self.company_repo.get_by_ids(sorted(company_ids))
-
-        # Buckets are keyed case/whitespace-insensitively; ``labels`` keeps the
-        # first spelling seen (writes already canonicalise GICS names).
-        sector_totals: dict[str, Decimal] = {}
-        labels: dict[str, str] = {}
-        fund_coverage: list[dict[str, Any]] = []
-        total_value = Decimal("0")
-
-        def add_sector(label: str, amount: Decimal) -> None:
-            key = sector_key(label)
-            labels.setdefault(key, normalise_sector(label) or OTHER_NOT_ITEMISED)
+        def add_sector(
+            sector_totals: dict[str, Decimal],
+            labels: dict[str, str],
+            label: str | None,
+            amount: Decimal,
+        ) -> None:
+            sector = normalise_sector(label)
+            bucket = sector or OTHER_NOT_ITEMISED
+            key = sector_key(bucket)
+            labels.setdefault(key, bucket)
             sector_totals[key] = sector_totals.get(key, Decimal("0")) + amount
 
-        def company_sector(company_id: int | None) -> str | None:
-            company = companies_by_id.get(company_id) if company_id is not None else None
-            return normalise_sector(company.sector) if company else None
+        if lookthrough:
+            exposure = await theme.lookthrough_exposure(workspace_id, as_of)
+            sector_totals: dict[str, Decimal] = {}
+            labels: dict[str, str] = {}
+            for row in exposure.by_company:
+                add_sector(sector_totals, labels, row.sector, row.total_value)
+            add_sector(sector_totals, labels, None, exposure.not_itemised_value)
+            total_value = exposure.total_value
+            warnings = list(exposure.warnings)
+            currency = exposure.currency
+            fx_as_of = exposure.fx_as_of
+            fx_rates_used = exposure.fx_rates_used
+            fund_coverage = [
+                {
+                    "instrument_public_id": str(row.instrument_id),
+                    "symbol": row.symbol,
+                    "name": row.name,
+                    "instrument_type": row.instrument_type,
+                    "value": str(row.value.quantize(Decimal("0.01"))),
+                    "coverage_pct": float(row.itemised_pct),
+                    "snapshot_date": row.snapshot_date.isoformat() if row.snapshot_date else None,
+                    "source": row.source,
+                    "constituent_rows": row.constituent_rows,
+                }
+                for row in exposure.fund_coverage
+            ]
+        else:
+            # No look-through: every holding is one bucket, valued through the
+            # same engine so currency/FX handling can never diverge.
+            portfolio = await theme._load_portfolio(workspace_id, as_of)
+            sector_totals: dict[str, Decimal] = {}
+            labels: dict[str, str] = {}
+            total_value = portfolio.total
+            warnings = list(portfolio.warnings)
+            currency = portfolio.currency
+            fx_as_of = portfolio.fx_as_of
+            fx_rates_used = portfolio.fx_rates_used
+            fund_coverage = []
 
-        for h in holdings:
-            instrument = None
-            if h.instrument_id is not None:
-                instrument = instruments_by_id.get(h.instrument_id)
-            if instrument is None:
-                instrument = instruments_by_symbol.get(h.symbol)
-            display_name = instrument.name if instrument and instrument.name else h.symbol
+            company_ids = sorted({
+                pos.instrument.company_id
+                for pos in portfolio.positions
+                if pos.instrument is not None and pos.instrument.company_id is not None
+            })
+            companies_by_id = await self.company_repo.get_by_ids(company_ids) if company_ids else {}
 
-            price_row = price_rows.get(h.id) if h.id is not None else None
-            if price_row is None:
-                warnings.append(
-                    f"No market price for {display_name} on or before {as_of.isoformat()}; "
-                    "valued at average cost"
-                )
-            native_value = h.quantity * (price_row.unit_price if price_row else h.avg_cost)
-            value = _convert_amount(native_value, h.currency.upper(), reporting_currency, fx_lookup)
-            if value is None:
-                warnings.append(
-                    f"FX rate from {h.currency.upper()} to {reporting_currency} is required "
-                    f"for {display_name}; excluded from the allocation"
-                )
-                continue
-            total_value += value
-
-            if self._PLACEHOLDER_SYMBOL_RE.match(h.symbol):
-                # The un-itemised remainder of a fund: never rescaled.
-                add_sector(OTHER_NOT_ITEMISED, value)
-                continue
-
-            is_pooled = instrument is not None and instrument.instrument_type in pooled_types
-
-            if not lookthrough:
-                if is_pooled:
-                    add_sector("ETFs & Funds", value)
-                else:
-                    sector = company_sector(instrument.company_id if instrument else None)
-                    add_sector(sector or "Unclassified", value)
-                continue
-
-            if not is_pooled:
-                # Direct stock: its own company's sector (unmapped -> Other).
-                sector = company_sector(instrument.company_id if instrument else None)
-                add_sector(sector or OTHER_NOT_ITEMISED, value)
-                continue
-
-            rows = constituents_by_instrument.get(instrument.id, [])  # type: ignore[arg-type]
-            fund = {
-                "instrument_public_id": str(instrument.public_id),
-                "symbol": instrument.symbol,
-                "name": instrument.name,
-                "instrument_type": instrument.instrument_type,
-                "value": str(value.quantize(Decimal("0.01"))),
-                "coverage_pct": 0.0,
-                "snapshot_date": None,
-                "source": None,
-                "constituent_rows": len(rows),
-            }
-            fund_coverage.append(fund)
-            if not rows:
-                add_sector(OTHER_NOT_ITEMISED, value)
-                warnings.append(f"No constituent snapshot for {display_name}")
-                continue
-
-            snapshot_date = rows[0].as_of_date
-            if (as_of - snapshot_date).days > self.staleness_window_days:
-                warnings.append(f"Stale constituent snapshot for {display_name}")
-            itemised_weight = min(sum((row.weight for row in rows), Decimal("0")), Decimal("1"))
-            fund["coverage_pct"] = round(float(itemised_weight * Decimal("100")), 2)
-            fund["snapshot_date"] = snapshot_date.isoformat()
-            fund["source"] = rows[0].source
-
-            # Rows are weighted by their raw weight; if provider weights exceed
-            # 1.0 they are scaled down so the fund never contributes more than
-            # its own value. The un-itemised remainder is never redistributed.
-            raw_weight = sum((row.weight for row in rows), Decimal("0"))
-            scale = Decimal("1") / raw_weight if raw_weight > 1 else Decimal("1")
-            for row in rows:
-                sector = company_sector(row.constituent_company_id)
-                add_sector(sector or OTHER_NOT_ITEMISED, value * row.weight * scale)
-            remainder = value * (Decimal("1") - itemised_weight)
-            if remainder > 0:
-                add_sector(OTHER_NOT_ITEMISED, remainder)
+            for pos in portfolio.positions:
+                holding, instrument = pos.holding, pos.instrument
+                if self._PLACEHOLDER_SYMBOL_RE.match(holding.symbol):
+                    add_sector(sector_totals, labels, OTHER_NOT_ITEMISED, pos.value)
+                    continue
+                if instrument is None:
+                    add_sector(sector_totals, labels, "Unclassified", pos.value)
+                    continue
+                if instrument.instrument_type in (
+                    InstrumentType.etf.value,
+                    InstrumentType.mutual_fund.value,
+                ):
+                    add_sector(sector_totals, labels, "ETFs & Funds", pos.value)
+                    continue
+                sector = None
+                if instrument.company_id is not None:
+                    company = companies_by_id.get(instrument.company_id)
+                    sector = normalise_sector(company.sector) if company else None
+                add_sector(sector_totals, labels, sector or "Unclassified", pos.value)
 
         sectors = self._rounded_sector_rows(sector_totals, labels, total_value)
         total_value = total_value.quantize(Decimal("0.01"))
         return {
             "as_of_date": as_of.isoformat(),
-            "currency": reporting_currency,
+            "currency": currency,
             "lookthrough": lookthrough,
             "total_portfolio_value": str(total_value),
             "holdings_value": str(total_value),
@@ -2360,7 +2287,7 @@ class ExposureAnalyticsService:
             "fund_coverage": fund_coverage,
             "warnings": warnings,
             "fx_as_of": fx_as_of.isoformat() if fx_as_of else None,
-            "fx_rates_used": _fx_rates_used(used_currencies, reporting_currency, fx_lookup),
+            "fx_rates_used": fx_rates_used,
         }
 
     @staticmethod

@@ -60,6 +60,7 @@ from app.investing.schemas import (
     SectorAllocationItem,
 )
 from app.investing.service import MONEY_QUANT, ExposureAnalyticsService
+from app.investing.theme_service import DEFAULT_REPORTING_CURRENCY
 
 
 def _value_change(current: Decimal, baseline: Decimal) -> tuple[Decimal, Decimal | None]:
@@ -620,22 +621,27 @@ class PerformanceService:
             brokerage_ids = {a.id for a in accounts if a.account_type == "brokerage"}
             cash_balances = [c for c in cash_balances if c.account_id in brokerage_ids]
 
-        # Determine reporting currency
-        reporting_currency = "USD"
+        # Determine reporting currency: workspace setting first, then the single
+        # held currency, then the default -- never seed with "USD" first, which
+        # silently preferred USD over the look-through engine's basis.
+        reporting_currency: str | None = None
         if self.finance_setting_repo is not None:
             settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
             if settings and settings.reporting_currency_code:
                 reporting_currency = settings.reporting_currency_code.upper()
-            elif open_holdings:
-                reporting_currency = open_holdings[0].currency.upper()
-            elif cash_balances:
-                reporting_currency = cash_balances[0].currency.upper()
+        if reporting_currency is None and open_holdings:
+            reporting_currency = open_holdings[0].currency.upper()
+        if reporting_currency is None and cash_balances:
+            reporting_currency = cash_balances[0].currency.upper()
+        if reporting_currency is None:
+            reporting_currency = DEFAULT_REPORTING_CURRENCY
 
         # FX rates if needed
         all_currencies = {h.currency.upper() for h in open_holdings} | {
             c.currency.upper() for c in cash_balances
         }
         fx_lookup: dict[tuple[str, str], FxRate] = {}
+        lookthrough_warnings: list[str] = []
         if self.fx_rate_repo is not None and any(c != reporting_currency for c in all_currencies):
             pairs = _build_required_pairs(all_currencies, reporting_currency)
             as_of_dt = datetime.combine(today, datetime.max.time(), tzinfo=UTC)
@@ -677,9 +683,21 @@ class PerformanceService:
 
         for h in open_holdings:
             p = latest_prices.get(h.id)
-            raw_val = h.quantity * (p.unit_price if p is not None else h.avg_cost)
+            if p is None:
+                lookthrough_warnings.append(
+                    f"No market price for {h.symbol} on or before {today}; "
+                    "excluded from the allocation"
+                )
+                continue
+            raw_val = h.quantity * p.unit_price
             converted = _convert_amount(raw_val, h.currency.upper(), reporting_currency, fx_lookup)
-            val = (converted if converted is not None else raw_val).quantize(Decimal("0.01"))
+            if converted is None:
+                lookthrough_warnings.append(
+                    f"No FX rate from {h.currency.upper()} to {reporting_currency} "
+                    f"for {h.symbol}; excluded from the allocation"
+                )
+                continue
+            val = converted.quantize(Decimal("0.01"))
             total_holdings_val += val
 
             inst = instruments.get(h.instrument_id)
@@ -706,9 +724,13 @@ class PerformanceService:
             c_converted = _convert_amount(
                 c.balance, c.currency.upper(), reporting_currency, fx_lookup
             )
-            c_val = (c_converted if c_converted is not None else c.balance).quantize(
-                Decimal("0.01")
-            )
+            if c_converted is None:
+                lookthrough_warnings.append(
+                    f"No FX rate from {c.currency.upper()} to {reporting_currency} "
+                    f"for cash on account {c.account_id}; excluded from the allocation"
+                )
+                continue
+            c_val = c_converted.quantize(Decimal("0.01"))
             total_cash_val += c_val
             class_buckets["cash"]["value"] += c_val
             class_buckets["cash"]["count"] += 1
@@ -737,7 +759,6 @@ class PerformanceService:
         # Sector allocation list
         sectors: list[SectorAllocationItem] = []
         fund_coverage: list[FundCoverageItem] = []
-        lookthrough_warnings: list[str] = []
         use_lookthrough = lookthrough and self.analytics_service is not None
         if use_lookthrough and self.analytics_service is not None:
             allocation = await self.analytics_service.sector_allocation(

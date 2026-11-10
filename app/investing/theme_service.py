@@ -286,10 +286,10 @@ class ThemeExposureService:
         instrument_repo: InstrumentRepository,
         company_repo: CompanyRepository,
         snapshot_repo: LatestConstituentSnapshotRepository,
-        holding_price_repo: HoldingPriceRepository,
-        finance_setting_repo: FinanceSettingRepository,
-        fx_rate_repo: FxRateRepository,
-        tag_repo: HoldingThemeTagRepository,
+        holding_price_repo: HoldingPriceRepository | None = None,
+        finance_setting_repo: FinanceSettingRepository | None = None,
+        fx_rate_repo: FxRateRepository | None = None,
+        tag_repo: HoldingThemeTagRepository | None = None,
         staleness_window_days: int = 90,
     ) -> None:
         self.holding_repo = holding_repo
@@ -311,7 +311,9 @@ class ThemeExposureService:
         warnings: list[str] = []
         used = sorted({h.currency.upper() for h in holdings})
 
-        setting = await self.finance_setting_repo.get_by_workspace(workspace_id)
+        setting = None
+        if self.finance_setting_repo is not None:
+            setting = await self.finance_setting_repo.get_by_workspace(workspace_id)
         reporting: str | None = None
         if setting and setting.reporting_currency_code:
             reporting = setting.reporting_currency_code.upper()
@@ -325,7 +327,7 @@ class ThemeExposureService:
 
         fx_lookup: dict[tuple[str, str], FxRate] = {}
         fx_as_of: datetime | None = None
-        if reporting and any(c != reporting for c in used):
+        if reporting and any(c != reporting for c in used) and self.fx_rate_repo is not None:
             pairs = build_required_pairs(used, reporting)
             fx_lookup = await self.fx_rate_repo.get_latest_rates_for_pairs(
                 list(pairs),
@@ -340,8 +342,12 @@ class ThemeExposureService:
         by_symbol = await self.instrument_repo.get_by_symbols(
             workspace_id, [h.symbol for h in holdings if h.instrument_id is None]
         )
-        prices = await self.holding_price_repo.latest_prices_on_or_before_bulk(
-            workspace_id, [h.id for h in holdings if h.id is not None], as_of
+        prices = (
+            await self.holding_price_repo.latest_prices_on_or_before_bulk(
+                workspace_id, [h.id for h in holdings if h.id is not None], as_of
+            )
+            if self.holding_price_repo is not None
+            else {}
         )
 
         positions: list[_Position] = []
@@ -364,7 +370,11 @@ class ThemeExposureService:
                 continue
             positions.append(_Position(h, instrument, name, value))
 
-        tags = await self.tag_repo.list_for_workspace(workspace_id)
+        tags = (
+            await self.tag_repo.list_for_workspace(workspace_id)
+            if self.tag_repo is not None
+            else []
+        )
         themes: dict[str, str] = {}
         for tag, _holding in tags:
             themes.setdefault(tag.theme.casefold(), tag.theme)
