@@ -11,6 +11,7 @@ from typing import Any
 from fastmcp import FastMCP
 from pydantic import ValidationError as PydanticValidationError
 
+from app.core.audit import AuditLogger
 from app.core.currency import (
     build_required_pairs,
     conversion_rate,
@@ -18,7 +19,6 @@ from app.core.currency import (
     effective_display_as_of,
     fx_rates_used,
 )
-from app.core.audit import AuditLogger
 from app.core.database import postgres
 from app.finance.repository import (
     AccountRepository,
@@ -589,7 +589,13 @@ def register(mcp: FastMCP) -> None:
             src = (source or "manual").strip()
             if not src or len(src) > 16:
                 raise ValueError("source must be 1-16 characters")
-        except (TypeError, ValueError, decimal.InvalidOperation, PydanticValidationError, InvalidOperation) as exc:
+        except (
+            TypeError,
+            ValueError,
+            decimal.InvalidOperation,
+            PydanticValidationError,
+            InvalidOperation,
+        ) as exc:
             return {"status": "error", "message": f"Invalid price input: {exc}"}
 
         async with postgres.async_session_maker() as session:
@@ -639,9 +645,7 @@ def register(mcp: FastMCP) -> None:
                 source=src,
             )
             if price_day == datetime.now(UTC).date():
-                await PortfolioSnapshotRepository(session).delete_for_date(
-                    workspace_id, price_day
-                )
+                await PortfolioSnapshotRepository(session).delete_for_date(workspace_id, price_day)
             await AuditLogger(session).log(
                 workspace_id=workspace_id,
                 actor_id=user_id,

@@ -596,11 +596,7 @@ class PerformanceService:
                     weight = Decimal(span - (t_date - prev.snapshot_date).days) / Decimal(span)
                     weighted += weight * converted
             denominator = prev.total_value + weighted
-            if (
-                prev.total_value <= 0
-                or cur.total_value <= 0
-                or denominator <= 0
-            ):
+            if prev.total_value <= 0 or cur.total_value <= 0 or denominator <= 0:
                 # A sub-period that opens or closes at a non-positive value
                 # cannot contribute a meaningful link: compounding through a
                 # zero-value snapshot would force the whole chain to -100%.

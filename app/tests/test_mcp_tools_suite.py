@@ -1068,7 +1068,9 @@ async def test_mcp_merge_companies_preview_and_confirm(monkeypatch):
             if str(public_id) == keep_public_id:
                 return FakeCompany(keep_public_id, "Old Name", "OLD", None, None, workspace_id)
             if str(public_id) == drop_public_id:
-                return FakeCompany(drop_public_id, "Drop Name", "DROP", "US0000000001", None, workspace_id)
+                return FakeCompany(
+                    drop_public_id, "Drop Name", "DROP", "US0000000001", None, workspace_id
+                )
             return None
 
     class FakeInstrumentRepo:
@@ -1168,9 +1170,7 @@ async def test_mcp_set_instrument_price_preview_and_confirm(monkeypatch):
     tool = tools["set_instrument_price"]
     monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
 
-    holding = SimpleNamespace(
-        id=9, public_id=uuid.uuid4(), symbol="TEST", currency="USD"
-    )
+    holding = SimpleNamespace(id=9, public_id=uuid.uuid4(), symbol="TEST", currency="USD")
     logs: list = []
 
     class FakeAuditLogger:
@@ -1189,7 +1189,9 @@ async def test_mcp_set_instrument_price_preview_and_confirm(monkeypatch):
         async def latest_price_on_or_before(self, *args, **kwargs):
             return None
 
-        async def upsert_price(self, workspace_id, holding_id, price_date, unit_price, source="manual"):
+        async def upsert_price(
+            self, workspace_id, holding_id, price_date, unit_price, source="manual"
+        ):
             FakePriceRepo.upserted = (holding_id, price_date, unit_price, source)
 
     class FakeSnapshotRepo:
@@ -1262,4 +1264,3 @@ async def test_mcp_set_instrument_price_preview_and_confirm(monkeypatch):
     )
     assert bad["status"] == "error"
     assert FakePriceRepo.upserted is None
-
