@@ -614,11 +614,16 @@ def register(mcp: FastMCP) -> None:
             existing = await price_repo.latest_price_on_or_before(
                 workspace_id, holding.id, price_day
             )
+            # A price row exactly on price_day means this is an update of an
+            # existing row; anything else (no row, or only an older price) is
+            # a create for (holding, price_day) and must be audited as such
+            # (before = null), otherwise the audit contract rejects it.
             before = (
                 str(existing.unit_price)
                 if existing is not None and existing.price_date == price_day
                 else None
             )
+            price_exists_for_day = before is not None
 
             if not confirmed:
                 return {
@@ -651,7 +656,7 @@ def register(mcp: FastMCP) -> None:
             await AuditLogger(session).log(
                 workspace_id=workspace_id,
                 actor_id=user_id,
-                action="update",
+                action="create" if not price_exists_for_day else "update",
                 module="investing",
                 entity_type="holding_price",
                 entity_id=holding.id,
