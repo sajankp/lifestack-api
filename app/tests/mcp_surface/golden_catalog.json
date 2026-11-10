@@ -2880,6 +2880,42 @@
     },
     {
       "annotations": null,
+      "description": "Merge one duplicate company into another inside this workspace.\n\nRe-points this workspace's instruments and constituent snapshot rows\nfrom the drop company to the keep company (summing weights when both\ncompanies already carry a row for one instrument snapshot), copies\nISIN/ticker/sector onto the keep company when empty, then retires the\ndrop company. Returns before/after snapshots. Both companies must be\nvisible in the workspace; global companies are never merged or retired\nby this tool.\n\nWithout ``confirmed`` the call returns ``needs_confirmation`` and\nwrites nothing. The change is recorded in the audit trail with\nbefore/after values. Requires the mcp:write scope.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "drop_company_public_id": {
+            "type": "string"
+          },
+          "keep_company_public_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "keep_company_public_id",
+          "drop_company_public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "merge_companies",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
       "description": "Diff an external holdings list (INDmoney/Paasa/broker) against LifeStack.\n\n``external_list`` entries (max 500): ``symbol`` and/or ``isin``,\n``quantity`` (required), optional ``avg_cost``, ``currency``,\n``account_id`` (LifeStack account UUID), ``source``, ``external_ref``.\nSymbols are normalised (``NSE:RELIANCE``, ``RELIANCE.NS`` and\n``RELIANCE-EQ`` match ``RELIANCE``) and ISIN wins over symbol when both\nsides have one. Returns per-position status -- matched, quantity_drift,\ncost_basis_drift, missing_in_lifestack, missing_at_depository -- with an\nactionable suggestion for each non-match (record a missed order, review\nfees on mis-fee'd orders, remove a stale holding). Pass ``account_id``\nwhen the external list covers a single account. ``quantity_tolerance``\nis an absolute share count (float noise); ``cost_tolerance_pct`` is the\nallowed relative difference in average cost. Read-only.",
       "input_schema": {
         "additionalProperties": false,
@@ -2931,7 +2967,7 @@
     },
     {
       "annotations": null,
-      "description": "Rename a company and/or set its ISIN, workspace-scoped.\n\nEdits one company visible in this workspace (global or a workspace\ncopy). A global company is forked into a workspace copy first, so the\nglobal record is never mutated in place. At least one of ``name`` or\n``isin`` must be provided. An ISIN or name already used by another\nvisible company is rejected.\n\nWithout ``confirmed`` the call returns ``needs_confirmation`` and\nwrites nothing. With it, the change is applied in a transaction and\nrecorded in the audit trail (before/after plus changed fields).\nRequires the mcp:write scope.",
+      "description": "Rename a company and/or set its ISIN, workspace-scoped.\n\nEdits one company visible in this workspace (global or a workspace\ncopy). A global company is forked into a workspace copy first, so the\nglobal record is never mutated in place. At least one of ``name`` or\n``isin`` must be provided. An ISIN already used by another company in\nthis workspace is rejected; a name may shadow a global record's name\n(the workspace copy takes precedence for this workspace).\n\nWithout ``confirmed`` the call returns ``needs_confirmation`` and\nwrites nothing. With it, the change is applied in a transaction and\nrecorded in the audit trail (before/after plus changed fields).\nRequires the mcp:write scope.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -3189,6 +3225,50 @@
       },
       "meta": null,
       "name": "set_holding_theme_tags",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Manually override one holding's price for a date (feed down, stale NAV).\n\n``unit_price`` is a decimal string in the holding's currency and\n``price_date`` an ISO date (YYYY-MM-DD). ``source`` labels the\nprovenance (1-16 characters, default ``manual``). The price is\nupserted on ``(holding, price_date)``; when ``price_date`` is today,\nthat day's portfolio snapshot is invalidated so performance reads\nrecompute against the new price. Without ``confirmed`` the call\npreviews and writes nothing. Recorded in the audit trail. Requires\nthe mcp:write scope.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "holding_public_id": {
+            "type": "string"
+          },
+          "price_date": {
+            "type": "string"
+          },
+          "source": {
+            "default": "manual",
+            "type": "string"
+          },
+          "unit_price": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "holding_public_id",
+          "price_date",
+          "unit_price"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "set_instrument_price",
       "output_schema": {
         "additionalProperties": true,
         "type": "object"

@@ -165,6 +165,19 @@ async def test_all_periods_uncomputable():
 
 
 @pytest.mark.anyio
+async def test_zero_closing_value_period_is_skipped_not_compounded():
+    # A zero-value snapshot mid-chain must not force the whole chain to -100%;
+    # the period is skipped and the computable sub-periods are linked instead.
+    result = await _twr(
+        _service([_snap(1, "100"), _snap(8, "0"), _snap(15, "110"), _snap(22, "121")])
+    )
+    assert result["status"] == "ok"
+    assert result["periods"] == 1
+    assert result["periods_skipped"] == 2
+    assert result["twr_pct"] == "10.00"
+
+
+@pytest.mark.anyio
 async def test_without_transfer_repo_result_is_flagged_unadjusted():
     result = await _twr(_service([_snap(1, "100"), _snap(11, "110")], with_transfer_repo=False))
     assert result["twr_pct"] == "10.00"

@@ -33,8 +33,28 @@ class MockAsyncSession:
     async def rollback(self):
         pass
 
+    async def flush(self):
+        pass
+
     def add(self, obj):
         pass
+
+
+class _MockExecuteResult:
+    """Result stand-in for session.execute in preview-only MCP tool paths."""
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return []
+
+
+async def _execute_mock(self, *args, **kwargs):
+    return _MockExecuteResult()
+
+
+MockAsyncSession.execute = _execute_mock
 
 
 @pytest.fixture(autouse=True)
@@ -103,6 +123,7 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
         "log_spending_transaction",
         "log_spending_transactions_batch",
         "log_weight",
+        "merge_companies",
         "reconcile_holdings",
         "set_company_details",
         "set_company_sector",
@@ -110,6 +131,7 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
         "set_fx_rates",
         "set_holding_compliance",
         "set_holding_theme_tags",
+        "set_instrument_price",
         "simulate_sale",
         "update_spending_transaction",
         "update_tax_profile",
@@ -120,7 +142,7 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
 
     missing = expected_tools - registered_tools
     assert not missing, f"Missing MCP tools from server: {missing}"
-    assert len(expected_tools) == 61
+    assert len(expected_tools) == 63
 
 
 @pytest.mark.anyio
@@ -1018,3 +1040,226 @@ async def test_spec_103_input_validation_happens_before_authorization(monkeypatc
     res = await tool_map["list_medication_events"](workspace_id=202, status="bogus")
     assert res["status"] == "error"
     authorize.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_mcp_merge_companies_preview_and_confirm(monkeypatch):
+    """merge_companies: unconfirmed preview writes nothing; confirmed merges and audits."""
+    server = create_mcp_server()
+    tools = {t.name: t.fn for t in await server.list_tools()}
+    tool = tools["merge_companies"]
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
+
+    keep_public_id = str(uuid.uuid4())
+    drop_public_id = str(uuid.uuid4())
+
+    class FakeCompany:
+        def __init__(self, public_id, name, ticker, isin, sector, workspace_id):
+            self.id = 1
+            self.public_id = public_id
+            self.name = name
+            self.ticker = ticker
+            self.isin = isin
+            self.sector = sector
+            self.workspace_id = workspace_id
+
+    class FakeCompanyRepo:
+        async def get_by_public_id(self, workspace_id, public_id):
+            if str(public_id) == keep_public_id:
+                return FakeCompany(keep_public_id, "Old Name", "OLD", None, None, workspace_id)
+            if str(public_id) == drop_public_id:
+                return FakeCompany(drop_public_id, "Drop Name", "DROP", "US0000000001", None, workspace_id)
+            return None
+
+    class FakeInstrumentRepo:
+        async def get_by_company(self, workspace_id, company_id):
+            return []
+
+    class FakeMergeService:
+        def __init__(self) -> None:
+            self.company_repo = FakeCompanyRepo()
+            self.instrument_repo = FakeInstrumentRepo()
+
+        async def merge_companies(self, workspace_id, keep_id, drop_id, *, actor_id):
+            assert actor_id == 101
+            return {
+                "company_id": 1,
+                "company_public_id": keep_public_id,
+                "changed": True,
+                "before": {
+                    "keep": {
+                        "company_public_id": keep_public_id,
+                        "name": "Old Name",
+                        "ticker": "OLD",
+                        "isin": None,
+                        "sector": None,
+                    },
+                    "drop": {
+                        "company_public_id": drop_public_id,
+                        "name": "Drop Name",
+                        "ticker": "DROP",
+                        "isin": "US0000000001",
+                        "sector": None,
+                    },
+                },
+                "after": {
+                    "keep": {
+                        "company_public_id": keep_public_id,
+                        "name": "Old Name",
+                        "ticker": "OLD",
+                        "isin": "US0000000001",
+                        "sector": None,
+                    },
+                    "drop": {
+                        "company_public_id": drop_public_id,
+                        "name": "Drop Name",
+                        "ticker": "DROP",
+                        "isin": "US0000000001",
+                        "sector": None,
+                        "retired": True,
+                    },
+                },
+                "changed_fields": ["isin"],
+                "summary": {
+                    "instruments_repointed": 0,
+                    "constituent_rows_repointed": 0,
+                    "constituent_weights_summed": 0,
+                    "drop_retired": True,
+                },
+            }
+
+    monkeypatch.setattr(
+        "app.mcp.tools.research.CompanyMergeService",
+        lambda session, company_repo, instrument_repo, constituent_repo: FakeMergeService(),
+    )
+
+    preview = await tool(
+        workspace_id=202,
+        keep_company_public_id=keep_public_id,
+        drop_company_public_id=drop_public_id,
+        confirmed=False,
+    )
+    assert preview["status"] == "needs_confirmation"
+    assert preview["needs_confirmation"] is True
+    assert preview["keep"]["name"] == "Old Name"
+    assert preview["drop"]["isin"] == "US0000000001"
+
+    res = await tool(
+        workspace_id=202,
+        keep_company_public_id=keep_public_id,
+        drop_company_public_id=drop_public_id,
+        confirmed=True,
+    )
+    assert res["status"] == "success", res
+    assert res["changed"] is True
+    assert res["before"]["keep"]["name"] == "Old Name"
+    assert res["before"]["drop"]["isin"] == "US0000000001"
+    assert res["after"]["keep"]["isin"] == "US0000000001"
+    assert res["after"]["drop"]["retired"] is True
+    assert res["summary"]["drop_retired"] is True
+    assert "drop retired" in res["summary_text"]
+
+
+@pytest.mark.anyio
+async def test_mcp_set_instrument_price_preview_and_confirm(monkeypatch):
+    """set_instrument_price: preview writes nothing; confirmed upserts and audits."""
+    server = create_mcp_server()
+    tools = {t.name: t.fn for t in await server.list_tools()}
+    tool = tools["set_instrument_price"]
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
+
+    holding = SimpleNamespace(
+        id=9, public_id=uuid.uuid4(), symbol="TEST", currency="USD"
+    )
+    logs: list = []
+
+    class FakeAuditLogger:
+        def __init__(self, session) -> None:
+            pass
+
+        async def log(self, **kwargs) -> None:
+            logs.append(kwargs)
+
+    class FakePriceRepo:
+        upserted = None
+
+        def __init__(self, session) -> None:
+            pass
+
+        async def latest_price_on_or_before(self, *args, **kwargs):
+            return None
+
+        async def upsert_price(self, workspace_id, holding_id, price_date, unit_price, source="manual"):
+            FakePriceRepo.upserted = (holding_id, price_date, unit_price, source)
+
+    class FakeSnapshotRepo:
+        deleted = None
+
+        def __init__(self, session) -> None:
+            pass
+
+        async def delete_for_date(self, workspace_id, snapshot_date):
+            FakeSnapshotRepo.deleted = snapshot_date
+
+    class FakeHoldingRepo:
+        def __init__(self, session) -> None:
+            pass
+
+        async def get_by_public_id(self, workspace_id, public_id):
+            return holding
+
+    monkeypatch.setattr("app.mcp.tools.portfolio.HoldingRepository", FakeHoldingRepo)
+    monkeypatch.setattr("app.mcp.tools.portfolio.HoldingPriceRepository", FakePriceRepo)
+    monkeypatch.setattr("app.mcp.tools.portfolio.PortfolioSnapshotRepository", FakeSnapshotRepo)
+    monkeypatch.setattr("app.mcp.tools.portfolio.AuditLogger", FakeAuditLogger)
+
+    holding_public_id = str(holding.public_id)
+
+    preview = await tool(
+        workspace_id=202,
+        holding_public_id=holding_public_id,
+        price_date="2026-11-09",
+        unit_price="123.45",
+        source="manual",
+        confirmed=False,
+    )
+    assert preview["status"] == "needs_confirmation"
+    assert preview["needs_confirmation"] is True
+    assert FakePriceRepo.upserted is None
+
+    res = await tool(
+        workspace_id=202,
+        holding_public_id=holding_public_id,
+        price_date="2026-11-09",
+        unit_price="123.45",
+        confirmed=True,
+    )
+    assert res["status"] == "success", res
+    assert res["changed"] is False
+    assert res["unit_price"] == "123.45"
+    assert res["source"] == "manual"
+    assert FakePriceRepo.upserted == (
+        9,
+        date(2026, 11, 9),
+        Decimal("123.45"),
+        "manual",
+    )
+    # A non-today price does not invalidate today's snapshot.
+    assert FakeSnapshotRepo.deleted is None
+    assert logs and logs[0]["action"] == "update"
+    assert logs[0]["entity_type"] == "holding_price"
+    assert logs[0]["details"]["before"] is None
+    assert logs[0]["details"]["after"] == "123.45"
+
+    # Bad input is rejected before any write.
+    FakePriceRepo.upserted = None
+    bad = await tool(
+        workspace_id=202,
+        holding_public_id=holding_public_id,
+        price_date="2026-11-09",
+        unit_price="not-a-price",
+        confirmed=True,
+    )
+    assert bad["status"] == "error"
+    assert FakePriceRepo.upserted is None
+

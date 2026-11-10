@@ -45,6 +45,7 @@ from app.investing.repository import (
     HoldingRepository,
     InstrumentRepository,
     PortfolioSnapshotRepository,
+    ReferenceSecurityRepository,
 )
 from app.investing.schemas import (
     AssetClassAllocationItem,
@@ -158,7 +159,10 @@ class PerformanceService:
             ) -> tuple[date, Decimal] | None:
                 async with sem:
                     if instrument_type == InstrumentType.mutual_fund.value and curr == "INR":
-                        return core_service._get_amfi_nav(sym, amfi_navs)
+                        code = await self._resolve_amfi_code(sym)
+                        if code is None:
+                            return None
+                        return core_service._get_amfi_nav(code, amfi_navs)
                     return await core_service._fetch_stock_price(client, sym, curr)
 
             tasks = [throttled_fetch(sym, curr, kind) for sym, curr, kind in unique_keys]
@@ -199,6 +203,26 @@ class PerformanceService:
             await self.snapshot_repo.delete_for_date(workspace_id, expected_close_date)
 
         return prices_updated
+
+    async def _resolve_amfi_code(self, sym: str) -> str | None:
+        """Resolve an MF holding's symbol to an AMFI scheme code.
+
+        Symbols that are already AMFI scheme codes (all digits, e.g. Groww's
+        ``122639``) are used as-is. Anything else (a CAMS folio, an ISIN, a
+        scheme name) is resolved against ``reference_securities`` by ticker or
+        ISIN and that row's ``amfi_code`` is used -- so a missing AMFI code
+        mapping never silently skips a fund's NAV refresh.
+        """
+        if sym.isdigit():
+            return sym
+        repo = ReferenceSecurityRepository(self.holding_price_repo.session)
+        row = await repo.get_by_ticker_exchange(sym, None)
+        if row is not None and row.amfi_code:
+            return row.amfi_code
+        row = await repo.get_by_isin(sym)
+        if row is not None and row.amfi_code:
+            return row.amfi_code
+        return None
 
     async def submit_prices(self, workspace_id: int, payload: HoldingPriceBulkCreate) -> None:
         holdings, _ = await self.holding_repo.get_all(workspace_id, limit=10000, offset=0)
@@ -572,7 +596,15 @@ class PerformanceService:
                     weight = Decimal(span - (t_date - prev.snapshot_date).days) / Decimal(span)
                     weighted += weight * converted
             denominator = prev.total_value + weighted
-            if denominator <= 0:
+            if (
+                prev.total_value <= 0
+                or cur.total_value <= 0
+                or denominator <= 0
+            ):
+                # A sub-period that opens or closes at a non-positive value
+                # cannot contribute a meaningful link: compounding through a
+                # zero-value snapshot would force the whole chain to -100%.
+                # Skip it and keep linking the computable sub-periods.
                 skipped += 1
                 continue
             growth *= Decimal("1") + (cur.total_value - prev.total_value - flow_total) / denominator
@@ -598,7 +630,7 @@ class PerformanceService:
             return result
         if skipped:
             result["warnings"].append(
-                f"{skipped} sub-period(s) with non-positive opening value were skipped"
+                f"{skipped} sub-period(s) with non-positive opening or closing value were skipped"
             )
         result["twr_pct"] = str(((growth - Decimal("1")) * Decimal("100")).quantize(MONEY_QUANT))
         return result
@@ -1002,6 +1034,12 @@ class InvestingSummaryService:
         used_cost_basis_fallback = False
         holding_values = {}
         for holding in holdings:
+            if holding.quantity == 0:
+                # Fully sold positions carry no value with or without a stored
+                # price, so they must not force the summary into
+                # cost-basis fallback.
+                holding_values[holding.id] = Decimal("0")
+                continue
             price_record = latest_prices.get(holding.id)
             if price_record is not None:
                 holding_values[holding.id] = holding.quantity * price_record.unit_price
