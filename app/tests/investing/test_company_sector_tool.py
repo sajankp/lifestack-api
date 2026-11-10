@@ -242,8 +242,14 @@ async def test_two_holdings_of_one_global_instrument_both_repointed(client, tool
 async def test_workspace_isolation_of_sector_writes(client, tools):
     brokerage_a = await _register(client, "sector-iso-a")
     holding_a = await _buy(client, brokerage_a, "ISOA", "1", "10.00")
+    # Price submitted while logged into workspace A (the API is workspace-scoped).
+    await _submit_holding_price(client, holding_a, "10.00")
     brokerage_b = await _register(client, "sector-iso-b")
     holding_b = await _buy(client, brokerage_b, "ISOA", "1", "10.00")
+    await _submit_holding_price(client, holding_b, "10.00")
+    # Valuation is now market-value based: unpriced holdings are excluded with a
+    # warning, never re-based to average cost. ISOA has a price, so it appears in
+    # the allocation; its company has no sector -> "Other / not itemised".
     ws_a, ws_b = await _workspace_ids()
 
     # B cannot reach A's holding through B's workspace id.

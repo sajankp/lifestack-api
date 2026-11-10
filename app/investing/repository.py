@@ -1110,6 +1110,18 @@ class InstrumentConstituentRepository:
                 grouped[iid].append(row)
         return grouped
 
+    async def get_single_latest_many(
+        self, instrument_ids: Sequence[int], as_of_date: date
+    ) -> dict[int, list[InstrumentConstituent]]:
+        """Alias of ``get_latest_on_or_before_many``.
+
+        Both return exactly one snapshot per instrument (newest by
+        ``(as_of_date, fetched_at)`` so look-through reads never double count);
+        the name mirrors ``LatestConstituentSnapshotRepository`` so the shared
+        valuation engine can be built on either repository.
+        """
+        return await self.get_latest_on_or_before_many(instrument_ids, as_of_date)
+
 
 class HoldingPriceRepository:
     def __init__(self, session: AsyncSession):
