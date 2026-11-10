@@ -1248,7 +1248,8 @@ async def test_mcp_set_instrument_price_preview_and_confirm(monkeypatch):
     )
     # A non-today price does not invalidate today's snapshot.
     assert FakeSnapshotRepo.deleted is None
-    assert logs and logs[0]["action"] == "update"
+    # No row existed for 2026-11-09, so this is a create (before = null).
+    assert logs and logs[0]["action"] == "create"
     assert logs[0]["entity_type"] == "holding_price"
     assert logs[0]["details"]["before"] is None
     assert logs[0]["details"]["after"] == "123.45"
@@ -1338,7 +1339,8 @@ async def test_mcp_set_instrument_price_audit_changed_fields(monkeypatch):
     FakePriceRepo.existing_price = None
     res = await tool(unit_price="123.45", source="manual", **common)
     assert res["status"] == "success", res
-    assert logs and logs[0]["details"]["changed_fields"] == ["unit_price"]
+    assert logs[0]["action"] == "create"
+    assert logs[0]["details"]["changed_fields"] == ["unit_price"]
     assert logs[0]["details"]["before"] is None
     assert logs[0]["details"]["after"] == "123.45"
 
@@ -1349,6 +1351,7 @@ async def test_mcp_set_instrument_price_audit_changed_fields(monkeypatch):
     res = await tool(unit_price="123.45", source="manual", **common)
     assert res["status"] == "success", res
     assert res["changed"] is False
+    assert logs[0]["action"] == "update"
     assert logs[0]["details"]["changed_fields"] == []
 
     # Price changed on an existing row: changed_fields records unit_price.
@@ -1356,6 +1359,7 @@ async def test_mcp_set_instrument_price_audit_changed_fields(monkeypatch):
     logs.clear()
     res = await tool(unit_price="93.9478", source="indmoney-nav", **common)
     assert res["status"] == "success", res
+    assert logs[0]["action"] == "update"
     assert logs[0]["details"]["changed_fields"] == ["unit_price"]
     assert logs[0]["details"]["before"] == "100.00"
     assert logs[0]["details"]["after"] == "93.9478"
