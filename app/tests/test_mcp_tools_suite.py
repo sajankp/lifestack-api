@@ -1252,6 +1252,7 @@ async def test_mcp_set_instrument_price_preview_and_confirm(monkeypatch):
     assert logs[0]["entity_type"] == "holding_price"
     assert logs[0]["details"]["before"] is None
     assert logs[0]["details"]["after"] == "123.45"
+    assert logs[0]["details"]["changed_fields"] == ["unit_price"]
 
     # Bad input is rejected before any write.
     FakePriceRepo.upserted = None
@@ -1264,3 +1265,97 @@ async def test_mcp_set_instrument_price_preview_and_confirm(monkeypatch):
     )
     assert bad["status"] == "error"
     assert FakePriceRepo.upserted is None
+
+
+@pytest.mark.anyio
+async def test_mcp_set_instrument_price_audit_changed_fields(monkeypatch):
+    """set_instrument_price confirmed path records changed_fields in the audit detail.
+
+    Regression test: a confirmed call without ``changed_fields`` used to fail
+    with ``Missing required audit detail key: changed_fields``.
+    """
+    server = create_mcp_server()
+    tools = {t.name: t.fn for t in await server.list_tools()}
+    tool = tools["set_instrument_price"]
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
+
+    holding = SimpleNamespace(id=9, public_id=uuid.uuid4(), symbol="TEST", currency="USD")
+    logs: list = []
+
+    class FakeAuditLogger:
+        def __init__(self, session) -> None:
+            pass
+
+        async def log(self, **kwargs) -> None:
+            logs.append(kwargs)
+
+    class ExistingPrice:
+        unit_price = Decimal("100.00")
+        price_date = date(2026, 11, 9)
+
+    class FakePriceRepo:
+        existing_price = None
+
+        def __init__(self, session) -> None:
+            pass
+
+        async def latest_price_on_or_before(self, *args, **kwargs):
+            return self.existing_price
+
+        async def upsert_price(
+            self, workspace_id, holding_id, price_date, unit_price, source="manual"
+        ):
+            pass
+
+    class FakeSnapshotRepo:
+        def __init__(self, session) -> None:
+            pass
+
+        async def delete_for_date(self, workspace_id, snapshot_date):
+            pass
+
+    class FakeHoldingRepo:
+        def __init__(self, session) -> None:
+            pass
+
+        async def get_by_public_id(self, workspace_id, public_id):
+            return holding
+
+    monkeypatch.setattr("app.mcp.tools.portfolio.HoldingRepository", FakeHoldingRepo)
+    monkeypatch.setattr("app.mcp.tools.portfolio.HoldingPriceRepository", FakePriceRepo)
+    monkeypatch.setattr("app.mcp.tools.portfolio.PortfolioSnapshotRepository", FakeSnapshotRepo)
+    monkeypatch.setattr("app.mcp.tools.portfolio.AuditLogger", FakeAuditLogger)
+
+    holding_public_id = str(holding.public_id)
+    common = dict(
+        workspace_id=202,
+        holding_public_id=holding_public_id,
+        price_date="2026-11-09",
+        confirmed=True,
+    )
+
+    # New price row: changed_fields lists unit_price.
+    FakePriceRepo.existing_price = None
+    res = await tool(unit_price="123.45", source="manual", **common)
+    assert res["status"] == "success", res
+    assert logs and logs[0]["details"]["changed_fields"] == ["unit_price"]
+    assert logs[0]["details"]["before"] is None
+    assert logs[0]["details"]["after"] == "123.45"
+
+    # Re-setting the same price: nothing changed.
+    FakePriceRepo.existing_price = ExistingPrice()
+    ExistingPrice.unit_price = Decimal("123.45")
+    logs.clear()
+    res = await tool(unit_price="123.45", source="manual", **common)
+    assert res["status"] == "success", res
+    assert res["changed"] is False
+    assert logs[0]["details"]["changed_fields"] == []
+
+    # Price changed on an existing row: changed_fields records unit_price.
+    ExistingPrice.unit_price = Decimal("100.00")
+    logs.clear()
+    res = await tool(unit_price="93.9478", source="indmoney-nav", **common)
+    assert res["status"] == "success", res
+    assert logs[0]["details"]["changed_fields"] == ["unit_price"]
+    assert logs[0]["details"]["before"] == "100.00"
+    assert logs[0]["details"]["after"] == "93.9478"

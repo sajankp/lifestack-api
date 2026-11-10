@@ -598,7 +598,7 @@ def register(mcp: FastMCP) -> None:
         ) as exc:
             return {"status": "error", "message": f"Invalid price input: {exc}"}
 
-        async with postgres.async_session_maker() as session:
+        async with postgres.async_session_maker() as session, session.begin():
             user_id = await security.authorize_workspace(
                 session,
                 workspace_id,
@@ -637,6 +637,8 @@ def register(mcp: FastMCP) -> None:
                     "before": before,
                 }
 
+            changed_fields = [] if before == str(price) else ["unit_price"]
+
             await price_repo.upsert_price(
                 workspace_id=workspace_id,
                 holding_id=holding.id,
@@ -660,6 +662,7 @@ def register(mcp: FastMCP) -> None:
                     "before": before,
                     "after": str(price),
                     "source": src,
+                    "changed_fields": changed_fields,
                 },
             )
             await session.commit()
