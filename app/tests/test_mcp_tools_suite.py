@@ -1327,12 +1327,12 @@ async def test_mcp_set_instrument_price_audit_changed_fields(monkeypatch):
     monkeypatch.setattr("app.mcp.tools.portfolio.AuditLogger", FakeAuditLogger)
 
     holding_public_id = str(holding.public_id)
-    common = dict(
-        workspace_id=202,
-        holding_public_id=holding_public_id,
-        price_date="2026-11-09",
-        confirmed=True,
-    )
+    common = {
+        "workspace_id": 202,
+        "holding_public_id": holding_public_id,
+        "price_date": "2026-11-09",
+        "confirmed": True,
+    }
 
     # New price row: changed_fields lists unit_price.
     FakePriceRepo.existing_price = None
