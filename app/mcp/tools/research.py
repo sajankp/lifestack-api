@@ -9,6 +9,7 @@ from typing import Any
 import structlog
 from fastmcp import FastMCP
 from pydantic import ValidationError as PydanticValidationError
+from sqlalchemy import select
 
 from app.core.audit import AuditLogger
 from app.core.database import postgres
@@ -33,8 +34,6 @@ from app.investing.schemas import (
 from app.investing.theme_schemas import GroupBy, HoldingThemeTagsInput, ThemeTagInput
 from app.mcp import security
 from app.mcp.support import services
-
-from sqlalchemy import select
 
 logger = structlog.get_logger(__name__)
 
@@ -491,9 +490,7 @@ def register(mcp: FastMCP) -> None:
                 },
             }
             if keep is not None and drop is not None and keep.workspace_id == workspace_id:
-                instruments = await service.instrument_repo.get_by_company(
-                    workspace_id, drop.id
-                )
+                instruments = await service.instrument_repo.get_by_company(workspace_id, drop.id)
                 preview["instruments_repointed"] = len(instruments)
                 result = await session.execute(
                     select(InstrumentConstituent)
@@ -503,9 +500,7 @@ def register(mcp: FastMCP) -> None:
                         InstrumentConstituent.constituent_company_id == drop.id,
                     )
                 )
-                preview["constituent_rows_repointed"] = len(
-                    list(result.scalars().all())
-                )
+                preview["constituent_rows_repointed"] = len(list(result.scalars().all()))
             else:
                 preview["error"] = (
                     "both companies must be visible in this workspace"

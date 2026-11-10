@@ -24,7 +24,6 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from app.core.audit import AuditLogger
 from app.investing.models import Company, Instrument, InstrumentConstituent
 from app.investing.repository import (
     CompanyRepository,
@@ -136,9 +135,7 @@ class CompanyMergeService:
                     Company.isin == drop.isin, Company.workspace_id == workspace_id
                 )
             )
-            clashers = [
-                c for c in result.scalars().all() if c.id not in (keep.id, drop.id)
-            ]
+            clashers = [c for c in result.scalars().all() if c.id not in (keep.id, drop.id)]
             if clashers:
                 raise MergeConflictError(
                     f"ISIN '{drop.isin}' is already used by '{clashers[0].name}'"
@@ -188,9 +185,7 @@ class CompanyMergeService:
         )
         keep_by_key: dict[tuple[int, str, str], InstrumentConstituent] = {}
         for row in keep_result.scalars().all():
-            keep_by_key[
-                (row.instrument_id, row.as_of_date.isoformat(), row.source)
-            ] = row
+            keep_by_key[(row.instrument_id, row.as_of_date.isoformat(), row.source)] = row
 
         constituent_rows_repointed = 0
         constituent_weights_summed = 0

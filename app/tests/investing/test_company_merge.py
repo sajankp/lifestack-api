@@ -29,16 +29,16 @@ async def _make_workspace(session) -> int:
     return result.scalar_one().id
 
 
-async def _make_company(session, workspace_id: int, name: str, ticker: str, isin: str | None) -> Company:
+async def _make_company(
+    session, workspace_id: int, name: str, ticker: str, isin: str | None
+) -> Company:
     company = Company(workspace_id=workspace_id, name=name, ticker=ticker, isin=isin)
     session.add(company)
     await session.flush()
     return company
 
 
-async def _make_instrument(
-    session, workspace_id: int, symbol: str, company_id: int
-) -> Instrument:
+async def _make_instrument(session, workspace_id: int, symbol: str, company_id: int) -> Instrument:
     instrument = Instrument(
         workspace_id=workspace_id,
         symbol=symbol,
@@ -90,11 +90,12 @@ async def test_merge_repoints_instruments_constituents_copies_fields_retires_dro
         third = await _make_company(session, ws, "Other Co", "OTHER", "NL0000000003")
         fund = await _make_instrument(session, ws, "UMMA", keep.id)  # already on keep
         drop_instrument = await _make_instrument(session, ws, "HIEU.L", drop.id)
-        await _make_constituent(session, drop_instrument.id, drop.id, "0.12905280", date(2026, 11, 3), "s1")
+        await _make_constituent(
+            session, drop_instrument.id, drop.id, "0.12905280", date(2026, 11, 3), "s1"
+        )
         await _make_constituent(session, fund.id, drop.id, "0.03610000", date(2026, 11, 6), "s1")
         await session.commit()
 
-    service = _service  # repositories rebound per session below
     async with postgres.async_session_maker() as session:
         outcome = await CompanyMergeService(
             session,
@@ -118,28 +119,34 @@ async def test_merge_repoints_instruments_constituents_copies_fields_retires_dro
             await session.execute(select(Company).where(Company.public_id == drop.public_id))
         ).scalar_one_or_none() is None
         kept_instrument = (
-            await session.execute(
-                select(Instrument).where(Instrument.symbol == "HIEU.L")
-            )
+            await session.execute(select(Instrument).where(Instrument.symbol == "HIEU.L"))
         ).scalar_one()
         assert kept_instrument.company_id == keep.id
         rows = (
-            await session.execute(
-                select(InstrumentConstituent).where(
-                    InstrumentConstituent.instrument_id == kept_instrument.id
+            (
+                await session.execute(
+                    select(InstrumentConstituent).where(
+                        InstrumentConstituent.instrument_id == kept_instrument.id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(rows) == 1
         assert rows[0].constituent_company_id == keep.id
         assert rows[0].weight == Decimal("0.12905280")
         fund_rows = (
-            await session.execute(
-                select(InstrumentConstituent).where(
-                    InstrumentConstituent.instrument_id == fund.id
+            (
+                await session.execute(
+                    select(InstrumentConstituent).where(
+                        InstrumentConstituent.instrument_id == fund.id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(fund_rows) == 1
         assert fund_rows[0].constituent_company_id == keep.id
         assert fund_rows[0].weight == Decimal("0.03610000")
@@ -171,14 +178,18 @@ async def test_merge_sums_weights_on_snapshot_collision(client):
     assert outcome["summary"]["constituent_rows_repointed"] == 0
     async with postgres.async_session_maker() as session:
         rows = (
-            await session.execute(
-                select(InstrumentConstituent).where(
-                    InstrumentConstituent.instrument_id == fund.id,
-                    InstrumentConstituent.as_of_date == date(2026, 11, 1),
-                    InstrumentConstituent.source == "s1",
+            (
+                await session.execute(
+                    select(InstrumentConstituent).where(
+                        InstrumentConstituent.instrument_id == fund.id,
+                        InstrumentConstituent.as_of_date == date(2026, 11, 1),
+                        InstrumentConstituent.source == "s1",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(rows) == 1
         assert rows[0].constituent_company_id == keep.id
         assert rows[0].weight == Decimal("0.15000000")
@@ -234,7 +245,7 @@ async def test_merge_rejects_isin_clash_with_third_company(client):
         ws = await _make_workspace(session)
         keep = await _make_company(session, ws, "Keep Co", "KEEP", None)
         drop = await _make_company(session, ws, "Drop Co", "DROP", "US0378331005")
-        third = await _make_company(session, ws, "Third Co", "AAPL", "US0378331005")
+        await _make_company(session, ws, "Third Co", "AAPL", "US0378331005")
         await session.commit()
 
     with pytest.raises(MergeConflictError, match="already used"):
