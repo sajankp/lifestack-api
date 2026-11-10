@@ -11,7 +11,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +56,84 @@ def normalize_currency_code(currency: str) -> str:
     return code
 
 
+MAX_FX_BATCH = 400  # one Indian FY of daily rates, with headroom
+MAX_FX_RATE = Decimal("1000")
+_FX_ENTRY_FIELDS = {"date", "currency", "rate"}
+
+
+def canonical_fx_rate(value: str | Decimal) -> str:
+    """Plain decimal text (no exponent, no trailing zeros) or a 422 ``ValidationError``."""
+    try:
+        rate = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        raise ValidationError(detail="rate must be a decimal string") from None
+    if not rate.is_finite() or rate <= 0 or rate > MAX_FX_RATE:
+        raise ValidationError(detail=f"rate must be finite and between 0 and {MAX_FX_RATE}")
+    return format(rate.normalize(), "f")
+
+
+def fx_override_key(on_date: date, currency: str) -> str:
+    """The storage key: ``YYYY-MM-DD:CCY``."""
+    return f"{on_date.isoformat()}:{normalize_currency_code(currency)}"
+
+
+def parse_fx_entries(items: object, *, today: date | None = None) -> dict[str, str]:
+    """Validate a batch of ``{date, currency, rate}`` entries into ``{key: canonical rate}``.
+
+    All-or-nothing: the first problem raises a ``ValidationError`` naming the entry
+    (``rates[3]: ...``) so nothing is ever half-applied. Dates must be real ISO calendar
+    days not after tomorrow (UTC); a key may appear only once per batch.
+    """
+    if not isinstance(items, list) or not items:
+        raise ValidationError(detail="rates must be a non-empty list")
+    if len(items) > MAX_FX_BATCH:
+        raise ValidationError(detail=f"rates must not exceed {MAX_FX_BATCH} entries")
+    latest = (today or datetime.now(UTC).date()) + timedelta(days=1)
+    parsed: dict[str, str] = {}
+    for index, item in enumerate(items):
+        where = f"rates[{index}]"
+        if not isinstance(item, dict):
+            raise ValidationError(detail=f"{where}: must be an object with date, currency, rate")
+        unknown = set(item) - _FX_ENTRY_FIELDS
+        missing = _FX_ENTRY_FIELDS - set(item)
+        if unknown or missing:
+            raise ValidationError(
+                detail=(
+                    f"{where}: expected exactly date, currency, rate"
+                    + (f"; unknown {sorted(unknown)}" if unknown else "")
+                    + (f"; missing {sorted(missing)}" if missing else "")
+                )
+            )
+        raw_date = str(item["date"])
+        try:
+            on_date = date.fromisoformat(raw_date)
+        except ValueError:
+            raise ValidationError(detail=f"{where}: date must be a valid YYYY-MM-DD") from None
+        if on_date.isoformat() != raw_date:
+            raise ValidationError(detail=f"{where}: date must be YYYY-MM-DD")
+        if on_date > latest:
+            raise ValidationError(detail=f"{where}: date is in the future")
+        try:
+            key = fx_override_key(on_date, str(item["currency"]))
+            rate = canonical_fx_rate(item["rate"])
+        except ValidationError as exc:
+            raise ValidationError(detail=f"{where}: {exc.detail}") from None
+        if key in parsed:
+            raise ValidationError(detail=f"{where}: duplicate entry for {key}")
+        parsed[key] = rate
+    return parsed
+
+
+@dataclass
+class FxOverrideResult:
+    """What a ``set_fx_overrides`` call did (or, as a preview, would do)."""
+
+    added: list[str]
+    updated: list[str]
+    skipped_existing: list[str]
+    unchanged: list[str]
+
+
 class TaxProfileRepository:
     """Read/write access to the workspace tax profile."""
 
@@ -73,6 +151,21 @@ class TaxProfileRepository:
         self.session.add(row)
         await self.session.flush()
         return row
+
+    async def get_or_create_locked(self, workspace_id: int) -> WorkspaceTaxProfile:
+        """``get_or_create`` that also takes a row lock until the transaction ends.
+
+        Read-modify-write of ``fx_overrides`` (a whole JSON document) must not interleave:
+        two writers that both read the old document would each save only their own entries.
+        """
+        row = await self.get_or_create(workspace_id)
+        locked = await self.session.execute(
+            select_workspace_tax_profile()
+            .where(WorkspaceTaxProfile.id == row.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return locked.scalar_one()
 
     async def get(self, workspace_id: int) -> WorkspaceTaxProfile | None:
         """Read-only lookup: unlike ``get_or_create`` it never inserts a row."""
@@ -403,6 +496,43 @@ class TaxService:
     async def update_profile(self, workspace_id: int, changes: dict) -> WorkspaceTaxProfile:
         row = await self.profile_repository.get_or_create(workspace_id)
         return await self.profile_repository.update(row, **changes)
+
+    async def set_fx_overrides(
+        self,
+        workspace_id: int,
+        entries: dict[str, str],
+        *,
+        overwrite: bool,
+        apply: bool = True,
+    ) -> FxOverrideResult:
+        """Merge ``{key: rate}`` into the workspace's Rule 115 rates under a row lock.
+
+        An existing key with a *different* value is kept unless ``overwrite`` is true; the
+        same value is reported as unchanged. With ``apply=False`` nothing is written (and no
+        profile row is created) -- the result is a preview of what would happen.
+        """
+        if apply:
+            row = await self.profile_repository.get_or_create_locked(workspace_id)
+            current = dict(row.fx_overrides or {})
+        else:
+            current = await self._fx_overrides(workspace_id)
+            row = None
+        result = FxOverrideResult(added=[], updated=[], skipped_existing=[], unchanged=[])
+        merged = dict(current)
+        for key, rate in sorted(entries.items()):
+            if key not in current:
+                result.added.append(key)
+                merged[key] = rate
+            elif current[key] == rate:
+                result.unchanged.append(key)
+            elif overwrite:
+                result.updated.append(key)
+                merged[key] = rate
+            else:
+                result.skipped_existing.append(key)
+        if apply and row is not None and (result.added or result.updated):
+            await self.profile_repository.update(row, fx_overrides=merged)
+        return result
 
     # ---------------------------------------------------- Rule 115 FX reads
     # ``set_fx_rate`` writes user-provided Rule 115 rates into the workspace tax

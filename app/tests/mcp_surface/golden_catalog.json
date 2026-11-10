@@ -1,0 +1,3989 @@
+{
+  "resource_templates": [
+    {
+      "description": "Bounded read-only workspace vocabulary for categories, spending accounts, tags, active medications, and timezone.",
+      "mime_type": "application/json",
+      "name": "workspace-reference-data",
+      "uri_template": "lifestack://workspaces/{workspace_id}/reference-data"
+    }
+  ],
+  "resources": [
+    {
+      "description": "Active workspaces available to the authenticated MCP user.",
+      "mime_type": "application/json",
+      "name": "my-workspaces",
+      "uri": "lifestack://me/workspaces"
+    }
+  ],
+  "tools": [
+    {
+      "annotations": null,
+      "description": "Create a confirmed dividend or investment-income event.\n\nThis credits the linked brokerage cash balance through the existing\nDividendService and never accepts bank or wallet accounts.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "external_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "gross_amount": {
+            "type": "string"
+          },
+          "income_type": {
+            "default": "dividend",
+            "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "pay_date": {
+            "type": "string"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tax_withheld": {
+            "default": "0",
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "account_id",
+          "gross_amount",
+          "currency",
+          "pay_date"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_investment_dividend",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Record a historical buy or sell order after explicit confirmation.\n\nThis records the trade in Lifestack and updates holdings and brokerage\ncash; it does not submit a live order to a broker.\n\nIdempotency: a repeated ``source_ref`` returns the existing order and\nwrites nothing. Without a ``source_ref``, an order with the same\naccount + symbol + side + quantity + price on the same local day is\nreported as ``possible_duplicate`` (with the existing order's ID) and is\nNOT recorded -- fees and rounding differ too much to skip it silently;\nset ``allow_duplicate=true`` to record a genuine repeat.\n\n``dry_run=true`` runs every validation (including cash and holding\nchecks) and the duplicate checks, writes nothing, needs no confirmation,\nand returns ``{counts, items:[{index, status, match_reason, existing_id,\nerrors}]}`` with the calculated amounts.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "allow_duplicate": {
+            "default": false,
+            "type": "boolean"
+          },
+          "brokerage_fee": {
+            "default": "0",
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "dry_run": {
+            "default": false,
+            "type": "boolean"
+          },
+          "exchange_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "instrument_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "instrument_type": {
+            "default": "stock",
+            "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "occurred_at": {
+            "type": "string"
+          },
+          "order_type": {
+            "type": "string"
+          },
+          "other_fees": {
+            "default": "0",
+            "type": "string"
+          },
+          "price_per_unit": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "string"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "tax_amount": {
+            "default": "0",
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "account_id",
+          "order_type",
+          "symbol",
+          "quantity",
+          "price_per_unit",
+          "currency",
+          "occurred_at"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_investment_order",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Record one portfolio report run in the append-only history (cron use).\n\nIdempotent on ``(workspace_id, as_of, run_id)``: re-sending the same run\nreturns the existing row's ``public_id`` and never overwrites it; a new\n``run_id`` on the same day adds a new row. ``as_of`` is an ISO date;\n``lrs_headroom_inr`` a decimal string. The denormalised columns\n(``theme_weights``, ``harvest_candidates``, ``lrs_headroom_inr``,\n``tax_buckets``) are stored as given so dashboards need not parse\n``foundation_json``.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "actions_md": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "as_of": {
+            "type": "string"
+          },
+          "foundation_json": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "harvest_candidates": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "lrs_headroom_inr": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "scalars_json": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tax_buckets": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "theme_weights": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "as_of",
+          "run_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_portfolio_report",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Create a voice-compatible recurring todo in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "by_ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "by_weekday": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "due_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "frequency": {
+            "default": "weekly",
+            "type": "string"
+          },
+          "interval": {
+            "default": 1,
+            "type": "integer"
+          },
+          "monthly_mode": {
+            "default": "day_of_month",
+            "type": "string"
+          },
+          "priority": {
+            "default": "medium",
+            "type": "string"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "title": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_recurring_todo",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Create a todo in a workspace the authenticated user belongs to.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "title": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_todo",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Create a voice-compatible todo in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "due_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "priority": {
+            "default": "medium",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_todo_task",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Create a capital transfer between accounts in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "fees": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "from_account_name": {
+            "type": "string"
+          },
+          "fx_fee_amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "fx_rate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "net_amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "platform_fee_amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tax_amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "to_account_name": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "from_account_name",
+          "to_account_name",
+          "amount"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "create_transfer",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Delete one complete sourced constituent snapshot after confirmation.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of_date": {
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "instrument_public_id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "instrument_public_id",
+          "as_of_date",
+          "source"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_investment_constituent_snapshot",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Delete a dividend/investment-income event by public ID.\n\nThis removes the dividend record and its associated cash balance credit.\nRequires explicit confirmation.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_investment_dividend",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Delete a recorded investment order after explicit confirmation.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_investment_order",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Delete one spending transaction after explicit confirmation.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_spending_transaction",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Delete one todo in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "public_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_todo",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Delete an existing capital transfer in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_transfer",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Find transaction candidates in an authorized workspace.\n\n``from_date``/``to_date`` (YYYY-MM-DD) are inclusive workspace-local calendar\ndays (``from_day``/``to_day`` are aliases). Returns ``total_count`` and\n``next_cursor``; pass it back as ``cursor`` for the next page.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "category_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "from_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "from_day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 10,
+            "type": "integer"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "to_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "to_day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "transaction_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "expense"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "find_spending_transactions",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Find bounded transfer candidates for a correction or deletion.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "from_day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 10,
+            "type": "integer"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "to_day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "find_transfers",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Get read-only spending-account balances for an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_account_balances",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Allocation vs target with optional new-cash deployment.\n\n``new_cash`` defaults to 0. If positive, computes buy-only deployment to\nunderweight themes.\nNever suggests sells. Largest-remainder rounding ensures exact sums.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "new_cash": {
+            "default": "0",
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_allocation_vs_target",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Read the stored Rule 115 FX rate for a date + currency.\n\nReads the user-provided rate written via `set_fx_rate` (key\n\"YYYY-MM-DD:CURRENCY\"). Returns status \"not_found\" (the REST 404) when no\nrate is stored for that exact date and currency.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "date_str": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "date_str",
+          "currency"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_fx_rate",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Get the stored halal compliance verdict for a holding.\n\nReturns the verdict, its date, the non-permissible income percentage\nand every cited source (screener name, URL, rule reference, and each\nscreener's own verdict/date). `sources_disagree` is true when the\ncited screeners gave different verdicts. When the holding has no\nrecord yet, `compliance` is null.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "holding_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "holding_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_holding_compliance",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Get a read-only investing summary for an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_investing_summary",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Read the latest sourced ETF or mutual-fund constituent snapshot.\n\nReturns the snapshot on or before ``as_of_date`` (latest snapshot by\n``(as_of_date, fetched_at)`` counts when several exist), optionally\nfiltered by ``source``. Each row carries the constituent company's\n``sector`` and ``industry`` where known.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "instrument_public_id": {
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "instrument_public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_investment_constituents",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Sector allocation of the portfolio, with optional ETF/MF look-through.\n\nWith look-through (default) each ETF/MF holding is split across the\nsectors of the companies in its latest constituent snapshot (exactly\none snapshot per instrument, newest by ``(as_of_date, fetched_at)``);\ndirect stocks use their own company's sector; ``OTHER-<FUND>``\nplaceholder holdings and unmapped companies go to ``Other / not\nitemised`` and are never rescaled. Returns value and % per sector\n(summing to 100% including that bucket) plus coverage per fund.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "lookthrough": {
+            "default": true,
+            "type": "boolean"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_investment_sector_allocation",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Get look-through exposure by theme/company/sector/country.\n\nOmit ``group_by`` for every grouping, or pass one of company, sector,\ncountry, theme to limit the response to it.\n\nUses exactly one latest constituent snapshot per fund (newest by as_of_date, fetched_at).\nOTHER-* placeholder rows and unmapped companies go to \"not itemised\" (never rescaled).",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "group_by": {
+            "anyOf": [
+              {
+                "enum": [
+                  "company",
+                  "sector",
+                  "country",
+                  "theme"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_lookthrough_exposure",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "FY outward remittance vs the USD 250,000 LRS cap, with TCS status.\n\nBuilt from INR-funded transfers into foreign-currency investing accounts\n(e.g. Paasa / a US brokerage) in the workspace; repatriations and INR\nbrokerage funding are excluded. `fy` is an Indian financial year label\nsuch as \"2026-27\" (1 Apr - 31 Mar, IST) and defaults to the current one.\nMoney values are decimal strings. See `assumptions` for limits.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "fy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_lrs_summary",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Get the current net worth for an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_net_worth",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "XIRR (money-weighted) and time-weighted return, converted to INR.\n\nXIRR is reported overall, per brokerage account and per holding, since\ninception, as a fraction (``0.1234`` = 12.34%) plus ``xirr_pct``; a\nposition whose flows cannot yield one gets ``xirr: null`` and\n``xirr_status: \"not_computable\"`` (never an error). Time-weighted return\nis chain-linked from portfolio snapshots over ``period`` (all, 1m, 3m,\n6m, 1y, 3y, 5y, ytd) with external contributions/withdrawals neutralised.\nAmounts are given natively and converted to ``reporting_currency``\n(default INR) at the latest FX; a currency with no rate yields null\nconverted values and an explicit warning, never zero. Read-only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "period": {
+            "default": "all",
+            "type": "string"
+          },
+          "reporting_currency": {
+            "default": "INR",
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_performance",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Estimate the halal purification (charity) amount for income.\n\nPass exactly one of `holding_id` (all income recorded against that\nholding, optionally limited by `from_date`/`to_date` as YYYY-MM-DD)\nor `dividend_id` (one income event). Amount = gross income x the\nholding's recorded non-permissible-income %, as a decimal string in\nthe holding's currency. If no percentage is recorded the amount is\n\"0.00\" and `basis` says why; nothing is guessed. Estimate only, not\na fatwa: see the `disclaimer` field.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "dividend_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "from_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "holding_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "to_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_purification_estimate",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Get budgets and spending details for an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_spending_budgets",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Get the workspace's capital gains tax configuration.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_tax_profile",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Get the capital gains tax estimate for a workspace and financial year.\n\nReturns the LTCG and STCG buckets with their tax, the per-lot\ndetail, the FX rates used (with their source), and the assumptions\nbehind the number. This is an estimate, not a filing-ready\nliability.\n\n`fy` is an Indian financial year label such as \"2026-27\" and\ndefaults to the current one.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "fy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_tax_summary",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Retrieve one todo in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "public_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_todo",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Get todo counts and due items for an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_todo_summary",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Paginated body-weight history, newest first (read counterpart of log_weight).\n\n``start``/``end`` are ISO-8601 bounds on ``measured_at`` (naive values\nare read as UTC). ``limit`` is capped at 100. Weights are strings in kg.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_weight_history",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Get bounded workspace vocabulary for safe follow-up tool calls.\n\nThis is read-only and excludes brokerage accounts. It gives MCP clients\nthe same categories, spending accounts, tags, active medications, and\npersisted timezone that the voice surface uses for disambiguation.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_workspace_reference_data",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Read-only: unrealised-loss lots worth realising for tax, best first.\n\nScans every non-zero holding's open lots against its latest stored\nprice, ranks loss lots by the tax the loss would save (converted to\nINR so mixed currencies compare), and reports each lot's price date\nand whether that price is stale. Holdings with no stored price or no\nopen lots are listed under `skipped_holdings`, never guessed. A\nforeign short-term loss follows your slab, so it is ranked last\nunless you pass `stcg_rate_percent` (e.g. \"30\").\n\n`limit` 1-200 caps the returned candidates (candidate_count is the\ntotal).",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer"
+          },
+          "stcg_rate_percent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "harvest_candidates",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "List bounded dividend, interest, and coupon events.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_investment_dividends",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "List investment holdings with filters, sorting, and reporting valuation.\n\nNative valuation fields remain in each holding's own currency. Reporting\nvalues use ``valuation_currency`` when supplied, otherwise the workspace\nreporting currency, or the sole holding currency when unambiguous.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "instrument_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer"
+          },
+          "quantity_state": {
+            "default": "nonzero",
+            "type": "string"
+          },
+          "sort_by": {
+            "default": "current_value",
+            "type": "string"
+          },
+          "sort_direction": {
+            "default": "desc",
+            "type": "string"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "valuation_currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_investment_holdings",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "List recorded stock, ETF, and mutual-fund orders.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer"
+          },
+          "order_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "search": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_investment_orders",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Paginated medication dose-event history, newest first (read counterpart\nof log_medication_event). Filter by ``medication_id`` (UUID) and/or\n``status`` (``taken`` | ``skipped``). ``limit`` is capped at 100.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 25,
+            "type": "integer"
+          },
+          "medication_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_medication_events",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Dates in [from_date, to_date] (YYYY-MM-DD, max 366 days) with no stored Rule 115 rate.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "type": "string"
+          },
+          "from_date": {
+            "type": "string"
+          },
+          "to_date": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "from_date",
+          "to_date",
+          "currency"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_missing_fx_rates",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "List the next due todos in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 5,
+            "type": "integer"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_next_due_items",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "List portfolio report history for a workspace, newest ``as_of`` first.\n\nFilters on ``as_of`` (inclusive). Cursor-paginated with a total count so\ncallers can verify no page was cut off. Items carry the denormalised\ncolumns; set ``include_payload=true`` to also get ``scalars_json``,\n``foundation_json`` and ``actions_md`` (large -- narrow the date range and\nlower ``limit`` first).",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "from_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "include_payload": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer"
+          },
+          "to_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_portfolio_reports",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Paginated, filterable read of the append-only audit log (newest first).\n\nEach row has the actor's name, the entity, and the redacted\n``details.before`` / ``details.after`` / ``details.changed_fields`` --\nenough to verify a write or to reconstruct an undo. Secrets (passwords,\ntokens, API keys, hashes, ...) are redacted. ``limit`` is capped at 100.\n``since``/``until`` are ISO-8601 (naive values are read as UTC).\nRead-only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "entity_public_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "entity_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer"
+          },
+          "module": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_recent_changes",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "List transactions for a local day or inclusive date range in an authorized workspace.\n\n``from_date``/``to_date`` (YYYY-MM-DD) are inclusive workspace-local calendar\ndays. Returns ``total_count`` and ``next_cursor``; pass it back as ``cursor``\nfor the next page.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "category_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "from_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 10,
+            "type": "integer"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "to_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "transaction_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "expense"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_spending_transactions",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Read-only: a holding's open FIFO tax lots with their long-term countdown.\n\nPer lot: acquired date, quantity, cost per unit (fee-inclusive),\nwhether it is long-term today, and `days_to_long_term` (calendar\ndays until the first day a sale is long-term; 0 = already). The\nthreshold is 12 months for Indian-listed holdings and 24 for foreign\nones. Unrealised P&L is included when a stored price exists.\n\n`holding` is a holding public_id or a symbol (use `account_id` to\ndisambiguate a symbol held in several accounts). Lots are paged:\n`limit` 1-500, `offset` >= 0.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "holding": {
+            "type": "string"
+          },
+          "limit": {
+            "default": 200,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "holding"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_tax_lots",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "List todos for an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_todos",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "List capital transfers for a day or date range in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "from_day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 10,
+            "type": "integer"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "to_day": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_transfers",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "List active workspaces available to the authenticated MCP user.\n\nCall this before workspace-scoped tools when the workspace is not already\nsupplied by the host application. Never guess a workspace identifier.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_workspaces",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Record a medication event in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "dose_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "name",
+          "status"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "log_medication_event",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Create a transaction (expense or income) in an authorized workspace.\n\nA repeated ``source_ref`` returns the existing transaction (idempotent).\n``dry_run=true`` writes nothing and returns ``{counts, items:[{index,\nstatus, match_reason, existing_id, errors}]}``. ``skip_duplicates=true``\nreports a same-day/amount/account/description match as a duplicate\ninstead of refusing.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "allow_duplicate": {
+            "default": false,
+            "type": "boolean"
+          },
+          "amount": {
+            "type": "string"
+          },
+          "category_name": {
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "dry_run": {
+            "default": false,
+            "type": "boolean"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "skip_duplicates": {
+            "default": false,
+            "type": "boolean"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "transaction_type": {
+            "default": "expense",
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "amount",
+          "category_name"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "log_spending_transaction",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Create up to 50 transactions idempotently in an authorized workspace.\n\nEach item: {amount, category_name, description?, account_name?, occurred_at?,\ntags?, transaction_type?, source_ref?, allow_duplicate?}. An exact\n``source_ref`` match returns the existing record. Items without one are matched\non local day + amount + account + normalised description, multiplicity-aware\n(the ledger already holding 1 of 2 identical purchases creates 1, skips 1):\n``duplicate`` with ``skip_duplicates=true``, else ``possible_duplicate`` (not\nwritten). Default is per-item partial success; ``atomic=true`` is all-or-nothing.\n``dry_run=true`` writes nothing and returns the same structure with\n``would_create``. Returns ``{counts, items:[{index, status, match_reason,\nexisting_id, errors, warnings}]}``.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "atomic": {
+            "default": false,
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": false,
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "skip_duplicates": {
+            "default": false,
+            "type": "boolean"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "items"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "log_spending_transactions_batch",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Log a body-weight measurement in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "weight_kg": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "weight_kg"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "log_weight",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Diff an external holdings list (INDmoney/Paasa/broker) against LifeStack.\n\n``external_list`` entries (max 500): ``symbol`` and/or ``isin``,\n``quantity`` (required), optional ``avg_cost``, ``currency``,\n``account_id`` (LifeStack account UUID), ``source``, ``external_ref``.\nSymbols are normalised (``NSE:RELIANCE``, ``RELIANCE.NS`` and\n``RELIANCE-EQ`` match ``RELIANCE``) and ISIN wins over symbol when both\nsides have one. Returns per-position status -- matched, quantity_drift,\ncost_basis_drift, missing_in_lifestack, missing_at_depository -- with an\nactionable suggestion for each non-match (record a missed order, review\nfees on mis-fee'd orders, remove a stale holding). Pass ``account_id``\nwhen the external list covers a single account. ``quantity_tolerance``\nis an absolute share count (float noise); ``cost_tolerance_pct`` is the\nallowed relative difference in average cost. Read-only.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "cost_tolerance_pct": {
+            "default": "0.5",
+            "type": "string"
+          },
+          "external_list": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "quantity_tolerance": {
+            "default": "0.0001",
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "external_list"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "reconcile_holdings",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Rename a company and/or set its ISIN, workspace-scoped.\n\nEdits one company visible in this workspace (global or a workspace\ncopy). A global company is forked into a workspace copy first, so the\nglobal record is never mutated in place. At least one of ``name`` or\n``isin`` must be provided. An ISIN or name already used by another\nvisible company is rejected.\n\nWithout ``confirmed`` the call returns ``needs_confirmation`` and\nwrites nothing. With it, the change is applied in a transaction and\nrecorded in the audit trail (before/after plus changed fields).\nRequires the mcp:write scope.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "company_public_id": {
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "isin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "company_public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "set_company_details",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Set the sector (and optional industry and country) on companies, in bulk.\n\n``rows`` holds 1-200 entries. Each row identifies its company by\nexactly one of:\n\n- ``holding_public_id`` - a holding in this workspace; the company\n  behind that holding's instrument is updated.\n- ``isin`` - a company matched by ISIN, workspace-scoped or global.\n- ``ticker`` plus ``exchange`` - a company via an instrument listed\n  on that exchange, workspace-scoped or global.\n\n``sector`` is required on every row (free text, up to 100 characters).\nUse GICS names: Information Technology, Health Care, Financials,\nIndustrials, Energy, Consumer Staples, Consumer Discretionary,\nMaterials, Utilities, Communication Services, Real Estate. Case and\nextra whitespace are normalised (``health  care`` -> ``Health Care``)\nso variants never split an allocation bucket. ``industry`` (up to 100\ncharacters) and ``country_code`` are optional and only written when\nprovided. ETFs and mutual funds have no company; their sectors come\nfrom constituent snapshots.\n\nA global company is never edited in place: it is forked into a\nworkspace-scoped copy and this workspace's instruments and holdings\nare re-pointed to it (idempotent on re-run). Without ``confirmed`` the\ncall returns ``needs_confirmation`` and writes nothing. With it, each\nrow is applied atomically; a row that cannot be applied is reported in\n``errors`` while the other rows still apply, and an unexpected failure\nrolls back the whole call. Returns per-row ``before``/``after`` values.\nRequires the mcp:research scope.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "rows"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "set_company_sector",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Set a daily Rule 115 FX rate for a specific date and currency.\n\n`date_str`: \"YYYY-MM-DD\" — the Rule 115 specified date (last day of month before sale month).\n`currency`: e.g., \"USD\", \"GBP\".\n`rate`: SBI TT buying rate ₹ per 1 unit (decimal string).\nThe key is stored as \"YYYY-MM-DD:CURRENCY\" for multi-currency workspaces.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "date_str": {
+            "type": "string"
+          },
+          "rate": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "date_str",
+          "currency",
+          "rate"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "set_fx_rate",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Backfill many daily Rule 115 FX rates in one call.\n\n``rates`` is a list of ``{\"date\": \"YYYY-MM-DD\", \"currency\": \"USD\", \"rate\": \"83.4\"}``\n(up to 400 -- a financial year of daily rates). Use ``list_missing_fx_rates`` to find\nthe gaps. Everything is validated first and nothing is written if any entry is bad;\nthe error names the entry (``rates[3]: ...``). Dates may not be in the future.\n\nA rate already stored for the same date + currency is **kept** (reported under\n``skipped_existing``) unless ``overwrite_existing=true``; an identical value is\n``unchanged``. Without ``confirmed=true`` nothing is written and the result is a\npreview of the counts (``add`` / ``update`` / ``skip_existing`` / ``unchanged``).\nConcurrent calls merge safely.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "overwrite_existing": {
+            "default": false,
+            "type": "boolean"
+          },
+          "rates": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "rates"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "set_fx_rates",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Record (create or replace) the halal compliance verdict for a holding.\n\nRequires the dedicated mcp:research grant and explicit confirmation.\nIdempotent: the latest call wins and the previous value stays in the\naudit log.\n\n`verdict` is one of \"halal\", \"non_halal\", \"permissible\" (not fully\nhalal but acceptable once income is purified) or \"unknown\".\n`sources` is 1-10 citations, each {\"screener_name\", \"url\" (http/https),\n\"rule_reference\"} plus optional \"verdict\" and \"as_of_date\" (YYYY-MM-DD)\nso screeners that disagree stay visible side by side. `as_of_date` is\nthe date of the verdict (not in the future). `impure_income_pct` is the\nscreener-stated share (0-100, decimal string) of non-permissible income;\nit drives get_purification_estimate and is never inferred.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of_date": {
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "holding_id": {
+            "type": "string"
+          },
+          "impure_income_pct": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "sources": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "verdict": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "holding_id",
+          "verdict",
+          "sources",
+          "as_of_date"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "set_holding_compliance",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Set theme tags on holdings.\n\nRequires mcp:research scope and explicit confirmation.\nEach holding entry: {\"holding_id\": str, \"tags\": [{\"theme\": str, \"target_weight_pct\": float?}]}",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "holdings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "holdings"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "set_holding_theme_tags",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Read-only what-if: the capital-gains tax of selling `qty` units of a holding.\n\nNothing is sold or changed. FIFO open lots are consumed oldest first;\neach lot is classified long-term/short-term on calendar days (more\nthan 12 months for Indian-listed, 24 for foreign). The tax is\nINCREMENTAL: the estimated tax for the sale's financial year with the\nsale minus without it, on top of the gains already realised that FY\n(the same data get_tax_summary uses), so the Rs 1.25 lakh Sec 112A\nexemption is only what is left. Returns per-lot gains, the Rule 115\nFX rate and its source, a status (success, insufficient_quantity,\nmissing_fx_rate, reconciliation_failed) and the assumptions used.\n\n`holding` is a holding public_id (from list_investment_holdings), or\na symbol; a symbol held in several accounts is rejected with the\ncandidates unless `account_id` (account public_id) narrows it.\n`date` is the sale day, YYYY-MM-DD in your timezone. `qty`, `price`\nand `sell_fees` are decimal strings (price and fees in the holding's\ncurrency).",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "date": {
+            "type": "string"
+          },
+          "holding": {
+            "type": "string"
+          },
+          "price": {
+            "type": "string"
+          },
+          "qty": {
+            "type": "string"
+          },
+          "sell_fees": {
+            "default": "0",
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "holding",
+          "qty",
+          "date",
+          "price"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "simulate_sale",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Set a brokerage account's market scope, or flag one holding's exchange.\n\nThe capital-gains tax regime depends on where a security is listed.\n`market_scope` sets the account-level default (\"india\", \"foreign\" or\n\"mixed\") used when the reference security master has no entry for a\nticker.\n\n`exchange_name` sets the exchange on a holding. With `symbol` it\napplies to that one holding and also sets its country override,\nwhich beats the account default. Without `symbol` it applies to\nevery holding in the account whose exchange is still unset.\n\nHoldings whose exchange is already set are skipped, and an\nunrecognised exchange name leaves the country unset rather than\nguessing.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "exchange_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "market_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "account_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "update_investing_account_status",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Update a recorded investment order after explicit confirmation.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "brokerage_fee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "exchange_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "order_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "other_fees": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "price_per_unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tax_amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "update_investment_order",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Update one spending transaction after explicit confirmation.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "category_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "update_spending_transaction",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Update the workspace's capital gains tax configuration.\n\nAll fields are optional — only provided fields are updated.\n`fx_overrides` accepts keys in \"YYYY-MM\" (legacy monthly) or \"YYYY-MM-DD:CURRENCY\" (daily) format.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "apply_carry_forward": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "cess_pct": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "explicit_regime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "fx_overrides": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "other_income": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "resident_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "slab_override_pct": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "surcharge_override_pct": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tax_regime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "update_tax_profile",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Update one todo in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "update_todo",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Update an existing capital transfer in an authorized workspace.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "fees": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "from_account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "fx_fee_amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "fx_rate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "net_amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "platform_fee_amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "tax_amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "to_account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "update_transfer",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Replace one sourced ETF or mutual-fund constituent snapshot.\n\nRequires the dedicated mcp:research grant and explicit confirmation.\nEach constituent must include a ticker or ISIN and a decimal weight,\nand may optionally carry ``sector`` and ``industry`` (free text, up to\n100 characters each; GICS sector names are recommended). A provided\nsector/industry fills an empty value on the constituent company; an\nalready-set value is overwritten only when ``overwrite_existing`` is\ntrue.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of_date": {
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "constituents": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fetched_at": {
+            "type": "string"
+          },
+          "instrument_public_id": {
+            "type": "string"
+          },
+          "overwrite_existing": {
+            "default": false,
+            "type": "boolean"
+          },
+          "renormalise": {
+            "default": false,
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "instrument_public_id",
+          "as_of_date",
+          "source",
+          "fetched_at",
+          "constituents"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "write_investment_constituent_snapshot",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    }
+  ]
+}

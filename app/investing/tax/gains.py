@@ -16,7 +16,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
-from app.investing.tax.fy import add_months
+from app.investing.tax.holding_period import (
+    IST,
+    as_day,
+    is_long_term_on,
+    long_term_mark_day,
+)
 from app.investing.tax.regime import RegimeSpec, RegimeType
 
 MONEY_QUANT = Decimal("0.01")
@@ -176,11 +181,11 @@ def effective_buy_cost_per_unit(order: OrderView) -> Decimal:
 def is_long_term(acquired_at: datetime, sold_at: datetime, regime: RegimeSpec) -> bool:
     """Whether a lot is long-term under the regime's threshold.
 
-    "More than N months" means the holding must exceed N **complete
-    calendar months** — strictly greater than acquisition + N months.
-    A days-based approximation drifts and misclassifies boundary lots.
+    "More than N months" is decided on calendar days in India time: the sale must
+    fall on a day *after* the N-month anniversary of the acquisition day. Time of
+    day never matters. See ``holding_period`` -- the what-if tools use the same rule.
     """
-    return sold_at > add_months(acquired_at, regime.ltcg_holding_months)
+    return is_long_term_on(acquired_at, sold_at, regime.ltcg_holding_months, IST)
 
 
 def _months_between(start: datetime, end: datetime) -> int:
@@ -293,9 +298,13 @@ def replay_fifo_lots(
                     gain_native=gross_gain.quantize(MONEY_QUANT),
                     fees_native=lot_fees.quantize(MONEY_QUANT),
                     regime=regime.key,
-                    holding_months=_months_between(lot.acquired_at, order.occurred_at),
+                    holding_months=_months_between(
+                        as_day(lot.acquired_at, IST), as_day(order.occurred_at, IST)
+                    ),
                     is_long_term=long_term,
-                    long_term_mark_date=add_months(lot.acquired_at, regime.ltcg_holding_months),
+                    long_term_mark_date=long_term_mark_day(
+                        lot.acquired_at, regime.ltcg_holding_months, IST
+                    ),
                     classified_by=classified_by,
                     classification_detail=classification_detail,
                 )

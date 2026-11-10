@@ -17,12 +17,9 @@ from app.finance.models import Account, AccountType, CapitalTransfer
 from app.investing.models import Dividend
 from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.repository import McpGrantRepository
-from app.mcp.server import (
-    _add_holding_reporting_valuation,
-    _run_capture_tool,
-    _sort_holding_items,
-    create_mcp_server,
-)
+from app.mcp.server import create_mcp_server
+from app.mcp.support.common import run_capture_tool
+from app.mcp.tools.portfolio import _add_holding_reporting_valuation, _sort_holding_items
 from app.platform.models import Workspace, WorkspaceMembership
 
 
@@ -303,7 +300,7 @@ async def test_spec095_mcp_transfer_and_dividend_tools(override_database_url, mo
     )
     monkeypatch.setattr("app.mcp.security.get_access_token", lambda: read_only_token)
     with pytest.raises(ForbiddenError):
-        await _run_capture_tool(
+        await run_capture_tool(
             workspace_id=202,
             required_scope="mcp:write",
             tool_name="create_transfer",
@@ -319,7 +316,7 @@ async def test_spec095_mcp_transfer_and_dividend_tools(override_database_url, mo
     monkeypatch.setattr("app.mcp.security.get_access_token", lambda: fake_token)
 
     # 4. Preview transfer (confirmed=False)
-    preview = await _run_capture_tool(
+    preview = await run_capture_tool(
         workspace_id=202,
         required_scope="mcp:write",
         tool_name="create_transfer",
@@ -348,7 +345,7 @@ async def test_spec095_mcp_transfer_and_dividend_tools(override_database_url, mo
         assert len(t_rows) == 0
 
     # 5. Confirmed transfer -> source_type must be mcp_agent
-    created = await _run_capture_tool(
+    created = await run_capture_tool(
         workspace_id=202,
         required_scope="mcp:write",
         tool_name="create_transfer",
@@ -372,7 +369,7 @@ async def test_spec095_mcp_transfer_and_dividend_tools(override_database_url, mo
         assert t_row.gross_amount == Decimal("100.00")
 
     # 6. Dividend creation via MCP tool
-    div_created = await _run_capture_tool(
+    div_created = await run_capture_tool(
         workspace_id=202,
         required_scope="mcp:write",
         tool_name="create_investment_dividend",
@@ -395,7 +392,7 @@ async def test_spec095_mcp_transfer_and_dividend_tools(override_database_url, mo
         assert div_row.symbol == "GOOGL"
 
     # 7. Dividend deletion via MCP tool (preview)
-    div_delete_preview = await _run_capture_tool(
+    div_delete_preview = await run_capture_tool(
         workspace_id=202,
         required_scope="mcp:write",
         tool_name="delete_investment_dividend",
@@ -408,7 +405,7 @@ async def test_spec095_mcp_transfer_and_dividend_tools(override_database_url, mo
     assert div_delete_preview["needs_confirmation"] is True
 
     # 8. Dividend deletion via MCP tool (confirmed)
-    div_deleted = await _run_capture_tool(
+    div_deleted = await run_capture_tool(
         workspace_id=202,
         required_scope="mcp:write",
         tool_name="delete_investment_dividend",

@@ -851,16 +851,26 @@ class CompanyRepository(BaseRepository[Company]):
         ingestion paths (CSV import, constituent API upsert) must call this
         instead of matching on raw name, or "Apple Inc"/"Apple Inc."/"AAPL"
         fragment into separate companies and understate look-through overlap.
+
+        An explicitly supplied ISIN always wins: if it matches a company, that
+        company is returned even when the ticker points elsewhere. If the ISIN
+        matches nothing while the ticker matches a *different* company, the
+        row is rejected instead of silently stamping the ISIN onto the
+        ticker-matched company (that re-pointed IDEX Corp at INE022Q01020 and
+        let a constituent write overwrite its sector).
         """
         isin = isin.strip().upper() if isin else None
         ticker = ticker.strip().upper() if ticker else None
         candidates = await self._scope_candidates(workspace_id)
 
+        isin_company: Company | None = None
         if isin:
             for candidate in candidates:
                 if candidate.isin and candidate.isin.strip().upper() == isin:
-                    return candidate
+                    isin_company = candidate
+                    break
 
+        ticker_company: Company | None = None
         if ticker:
             for candidate in candidates:
                 if not (candidate.ticker and candidate.ticker.strip().upper() == ticker):
@@ -874,23 +884,37 @@ class CompanyRepository(BaseRepository[Company]):
                     and candidate.country_code.upper() != country_code.upper()
                 ):
                     continue
-                if isin and not candidate.isin:
-                    candidate.isin = isin
-                    await self.save(candidate)
-                return candidate
+                ticker_company = candidate
+                break
+
+        if isin and isin_company is not None:
+            # ISIN wins. A ticker that points at a different company is a
+            # genuine identity conflict: reject rather than merge.
+            if ticker_company is not None and ticker_company is not isin_company:
+                raise ValueError(
+                    f"company '{name}': ISIN '{isin}' resolves to "
+                    f"'{isin_company.name}' but ticker '{ticker}' resolves to "
+                    f"'{ticker_company.name}' — they denote different "
+                    f"companies. Correct one record first, then re-send the row."
+                )
+            return isin_company
+
+        if isin and ticker_company is not None and isin_company is None:
+            # Explicit ISIN matches nothing: refuse to backfill it onto the
+            # company the ticker happens to point at.
+            raise ValueError(
+                f"company '{name}': no company with ISIN '{isin}' is visible in "
+                f"this workspace, but ticker '{ticker}' resolves to "
+                f"'{ticker_company.name}'. ISIN and ticker disagree — correct "
+                f"one record first (or omit the ISIN to match by ticker alone)."
+            )
+
+        if ticker and ticker_company is not None:
+            return ticker_company
 
         normalized_target = normalize_company_name(name)
         for candidate in candidates:
             if normalize_company_name(candidate.name) == normalized_target:
-                changed = False
-                if isin and not candidate.isin:
-                    candidate.isin = isin
-                    changed = True
-                if ticker and not candidate.ticker:
-                    candidate.ticker = ticker
-                    changed = True
-                if changed:
-                    await self.save(candidate)
                 return candidate
 
         return await self.create(

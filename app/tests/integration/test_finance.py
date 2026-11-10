@@ -11,7 +11,7 @@ from app.auth.models import User
 from app.config import settings
 from app.core.database import postgres
 from app.finance.models import Account, CapitalTransfer, FxRate, TransferModule
-from app.mcp.server import _load_workspace_reference_data
+from app.mcp.tools.workspace import _load_workspace_reference_data
 from app.platform.models import WorkspaceMembership
 from app.spending.models import SpendingCategory, SpendingTransaction, TransactionType
 

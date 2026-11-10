@@ -183,7 +183,7 @@ async def tools(monkeypatch):
 
 
 def _as(monkeypatch, user_id: int) -> None:
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=user_id))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=user_id))
 
 
 def _local_today() -> date:

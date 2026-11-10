@@ -51,8 +51,20 @@ class TestResolveOrCreateCompany:
 
         assert resolved is existing
 
-    async def test_ticker_match_backfills_missing_isin(self) -> None:
-        existing = Company(id=1, workspace_id=1, name="Apple Inc", ticker="AAPL", isin=None)
+    async def test_ticker_match_without_isin_still_works(self) -> None:
+        existing = Company(id=1, workspace_id=1, name="Apple Inc", ticker="AAPL")
+        session = _session_with_candidates([existing])
+        repo = CompanyRepository(session)
+
+        resolved = await repo.resolve_or_create_company(1, name="Apple", ticker="AAPL")
+
+        assert resolved is existing
+        session.add.assert_not_called()
+
+    async def test_isin_and_ticker_pointing_to_same_company(self) -> None:
+        existing = Company(
+            id=1, workspace_id=1, name="Apple Inc", ticker="AAPL", isin="US0378331005"
+        )
         session = _session_with_candidates([existing])
         repo = CompanyRepository(session)
 
@@ -61,10 +73,49 @@ class TestResolveOrCreateCompany:
         )
 
         assert resolved is existing
-        assert existing.isin == "US0378331005"
-        session.add.assert_called_once_with(existing)
+        session.add.assert_not_called()
 
-    async def test_normalized_name_collapses_variants(self) -> None:
+    async def test_isin_match_wins_when_ticker_matches_nothing(self) -> None:
+        apple = Company(id=1, workspace_id=1, name="Apple Inc", ticker="AAPL", isin="US0378331005")
+        session = _session_with_candidates([apple])
+        repo = CompanyRepository(session)
+
+        # Ticker ZZZZ matches nothing: ISIN still resolves Apple unambiguously.
+        resolved = await repo.resolve_or_create_company(
+            1, name="Apple", ticker="ZZZZ", isin="US0378331005"
+        )
+
+        assert resolved is apple
+        session.add.assert_not_called()
+
+    async def test_isin_and_ticker_denoting_different_companies_is_rejected(self) -> None:
+        apple = Company(id=1, workspace_id=1, name="Apple Inc", ticker="AAPL", isin="US0378331005")
+        idex = Company(id=2, workspace_id=1, name="IDEX Corp", ticker="IEX", isin="INE022Q01020")
+        session = _session_with_candidates([apple, idex])
+        repo = CompanyRepository(session)
+
+        with pytest.raises(ValueError, match="different companies"):
+            await repo.resolve_or_create_company(
+                1, name="Indian Energy Exchange", ticker="IEX", isin="US0378331005"
+            )
+        session.add.assert_not_called()
+
+    async def test_unmatched_isin_is_not_backfilled_onto_ticker_match(self) -> None:
+        idex = Company(id=2, workspace_id=1, name="IDEX Corp", ticker="IEX")
+        session = _session_with_candidates([idex])
+        repo = CompanyRepository(session)
+
+        # ISIN INE022Q01020 matches nothing; ticker IEX points at IDEX Corp.
+        # Stamping the ISIN onto IDEX would re-point a real company at the
+        # wrong identity: reject instead.
+        with pytest.raises(ValueError, match="no company with ISIN 'INE022Q01020'"):
+            await repo.resolve_or_create_company(
+                1, name="Indian Energy Exchange", ticker="IEX", isin="INE022Q01020"
+            )
+        assert idex.isin is None
+        session.add.assert_not_called()
+
+    async def test_new_company_carries_both_identifiers_when_nothing_matches(self) -> None:
         existing = Company(id=1, workspace_id=1, name="Apple Inc.")
         session = _session_with_candidates([existing])
         repo = CompanyRepository(session)

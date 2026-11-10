@@ -95,7 +95,7 @@ class _Auth:
 @pytest.fixture
 async def order_tool(seed, monkeypatch):
     auth = _Auth()
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", auth)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", auth)
     tools = {t.name: t.fn for t in await create_mcp_server().list_tools()}
 
     async def call(**over):
@@ -174,7 +174,7 @@ async def test_dry_run_is_not_an_unauthenticated_oracle(order_tool, monkeypatch)
     async def deny(*_a, **_k):
         raise ForbiddenError(detail="You do not have access to this workspace")
 
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", deny)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", deny)
     with pytest.raises(ForbiddenError):
         await order_tool(dry_run=True, workspace_id=WS + 1, source_ref="probe")
 

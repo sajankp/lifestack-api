@@ -17,7 +17,8 @@ from app.config import settings
 from app.core.database import postgres
 from app.core.exceptions import ForbiddenError
 from app.investing.models import PortfolioReport
-from app.mcp.server import MAX_PORTFOLIO_REPORT_CHARS, create_mcp_server
+from app.mcp.server import create_mcp_server
+from app.mcp.tools.portfolio import MAX_PORTFOLIO_REPORT_CHARS
 from app.platform.models import Workspace, WorkspaceMembership
 
 WS = 8201
@@ -34,7 +35,7 @@ def _mcp_settings(monkeypatch):
 @pytest.fixture
 def authorize(monkeypatch):
     mock = AsyncMock(return_value=ALICE)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", mock)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", mock)
     return mock
 
 
@@ -301,7 +302,7 @@ async def test_both_tools_stop_when_authorization_fails(
     override_database_url, monkeypatch, tool, kwargs
 ):
     monkeypatch.setattr(
-        "app.mcp.server.authorize_workspace",
+        "app.mcp.security.authorize_workspace",
         AsyncMock(side_effect=ForbiddenError(detail="no access")),
     )
     await _seed_workspaces()

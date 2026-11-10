@@ -18,6 +18,8 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
+
 from app.investing.models import Company, Instrument
 from app.investing.repository import (
     CompanyRepository,
@@ -160,3 +162,75 @@ class CompanySectorService:
                 f"'{ticker}' on '{exchange}' is ambiguous: it resolves to {len(companies)} companies"
             )
         return next(iter(companies.values()))
+
+    async def set_company_details(
+        self,
+        workspace_id: int,
+        company_public_id: uuid.UUID,
+        *,
+        name: str | None = None,
+        isin: str | None = None,
+    ) -> dict[str, Any]:
+        """Rename and/or set the ISIN on one workspace-visible company.
+
+        A global company is forked into a workspace copy first, so the global
+        record is never mutated in place. Returns ``{"company_public_id",
+        "name", "isin", "forked_from_global", "changed", "before", "after"}``.
+        Raises :class:`SectorRowError` for a reason the caller can act on
+        (company not visible, name/ISIN already taken by another company).
+        """
+        company = await self.company_repo.get_by_public_id(workspace_id, company_public_id)
+        if company is None:
+            raise SectorRowError(f"company '{company_public_id}' not found in this workspace")
+        assert company.id is not None
+        forked = company.workspace_id is None
+        if forked:
+            company = await self.company_repo.fork_for_workspace(workspace_id, company)
+
+        before = {"name": company.name, "isin": company.isin}
+        changed = False
+        if name is not None:
+            name = name.strip()
+            if name and name != company.name:
+                clash = (
+                    (
+                        await self.company_repo.session.execute(
+                            select(Company).where(
+                                Company.name == name,
+                                Company.id != company.id,
+                                (Company.workspace_id == workspace_id)
+                                | (Company.workspace_id.is_(None)),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                if clash is not None:
+                    raise SectorRowError(
+                        f"another company in this workspace is already named '{name}'"
+                    )
+                company.name = name
+                changed = True
+        if isin is not None:
+            isin = isin.strip().upper() or None
+            if isin is not None and isin != company.isin:
+                existing = await self.company_repo.get_by_isin(workspace_id, isin)
+                if existing is not None and existing.id != company.id:
+                    raise SectorRowError(f"ISIN '{isin}' is already used by '{existing.name}'")
+                company.isin = isin
+                changed = True
+        if changed:
+            company.updated_at = datetime.now(UTC)
+            await self.company_repo.save(company)
+        after = {"name": company.name, "isin": company.isin}
+        return {
+            "company_id": company.id,
+            "company_public_id": str(company.public_id),
+            "company_name": company.name,
+            "company_isin": company.isin,
+            "forked_from_global": forked,
+            "changed": changed,
+            "before": before,
+            "after": after,
+        }

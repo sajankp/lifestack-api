@@ -1,9 +1,12 @@
+import uuid
 from http.cookies import SimpleCookie
 
 import pytest
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from limits.storage import storage_from_string
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 from testcontainers.postgres import PostgresContainer
@@ -153,3 +156,23 @@ async def client(override_database_url):
     ) as ac:
         yield ac
     limiter.enabled = True
+
+
+@pytest.fixture
+async def race_engine(migrated_database_url: str):
+    """Engine on a private clone of the migrated database; dropped after the test."""
+    name = f"race_{uuid.uuid4().hex[:12]}"
+    template_url = make_url(migrated_database_url)
+    admin = create_async_engine(
+        template_url.set(database="postgres"), isolation_level="AUTOCOMMIT", poolclass=NullPool
+    )
+    async with admin.connect() as conn:
+        await conn.execute(text(f'CREATE DATABASE "{name}" TEMPLATE "{template_url.database}"'))
+    engine = create_async_engine(template_url.set(database=name), poolclass=NullPool)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+        async with admin.connect() as conn:
+            await conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        await admin.dispose()

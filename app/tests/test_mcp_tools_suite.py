@@ -10,11 +10,9 @@ import pytest
 
 from app.config import settings
 from app.core.exceptions import ForbiddenError, ValidationError
-from app.mcp.server import (
-    _decimal_string,
-    _dividend_response,
-    create_mcp_server,
-)
+from app.mcp.server import create_mcp_server
+from app.mcp.tools.orders import _dividend_response
+from app.mcp.tools.portfolio import _decimal_string
 
 
 class MockAsyncSession:
@@ -44,7 +42,7 @@ def mock_mcp_environment(monkeypatch):
     """Set MCP environment and mock DB session maker."""
     monkeypatch.setattr(settings, "MCP_BASE_URL", "https://api.lifestack.test")
     monkeypatch.setattr(
-        "app.mcp.server.postgres.async_session_maker",
+        "app.core.database.postgres.async_session_maker",
         lambda: MockAsyncSession(),
     )
 
@@ -106,8 +104,10 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
         "log_spending_transactions_batch",
         "log_weight",
         "reconcile_holdings",
+        "set_company_details",
         "set_company_sector",
         "set_fx_rate",
+        "set_fx_rates",
         "set_holding_compliance",
         "set_holding_theme_tags",
         "simulate_sale",
@@ -120,7 +120,7 @@ async def test_mcp_tool_catalog_contains_all_expected_tools():
 
     missing = expected_tools - registered_tools
     assert not missing, f"Missing MCP tools from server: {missing}"
-    assert len(expected_tools) == 59
+    assert len(expected_tools) == 61
 
 
 @pytest.mark.anyio
@@ -184,7 +184,7 @@ async def test_mcp_todo_tools(monkeypatch):
     tools = await server.list_tools()
     tool_map = {t.name: t.fn for t in tools}
 
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
 
     fake_todo = SimpleNamespace(
         id=1,
@@ -201,7 +201,7 @@ async def test_mcp_todo_tools(monkeypatch):
         updated_at=datetime(2026, 10, 4, 10, 0, tzinfo=UTC),
     )
 
-    with patch("app.mcp.server.TodoService") as mock_todo_svc_cls:
+    with patch("app.mcp.tools.todos.TodoService") as mock_todo_svc_cls:
         mock_todo_svc = mock_todo_svc_cls.return_value
         mock_todo_svc.create_todo = AsyncMock(return_value=fake_todo)
         mock_todo_svc.list_todos = AsyncMock(return_value=([fake_todo], 1))
@@ -245,7 +245,7 @@ async def test_mcp_create_todo_passes_user_and_workspace_in_correct_order(monkey
     tool_map = {t.name: t.fn for t in tools}
 
     # authorize_workspace resolves to the authenticated user (id 101).
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
 
     fake_todo = SimpleNamespace(
         id=1,
@@ -262,7 +262,7 @@ async def test_mcp_create_todo_passes_user_and_workspace_in_correct_order(monkey
         updated_at=datetime(2026, 10, 4, 10, 0, tzinfo=UTC),
     )
 
-    with patch("app.mcp.server.TodoService") as mock_todo_svc_cls:
+    with patch("app.mcp.tools.todos.TodoService") as mock_todo_svc_cls:
         mock_todo_svc = mock_todo_svc_cls.return_value
         mock_todo_svc.create_todo = AsyncMock(return_value=fake_todo)
 
@@ -285,10 +285,10 @@ async def test_mcp_net_worth_and_spending_budgets(monkeypatch):
     tools = await server.list_tools()
     tool_map = {t.name: t.fn for t in tools}
 
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
 
     # 1. get_net_worth
-    with patch("app.mcp.server.NetWorthService") as mock_nw_cls:
+    with patch("app.mcp.tools.finance.NetWorthService") as mock_nw_cls:
         mock_nw_svc = mock_nw_cls.return_value
         mock_nw_svc.get_net_worth = AsyncMock(
             return_value={"total_net_worth": "50000.00", "currency": "USD"}
@@ -297,7 +297,7 @@ async def test_mcp_net_worth_and_spending_budgets(monkeypatch):
         assert nw["total_net_worth"] == "50000.00"
 
     # 2. get_spending_budgets
-    with patch("app.mcp.server.BudgetService") as mock_b_cls:
+    with patch("app.mcp.tools.spending.BudgetService") as mock_b_cls:
         mock_b_svc = mock_b_cls.return_value
         fake_b = SimpleNamespace(
             model_dump=lambda: {"id": 1, "category": "Groceries", "amount": "500.00"}
@@ -315,12 +315,12 @@ async def test_mcp_workspace_discovery_and_resources(monkeypatch):
     tools = await server.list_tools()
     tool_map = {t.name: t.fn for t in tools}
 
-    monkeypatch.setattr("app.mcp.server.authorize_user", lambda **kwargs: 101)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    monkeypatch.setattr("app.mcp.security.authorize_user", lambda **kwargs: 101)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
 
     mock_choices = [{"id": 202, "name": "Primary Workspace", "role": "owner"}]
     monkeypatch.setattr(
-        "app.mcp.server._load_workspace_choices",
+        "app.mcp.tools.workspace._load_workspace_choices",
         AsyncMock(return_value=mock_choices),
     )
 
@@ -332,7 +332,7 @@ async def test_mcp_workspace_discovery_and_resources(monkeypatch):
         "timezone": "UTC",
     }
     monkeypatch.setattr(
-        "app.mcp.server._load_workspace_reference_data",
+        "app.mcp.tools.workspace._load_workspace_reference_data",
         AsyncMock(return_value=mock_ref),
     )
 
@@ -399,7 +399,7 @@ async def test_mcp_investment_constituents_tools(monkeypatch):
     tools = await server.list_tools()
     tool_map = {t.name: t.fn for t in tools}
 
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
 
     inst_id = str(uuid.uuid4())
 
@@ -441,7 +441,7 @@ async def test_mcp_investment_dividends_tools(monkeypatch):
     tools = await server.list_tools()
     tool_map = {t.name: t.fn for t in tools}
 
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
 
     acc_id = str(uuid.uuid4())
 
@@ -492,7 +492,7 @@ async def test_mcp_investment_dividends_tools(monkeypatch):
 
     mock_service = MagicMock()
     mock_service.create_dividend = AsyncMock(return_value=(mock_div, mock_acc))
-    monkeypatch.setattr("app.mcp.server._dividend_service", lambda session: mock_service)
+    monkeypatch.setattr("app.mcp.support.services.dividend_service", lambda session: mock_service)
 
     res_div = await tool_map["create_investment_dividend"](
         workspace_id=202,
@@ -526,7 +526,7 @@ async def test_mcp_delegated_capture_tools(monkeypatch):
             "workspace_id": workspace_id,
         }
 
-    monkeypatch.setattr("app.mcp.server._run_capture_tool", fake_run_capture_tool)
+    monkeypatch.setattr("app.mcp.support.common.run_capture_tool", fake_run_capture_tool)
 
     # 1. find_spending_transactions
     res = await tool_map["find_spending_transactions"](workspace_id=202, search="coffee", limit=5)
@@ -654,9 +654,9 @@ async def test_mcp_set_company_sector_validation_and_preview(monkeypatch):
     tool = {t.name: t.fn for t in tools}["set_company_sector"]
 
     auth = AsyncMock(return_value=101)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", auth)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", auth)
     service = SimpleNamespace(set_sectors=AsyncMock())
-    monkeypatch.setattr("app.mcp.server._company_sector_service", lambda session: service)
+    monkeypatch.setattr("app.mcp.support.services.company_sector_service", lambda session: service)
 
     holding = str(uuid.uuid4())
     bad_rows = {
@@ -704,7 +704,7 @@ async def test_mcp_set_company_sector_confirmed_and_failure_rolls_back(monkeypat
     server = create_mcp_server()
     tools = await server.list_tools()
     tool = {t.name: t.fn for t in tools}["set_company_sector"]
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
 
     commits: list[str] = []
 
@@ -715,14 +715,16 @@ async def test_mcp_set_company_sector_confirmed_and_failure_rolls_back(monkeypat
         async def rollback(self):
             commits.append("rollback")
 
-    monkeypatch.setattr("app.mcp.server.postgres.async_session_maker", lambda: RecordingSession())
+    monkeypatch.setattr(
+        "app.core.database.postgres.async_session_maker", lambda: RecordingSession()
+    )
 
     outcome = {
         "updated": [{"row_index": 0, "before": {"sector": None}, "after": {"sector": "Energy"}}],
         "errors": [{"row_index": 1, "message": "holding not found"}],
     }
     service = SimpleNamespace(set_sectors=AsyncMock(return_value=outcome))
-    monkeypatch.setattr("app.mcp.server._company_sector_service", lambda session: service)
+    monkeypatch.setattr("app.mcp.support.services.company_sector_service", lambda session: service)
     rows = [
         {"isin": "US0378331005", "sector": "energy"},
         {"holding_public_id": str(uuid.uuid4()), "sector": "Energy"},
@@ -751,7 +753,7 @@ async def test_mcp_get_investment_sector_allocation(monkeypatch):
     tools = await server.list_tools()
     tool_map = {t.name: t.fn for t in tools}
 
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
 
     # 1. Invalid date is rejected without touching the database.
     bad = await tool_map["get_investment_sector_allocation"](
@@ -776,7 +778,7 @@ async def test_mcp_get_investment_sector_allocation(monkeypatch):
         "fx_rates_used": {},
     }
     fake_service = SimpleNamespace(sector_allocation=AsyncMock(return_value=fake_result))
-    monkeypatch.setattr("app.mcp.server._analytics_service", lambda session: fake_service)
+    monkeypatch.setattr("app.mcp.support.services.analytics_service", lambda session: fake_service)
 
     res = await tool_map["get_investment_sector_allocation"](
         workspace_id=202, as_of_date="2026-11-08", lookthrough=True
@@ -805,12 +807,12 @@ async def _tool_map():
 async def test_mcp_fx_and_lrs_tools_require_read_scope_on_the_workspace(monkeypatch):
     tool_map = await _tool_map()
     authorize = AsyncMock(return_value=101)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", authorize)
     tax = MagicMock()
     tax.get_fx_rate = AsyncMock(return_value=None)
     tax.list_missing_fx_rates = AsyncMock(return_value=[])
-    monkeypatch.setattr("app.mcp.server._tax_service", lambda session: tax)
-    with patch("app.mcp.server.LrsService") as lrs_cls:
+    monkeypatch.setattr("app.mcp.support.services.tax_service", lambda session: tax)
+    with patch("app.mcp.tools.finance.LrsService") as lrs_cls:
         lrs_cls.return_value.get_lrs_summary = AsyncMock(
             return_value={"fy_start": date(2026, 4, 1), "fy_end": date(2027, 3, 31)}
         )
@@ -833,7 +835,7 @@ async def test_mcp_fx_and_lrs_tools_require_read_scope_on_the_workspace(monkeypa
 @pytest.mark.anyio
 async def test_mcp_get_lrs_summary(monkeypatch):
     tool_map = await _tool_map()
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
     summary = {
         "fy_label": "2026-27",
         "fy_start": date(2026, 4, 1),
@@ -847,7 +849,7 @@ async def test_mcp_get_lrs_summary(monkeypatch):
         "tcs_amount_inr": "0.00",
         "assumptions": ["x"],
     }
-    with patch("app.mcp.server.LrsService") as lrs_cls:
+    with patch("app.mcp.tools.finance.LrsService") as lrs_cls:
         svc = lrs_cls.return_value
         svc.get_lrs_summary = AsyncMock(return_value=summary)
         res = await tool_map["get_lrs_summary"](workspace_id=202, fy="2026-27")
@@ -858,7 +860,7 @@ async def test_mcp_get_lrs_summary(monkeypatch):
     assert res["total_usd"] == "3000.00" and res["cap_remaining_usd"] == "247000.00"
     assert res["tcs_applicable"] is False
 
-    with patch("app.mcp.server.LrsService") as lrs_cls:
+    with patch("app.mcp.tools.finance.LrsService") as lrs_cls:
         lrs_cls.return_value.get_lrs_summary = AsyncMock(
             side_effect=ValidationError(detail="Invalid FY label 'bad'")
         )
@@ -869,10 +871,10 @@ async def test_mcp_get_lrs_summary(monkeypatch):
 @pytest.mark.anyio
 async def test_mcp_get_fx_rate(monkeypatch):
     tool_map = await _tool_map()
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
     tax = MagicMock()
     tax.get_fx_rate = AsyncMock(return_value="86.50")
-    monkeypatch.setattr("app.mcp.server._tax_service", lambda session: tax)
+    monkeypatch.setattr("app.mcp.support.services.tax_service", lambda session: tax)
 
     ok = await tool_map["get_fx_rate"](workspace_id=202, date_str="2026-01-31", currency="usd")
     assert ok == {
@@ -898,10 +900,10 @@ async def test_mcp_get_fx_rate(monkeypatch):
 @pytest.mark.anyio
 async def test_mcp_list_missing_fx_rates(monkeypatch):
     tool_map = await _tool_map()
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", AsyncMock(return_value=101))
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=101))
     tax = MagicMock()
     tax.list_missing_fx_rates = AsyncMock(return_value=[date(2026, 2, 1), date(2026, 2, 2)])
-    monkeypatch.setattr("app.mcp.server._tax_service", lambda session: tax)
+    monkeypatch.setattr("app.mcp.support.services.tax_service", lambda session: tax)
 
     res = await tool_map["list_missing_fx_rates"](
         workspace_id=202, from_date="2026-01-31", to_date="2026-02-02", currency="usd"
@@ -969,7 +971,7 @@ async def test_spec_103_tools_authorize_with_read_scope_before_touching_data(
     """Every new tool authorizes via authorize_workspace(mcp:read, <own name>); a
     denial propagates and nothing is read (the mocked session has no query API)."""
     authorize = AsyncMock(side_effect=ForbiddenError(detail="denied"))
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", authorize)
     server = create_mcp_server()
     tool_map = {t.name: t.fn for t in await server.list_tools()}
 
@@ -988,7 +990,7 @@ async def test_spec_103_tools_authorize_with_read_scope_before_touching_data(
 @pytest.mark.parametrize("page", [{"limit": 101}, {"limit": 0}, {"limit": -3}, {"offset": -1}])
 async def test_spec_103_paginated_tools_cap_page_size(monkeypatch, tool, page):
     authorize = AsyncMock(return_value=101)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", authorize)
     server = create_mcp_server()
     tool_map = {t.name: t.fn for t in await server.list_tools()}
 
@@ -1000,7 +1002,7 @@ async def test_spec_103_paginated_tools_cap_page_size(monkeypatch, tool, page):
 @pytest.mark.anyio
 async def test_spec_103_input_validation_happens_before_authorization(monkeypatch):
     authorize = AsyncMock(return_value=101)
-    monkeypatch.setattr("app.mcp.server.authorize_workspace", authorize)
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", authorize)
     server = create_mcp_server()
     tool_map = {t.name: t.fn for t in await server.list_tools()}
 
