@@ -661,7 +661,23 @@ def register(mcp: FastMCP) -> None:
                     "before": before,
                 }
 
-            changed_fields = [] if before == str(price) else ["unit_price"]
+            # Compare as Decimals, not strings: a stored Numeric(…,6) renders
+            # "93.947800" while the raw input is "93.9478" — the same value at
+            # a different scale. String comparison would falsely flag a change,
+            # so compare the Decimals (scale-independent) and normalise `after`
+            # to the stored scale on a same-value rewrite.
+            if price_exists_for_day:
+                changed = existing.unit_price != price
+            else:
+                changed = True  # create path: a new row is always a change
+            changed_fields = [] if not changed else ["unit_price"]
+            if price_exists_for_day and not changed:
+                # Render `after` at the stored scale so before/after match
+                # exactly on a same-value rewrite (e.g. stored "93.947800",
+                # input "93.9478" -> both render as "93.947800").
+                after = before
+            else:
+                after = str(price)
 
             await price_repo.upsert_price(
                 workspace_id=workspace_id,
@@ -684,7 +700,7 @@ def register(mcp: FastMCP) -> None:
                     "holding_symbol": holding.symbol,
                     "price_date": price_day.isoformat(),
                     "before": before,
-                    "after": str(price),
+                    "after": after,
                     "source": src,
                     "changed_fields": changed_fields,
                 },
@@ -698,7 +714,7 @@ def register(mcp: FastMCP) -> None:
             "price_date": price_day.isoformat(),
             "unit_price": str(price),
             "source": src,
-            "changed": before is not None and before != str(price),
+            "changed": price_exists_for_day and changed,
             "summary": (
                 f"Price for {holding_public_id} on {price_day} set to {price} "
                 f"{holding.currency} (source {src})."

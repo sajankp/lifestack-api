@@ -1355,6 +1355,18 @@ async def test_mcp_set_instrument_price_audit_changed_fields(monkeypatch):
     assert logs[0]["action"] == "update"
     assert logs[0]["details"]["changed_fields"] == []
 
+    # Same numeric value, different scale: stored "93.947800" (6 dp),
+    # input "93.9478". String comparison would falsely flag unit_price.
+    ExistingPrice.unit_price = Decimal("93.947800")
+    logs.clear()
+    res = await tool(unit_price="93.9478", source="manual", **common)
+    assert res["status"] == "success", res
+    assert res["changed"] is False
+    assert logs[0]["action"] == "update"
+    assert logs[0]["details"]["changed_fields"] == []
+    assert logs[0]["details"]["before"] == "93.947800"
+    assert logs[0]["details"]["after"] == "93.947800"
+
     # Price changed on an existing row: changed_fields records unit_price.
     ExistingPrice.unit_price = Decimal("100.00")
     logs.clear()
