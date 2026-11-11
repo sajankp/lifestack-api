@@ -73,6 +73,26 @@ NOT_ITEMISED_KEY = "not_itemised"
 NOT_ITEMISED_LABEL = "Not itemised"
 UNCLASSIFIED_SECTOR = "Unclassified"
 UNKNOWN_COUNTRY = "Unknown"
+_ISIN_COUNTRY_PREFIX_RE = re.compile(r"^[A-Z]{2}")
+
+
+def isin_to_country_code(isin: str | None) -> str | None:
+    """Derive the ISO country code from an ISIN's two-letter country prefix.
+
+    Returns the two-letter prefix when it is uppercase A-Z (e.g. ``"INE..."``
+    -> ``"IN"``), else ``None`` so callers fall back to ``UNKNOWN_COUNTRY``.
+    """
+    if not isin or len(isin) < 2:
+        return None
+    match = _ISIN_COUNTRY_PREFIX_RE.match(isin)
+    return match.group(0) if match else None
+
+
+def country_label(company: Company) -> str:
+    """Country bucket label for a company: stored code, else ISIN prefix."""
+    return company.country_code or isin_to_country_code(company.isin) or UNKNOWN_COUNTRY
+
+
 MAX_NEW_CASH = Decimal("1000000000000")  # 1e12 - sanity bound, not a business rule
 _WEIGHT_TOLERANCE = Decimal("0.0001")
 _PLACEHOLDER_RE = re.compile(r"^OTHER-", re.IGNORECASE)
@@ -558,7 +578,7 @@ class ThemeExposureService:
         if want in (None, "sector"):
             by_sector = bucketed(lambda c: c.sector or UNCLASSIFIED_SECTOR)
         if want in (None, "country"):
-            by_country = bucketed(lambda c: c.country_code or UNKNOWN_COUNTRY)
+            by_country = bucketed(country_label)
         if want in (None, "theme"):
             value_by_holding = {p.holding.id: p.value for p in portfolio.positions}
             theme_rows: list[LookthroughThemeRow] = []

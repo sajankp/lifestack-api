@@ -17,8 +17,11 @@ from app.investing.models import Company, HoldingThemeTag, InstrumentConstituent
 from app.investing.theme_repository import LatestConstituentSnapshotRepository
 from app.investing.theme_schemas import ThemeTagInput
 from app.investing.theme_service import (
+    UNKNOWN_COUNTRY,
     ThemeExposureService,
     allocate_exact,
+    country_label,
+    isin_to_country_code,
     validate_new_cash,
 )
 from app.mcp.server import create_mcp_server
@@ -59,6 +62,45 @@ def test_validate_new_cash_rejects_bad_input(bad):
 def test_validate_new_cash_accepts_cents():
     assert validate_new_cash(D("12.5")) == D("12.50")
     assert validate_new_cash(D("0")) == D("0.00")
+
+
+# ---------------------------------------------------------------------------
+# ISIN -> country code helper
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "isin,expected",
+    [
+        ("INE040A01034", "IN"),  # HDFC Bank
+        ("US0378331005", "US"),  # Apple
+        ("INE009A01021", "IN"),  # Infosys
+        ("JP3788600009", "JP"),  # Toyota
+        (None, None),
+        ("", None),
+        ("US", "US"),
+        ("1E040A01034", None),  # first char not a letter
+        ("ine040a01034", None),  # country prefix must be uppercase A-Z
+        ("*E040A01034", None),
+    ],
+)
+def test_isin_to_country_code(isin: str | None, expected: str | None) -> None:
+    assert isin_to_country_code(isin) == expected
+
+
+def test_country_label_uses_stored_country_code() -> None:
+    company = Company(id=1, name="Acme", country_code="US", isin="INE040A01034")
+    assert country_label(company) == "US"
+
+
+def test_country_label_falls_back_to_isin_prefix() -> None:
+    company = Company(id=1, name="Acme", country_code=None, isin="INE040A01034")
+    assert country_label(company) == "IN"
+
+
+def test_country_label_is_unknown_without_country_or_isin() -> None:
+    company = Company(id=1, name="Acme", country_code=None, isin=None)
+    assert country_label(company) == UNKNOWN_COUNTRY
 
 
 def test_plan_deployment_proportional_capped_and_exact():
