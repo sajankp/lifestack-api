@@ -34,6 +34,7 @@ from app.investing.reconciliation import (
 )
 from app.investing.repository import (
     CompanyRepository,
+    HoldingComplianceRepository,
     HoldingPriceRepository,
     HoldingRepository,
     InstrumentRepository,
@@ -42,6 +43,7 @@ from app.investing.repository import (
 from app.investing.tax.exchanges import resolve_exchange
 from app.mcp import security
 from app.mcp.support import common, services
+from app.investing.theme_repository import HoldingThemeTagRepository
 
 _HOLDINGS_QUANTITY_STATES = {"all", "nonzero", "zero"}
 
@@ -309,6 +311,16 @@ def register(mcp: FastMCP) -> None:
                 [holding.id for holding in raw_holdings if holding.id is not None],
                 datetime.now(UTC).date(),
             )
+            holding_ids = [holding.id for holding in raw_holdings if holding.id is not None]
+            compliance_by_holding = await HoldingComplianceRepository(session).get_by_holdings(
+                workspace_id, holding_ids
+            )
+            theme_tag_rows = await HoldingThemeTagRepository(session).list_for_holdings(
+                workspace_id, holding_ids
+            )
+            theme_tags_by_holding: dict[int, list[str]] = {}
+            for tag in theme_tag_rows:
+                theme_tags_by_holding.setdefault(tag.holding_id, []).append(tag.theme)
 
             finance_settings = await FinanceSettingRepository(session).get_by_workspace(
                 workspace_id
@@ -373,6 +385,13 @@ def register(mcp: FastMCP) -> None:
                         fx_as_of,
                         stale_days=stale_days,
                     )
+                if raw is not None and raw.id is not None:
+                    compliance = compliance_by_holding.get(raw.id)
+                    if compliance is not None:
+                        data["halal_verdict"] = compliance.verdict
+                    tags = theme_tags_by_holding.get(raw.id)
+                    if tags:
+                        data["theme_tags"] = tags
                 items.append(data)
 
             if requires_value_sort:
