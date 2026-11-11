@@ -41,9 +41,9 @@ from app.investing.repository import (
     PortfolioSnapshotRepository,
 )
 from app.investing.tax.exchanges import resolve_exchange
+from app.investing.theme_repository import HoldingThemeTagRepository
 from app.mcp import security
 from app.mcp.support import common, services
-from app.investing.theme_repository import HoldingThemeTagRepository
 
 _HOLDINGS_QUANTITY_STATES = {"all", "nonzero", "zero"}
 
@@ -666,18 +666,13 @@ def register(mcp: FastMCP) -> None:
             # a different scale. String comparison would falsely flag a change,
             # so compare the Decimals (scale-independent) and normalise `after`
             # to the stored scale on a same-value rewrite.
-            if price_exists_for_day:
-                changed = existing.unit_price != price
-            else:
-                changed = True  # create path: a new row is always a change
+            changed = (
+                existing.unit_price != price if price_exists_for_day else True
+            )  # create path: a new row is always a change
             changed_fields = [] if not changed else ["unit_price"]
-            if price_exists_for_day and not changed:
-                # Render `after` at the stored scale so before/after match
-                # exactly on a same-value rewrite (e.g. stored "93.947800",
-                # input "93.9478" -> both render as "93.947800").
-                after = before
-            else:
-                after = str(price)
+            after = (
+                before if price_exists_for_day and not changed else str(price)
+            )  # render `after` at stored scale on same-value rewrite
 
             await price_repo.upsert_price(
                 workspace_id=workspace_id,
