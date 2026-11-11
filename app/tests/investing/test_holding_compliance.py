@@ -19,6 +19,7 @@ from app.config import settings
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.investing.models import Holding, HoldingCompliance
+from app.investing.theme_repository import HoldingThemeTagRepository
 from app.mcp.server import create_mcp_server
 from app.tests.integration.test_investing import (
     _create_holding_via_order,
@@ -592,3 +593,58 @@ async def test_mcp_tool_docstrings_are_discoverable(mcp_enabled):
         assert tools[name].description and len(tools[name].description) > 80
     assert "fatwa" in tools["get_purification_estimate"].description
     assert "mcp:research" in tools["set_holding_compliance"].description
+
+
+@pytest.mark.asyncio
+async def test_list_holdings_includes_halal_verdict_and_theme_tags(
+    client: AsyncClient, monkeypatch, mcp_enabled
+):
+    account_map = await _register_and_login(
+        client,
+        email="enrich-list@example.com",
+        username="enrich-list",
+        password="Abcdef1!",
+    )
+    brokerage = account_map["brokerage"]
+    aapl_public_id = await _create_holding_via_order(
+        client, brokerage, "AAPL", "10.00000000", "100.00", "USD"
+    )
+    msft_public_id = await _create_holding_via_order(
+        client, brokerage, "MSFT", "10.00000000", "100.00", "USD"
+    )
+
+    async with postgres.async_session_maker() as session:
+        aapl = (
+            await session.execute(select(Holding).where(Holding.public_id == UUID(aapl_public_id)))
+        ).scalar_one()
+        msft = (
+            await session.execute(select(Holding).where(Holding.public_id == UUID(msft_public_id)))
+        ).scalar_one()
+        workspace_id, user_id = aapl.workspace_id, aapl.user_id
+        assert msft.workspace_id == workspace_id
+
+    await _set_compliance(client, aapl_public_id, verdict="permissible", impure_income_pct="5")
+
+    async with postgres.async_session_maker() as session:
+        aapl = (
+            await session.execute(select(Holding).where(Holding.public_id == UUID(aapl_public_id)))
+        ).scalar_one()
+        await HoldingThemeTagRepository(session).replace_for_holding(
+            workspace_id, aapl.id, [("battery", None), ("AI power/grid", Decimal("10"))]
+        )
+        await session.commit()
+
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=user_id))
+    tools = await _tool_map()
+    listing = await tools["list_investment_holdings"](workspace_id=workspace_id, limit=50)
+    assert listing["status"] == "success", listing
+    by_symbol = {h["symbol"]: h for h in listing["items"]}
+    assert set(by_symbol) == {"AAPL", "MSFT"}
+
+    aapl_item = by_symbol["AAPL"]
+    assert aapl_item["halal_verdict"] == "permissible"
+    assert aapl_item["theme_tags"] == ["AI power/grid", "battery"]
+
+    msft_item = by_symbol["MSFT"]
+    assert "halal_verdict" not in msft_item
+    assert "theme_tags" not in msft_item

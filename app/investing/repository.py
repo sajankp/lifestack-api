@@ -390,7 +390,10 @@ class InvestingOrderRepository(BaseRepository[InvestingOrder]):
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
         result = await self.session.execute(
-            base.order_by(InvestingOrder.occurred_at.desc()).limit(limit).offset(offset)
+            base
+            .order_by(InvestingOrder.occurred_at.desc(), InvestingOrder.id.desc())
+            .limit(limit)
+            .offset(offset)
         )
         return result.scalars().all(), total
 
@@ -545,7 +548,10 @@ class HoldingVerificationRepository(BaseRepository[HoldingVerification]):
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
         result = await self.session.execute(
-            base.order_by(HoldingVerification.created_at.desc()).limit(limit).offset(offset)
+            base
+            .order_by(HoldingVerification.created_at.desc(), HoldingVerification.id.desc())
+            .limit(limit)
+            .offset(offset)
         )
         return result.scalars().all(), total
 
@@ -1493,6 +1499,21 @@ class HoldingComplianceRepository(BaseRepository[HoldingCompliance]):
             )
         )
         return result.scalar_one_or_none()
+
+    async def get_by_holdings(
+        self, workspace_id: int, holding_ids: Sequence[int]
+    ) -> dict[int, HoldingCompliance]:
+        """Compliance rows for the given holding ids, one query for all of them."""
+        ids = set(holding_ids)
+        if not ids:
+            return {}
+        result = await self.session.execute(
+            select(HoldingCompliance).where(
+                HoldingCompliance.workspace_id == workspace_id,
+                HoldingCompliance.holding_id.in_(ids),
+            )
+        )
+        return {row.holding_id: row for row in result.scalars().all()}
 
     async def upsert(
         self,

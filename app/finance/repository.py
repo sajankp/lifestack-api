@@ -99,7 +99,7 @@ class AccountRepository(BaseRepository[Account]):
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
         result = await self.session.execute(
-            base.order_by(Account.created_at.desc()).limit(limit).offset(offset)
+            base.order_by(Account.created_at.desc(), Account.id.desc()).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
 
@@ -797,7 +797,7 @@ class FxRateRepository:
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
         result = await self.session.execute(
-            base.order_by(FxRate.as_of.desc()).limit(limit).offset(offset)
+            base.order_by(FxRate.as_of.desc(), FxRate.id.desc()).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
 
@@ -857,7 +857,10 @@ class CapitalTransferRepository(BaseRepository[CapitalTransfer]):
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
         result = await self.session.execute(
-            base.order_by(CapitalTransfer.occurred_at.desc()).limit(limit).offset(offset)
+            base
+            .order_by(CapitalTransfer.occurred_at.desc(), CapitalTransfer.id.desc())
+            .limit(limit)
+            .offset(offset)
         )
         return result.scalars().all(), total
 

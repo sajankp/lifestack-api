@@ -34,12 +34,14 @@ from app.investing.reconciliation import (
 )
 from app.investing.repository import (
     CompanyRepository,
+    HoldingComplianceRepository,
     HoldingPriceRepository,
     HoldingRepository,
     InstrumentRepository,
     PortfolioSnapshotRepository,
 )
 from app.investing.tax.exchanges import resolve_exchange
+from app.investing.theme_repository import HoldingThemeTagRepository
 from app.mcp import security
 from app.mcp.support import common, services
 
@@ -309,6 +311,16 @@ def register(mcp: FastMCP) -> None:
                 [holding.id for holding in raw_holdings if holding.id is not None],
                 datetime.now(UTC).date(),
             )
+            holding_ids = [holding.id for holding in raw_holdings if holding.id is not None]
+            compliance_by_holding = await HoldingComplianceRepository(session).get_by_holdings(
+                workspace_id, holding_ids
+            )
+            theme_tag_rows = await HoldingThemeTagRepository(session).list_for_holdings(
+                workspace_id, holding_ids
+            )
+            theme_tags_by_holding: dict[int, list[str]] = {}
+            for tag in theme_tag_rows:
+                theme_tags_by_holding.setdefault(tag.holding_id, []).append(tag.theme)
 
             finance_settings = await FinanceSettingRepository(session).get_by_workspace(
                 workspace_id
@@ -373,6 +385,13 @@ def register(mcp: FastMCP) -> None:
                         fx_as_of,
                         stale_days=stale_days,
                     )
+                if raw is not None and raw.id is not None:
+                    compliance = compliance_by_holding.get(raw.id)
+                    if compliance is not None:
+                        data["halal_verdict"] = compliance.verdict
+                    tags = theme_tags_by_holding.get(raw.id)
+                    if tags:
+                        data["theme_tags"] = tags
                 items.append(data)
 
             if requires_value_sort:
@@ -642,7 +661,18 @@ def register(mcp: FastMCP) -> None:
                     "before": before,
                 }
 
-            changed_fields = [] if before == str(price) else ["unit_price"]
+            # Compare as Decimals, not strings: a stored Numeric(…,6) renders
+            # "93.947800" while the raw input is "93.9478" — the same value at
+            # a different scale. String comparison would falsely flag a change,
+            # so compare the Decimals (scale-independent) and normalise `after`
+            # to the stored scale on a same-value rewrite.
+            changed = (
+                existing.unit_price != price if price_exists_for_day else True
+            )  # create path: a new row is always a change
+            changed_fields = [] if not changed else ["unit_price"]
+            after = (
+                before if price_exists_for_day and not changed else str(price)
+            )  # render `after` at stored scale on same-value rewrite
 
             await price_repo.upsert_price(
                 workspace_id=workspace_id,
@@ -665,7 +695,7 @@ def register(mcp: FastMCP) -> None:
                     "holding_symbol": holding.symbol,
                     "price_date": price_day.isoformat(),
                     "before": before,
-                    "after": str(price),
+                    "after": after,
                     "source": src,
                     "changed_fields": changed_fields,
                 },
@@ -679,7 +709,7 @@ def register(mcp: FastMCP) -> None:
             "price_date": price_day.isoformat(),
             "unit_price": str(price),
             "source": src,
-            "changed": before is not None and before != str(price),
+            "changed": price_exists_for_day and changed,
             "summary": (
                 f"Price for {holding_public_id} on {price_day} set to {price} "
                 f"{holding.currency} (source {src})."

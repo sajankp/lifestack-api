@@ -215,6 +215,19 @@ def register(mcp: FastMCP) -> None:
         return await common.run_capture_tool(workspace_id, "mcp:read", "get_account_balances", {})
 
     @mcp.tool
+    async def get_investing_cash_balances(workspace_id: int) -> dict[str, Any]:
+        """Get read-only brokerage (investing) cash balances for an authorized workspace.
+
+        Returns the latest ``investing_cash_balances`` snapshot per active
+        brokerage account, with currency and as-of timestamp. Spending
+        accounts (wallet/bank/card) are excluded — use ``get_account_balances``
+        for those.
+        """
+        return await common.run_capture_tool(
+            workspace_id, "mcp:read", "get_investing_cash_balances", {}
+        )
+
+    @mcp.tool
     async def set_fx_rate(
         workspace_id: int,
         date_str: str,

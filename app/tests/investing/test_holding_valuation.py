@@ -1,6 +1,6 @@
 """Holding valuation: stale-price annotation and cost-basis-fallback scope."""
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -55,11 +55,12 @@ def test_valuation_goes_stale_outside_stale_window() -> None:
 
 def test_valuation_boundary_is_seven_days_inclusive() -> None:
     # Exactly 7 days old is still current; the window is "older than".
+    # Use a date relative to today so the boundary holds regardless of when CI runs.
     data = _data()
     _add_holding_reporting_valuation(
         data,
         _holding(),
-        _price_row(date(2026, 11, 3)),
+        _price_row(date.today() - timedelta(days=7)),
         "USD",
         {},
         None,

@@ -2063,6 +2063,35 @@ class AgentTools:
         ]
         return {"status": "success", "accounts": balances}
 
+    async def get_investing_cash_balances(self) -> dict:
+        """Read-only brokerage cash balances (spec-059 extension): the latest
+        ``investing_cash_balances`` snapshot per active brokerage account,
+        with currency and as-of timestamp. Spending accounts (wallet/bank/
+        card) are excluded — they are covered by ``get_account_balances``."""
+        accounts, _ = await self.account_repo.list_workspace_accounts(
+            self.workspace_id, limit=1000, offset=0
+        )
+        brokerage_accounts = [
+            a
+            for a in accounts
+            if a.is_active and a.account_type == AccountType.brokerage and a.id is not None
+        ]
+        cash_repo = CashBalanceRepository(self.session)
+        latest = await cash_repo.get_latest_per_account_currency(self.workspace_id)
+        latest_by_key = {(cb.account_id, cb.currency): cb for cb in latest}
+
+        balances = []
+        for a in sorted(brokerage_accounts, key=lambda ac: ac.name):
+            cb = latest_by_key.get((a.id, a.default_currency_code))
+            balances.append({
+                "account_name": a.name,
+                "account_type": str(a.account_type),
+                "currency_code": a.default_currency_code,
+                "balance": str(cb.balance) if cb is not None else "0.00",
+                "as_of": cb.as_of.isoformat() if cb is not None else None,
+            })
+        return {"status": "success", "accounts": balances}
+
     async def log_weight(self, weight_kg: str, note: str | None = None) -> dict:
         """Log a body weight measurement (spec-069). Kilograms only in v1.
 
