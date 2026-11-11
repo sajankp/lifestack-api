@@ -2088,7 +2088,7 @@ class AgentTools:
             balances.append(
                 {
                     "account_name": a.name,
-                    "account_type": a.account_type.value,
+                    "account_type": str(a.account_type),
                     "currency_code": a.default_currency_code,
                     "balance": str(cb.balance) if cb is not None else "0.00",
                     "as_of": cb.as_of.isoformat() if cb is not None else None,

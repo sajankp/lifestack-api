@@ -497,7 +497,6 @@ async def test_get_investing_cash_balances_tool(seed_agent_test_data):
     res = await execute_agent_tool(
         name="get_investing_cash_balances", args={}, user_id=10, workspace_id=20
     )
-    print("DEBUG RES:", res)
 
     assert res["status"] == "success"
     by_name = {a["account_name"]: a for a in res["accounts"]}
