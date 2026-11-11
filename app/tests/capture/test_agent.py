@@ -469,6 +469,46 @@ async def test_get_account_balances_tool(seed_agent_test_data):
 
 
 @pytest.mark.asyncio
+async def test_get_investing_cash_balances_tool(seed_agent_test_data):
+    """The latest investing_cash_balances snapshot is returned per active
+    brokerage account, with currency and as-of; spending accounts are excluded."""
+    async with postgres.async_session_maker() as session:
+        account = (
+            await session.execute(
+                select(Account).where(
+                    Account.workspace_id == 20,
+                    Account.name == "Chase Brokerage",
+                )
+            )
+        ).scalar_one()
+        session.add(
+            CashBalance(
+                workspace_id=20,
+                user_id=10,
+                account_id=account.id,
+                balance=Decimal("1250.50"),
+                currency="USD",
+                as_of=datetime(2026, 6, 1, 8, 30, tzinfo=UTC),
+                source_type="manual",
+            )
+        )
+        await session.commit()
+
+    res = await execute_agent_tool(
+        name="get_investing_cash_balances", args={}, user_id=10, workspace_id=20
+    )
+    print("DEBUG RES:", res)
+
+    assert res["status"] == "success"
+    by_name = {a["account_name"]: a for a in res["accounts"]}
+    assert "Everyday Wallet" not in by_name
+    assert by_name["Chase Brokerage"]["account_type"] == "brokerage"
+    assert by_name["Chase Brokerage"]["currency_code"] == "USD"
+    assert by_name["Chase Brokerage"]["balance"] == "1250.50"
+    assert by_name["Chase Brokerage"]["as_of"] == "2026-06-01T08:30:00+00:00"
+
+
+@pytest.mark.asyncio
 async def test_fuzzy_account_containment_and_type_match(seed_agent_test_data):
     """spec-059: partial names and account-type words resolve to the unique
     spending-eligible account."""

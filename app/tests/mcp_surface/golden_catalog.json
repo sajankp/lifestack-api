@@ -1212,6 +1212,30 @@
     },
     {
       "annotations": null,
+      "description": "Get read-only brokerage (investing) cash balances for an authorized workspace.\n\nReturns the latest ``investing_cash_balances`` snapshot per active\nbrokerage account, with currency and as-of timestamp. Spending\naccounts (wallet/bank/card) are excluded — use ``get_account_balances``\nfor those.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_investing_cash_balances",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
       "description": "Get a read-only investing summary for an authorized workspace.",
       "input_schema": {
         "additionalProperties": false,
