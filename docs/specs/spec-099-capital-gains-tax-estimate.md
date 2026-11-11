@@ -117,9 +117,9 @@ Before designing the regime switch, the existing reference data was checked agai
 
 ```python
 class MarketScope(StrEnum):
-    india = "india"      # Indian-listed securities (STT paid) -> 111A/112A
+    india = "india"  # Indian-listed securities (STT paid) -> 111A/112A
     foreign = "foreign"  # US/foreign listed, no STT -> Sec 112
-    mixed = "mixed"      # account holds both
+    mixed = "mixed"  # account holds both
 ```
 
 - New nullable column on `accounts`, default `"india"` for existing rows (backfill), then user-editable.
@@ -277,15 +277,16 @@ Anything unrecognised → the country is left `None` and the tool says so explic
 @dataclass(frozen=True)
 class RegimeSpec:
     key: RegimeType
-    ltcg_holding_months: int        # 12 or 24
-    stcg_section: str               # "111A" | "112(1)(a)(ii)"
-    ltcg_section: str               # "112A" | "112(1)(c)"
-    ltcg_rate_pct: Decimal          # 0.125 for both
-    ltcg_exemption_inr: Decimal     # 125000 indian, 0 foreign
-    stcg_is_flat: bool              # True indian (20%), False foreign (slab)
-    stcg_flat_rate_pct: Decimal     # 0.20 indian, None foreign
-    indexation_available: bool      # False for both post-23-Jul-2024
+    ltcg_holding_months: int  # 12 or 24
+    stcg_section: str  # "111A" | "112(1)(a)(ii)"
+    ltcg_section: str  # "112A" | "112(1)(c)"
+    ltcg_rate_pct: Decimal  # 0.125 for both
+    ltcg_exemption_inr: Decimal  # 125000 indian, 0 foreign
+    stcg_is_flat: bool  # True indian (20%), False foreign (slab)
+    stcg_flat_rate_pct: Decimal  # 0.20 indian, None foreign
+    indexation_available: bool  # False for both post-23-Jul-2024
     cess_pct: Decimal
+
 
 INDIAN = RegimeSpec(
     key=RegimeType.indian,
@@ -428,7 +429,7 @@ class TaxLot:
     instrument_type: str
     regime: RegimeType
     quantity: Decimal
-    cost_per_unit: Decimal       # buy cost incl. capitalised buy-side fees
+    cost_per_unit: Decimal  # buy cost incl. capitalised buy-side fees
     acquired_at: datetime
     sold_at: datetime
     sale_price_per_unit: Decimal

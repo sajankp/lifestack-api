@@ -615,14 +615,10 @@ async def test_list_holdings_includes_halal_verdict_and_theme_tags(
 
     async with postgres.async_session_maker() as session:
         aapl = (
-            await session.execute(
-                select(Holding).where(Holding.public_id == UUID(aapl_public_id))
-            )
+            await session.execute(select(Holding).where(Holding.public_id == UUID(aapl_public_id)))
         ).scalar_one()
         msft = (
-            await session.execute(
-                select(Holding).where(Holding.public_id == UUID(msft_public_id))
-            )
+            await session.execute(select(Holding).where(Holding.public_id == UUID(msft_public_id)))
         ).scalar_one()
         workspace_id, user_id = aapl.workspace_id, aapl.user_id
         assert msft.workspace_id == workspace_id
@@ -631,18 +627,14 @@ async def test_list_holdings_includes_halal_verdict_and_theme_tags(
 
     async with postgres.async_session_maker() as session:
         aapl = (
-            await session.execute(
-                select(Holding).where(Holding.public_id == UUID(aapl_public_id))
-            )
+            await session.execute(select(Holding).where(Holding.public_id == UUID(aapl_public_id)))
         ).scalar_one()
         await HoldingThemeTagRepository(session).replace_for_holding(
             workspace_id, aapl.id, [("battery", None), ("AI power/grid", Decimal("10"))]
         )
         await session.commit()
 
-    monkeypatch.setattr(
-        "app.mcp.security.authorize_workspace", AsyncMock(return_value=user_id)
-    )
+    monkeypatch.setattr("app.mcp.security.authorize_workspace", AsyncMock(return_value=user_id))
     tools = await _tool_map()
     listing = await tools["list_investment_holdings"](workspace_id=workspace_id, limit=50)
     assert listing["status"] == "success", listing

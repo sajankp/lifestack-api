@@ -2074,9 +2074,7 @@ class AgentTools:
         brokerage_accounts = [
             a
             for a in accounts
-            if a.is_active
-            and a.account_type == AccountType.brokerage
-            and a.id is not None
+            if a.is_active and a.account_type == AccountType.brokerage and a.id is not None
         ]
         cash_repo = CashBalanceRepository(self.session)
         latest = await cash_repo.get_latest_per_account_currency(self.workspace_id)
@@ -2085,15 +2083,13 @@ class AgentTools:
         balances = []
         for a in sorted(brokerage_accounts, key=lambda ac: ac.name):
             cb = latest_by_key.get((a.id, a.default_currency_code))
-            balances.append(
-                {
-                    "account_name": a.name,
-                    "account_type": str(a.account_type),
-                    "currency_code": a.default_currency_code,
-                    "balance": str(cb.balance) if cb is not None else "0.00",
-                    "as_of": cb.as_of.isoformat() if cb is not None else None,
-                }
-            )
+            balances.append({
+                "account_name": a.name,
+                "account_type": str(a.account_type),
+                "currency_code": a.default_currency_code,
+                "balance": str(cb.balance) if cb is not None else "0.00",
+                "as_of": cb.as_of.isoformat() if cb is not None else None,
+            })
         return {"status": "success", "accounts": balances}
 
     async def log_weight(self, weight_kg: str, note: str | None = None) -> dict:
