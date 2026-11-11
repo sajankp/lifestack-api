@@ -89,8 +89,13 @@ def isin_to_country_code(isin: str | None) -> str | None:
 
 
 def country_label(company: Company) -> str:
-    """Country bucket label for a company: stored code, else ISIN prefix."""
-    return company.country_code or isin_to_country_code(company.isin) or UNKNOWN_COUNTRY
+    """Country bucket label for a company: stored code, else ISIN prefix.
+
+    ``company`` may be a plain object (e.g. a test namespace) without an
+    ``isin`` attribute — fall back gracefully in that case.
+    """
+    isin = getattr(company, "isin", None)
+    return company.country_code or isin_to_country_code(isin) or UNKNOWN_COUNTRY
 
 
 MAX_NEW_CASH = Decimal("1000000000000")  # 1e12 - sanity bound, not a business rule
