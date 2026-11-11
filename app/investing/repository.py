@@ -390,7 +390,7 @@ class InvestingOrderRepository(BaseRepository[InvestingOrder]):
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
         result = await self.session.execute(
-            base.order_by(InvestingOrder.occurred_at.desc()).limit(limit).offset(offset)
+            base.order_by(InvestingOrder.occurred_at.desc(), InvestingOrder.id.desc()).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
 
@@ -545,7 +545,7 @@ class HoldingVerificationRepository(BaseRepository[HoldingVerification]):
             await self.session.execute(select(func.count()).select_from(base.subquery()))
         ).scalar_one()
         result = await self.session.execute(
-            base.order_by(HoldingVerification.created_at.desc()).limit(limit).offset(offset)
+            base.order_by(HoldingVerification.created_at.desc(), HoldingVerification.id.desc()).limit(limit).offset(offset)
         )
         return result.scalars().all(), total
 
