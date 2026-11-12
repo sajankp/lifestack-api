@@ -1043,7 +1043,7 @@ async def list_holding_verifications(
     return build_page(items, total, pagination)
 
 
-def _portfolio_report_item(report: PortfolioReport, include_payload: bool) -> dict[str, Any]:
+def _portfolio_report_item(report: PortfolioReportItem, include_payload: bool) -> dict[str, Any]:
     data = {
         "public_id": report.public_id,
         "as_of": report.as_of,
