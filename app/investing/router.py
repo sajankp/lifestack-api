@@ -21,6 +21,7 @@ from app.core.dependencies import (
     get_investing_instrument_service,
     get_investing_order_service,
     get_investing_performance_service,
+    get_investing_portfolio_report_service,
     get_investing_return_metrics_service,
     get_investing_snapshot_repo,
     get_investing_summary_service,
@@ -69,6 +70,8 @@ from app.investing.schemas import (
     PerformanceHistoryResponse,
     PerformanceSummaryResponse,
     PortfolioAllocationResponse,
+    PortfolioReportItem,
+    PortfolioReportList,
     PurificationEstimateResponse,
     ReferenceResolveResponse,
     ReferenceSecurityResponse,
@@ -81,6 +84,7 @@ from app.investing.service import (
     ExposureAnalyticsService,
     HoldingService,
     InstrumentService,
+    PortfolioReportService,
 )
 from app.investing.tax.regime import REGIMES
 from app.investing.tax_schemas import (
@@ -1037,6 +1041,110 @@ async def list_holding_verifications(
     account_cache = await _build_account_cache(account_service, workspace_id)
     items = [_holding_verification_response(v, account_cache) for v in verifications]
     return build_page(items, total, pagination)
+
+
+def _portfolio_report_item(report: PortfolioReport, include_payload: bool) -> dict[str, Any]:
+    data = {
+        "public_id": report.public_id,
+        "as_of": report.as_of,
+        "run_id": report.run_id,
+        "theme_weights": report.theme_weights,
+        "harvest_candidates": report.harvest_candidates,
+        "lrs_headroom_inr": (
+            str(report.lrs_headroom_inr) if report.lrs_headroom_inr is not None else None
+        ),
+        "tax_buckets": report.tax_buckets,
+        "created_at": report.created_at,
+    }
+    if include_payload:
+        data.update(
+            {
+                "scalars_json": report.scalars_json,
+                "foundation_json": report.foundation_json,
+                "actions_md": report.actions_md,
+            }
+        )
+    return data
+
+
+@router.get(
+    "/portfolio-reports",
+    response_model=PortfolioReportList,
+    response_model_exclude_none=True,
+)
+async def list_portfolio_reports(
+    portfolio_report_service: Annotated[
+        PortfolioReportService, Depends(get_investing_portfolio_report_service)
+    ],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    from_date: date | None = Query(
+        None, description="Filter reports with as_of on or after this ISO date (YYYY-MM-DD)."
+    ),
+    to_date: date | None = Query(
+        None, description="Filter reports with as_of on or before this ISO date (YYYY-MM-DD)."
+    ),
+    limit: int = Query(20, ge=1, le=100, description="Max number of reports to return."),
+    cursor: int | None = Query(
+        None, ge=0, description="Offset cursor for pagination; skips that many newest-first rows before the page."
+    ),
+    include_payload: bool = Query(
+        False,
+        description="Include the heavy payload columns (scalars_json, foundation_json, actions_md).",
+    ),
+):
+    """List portfolio report history for the workspace, newest ``as_of`` first.
+
+    Cursor-paginated (``cursor`` is the offset) with a total count so callers
+    can verify no page was cut off. Mirrors the MCP tool ``list_portfolio_reports``:
+    denormalised columns are always returned; ``scalars_json``,
+    ``foundation_json`` and ``actions_md`` only with ``include_payload=true``.
+    """
+    items, total = await portfolio_report_service.list_reports(
+        workspace_id=workspace_id,
+        from_date=from_date,
+        to_date=to_date,
+        limit=limit,
+        cursor=cursor,
+    )
+    offset = cursor or 0
+    next_cursor = offset + len(items) if offset + len(items) < total else None
+    return PortfolioReportList(
+        total=total,
+        next_cursor=next_cursor,
+        items=[
+            PortfolioReportItem.model_validate(_portfolio_report_item(item, include_payload))
+            for item in items
+        ],
+    )
+
+
+@router.get(
+    "/portfolio-reports/{public_id}",
+    response_model=PortfolioReportItem,
+    response_model_exclude_none=True,
+)
+async def get_portfolio_report(
+    public_id: uuid.UUID,
+    portfolio_report_service: Annotated[
+        PortfolioReportService, Depends(get_investing_portfolio_report_service)
+    ],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    _user: Annotated[dict, Depends(get_current_user)],
+    include_payload: bool = Query(
+        False,
+        description="Include the heavy payload columns (scalars_json, foundation_json, actions_md).",
+    ),
+):
+    """Fetch one portfolio report by public_id (404 when not in this workspace)."""
+    report = await portfolio_report_service.get_report(
+        workspace_id=workspace_id, public_id=public_id
+    )
+    if report is None:
+        raise NotFoundError(detail=f"No portfolio report {public_id} in this workspace")
+    return PortfolioReportItem.model_validate(
+        _portfolio_report_item(report, include_payload)
+    )
 
 
 # ------------------------------------------------------ capital gains tax

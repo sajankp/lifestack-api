@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -958,3 +958,30 @@ class CompanySectorRow(BaseModel):
         if (self.ticker is None) != (self.exchange is None):
             raise ValueError("ticker and exchange must be supplied together")
         return self
+
+
+class PortfolioReportItem(BaseModel):
+    """One portfolio report row returned to API callers.
+
+    ``scalars_json``, ``foundation_json`` and ``actions_md`` are the heavy
+    payload columns: they are only populated when the caller sets
+    ``include_payload`` and are omitted from the response otherwise.
+    """
+
+    public_id: uuid.UUID
+    as_of: date
+    run_id: str
+    theme_weights: dict[str, Any]
+    harvest_candidates: list[Any]
+    lrs_headroom_inr: str | None
+    tax_buckets: dict[str, Any]
+    created_at: datetime
+    scalars_json: dict[str, Any] | None = None
+    foundation_json: dict[str, Any] | None = None
+    actions_md: str | None = None
+
+
+class PortfolioReportList(BaseModel):
+    total: int
+    next_cursor: int | None
+    items: list[PortfolioReportItem]
