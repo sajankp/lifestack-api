@@ -75,6 +75,7 @@ from app.investing.service import (
     ExposureAnalyticsService,
     HoldingService,
     InstrumentService,
+    PortfolioReportService,
 )
 from app.investing.tax_service import TaxService
 from app.investing.theme_repository import (
@@ -507,6 +508,12 @@ async def get_investing_dividend_service(
         transaction_repo,
         category_repo,
     )
+
+
+async def get_investing_portfolio_report_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> PortfolioReportService:
+    return PortfolioReportService(session=session)
 
 
 async def get_investing_summary_service(

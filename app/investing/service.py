@@ -2455,3 +2455,35 @@ class PortfolioReportService:
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )
         return RecordedPortfolioReport(report, created=False, content_matches=matches)
+
+    async def get_report(
+        self, *, workspace_id: int, public_id: uuid.UUID
+    ) -> PortfolioReport | None:
+        """Fetch one report by public_id, scoped to the caller's workspace.
+
+        Returns None when no such report exists in the workspace.
+        """
+        return await self.repo.get_by_public_id(workspace_id, public_id)
+
+    async def list_reports(
+        self,
+        *,
+        workspace_id: int,
+        from_date: date | None = None,
+        to_date: date | None = None,
+        limit: int = DEFAULT_LIMIT,
+        cursor: int | None = None,
+    ) -> tuple[Sequence[PortfolioReport], int]:
+        """List the workspace's reports, newest ``as_of`` first.
+
+        Cursor-paginated (``cursor`` is the offset) and returns the total
+        count so callers can verify no page was cut off.
+        """
+        offset = cursor or 0
+        return await self.repo.list_by_workspace_range(
+            workspace_id,
+            from_date=from_date,
+            to_date=to_date,
+            limit=limit,
+            offset=offset,
+        )
