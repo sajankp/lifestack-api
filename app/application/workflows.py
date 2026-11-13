@@ -568,6 +568,7 @@ class MorningBriefingWorkflow:
         return lines
 
     async def _net_worth_lines(self, workspace_id: int) -> list[BriefingLine]:
+        as_of = datetime.now(UTC)
         performance = await self.investing_performance_service.summary(workspace_id)
         if performance.daily_change is None:
             return []
@@ -578,7 +579,8 @@ class MorningBriefingWorkflow:
             if performance.daily_change_pct is not None
             else ""
         )
-        text = f"Portfolio {sign}{performance.daily_change:.2f}{pct_text} today"
+        time_text = as_of.strftime("%H:%M UTC")
+        text = f"Portfolio {sign}{performance.daily_change:.2f}{pct_text} today (as of {time_text})"
         if degraded:
             text += f" — valuation {performance.valuation_status}"
         return [
