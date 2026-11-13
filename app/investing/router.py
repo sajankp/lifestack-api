@@ -1076,8 +1076,11 @@ async def list_portfolio_reports(
     portfolio_report_service: Annotated[
         PortfolioReportService, Depends(get_investing_portfolio_report_service)
     ],
-    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
     _user: Annotated[dict, Depends(get_current_user)],
+    workspace_public_id: Annotated[uuid.UUID | None, Query(
+        description="Workspace public ID (UUID). Defaults to current user's active workspace."
+    )] = None,
+    current_workspace_id: Annotated[int, Depends(get_current_workspace_id)] = None,
     from_date: date | None = Query(
         None, description="Filter reports with as_of on or after this ISO date (YYYY-MM-DD)."
     ),
@@ -1100,8 +1103,34 @@ async def list_portfolio_reports(
     denormalised columns are always returned; ``scalars_json``,
     ``foundation_json`` and ``actions_md`` only with ``include_payload=true``.
     """
+    # Resolve workspace: use provided public_id or fall back to current user's active workspace
+    effective_workspace_id = current_workspace_id
+    if workspace_public_id is not None:
+        from app.platform.repository import WorkspaceRepository
+        from app.core.database.postgres import async_session_maker
+
+        async with async_session_maker() as session:
+            workspace_repo = WorkspaceRepository(session)
+            workspace = await workspace_repo.get_by_public_id(workspace_public_id)
+            if not workspace or not workspace.is_active:
+                from app.core.exceptions import NotFoundError
+                raise NotFoundError(detail="Workspace not found or is inactive")
+            effective_workspace_id = workspace.id
+
+    # If explicit workspace_public_id provided, verify user is a member
+    if workspace_public_id is not None:
+        from app.auth.repository import MembershipRepository
+        from app.core.database.postgres import async_session_maker
+
+        async with async_session_maker() as session:
+            membership_repo = MembershipRepository(session)
+            membership = await membership_repo.get_membership(effective_workspace_id, _user["id"])
+            if not membership:
+                from app.core.exceptions import ForbiddenError
+                raise ForbiddenError(detail="Not a member of this workspace")
+
     items, total = await portfolio_report_service.list_reports(
-        workspace_id=workspace_id,
+        workspace_id=effective_workspace_id,
         from_date=from_date,
         to_date=to_date,
         limit=limit,
