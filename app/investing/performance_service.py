@@ -13,6 +13,7 @@ import asyncio
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from sqlalchemy import select
@@ -347,14 +348,18 @@ class PerformanceService:
             )
         )
 
-    async def summary(self, workspace_id: int) -> PerformanceSummaryResponse:
+    async def summary(self, workspace_id: int, user_tz: str = "UTC") -> PerformanceSummaryResponse:
         configured_reporting_currency: str | None = None
         if self.finance_setting_repo is not None:
             settings = await self.finance_setting_repo.get_by_workspace(workspace_id)
             if settings and settings.reporting_currency_code:
                 configured_reporting_currency = settings.reporting_currency_code.upper()
 
-        today = datetime.now(UTC).date()
+        try:
+            tz = ZoneInfo(user_tz)
+        except ZoneInfoNotFoundError:
+            tz = UTC
+        today = datetime.now(tz).date()
         snapshot = await self.snapshot_repo.latest(workspace_id)
         if (
             snapshot is None

@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
-from app.auth.repository import AuthSessionRepository
+from app.auth.repository import AuthSessionRepository, UserRepository
 from app.auth.schemas import UserCreate
 from app.auth.service import AuthService
 from app.config import settings
@@ -320,6 +320,7 @@ class MorningBriefingWorkflow:
         weekly_summary_repo: WeeklySummaryRepository,
         finance_setting_repo: FinanceSettingRepository,
         health_service: HealthService | None = None,
+        user_repo: UserRepository | None = None,
     ):
         self.todo_service = todo_service
         self.budget_service = budget_service
@@ -330,9 +331,18 @@ class MorningBriefingWorkflow:
         self.weekly_summary_repo = weekly_summary_repo
         self.finance_setting_repo = finance_setting_repo
         self.health_service = health_service
+        self.user_repo = user_repo
 
     async def get_briefing(self, workspace_id: int, user_id: int) -> BriefingResponse:
         now = datetime.now(UTC)
+
+        # Get user's timezone for snapshot date calculation
+        user_tz = "UTC"
+        if self.user_repo is not None:
+            user = await self.user_repo.get_by_id(user_id)
+            if user and user.timezone:
+                user_tz = user.timezone
+
         raw_lines: list[tuple[int, BriefingLine]] = []
 
         builders = [
@@ -341,7 +351,7 @@ class MorningBriefingWorkflow:
             (_DOMAIN_HEALTH, self._health_lines(workspace_id, now)),
             (_DOMAIN_BUDGET_GUARDRAILS, self._budget_guardrail_lines(workspace_id, now)),
             (_DOMAIN_RECURRING_DUE, self._recurring_due_lines(workspace_id, now)),
-            (_DOMAIN_NET_WORTH, self._net_worth_lines(workspace_id)),
+            (_DOMAIN_NET_WORTH, self._net_worth_lines(workspace_id, user_tz)),
             (_DOMAIN_PENDING_REVIEW, self._pending_review_lines(workspace_id)),
             (_DOMAIN_WEEKLY_SUMMARY, self._weekly_summary_lines(workspace_id, now)),
             (_DOMAIN_FRESH_INSIGHTS, self._fresh_insight_lines(workspace_id, user_id, now)),
@@ -567,9 +577,9 @@ class MorningBriefingWorkflow:
             )
         return lines
 
-    async def _net_worth_lines(self, workspace_id: int) -> list[BriefingLine]:
+    async def _net_worth_lines(self, workspace_id: int, user_tz: str = "UTC") -> list[BriefingLine]:
         as_of = datetime.now(UTC)
-        performance = await self.investing_performance_service.summary(workspace_id)
+        performance = await self.investing_performance_service.summary(workspace_id, user_tz)
         if performance.daily_change is None:
             return []
         degraded = performance.valuation_status in ("partial", "conversion_required")

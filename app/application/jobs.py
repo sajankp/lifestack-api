@@ -45,6 +45,7 @@ from app.application.workflows import (
     purge_resolved_job_failures,
 )
 from app.auth.models import User
+from app.auth.repository import UserRepository
 from app.config import settings
 from app.core.constants import (
     ADVISORY_LOCK_BHAVCOPY_PRICE_FEED,
@@ -1567,6 +1568,7 @@ async def morning_briefing_job(workspace_id: int | None = None) -> None:
                 MedicationEventRepository(session),
                 WeightEntryRepository(session),
             ),
+            user_repo=UserRepository(session),
         )
 
         briefing = await workflow.get_briefing(workspace.id, user_id)
