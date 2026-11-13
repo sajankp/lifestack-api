@@ -8,11 +8,13 @@ RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/list
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock ./
-RUN uv export --frozen --no-dev -o requirements.txt && \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv export --frozen --no-dev -o requirements.txt && \
     uv pip install --system --no-cache -r requirements.txt
 
 COPY . .
-RUN uv pip install --system --no-cache --no-deps .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system --no-cache --no-deps .
 
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
