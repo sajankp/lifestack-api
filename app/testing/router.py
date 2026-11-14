@@ -1,6 +1,7 @@
+import uuid
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
-from typing import Annotated
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -17,12 +18,14 @@ from app.core.dependencies import (
     get_current_workspace_id,
     get_db_session,
     get_finance_fx_rate_service,
+    get_investing_portfolio_report_service,
     get_workspace_repo,
     require_min_role,
 )
 from app.core.exceptions import NotFoundError
 from app.finance.schemas import FxRateUpsert
 from app.finance.service import FxRateService
+from app.investing.service import PortfolioReportService
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.platform.repository import WorkspaceRepository
@@ -69,6 +72,25 @@ class FxRateSeedRequest(BaseModel):
     base_currency_code: str = Field(..., min_length=1, max_length=10)
     quote_currency_code: str = Field(..., min_length=1, max_length=10)
     rate: Decimal = Field(..., gt=0, decimal_places=10)
+
+
+class PortfolioReportSeedRequest(BaseModel):
+    """Mirrors the ``create_portfolio_report`` MCP tool's denormalised columns."""
+
+    as_of: date
+    run_id: str = Field(
+        default_factory=lambda: f"e2e-{uuid.uuid4().hex[:8]}", min_length=1, max_length=128
+    )
+    theme_weights: dict[str, Any] = Field(default_factory=dict)
+    harvest_candidates: list[Any] = Field(default_factory=list)
+    lrs_headroom_inr: Decimal | None = None
+    tax_buckets: dict[str, Any] = Field(default_factory=dict)
+    foundation_json: dict[str, Any] | None = None
+
+
+class PortfolioReportSeedResponse(BaseModel):
+    status: str = "ok"
+    public_id: str
 
 
 async def _active_workspace_or_404(workspace_id: int, workspace_repo: WorkspaceRepository):
@@ -152,6 +174,41 @@ async def seed_fx_rate(
         )
     )
     return WorkflowRunResponse()
+
+
+@router.post("/portfolio-reports", response_model=PortfolioReportSeedResponse)
+async def seed_portfolio_report(
+    payload: PortfolioReportSeedRequest,
+    _user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("owner"))],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    report_service: Annotated[
+        PortfolioReportService, Depends(get_investing_portfolio_report_service)
+    ],
+) -> PortfolioReportSeedResponse:
+    """
+    Seed one portfolio report row for the caller's workspace.
+
+    Reports are normally written by the fortnightly cron through the
+    ``create_portfolio_report`` MCP tool, which the e2e stack cannot reach, so this
+    hook lets the Analytics report cards be exercised against the real stored shape.
+    """
+    headroom = (
+        payload.lrs_headroom_inr.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if payload.lrs_headroom_inr is not None
+        else None
+    )
+    report = await report_service.create_portfolio_report(
+        workspace_id=workspace_id,
+        as_of=payload.as_of,
+        run_id=payload.run_id,
+        foundation_json=payload.foundation_json,
+        theme_weights=payload.theme_weights,
+        harvest_candidates=payload.harvest_candidates,
+        lrs_headroom_inr=headroom,
+        tax_buckets=payload.tax_buckets,
+    )
+    return PortfolioReportSeedResponse(public_id=str(report.public_id))
 
 
 @router.post("/workflows/weekly-summary", response_model=WeeklySummaryWorkflowRunResponse)
