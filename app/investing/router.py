@@ -26,10 +26,12 @@ from app.core.dependencies import (
     get_investing_snapshot_repo,
     get_investing_summary_service,
     get_investing_tax_service,
+    get_membership_repo,
     get_reference_resolve_service,
+    get_workspace_repo,
     require_min_role,
 )
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import ForbiddenError, NotFoundError
 from app.core.pagination import PaginatedResponse, PaginationParams, build_page
 from app.finance.repository import AccountRepository
 from app.finance.service import AccountService
@@ -95,6 +97,7 @@ from app.investing.tax_schemas import (
 )
 from app.investing.tax_service import TaxService
 from app.investing.theme_router import router as theme_router
+from app.platform.repository import MembershipRepository, WorkspaceRepository
 
 router = APIRouter(prefix="/investing", tags=["investing"])
 
@@ -1057,13 +1060,11 @@ def _portfolio_report_item(report: PortfolioReportItem, include_payload: bool) -
         "created_at": report.created_at,
     }
     if include_payload:
-        data.update(
-            {
-                "scalars_json": report.scalars_json,
-                "foundation_json": report.foundation_json,
-                "actions_md": report.actions_md,
-            }
-        )
+        data.update({
+            "scalars_json": report.scalars_json,
+            "foundation_json": report.foundation_json,
+            "actions_md": report.actions_md,
+        })
     return data
 
 
@@ -1077,9 +1078,14 @@ async def list_portfolio_reports(
         PortfolioReportService, Depends(get_investing_portfolio_report_service)
     ],
     _user: Annotated[dict, Depends(get_current_user)],
-    workspace_public_id: Annotated[uuid.UUID | None, Query(
-        description="Workspace public ID (UUID). Defaults to current user's active workspace."
-    )] = None,
+    workspace_repo: Annotated[WorkspaceRepository, Depends(get_workspace_repo)],
+    membership_repo: Annotated[MembershipRepository, Depends(get_membership_repo)],
+    workspace_public_id: Annotated[
+        uuid.UUID | None,
+        Query(
+            description="Workspace public ID (UUID). Defaults to current user's active workspace."
+        ),
+    ] = None,
     current_workspace_id: Annotated[int, Depends(get_current_workspace_id)] = None,
     from_date: date | None = Query(
         None, description="Filter reports with as_of on or after this ISO date (YYYY-MM-DD)."
@@ -1089,7 +1095,9 @@ async def list_portfolio_reports(
     ),
     limit: int = Query(20, ge=1, le=100, description="Max number of reports to return."),
     cursor: int | None = Query(
-        None, ge=0, description="Offset cursor for pagination; skips that many newest-first rows before the page."
+        None,
+        ge=0,
+        description="Offset cursor for pagination; skips that many newest-first rows before the page.",
     ),
     include_payload: bool = Query(
         False,
@@ -1106,28 +1114,13 @@ async def list_portfolio_reports(
     # Resolve workspace: use provided public_id or fall back to current user's active workspace
     effective_workspace_id = current_workspace_id
     if workspace_public_id is not None:
-        from app.platform.repository import WorkspaceRepository
-        from app.core.database.postgres import async_session_maker
-
-        async with async_session_maker() as session:
-            workspace_repo = WorkspaceRepository(session)
-            workspace = await workspace_repo.get_by_public_id(workspace_public_id)
-            if not workspace or not workspace.is_active:
-                from app.core.exceptions import NotFoundError
-                raise NotFoundError(detail="Workspace not found or is inactive")
-            effective_workspace_id = workspace.id
-
-    # If explicit workspace_public_id provided, verify user is a member
-    if workspace_public_id is not None:
-        from app.auth.repository import MembershipRepository
-        from app.core.database.postgres import async_session_maker
-
-        async with async_session_maker() as session:
-            membership_repo = MembershipRepository(session)
-            membership = await membership_repo.get_membership(effective_workspace_id, _user["id"])
-            if not membership:
-                from app.core.exceptions import ForbiddenError
-                raise ForbiddenError(detail="Not a member of this workspace")
+        workspace = await workspace_repo.get_by_public_id(workspace_public_id)
+        if workspace is None or workspace.id is None or not workspace.is_active:
+            raise NotFoundError(detail="Workspace not found or is inactive")
+        # An explicit workspace must be one the caller belongs to.
+        if not await membership_repo.get_membership(workspace.id, _user["id"]):
+            raise ForbiddenError(detail="Not a member of this workspace")
+        effective_workspace_id = workspace.id
 
     items, total = await portfolio_report_service.list_reports(
         workspace_id=effective_workspace_id,
@@ -1171,9 +1164,7 @@ async def get_portfolio_report(
     )
     if report is None:
         raise NotFoundError(detail=f"No portfolio report {public_id} in this workspace")
-    return PortfolioReportItem.model_validate(
-        _portfolio_report_item(report, include_payload)
-    )
+    return PortfolioReportItem.model_validate(_portfolio_report_item(report, include_payload))
 
 
 # ------------------------------------------------------ capital gains tax

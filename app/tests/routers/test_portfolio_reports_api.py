@@ -155,9 +155,7 @@ async def test_list_portfolio_reports_date_range(client: AsyncClient):
     assert res.json()["total"] == 1
     assert res.json()["items"][0]["as_of"] == "2026-10-01"
 
-    res = await client.get(
-        LIST_PATH, params={"from_date": "2026-11-01", "to_date": "2026-11-10"}
-    )
+    res = await client.get(LIST_PATH, params={"from_date": "2026-11-01", "to_date": "2026-11-10"})
     assert res.status_code == 200
     assert res.json()["total"] == 1
     assert res.json()["items"][0]["as_of"] == "2026-11-01"
@@ -218,9 +216,7 @@ async def test_list_portfolio_reports_excludes_other_workspace(client: AsyncClie
         await session.flush()
         other_ws_id = other_ws.id
         assert other_ws_id is not None
-        session.add(
-            WorkspaceMembership(workspace_id=other_ws_id, user_id=_user_id, role="owner")
-        )
+        session.add(WorkspaceMembership(workspace_id=other_ws_id, user_id=_user_id, role="owner"))
         await _seed(session, other_ws_id, date(2026, 11, 1), "2026-11-01_bob")
 
     res = await client.get(LIST_PATH)
@@ -241,3 +237,44 @@ async def test_list_portfolio_reports_input_validation(client: AsyncClient):
     ]:
         res = await client.get(LIST_PATH, params=params)
         assert res.status_code == 422, f"{params}: {res.text}"
+
+
+@pytest.mark.asyncio
+async def test_list_portfolio_reports_with_workspace_public_id(client: AsyncClient):
+    """The web app always sends ``workspace_public_id``; this path was untested."""
+    _user_id, workspace_id = await _register_and_login(client)
+    async with postgres.async_session_maker() as session:
+        await _seed(session, workspace_id, date(2026, 11, 1), "2026-11-01_a")
+        workspace = (
+            await session.execute(select(Workspace).where(Workspace.id == workspace_id))
+        ).scalar_one()
+        public_id = str(workspace.public_id)
+
+    res = await client.get(LIST_PATH, params={"workspace_public_id": public_id, "limit": 1})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] == 1
+    assert body["items"][0]["run_id"] == "2026-11-01_a"
+
+
+@pytest.mark.asyncio
+async def test_list_portfolio_reports_workspace_public_id_unknown_is_404(client: AsyncClient):
+    await _register_and_login(client)
+    res = await client.get(LIST_PATH, params={"workspace_public_id": str(uuid4())})
+    assert res.status_code == 404, res.text
+
+
+@pytest.mark.asyncio
+async def test_list_portfolio_reports_workspace_public_id_non_member_is_403(
+    client: AsyncClient,
+):
+    await _register_and_login(client)
+    async with postgres.async_session_maker() as session:
+        stranger_ws = Workspace(name="Not mine")
+        session.add(stranger_ws)
+        await session.flush()
+        stranger_public_id = str(stranger_ws.public_id)
+        await session.commit()
+
+    res = await client.get(LIST_PATH, params={"workspace_public_id": stranger_public_id})
+    assert res.status_code == 403, res.text
