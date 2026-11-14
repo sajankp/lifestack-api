@@ -1,6 +1,7 @@
 """Import smoke tests — catch module-level errors (NameError, missing imports, etc.)
 that endpoint tests may bypass because they don't force full app evaluation at import time.
 """
+
 import pytest
 
 
@@ -16,15 +17,15 @@ def test_app_imports_cleanly():
 
 def test_all_router_modules_import_cleanly():
     """Importing every router module must not raise NameError/ImportError at module level."""
-    from app.investing import router as investing_router
-    from app.finance import router as finance_router
-    from app.capture import router as capture_router
     from app.auth import router as auth_router
+    from app.capture import router as capture_router
     from app.exports import router as exports_router
-    from app.imports import router as imports_router
-    from app.platform import router as platform_router
-    from app.notifications import router as notifications_router
+    from app.finance import router as finance_router
     from app.health import router as health_router
+    from app.imports import router as imports_router
+    from app.investing import router as investing_router
+    from app.notifications import router as notifications_router
+    from app.platform import router as platform_router
 
     # Just verify they're module objects with expected attributes
     for mod in [
@@ -43,11 +44,11 @@ def test_all_router_modules_import_cleanly():
 
 def test_investing_router_portfolio_report_types_resolve():
     """Specifically verify the portfolio report helper uses PortfolioReportItem, not PortfolioReport."""
-    from app.investing.router import _portfolio_report_item
-    from app.investing.schemas import PortfolioReportItem
-
     # The function signature should reference PortfolioReportItem
     import inspect
+
+    from app.investing.router import _portfolio_report_item
+    from app.investing.schemas import PortfolioReportItem
 
     sig = inspect.signature(_portfolio_report_item)
     report_param = sig.parameters["report"]
@@ -59,8 +60,9 @@ def test_investing_router_portfolio_report_types_resolve():
 
 def test_investing_router_return_type_annotation_resolves():
     """Verify dict[str, Any] return type resolves (Any must be imported)."""
-    from app.investing.router import _portfolio_report_item
     import inspect
+
+    from app.investing.router import _portfolio_report_item
 
     sig = inspect.signature(_portfolio_report_item)
     return_annotation = sig.return_annotation
@@ -75,6 +77,7 @@ def test_no_undefined_names_in_router_type_hints():
     (respecting from __future__ import annotations), catching NameError.
     """
     import typing
+
     from app.investing import router as investing_router
 
     # This will raise NameError if any type annotation references an undefined name
@@ -87,6 +90,7 @@ def test_no_undefined_names_in_router_type_hints():
 def test_all_schemas_exported_and_resolve():
     """Import all schemas and verify they're valid pydantic models."""
     import uuid
+
     from app.investing import schemas
 
     # Check key portfolio report schemas exist and are valid
