@@ -1,58 +1,57 @@
 """Import smoke tests — catch module-level errors (NameError, missing imports, etc.)
 that endpoint tests may bypass because they don't force full app evaluation at import time.
+
+Modules are loaded with ``importlib.import_module`` inside each test rather than with
+top-of-file ``import`` statements: a broken module then fails *that* test with a clear
+message instead of aborting collection of the whole file, and ruff's PLC0415
+(import-outside-top-level) stays enabled for the rest of the codebase.
 """
 
+import importlib
+import inspect
+import typing
+import uuid
+
 import pytest
+
+ROUTER_MODULES = [
+    "app.auth.router",
+    "app.capture.router",
+    "app.exports.router",
+    "app.finance.router",
+    "app.health.router",
+    "app.imports.router",
+    "app.investing.router",
+    "app.notifications.router",
+    "app.platform.router",
+]
 
 
 def test_app_imports_cleanly():
     """Importing app.main must succeed without NameError or ImportError."""
-    from app.main import app, create_app
+    main = importlib.import_module("app.main")
 
-    assert app is not None
+    assert main.app is not None
     # Creating a fresh app instance also works (used in production-disabled docs test)
-    fresh = create_app()
-    assert fresh is not None
+    assert main.create_app() is not None
 
 
-def test_all_router_modules_import_cleanly():
+@pytest.mark.parametrize("module_name", ROUTER_MODULES)
+def test_router_module_imports_cleanly(module_name: str):
     """Importing every router module must not raise NameError/ImportError at module level."""
-    from app.auth import router as auth_router
-    from app.capture import router as capture_router
-    from app.exports import router as exports_router
-    from app.finance import router as finance_router
-    from app.health import router as health_router
-    from app.imports import router as imports_router
-    from app.investing import router as investing_router
-    from app.notifications import router as notifications_router
-    from app.platform import router as platform_router
+    module = importlib.import_module(module_name)
 
-    # Just verify they're module objects with expected attributes
-    for mod in [
-        investing_router,
-        finance_router,
-        capture_router,
-        auth_router,
-        exports_router,
-        imports_router,
-        platform_router,
-        notifications_router,
-        health_router,
-    ]:
-        assert hasattr(mod, "router"), f"{mod} missing 'router' attribute"
+    assert hasattr(module, "router"), f"{module_name} missing 'router' attribute"
 
 
 def test_investing_router_portfolio_report_types_resolve():
     """Specifically verify the portfolio report helper uses PortfolioReportItem, not PortfolioReport."""
-    # The function signature should reference PortfolioReportItem
-    import inspect
+    router = importlib.import_module("app.investing.router")
+    schemas = importlib.import_module("app.investing.schemas")
 
-    from app.investing.router import _portfolio_report_item
-    from app.investing.schemas import PortfolioReportItem
-
-    sig = inspect.signature(_portfolio_report_item)
+    sig = inspect.signature(router._portfolio_report_item)
     report_param = sig.parameters["report"]
-    assert report_param.annotation is PortfolioReportItem, (
+    assert report_param.annotation is schemas.PortfolioReportItem, (
         f"_portfolio_report_item 'report' param annotation is {report_param.annotation}, "
         f"expected PortfolioReportItem"
     )
@@ -60,14 +59,11 @@ def test_investing_router_portfolio_report_types_resolve():
 
 def test_investing_router_return_type_annotation_resolves():
     """Verify dict[str, Any] return type resolves (Any must be imported)."""
-    import inspect
+    router = importlib.import_module("app.investing.router")
 
-    from app.investing.router import _portfolio_report_item
-
-    sig = inspect.signature(_portfolio_report_item)
-    return_annotation = sig.return_annotation
+    sig = inspect.signature(router._portfolio_report_item)
     # Should be dict[str, Any] — the Any should resolve without NameError
-    assert return_annotation is not inspect.Signature.empty
+    assert sig.return_annotation is not inspect.Signature.empty
 
 
 def test_no_undefined_names_in_router_type_hints():
@@ -76,12 +72,10 @@ def test_no_undefined_names_in_router_type_hints():
     This uses typing.get_type_hints() which evaluates annotations at runtime
     (respecting from __future__ import annotations), catching NameError.
     """
-    import typing
-
-    from app.investing import router as investing_router
+    router = importlib.import_module("app.investing.router")
 
     # This will raise NameError if any type annotation references an undefined name
-    type_hints = typing.get_type_hints(investing_router._portfolio_report_item)
+    type_hints = typing.get_type_hints(router._portfolio_report_item)
     assert "report" in type_hints
     assert "include_payload" in type_hints
     assert "return" in type_hints
@@ -89,9 +83,7 @@ def test_no_undefined_names_in_router_type_hints():
 
 def test_all_schemas_exported_and_resolve():
     """Import all schemas and verify they're valid pydantic models."""
-    import uuid
-
-    from app.investing import schemas
+    schemas = importlib.import_module("app.investing.schemas")
 
     # Check key portfolio report schemas exist and are valid
     assert hasattr(schemas, "PortfolioReportItem")
@@ -113,16 +105,10 @@ def test_all_schemas_exported_and_resolve():
 
 def test_create_app_lifespan_starts():
     """Create app and verify lifespan can start (catches runtime import errors)."""
-    from app.main import create_app
+    main = importlib.import_module("app.main")
 
-    app = create_app()
+    app = main.create_app()
     # If this fails, it's a runtime import error (e.g., circular import, missing dependency)
     assert app is not None
     # Verify app has routes registered (they live under _IncludedRouter)
     assert len(app.routes) > 0
-    # Health endpoint should be reachable via test client (tested in test_main.py)
-    # This test just ensures the app factory runs without import/runtime errors
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

@@ -110,11 +110,6 @@ unfixable = []
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
 
-[tool.ruff.lint.per-file-ignores]
-# The import smoke test imports inside test functions on purpose: the point is to
-# surface ImportError/NameError at test time rather than at collection.
-"app/tests/test_import_smoke.py" = ["PLC0415"]
-
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"

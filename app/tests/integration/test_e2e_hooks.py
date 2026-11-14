@@ -237,6 +237,70 @@ async def test_e2e_fx_rate_hook_seeds_rate_used_by_performance_snapshot(
     assert fx_rates.json()["rate"] == "1.2500000000"
 
 
+@pytest.mark.asyncio
+async def test_e2e_portfolio_report_hook_seeds_report_listed_by_workspace(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    """Seeds the shape the fortnightly cron really writes, read back the way the web app does."""
+    creds = await _register_and_login(client, "e2ereport")
+    workspaces = await client.get("/v1/platform/workspaces/", cookies=creds["cookies"])
+    assert workspaces.status_code == 200, workspaces.text
+    workspace_public_id = workspaces.json()["items"][0]["public_id"]
+
+    monkeypatch.setattr(settings, "ENABLE_E2E_TEST_HOOKS", True)
+    monkeypatch.setattr(settings, "ENV", "local")
+    async with await _e2e_hook_client() as hook_client:
+        hook_client.cookies.update(creds["cookies"])
+        response = await hook_client.post(
+            "/v1/e2e/portfolio-reports",
+            json={
+                "as_of": "2026-11-13",
+                "theme_weights": {"semis_ai": 31.5, "gold": 12.0},
+                "harvest_candidates": [
+                    {
+                        "symbol": "ABC",
+                        "account": "IND Money",
+                        "qty": 4,
+                        "unrealised_loss_inr": 2500.5,
+                        "days_to_long_term": 40,
+                        "tax_saved_inr": 780.25,
+                    }
+                ],
+                "lrs_headroom_inr": "662922.41",
+                "tax_buckets": {"lt_gain_inr": 1000, "lt_tax_inr": 125, "st_gain_inr": 0},
+            },
+        )
+    assert response.status_code == 200, response.text
+    seeded = response.json()
+    assert seeded["status"] == "ok"
+
+    listed = await client.get(
+        "/v1/investing/portfolio-reports",
+        params={"workspace_public_id": workspace_public_id, "limit": 1},
+        cookies=creds["cookies"],
+    )
+    assert listed.status_code == 200, listed.text
+    item = listed.json()["items"][0]
+    assert item["public_id"] == seeded["public_id"]
+    assert item["as_of"] == "2026-11-13"
+    assert item["lrs_headroom_inr"] == "662922.41"
+    assert item["harvest_candidates"][0]["unrealised_loss_inr"] == 2500.5
+    assert item["tax_buckets"]["lt_tax_inr"] == 125
+
+
+@pytest.mark.asyncio
+async def test_e2e_portfolio_report_hook_not_registered_by_default(client: AsyncClient):
+    creds = await _register_and_login(client, "e2ereportoff")
+
+    response = await client.post(
+        "/v1/e2e/portfolio-reports",
+        json={"as_of": "2026-11-13"},
+        cookies=creds["cookies"],
+    )
+
+    assert response.status_code == 404
+
+
 def test_e2e_hooks_production_gating_settings():
     # Should raise error if we try to set ENABLE_E2E_TEST_HOOKS=True in production
     with pytest.raises(

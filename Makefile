@@ -1,4 +1,4 @@
-.PHONY: sync-agent-docs
+.PHONY: sync-agent-docs hooks
 
 sync-agent-docs:
 	@echo "Syncing .agent/context.md to tool-specific entry points..."
@@ -7,3 +7,8 @@ sync-agent-docs:
 	@echo "<!-- AUTO-SYNCED from .agent/context.md — do not edit directly. Run: make sync-agent-docs -->" > .cursorrules
 	@cat .agent/context.md >> .cursorrules
 	@echo "Done. Synced to .github/copilot-instructions.md and .cursorrules"
+
+# A fresh clone has no git hooks, so lint/format/commit-message checks only run in CI.
+# Run once per clone (hooks are shared by git worktrees).
+hooks:
+	uv run pre-commit install -t pre-commit -t commit-msg

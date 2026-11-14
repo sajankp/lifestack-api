@@ -143,6 +143,7 @@ PR ready for review.
 
 - Protected main blocks push → Push feature branch and open PR instead
 - Local env mismatch → Use `uv` and pinned version requirements
+- Hooks not running on commit → A fresh clone has none installed (CI is then the first place lint/format failures show). Run `make hooks` once per clone
 - Pre-commit failure → Fix hooks, recommit, re-verify with `git status`
 - Full-stack confidence → API/Web green is insufficient. Verify the E2E workflow receiver and a fresh composed run; API currently has a dispatch sender, but E2E has no `repository_dispatch` trigger.
 - Production deployment → Use `./scripts/deploy-production.sh`; it validates Compose, locks concurrent deploys, captures logs, and waits for API health.
