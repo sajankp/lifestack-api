@@ -1,6 +1,7 @@
 import json
 import secrets
 from decimal import Decimal
+from typing import Literal
 from urllib.parse import urlparse
 
 import structlog
@@ -290,6 +291,14 @@ class Settings(BaseSettings):
     # prod only after confirming the deployed model accepts these setup fields.
     CAPTURE_ENABLE_SESSION_RESUMPTION: bool = False
     CAPTURE_ENABLE_CONTEXT_COMPRESSION: bool = False
+    # spec-109: server-side VAD (voice activity detection) tuning for Gemini Live.
+    # All default to None = send no `realtimeInputConfig`, i.e. the server's own
+    # defaults (current behaviour). Google recommends 500-800 ms silence; below
+    # 500 ms natural pauses split one utterance into fragments.
+    CAPTURE_VAD_SILENCE_MS: int | None = None
+    CAPTURE_VAD_PREFIX_PADDING_MS: int | None = None
+    CAPTURE_VAD_START_SENSITIVITY: Literal["LOW", "HIGH"] | None = None
+    CAPTURE_VAD_END_SENSITIVITY: Literal["LOW", "HIGH"] | None = None
     # spec-090: replay-dedup window for write tool-calls on resumed sessions.
     # 45 min covers the worst observed replay delay (+37 min, 2026-07-22
     # production log analysis) with margin; suppression is additionally gated

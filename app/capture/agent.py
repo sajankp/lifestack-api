@@ -14,7 +14,11 @@ import websockets
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.capture.audio import AudioDecoder
-from app.capture.gemini_setup import _build_setup_message, _fetch_workspace_context
+from app.capture.gemini_setup import (
+    _build_setup_message,
+    _fetch_workspace_context,
+    is_gemini_3x,
+)
 from app.capture.session_limiter import (
     CAPTURE_POLICY_VIOLATION_CLOSE_CODE,
     CaptureSessionLimiter,
@@ -166,17 +170,34 @@ def _log_user_transcript(
     })
 
 
-def _log_session_ended(reason: str, duration_seconds: float) -> None:
+def _log_session_ended(
+    reason: str,
+    duration_seconds: float,
+    *,
+    user_id: int | None = None,
+    workspace_id: int | None = None,
+    session_id: str | None = None,
+) -> None:
     """Structured, PII-redacted disconnect/resume-failure instrumentation
     (spec-079 Stage A). Emits a count-only event — no transcript, audio, or
     user-authored content — so production logs can be aggregated into a
     disconnect-rate-by-reason metric ahead of Stage B transport work.
+    spec-109: also written to the capture log as `kind='session_ended'` so a
+    session's start, turns and end can be read from one place.
     """
     logger.info(
         "capture_session_ended",
         reason=reason,
         duration_seconds=round(duration_seconds, 1),
     )
+    _log_capture_event({
+        "kind": "session_ended",
+        "session_id": session_id,
+        "reason": reason,
+        "duration_seconds": round(duration_seconds, 1),
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+    })
 
 
 async def _send_capture_error(
@@ -289,11 +310,7 @@ async def _connect_gemini(
     logger.info("connecting_to_gemini", model=settings.GEMINI_MODEL)
 
     # Try a sequence of response modality options to handle provider/model changes
-    modality_attempts = [
-        ["TEXT", "AUDIO"],
-        ["TEXT"],
-        ["AUDIO"],
-    ]
+    modality_attempts = _modality_attempts(settings.GEMINI_MODEL)
 
     last_err: Exception | None = None
     for modalities in modality_attempts:
@@ -365,6 +382,103 @@ async def _connect_gemini(
     if last_err is not None:
         raise last_err
     raise RuntimeError("Failed to establish Gemini WebSocket connection")
+
+
+def _now() -> float:
+    """Monotonic clock for turn timing (a seam so tests can script time)."""
+    return time.monotonic()
+
+
+def _timing(turn_state: dict | None) -> dict:
+    """Per-turn timing marks (spec-109). Returns a throwaway dict when there is
+    no turn_state, so callers never need to branch."""
+    if turn_state is None:
+        return {}
+    return turn_state.setdefault("timing", {})
+
+
+def _mark_timing(turn_state: dict | None, key: str) -> None:
+    """Record the first time `key` happens in the current turn."""
+    timing = _timing(turn_state)
+    if key not in timing:
+        timing[key] = _now()
+
+
+def _mark_input_timing(turn_state: dict | None) -> None:
+    """An input-transcription fragment arrived: first/last mark the span the
+    user was heard speaking (the fragments stream while they talk)."""
+    _mark_timing(turn_state, "first_input_at")
+    _timing(turn_state)["last_input_at"] = _now()
+
+
+def _flush_turn_timing(
+    turn_state: dict, *, user_id: int, workspace_id: int, session_id: str | None
+) -> None:
+    """Write the `turn_timing` row for a completed turn, then reset the marks
+    (spec-109). Text-free by design: durations and counts only. Fields that
+    cannot be computed (a typed turn has no input span) are None."""
+    timing = turn_state.pop("timing", {})
+    ended = _now()
+
+    def ms(start: float | None, end: float | None) -> float | None:
+        if start is None or end is None:
+            return None
+        return round((end - start) * 1000, 1)
+
+    first_in = timing.get("first_input_at")
+    last_in = timing.get("last_input_at")
+    first_resp = timing.get("first_response_at")
+    first_tool = timing.get("first_tool_at")
+    tool_count = timing.get("tool_count", 0)
+    _log_capture_event({
+        "kind": "turn_timing",
+        "session_id": session_id,
+        "has_input_transcript": first_in is not None,
+        "input_ms": ms(first_in, last_in),
+        "input_end_to_first_response_ms": ms(last_in, first_resp),
+        "input_end_to_first_tool_ms": ms(last_in, first_tool),
+        "tool_count": tool_count,
+        "tool_ms": round(timing.get("tool_s", 0.0) * 1000, 1) if tool_count else None,
+        "turn_ms": ms(last_in if last_in is not None else first_resp, ended),
+        "interrupted": bool(timing.get("interrupted")),
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+    })
+
+
+_AUDIO_STREAM_END_FLUSH_DELAY_SECONDS = 0.4
+
+
+async def _handle_audio_stream_end(
+    gemini_ws,
+    *,
+    user_id: int,
+    workspace_id: int,
+    session_id: str | None,
+    delay: float = _AUDIO_STREAM_END_FLUSH_DELAY_SECONDS,
+) -> None:
+    """The client stopped its mic (spec-109). Gemini asks for `audioStreamEnd`
+    after an audio pause so cached audio is flushed. The client sends its last
+    chunk right before this message, but that chunk still has to pass through
+    the ffmpeg decode pipe, so wait briefly before telling Gemini the stream
+    ended (otherwise the tail of the utterance could arrive after the flush)."""
+    await asyncio.sleep(delay)
+    await gemini_ws.send(json.dumps({"realtimeInput": {"audioStreamEnd": True}}))
+    _log_capture_event({
+        "kind": "mic_stopped",
+        "session_id": session_id,
+        "user_id": user_id,
+        "workspace_id": workspace_id,
+    })
+
+
+def _modality_attempts(model: str) -> list[list[str]]:
+    """Response-modality combinations to try, in order. 3.x Live models reject
+    TEXT (spec-079), so lead with AUDIO there instead of opening and discarding
+    a socket per session; fallbacks stay so a changed provider still connects."""
+    if is_gemini_3x(model):
+        return [["AUDIO"], ["TEXT", "AUDIO"], ["TEXT"]]
+    return [["TEXT", "AUDIO"], ["TEXT"], ["AUDIO"]]
 
 
 def _accumulate_assistant_text(turn_state: dict | None, text: str) -> None:
@@ -469,6 +583,13 @@ async def _handle_gemini_message(
     if go_away:
         time_left = go_away.get("timeLeft")
         logger.info("gemini_go_away", time_left=str(time_left))
+        _log_capture_event({
+            "kind": "go_away",
+            "session_id": session_id,
+            "time_left": str(time_left),
+            "user_id": user_id,
+            "workspace_id": workspace_id,
+        })
         await client_ws.send_json({
             "type": "session_state",
             "state": "closing",
@@ -483,12 +604,14 @@ async def _handle_gemini_message(
         # time, so it must be told to flush its queue or buffered speech keeps
         # playing to the end.
         if server_content.get("interrupted"):
+            _timing(turn_state)["interrupted"] = True
             await client_ws.send_json({"type": "interrupted"})
 
         model_turn = server_content.get("modelTurn")
         if model_turn:
             parts = model_turn.get("parts") or []
             for part in parts:
+                _mark_timing(turn_state, "first_response_at")
                 # Transcript text (may arrive in same event as audio on 3.1)
                 text = part.get("text")
                 if text:
@@ -508,26 +631,35 @@ async def _handle_gemini_message(
         # Forward as the same caption channel and accumulate for the turn log.
         output_transcription = server_content.get("outputTranscription")
         if output_transcription and (ot_text := output_transcription.get("text")):
+            _mark_timing(turn_state, "first_response_at")
             _accumulate_assistant_text(turn_state, ot_text)
             await client_ws.send_json({"type": "transcript", "content": ot_text})
 
         # Input transcription (spec-079 Q4): the user's own words as heard by the
-        # model. Log-only — never echoed back on the assistant caption channel.
-        # Gated on the flag here as well as in the setup message: 3.1 Flash Live
-        # emits inputTranscription even when not requested, and flag-off must
-        # mean utterance text is never persisted.
-        if settings.CAPTURE_ENABLE_INPUT_TRANSCRIPTION:
-            input_transcription = server_content.get("inputTranscription")
-            if input_transcription and (it_text := input_transcription.get("text")):
+        # model. Persisted to the capture log only when the flag is on, and never
+        # echoed on the assistant caption channel. spec-109: the same flag also lets
+        # the user's own words go back to *their* socket as `input_transcript`, so
+        # the UI can show what was heard. Timing marks are text-free and always
+        # recorded (3.1 emits inputTranscription even when not requested).
+        input_transcription = server_content.get("inputTranscription")
+        if input_transcription and (it_text := input_transcription.get("text")):
+            _mark_input_timing(turn_state)
+            if settings.CAPTURE_ENABLE_INPUT_TRANSCRIPTION:
                 _accumulate_user_text(turn_state, it_text)
+                await client_ws.send_json({"type": "input_transcript", "content": it_text})
 
         # Turn boundary: flush the accumulated user utterance then the assistant
         # reply (conversational order) to the capture log, resetting both buffers.
+        if server_content.get("turnComplete"):
+            await client_ws.send_json({"type": "turn_complete"})
         if server_content.get("turnComplete") and turn_state is not None:
             _flush_user_turn(
                 turn_state, user_id=user_id, workspace_id=workspace_id, session_id=session_id
             )
             _flush_assistant_turn(
+                turn_state, user_id=user_id, workspace_id=workspace_id, session_id=session_id
+            )
+            _flush_turn_timing(
                 turn_state, user_id=user_id, workspace_id=workspace_id, session_id=session_id
             )
 
@@ -541,6 +673,9 @@ async def _handle_gemini_message(
             args = fc.get("args") or {}
 
             await client_ws.send_json({"type": "tool_call", "name": name, "arguments": args})
+            _mark_timing(turn_state, "first_response_at")
+            _mark_timing(turn_state, "first_tool_at")
+            _timing(turn_state)["tool_count"] = _timing(turn_state).get("tool_count", 0) + 1
 
             # spec-090 replay guard: on a resumed connection where the user has
             # not yet spoken/typed, a write call matching a recent successful
@@ -567,12 +702,16 @@ async def _handle_gemini_message(
                     )
 
             if result is None:
+                tool_started = _now()
                 result = await execute_agent_tool(
                     name,
                     args,
                     user_id,
                     workspace_id,
                     user_timezone,
+                )
+                _timing(turn_state)["tool_s"] = _timing(turn_state).get("tool_s", 0.0) + (
+                    _now() - tool_started
                 )
                 if (
                     dedup_ctx is not None
@@ -666,6 +805,7 @@ async def run_agent_session(
     _log_capture_event({
         "kind": "session_started",
         "session_id": session_id,
+        "model": settings.GEMINI_MODEL,
         "resumed": resumption_handle is not None,
         "resume_of_session_id": prev_session_id,
         "user_id": user_id,
@@ -817,6 +957,14 @@ async def run_agent_session(
                         content = client_msg.get("content", "")
                         # Gemini 3.1: use realtimeInput for live text (not clientContent)
                         await gemini_ws.send(json.dumps({"realtimeInput": {"text": content}}))
+                    elif msg_type == "audio_stream_end":
+                        # spec-109: mic stopped — flush Gemini's cached audio.
+                        await _handle_audio_stream_end(
+                            gemini_ws,
+                            user_id=user_id,
+                            workspace_id=workspace_id,
+                            session_id=session_id,
+                        )
 
         pcm_task = asyncio.create_task(pcm_to_gemini_loop())
         gemini_task = asyncio.create_task(gemini_to_client_loop())
@@ -872,4 +1020,10 @@ async def run_agent_session(
         if ws_context_manager is not None:
             with suppress(Exception):
                 await ws_context_manager.__aexit__(None, None, None)
-        _log_session_ended(session_outcome["reason"], time.monotonic() - session_started_at)
+        _log_session_ended(
+            session_outcome["reason"],
+            time.monotonic() - session_started_at,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+        )

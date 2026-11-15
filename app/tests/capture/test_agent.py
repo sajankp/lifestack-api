@@ -1794,8 +1794,11 @@ async def test_handle_gemini_message_logs_assistant_transcript_on_turn_complete(
 
     # The caption reached the client on each fragment.
     assert {"type": "transcript", "content": "Your portfolio "} in client_ws.sent_json
-    entry = json.loads(log_path.read_text().strip())
-    assert entry["kind"] == "assistant_transcript"
+    entry = next(
+        e
+        for e in (json.loads(line) for line in log_path.read_text().strip().splitlines())
+        if e["kind"] == "assistant_transcript"
+    )
     assert entry["text"] == "Your portfolio is up."
     assert entry["session_id"] == "sess-1"
     # Buffer reset so the next turn starts clean.
@@ -1876,10 +1879,14 @@ async def test_handle_gemini_message_logs_user_transcript_on_turn_complete(tmp_p
         session_id="sess-1",
         turn_state=turn_state,
     )
-    # No entry until the turn completes, and the user's words are never sent
-    # back to the client on the assistant caption channel.
+    # No entry until the turn completes. spec-109: the user's own words go back
+    # to their own socket as `input_transcript` (never on the assistant caption
+    # channel, which is `transcript`).
     assert not log_path.exists()
-    assert client_ws.sent_json == []
+    assert client_ws.sent_json == [
+        {"type": "input_transcript", "content": "Add a todo "},
+        {"type": "input_transcript", "content": "to buy milk."},
+    ]
 
     await _handle_gemini_message(
         {"serverContent": {"turnComplete": True}},
@@ -1895,8 +1902,11 @@ async def test_handle_gemini_message_logs_user_transcript_on_turn_complete(tmp_p
             break
         await asyncio.sleep(0.02)
 
-    entry = json.loads(log_path.read_text().strip())
-    assert entry["kind"] == "user_transcript"
+    entry = next(
+        e
+        for e in (json.loads(line) for line in log_path.read_text().strip().splitlines())
+        if e["kind"] == "user_transcript"
+    )
     assert entry["text"] == "Add a todo to buy milk."
     assert entry["session_id"] == "sess-1"
     # Buffer reset so the next turn starts clean.
@@ -1934,7 +1944,15 @@ async def test_user_transcript_not_logged_when_flag_disabled(tmp_path, monkeypat
     )
     await asyncio.sleep(0.1)
 
-    assert not log_path.exists()
+    # Flag off: the utterance is never persisted nor forwarded. Only the
+    # text-free turn_timing row may exist (spec-109).
+    rows = (
+        [json.loads(line) for line in log_path.read_text().splitlines()]
+        if log_path.exists()
+        else []
+    )
+    assert all(r["kind"] == "turn_timing" for r in rows)
+    assert not any(m.get("type") == "input_transcript" for m in client_ws.sent_json)
 
 
 @pytest.mark.asyncio
@@ -1976,11 +1994,15 @@ async def test_turn_complete_flushes_user_transcript_before_assistant(tmp_path, 
     )
     for _ in range(50):
         lines = log_path.read_text().strip().splitlines() if log_path.exists() else []
-        if len(lines) == 2:
+        if len(lines) >= 3:
             break
         await asyncio.sleep(0.02)
 
-    entries = [json.loads(line) for line in log_path.read_text().strip().splitlines()]
+    entries = [
+        e
+        for e in (json.loads(line) for line in log_path.read_text().strip().splitlines())
+        if e["kind"] in ("user_transcript", "assistant_transcript")
+    ]
     assert [e["kind"] for e in entries] == ["user_transcript", "assistant_transcript"]
     assert entries[0]["text"] == "What's my balance?"
     assert entries[1]["text"] == "You have 40 dollars."
