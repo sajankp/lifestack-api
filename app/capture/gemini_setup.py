@@ -20,6 +20,19 @@ _MAX_INJECTED_TAGS = 50
 _MAX_INJECTED_MEDICATIONS = 30
 
 
+def _model_id(model: str) -> str:
+    return model.rsplit("/", 1)[-1]
+
+
+def is_gemini_3x(model: str) -> bool:
+    """3.x Live models only accept AUDIO output modality (spec-079, spec-109)."""
+    return _model_id(model).startswith("gemini-3")
+
+
+def is_gemini_38(model: str) -> bool:
+    return _model_id(model).startswith("gemini-3.8")
+
+
 async def _fetch_workspace_context(workspace_id: int) -> str:
     """Build the workspace-vocabulary data block appended to the system prompt
     (spec-055): the active spending category names, account names (with type,
@@ -914,4 +927,27 @@ def _build_setup_message(
     # model's context limit instead of being terminated.
     if settings.CAPTURE_ENABLE_CONTEXT_COMPRESSION:
         setup_message["setup"]["contextWindowCompression"] = {"slidingWindow": {}}
+    # spec-109: optional server-VAD tuning. Only configured fields are sent, and
+    # nothing at all when none is set, so default behaviour is the server's own.
+    vad: dict = {}
+    if settings.CAPTURE_VAD_SILENCE_MS is not None:
+        vad["silenceDurationMs"] = settings.CAPTURE_VAD_SILENCE_MS
+    if settings.CAPTURE_VAD_PREFIX_PADDING_MS is not None:
+        vad["prefixPaddingMs"] = settings.CAPTURE_VAD_PREFIX_PADDING_MS
+    if settings.CAPTURE_VAD_START_SENSITIVITY is not None:
+        vad["startOfSpeechSensitivity"] = (
+            f"START_SENSITIVITY_{settings.CAPTURE_VAD_START_SENSITIVITY}"
+        )
+    if settings.CAPTURE_VAD_END_SENSITIVITY is not None:
+        vad["endOfSpeechSensitivity"] = f"END_SENSITIVITY_{settings.CAPTURE_VAD_END_SENSITIVITY}"
+    if vad:
+        setup_message["setup"]["realtimeInputConfig"] = {"automaticActivityDetection": vad}
+    # spec-109: gemini-3.8-live has built-in interleaved reasoning (a thinking
+    # config is rejected) and defaults to async function calling. The
+    # preview-then-confirm write flows (spec-095) need the model to wait for the
+    # tool result, so declare every tool BLOCKING.
+    if is_gemini_38(settings.GEMINI_MODEL):
+        setup_message["setup"]["generationConfig"].pop("thinkingConfig", None)
+        for declaration in setup_message["setup"]["tools"][0]["functionDeclarations"]:
+            declaration["behavior"] = "BLOCKING"
     return setup_message
