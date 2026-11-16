@@ -7,6 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 
 import structlog
@@ -33,6 +34,7 @@ from app.capture.tools import AgentTools
 from app.config import settings
 from app.core.database import postgres
 from app.core.exceptions import APIError
+from app.observability.request_metrics import observe_capture_tool
 
 logger = structlog.get_logger(__name__)
 
@@ -101,11 +103,13 @@ def _log_capture_turn(
     session_id: str | None = None,
     call_id: str | None = None,
     error_code: str | None = None,
+    duration_ms: float | None = None,
 ) -> None:
     """Record one voice tool-call turn (`kind='tool_call'`): tool name, args, and
     outcome. The user's utterance is not on this row — with input transcription
     enabled it lands as a separate `kind='user_transcript'` event (spec-079 Q4,
-    metered free). `session_id` groups a conversation's turns; see
+    metered free). `duration_ms` is the tool execution time (None when nothing ran,
+    e.g. a suppressed replay). `session_id` groups a conversation's turns; see
     `_log_capture_event` for the write semantics.
     """
     _log_capture_event({
@@ -116,6 +120,7 @@ def _log_capture_turn(
         "args": args,
         "status": status,
         "error_code": error_code,
+        "duration_ms": duration_ms,
         "user_id": user_id,
         "workspace_id": workspace_id,
     })
@@ -382,6 +387,14 @@ async def _connect_gemini(
     if last_err is not None:
         raise last_err
     raise RuntimeError("Failed to establish Gemini WebSocket connection")
+
+
+@lru_cache(maxsize=1)
+def _declared_tool_names() -> frozenset[str]:
+    """Names of the tools declared to the model — the bounded label set for the
+    tool-duration histogram (spec-110)."""
+    declarations = _build_setup_message()["setup"]["tools"][0]["functionDeclarations"]
+    return frozenset(d["name"] for d in declarations)
 
 
 def _now() -> float:
@@ -701,6 +714,7 @@ async def _handle_gemini_message(
                         workspace_id=workspace_id,
                     )
 
+            duration_ms: float | None = None
             if result is None:
                 tool_started = _now()
                 result = await execute_agent_tool(
@@ -710,8 +724,16 @@ async def _handle_gemini_message(
                     workspace_id,
                     user_timezone,
                 )
-                _timing(turn_state)["tool_s"] = _timing(turn_state).get("tool_s", 0.0) + (
-                    _now() - tool_started
+                tool_elapsed = _now() - tool_started
+                duration_ms = round(tool_elapsed * 1000, 1)
+                observe_capture_tool(
+                    name,
+                    result.get("status", "success"),
+                    tool_elapsed,
+                    known_tools=_declared_tool_names(),
+                )
+                _timing(turn_state)["tool_s"] = (
+                    _timing(turn_state).get("tool_s", 0.0) + tool_elapsed
                 )
                 if (
                     dedup_ctx is not None
@@ -734,6 +756,7 @@ async def _handle_gemini_message(
                 workspace_id=workspace_id,
                 session_id=session_id,
                 call_id=call_id,
+                duration_ms=duration_ms,
                 error_code=(
                     "confirmation_required"
                     if result.get("needs_confirmation")

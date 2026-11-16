@@ -76,6 +76,8 @@ class Settings(BaseSettings):
 
     # Log Level
     LOG_LEVEL: str = "INFO"
+    # spec-110: log + count SQL statements slower than this (ms). 0 disables.
+    SLOW_QUERY_THRESHOLD_MS: float = 500
 
     # Database
     DATABASE_URL: str = Field(

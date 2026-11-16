@@ -8,6 +8,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
+from app.observability.request_metrics import observe_request
 
 
 class MultipartBodySizeLimitMiddleware:
@@ -145,6 +146,7 @@ class StructlogMiddleware(BaseHTTPMiddleware):
 
         process_time = time.perf_counter() - start_time
         status_code = response.status_code
+        route = observe_request(request, status_code, process_time)
 
         if status_code >= 500:
             log_fn = logger.error
@@ -158,6 +160,7 @@ class StructlogMiddleware(BaseHTTPMiddleware):
                 "Request finished",
                 status_code=status_code,
                 duration=process_time,
+                route=route,
             )
 
         response.headers["X-Request-ID"] = request_id
