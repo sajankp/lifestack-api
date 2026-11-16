@@ -1,4 +1,4 @@
-"""Read-only REST routes for the measurement store (spec-110 §E)."""
+"""Read-only REST routes for the measurement store (spec-111 §E)."""
 
 import pytest
 from httpx import AsyncClient

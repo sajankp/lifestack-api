@@ -1,4 +1,4 @@
-"""Read-only REST for the health measurement store (spec-110 §E).
+"""Read-only REST for the health measurement store (spec-111 §E).
 
 There are deliberately no generic write routes: ingestion is MCP-only. Weight keeps its own
 read/write routes in ``app/health/router.py`` (served by the same store).

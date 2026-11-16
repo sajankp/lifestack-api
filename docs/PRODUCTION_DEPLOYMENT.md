@@ -177,7 +177,7 @@ docker compose --env-file .env.production \
 A data repair is a reviewed script, never a migration. Run it inside the API container after the
 deploy, dry-run first, and verify by a read (not by the script's own output).
 
-**Weight into the measurement store (spec-110).** Run once right after the deploy that ships
+**Weight into the measurement store (spec-111).** Run once right after the deploy that ships
 migration `0075_health_measurements` and the weight flip. Until it runs, weight history reads as
 empty (the old `weight_entries` rows are untouched).
 

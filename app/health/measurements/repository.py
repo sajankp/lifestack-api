@@ -10,7 +10,7 @@ from app.auth.models import User
 from app.core.repository import BaseRepository
 from app.health.measurements.models import HealthMeasurement, HealthMetric, HealthRecord
 
-# A series read is bounded; spec-110 sizes (tens of rows per metric) are far below this.
+# A series read is bounded; spec-111 sizes (tens of rows per metric) are far below this.
 SERIES_ROW_CAP = 5000
 _WRITE_LOCK_NAMESPACE = 1_212_501_320  # distinct from the other advisory-lock namespaces
 

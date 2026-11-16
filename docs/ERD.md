@@ -162,7 +162,7 @@ erDiagram
 ## Health (spec-069)
 
 Medications + weight in v1 (owner decision D9). Labs, vitals, prescriptions and any other result over
-time live in the generic measurement store (spec-110, below); weight is its `body_weight` metric. Dose slots are never stored: they're derived on read from
+time live in the generic measurement store (spec-111, below); weight is its `body_weight` metric. Dose slots are never stored: they're derived on read from
 (frequency, interval, anchor_date, days_of_week, times, timezone, end_date) via
 `app/health/schedule.py`, reusing the `RecurringTodoRule` recurrence vocabulary
 (`core/recurrence.py::advance_due_date` semantics for daily/monthly, with
@@ -216,7 +216,7 @@ erDiagram
     }
 
     WEIGHT_ENTRIES {
-        %% LEGACY (spec-110): read only by scripts/migrate_weight_to_health_measurements.py;
+        %% LEGACY (spec-111): read only by scripts/migrate_weight_to_health_measurements.py;
         %% kept as the rollback path and dropped in a later change.
         int id PK
         uuid public_id UK
@@ -239,7 +239,7 @@ erDiagram
     WORKSPACES ||--o{ WEIGHT_ENTRIES : scopes
 ```
 
-### Health measurements (spec-110)
+### Health measurements (spec-111)
 
 One store for any result over time. `health_metrics` is the per-workspace catalog (code, canonical
 unit, unit conversions, aliases); `health_records` is the document or event a bulk write came from

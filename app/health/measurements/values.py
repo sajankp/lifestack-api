@@ -1,4 +1,4 @@
-"""Pure value, unit and range rules for health measurements (spec-110 §B).
+"""Pure value, unit and range rules for health measurements (spec-111 §B).
 
 No database access here: everything is a function of its arguments so the rules are
 cheap to test exhaustively.

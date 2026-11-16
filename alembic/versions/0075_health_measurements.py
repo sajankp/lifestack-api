@@ -1,4 +1,4 @@
-"""health_metrics, health_records, health_measurements (spec-110).
+"""health_metrics, health_records, health_measurements (spec-111).
 
 Schema only. The copy of existing ``weight_entries`` rows into ``health_measurements`` is a
 reviewed one-time script (``scripts/migrate_weight_to_health_measurements.py``), not part of

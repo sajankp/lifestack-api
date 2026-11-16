@@ -1,4 +1,4 @@
-"""Copy ``weight_entries`` into ``health_measurements`` as ``body_weight`` readings (spec-110 §D).
+"""Copy ``weight_entries`` into ``health_measurements`` as ``body_weight`` readings (spec-111 §D).
 
 A reviewed one-time repair, not a migration (the repo rule: alembic is schema only). It is
 idempotent, refuses when a previously copied row no longer matches its source, and leaves

@@ -1,4 +1,4 @@
-"""Health measurements: any result over time, written through MCP only (spec-110)."""
+"""Health measurements: any result over time, written through MCP only (spec-111)."""
 
 import uuid
 from datetime import date

@@ -1,4 +1,4 @@
-"""MCP health measurement tools against real Postgres (spec-110).
+"""MCP health measurement tools against real Postgres (spec-111).
 
 Only ``authorize_workspace`` is patched, so the tools' real queries, commits and error
 shapes run. Every write is read back through a fresh session.

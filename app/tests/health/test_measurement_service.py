@@ -1,4 +1,4 @@
-"""MeasurementService against real Postgres (spec-110)."""
+"""MeasurementService against real Postgres (spec-111)."""
 
 import uuid
 from datetime import UTC, date, datetime, timedelta

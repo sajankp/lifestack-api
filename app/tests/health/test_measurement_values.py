@@ -1,4 +1,4 @@
-"""Pure value/unit/range rules for health measurements (spec-110 §B)."""
+"""Pure value/unit/range rules for health measurements (spec-111 §B)."""
 
 from decimal import Decimal
 
