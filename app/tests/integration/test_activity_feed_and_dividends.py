@@ -247,3 +247,88 @@ async def test_unified_activity_feed_endpoint(client: AsyncClient):
     bank_items = bank_feed.json()["items"]
     # All items must belong to bank
     assert all(it["account_id"] == bank["public_id"] for it in bank_items)
+
+
+@pytest.mark.asyncio
+async def test_activity_feed_category_filter(client: AsyncClient):
+    await _register_and_login(
+        client,
+        email="feed-category@example.com",
+        username="feed-category",
+        password="TestPass123!",
+    )
+
+    bank = (
+        await client.post(
+            "/v1/finance/accounts",
+            json={"name": "ICICI", "account_type": "bank", "default_currency_code": "INR"},
+        )
+    ).json()
+    savings = (
+        await client.post(
+            "/v1/finance/accounts",
+            json={"name": "SBI", "account_type": "bank", "default_currency_code": "INR"},
+        )
+    ).json()
+
+    cats = (await client.get("/v1/spending/categories")).json()["items"]
+    cat_a, cat_b = cats[0], cats[1]
+
+    async def _spend(cat: dict, amount: str, description: str, account: dict = bank):
+        res = await client.post(
+            "/v1/spending/transactions",
+            json={
+                "category_id": cat["public_id"],
+                "account_id": account["public_id"],
+                "amount": amount,
+                "type": "expense",
+                "occurred_at": "2026-07-01T12:00:00Z",
+                "description": description,
+            },
+        )
+        assert res.status_code == 201, res.text
+
+    await _spend(cat_a, "10.00", "a-one")
+    await _spend(cat_a, "20.00", "a-two", account=savings)
+    await _spend(cat_b, "30.00", "b-one")
+    transfer_res = await client.post(
+        "/v1/finance/transfers",
+        json={
+            "from_account_id": bank["public_id"],
+            "to_account_id": savings["public_id"],
+            "from_currency_code": "INR",
+            "to_currency_code": "INR",
+            "gross_amount": "100.00",
+            "net_amount_received": "100.00",
+            "occurred_at": "2026-07-02T10:00:00Z",
+        },
+    )
+    assert transfer_res.status_code == 201, transfer_res.text
+
+    # Category filter returns only spend rows of that category (transfers excluded)
+    res = await client.get(f"/v1/finance/activity-feed?category_id={cat_a['public_id']}")
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["total"] == 2
+    assert {it["description"] for it in data["items"]} == {"a-one", "a-two"}
+    assert all(it["event_type"] == "spend" for it in data["items"])
+    assert all(it["category_name"] == cat_a["name"] for it in data["items"])
+
+    # Combines with account filter
+    res = await client.get(
+        f"/v1/finance/activity-feed?category_id={cat_a['public_id']}"
+        f"&account_id={savings['public_id']}"
+    )
+    assert res.status_code == 200
+    assert [it["description"] for it in res.json()["items"]] == ["a-two"]
+
+    # Total is category-scoped and pagination applies after filtering
+    res = await client.get(f"/v1/finance/activity-feed?category_id={cat_a['public_id']}&limit=1")
+    assert res.json()["total"] == 2
+    assert len(res.json()["items"]) == 1
+
+    # Unknown category is rejected, like an unknown account
+    res = await client.get(
+        "/v1/finance/activity-feed?category_id=00000000-0000-0000-0000-000000000001"
+    )
+    assert res.status_code in (404, 422), res.text
