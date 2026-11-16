@@ -23,7 +23,7 @@ class Todo(SQLModel, table=True):
     user_id: int = Field(foreign_key="users.id", index=True)
 
     title: str = Field(max_length=100)
-    description: str | None = Field(default="", max_length=500)
+    description: str | None = Field(default="", sa_type=sa.Text(), max_length=2000)
     due_date: datetime | None = Field(default=None, sa_type=sa.DateTime(timezone=True))
     priority: PriorityEnum = Field(default=PriorityEnum.medium, sa_type=sa.String())
     completed: bool = Field(default=False)
@@ -69,7 +69,7 @@ class RecurringTodoRule(SQLModel, table=True):
     user_id: int = Field(foreign_key="users.id", index=True)
 
     title: str = Field(max_length=100)
-    description: str | None = Field(default="", max_length=500)
+    description: str | None = Field(default="", sa_type=sa.Text(), max_length=2000)
     priority: PriorityEnum = Field(default=PriorityEnum.medium, sa_type=sa.String())
 
     frequency: str = Field(default="weekly", max_length=16)

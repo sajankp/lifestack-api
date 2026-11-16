@@ -118,7 +118,7 @@ erDiagram
         int user_id FK
         int parent_id FK
         string title
-        string description
+        text description
         datetime due_date
         string priority
         boolean completed
@@ -134,7 +134,7 @@ erDiagram
         int workspace_id FK
         int user_id FK
         string title
-        string description
+        text description
         string priority
         string frequency
         int interval
