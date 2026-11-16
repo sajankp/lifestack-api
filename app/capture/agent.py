@@ -7,6 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 
 import structlog
@@ -33,6 +34,7 @@ from app.capture.tools import AgentTools
 from app.config import settings
 from app.core.database import postgres
 from app.core.exceptions import APIError
+from app.observability.request_metrics import observe_capture_tool
 
 logger = structlog.get_logger(__name__)
 
@@ -387,6 +389,14 @@ async def _connect_gemini(
     raise RuntimeError("Failed to establish Gemini WebSocket connection")
 
 
+@lru_cache(maxsize=1)
+def _declared_tool_names() -> frozenset[str]:
+    """Names of the tools declared to the model — the bounded label set for the
+    tool-duration histogram (spec-110)."""
+    declarations = _build_setup_message()["setup"]["tools"][0]["functionDeclarations"]
+    return frozenset(d["name"] for d in declarations)
+
+
 def _now() -> float:
     """Monotonic clock for turn timing (a seam so tests can script time)."""
     return time.monotonic()
@@ -716,6 +726,12 @@ async def _handle_gemini_message(
                 )
                 tool_elapsed = _now() - tool_started
                 duration_ms = round(tool_elapsed * 1000, 1)
+                observe_capture_tool(
+                    name,
+                    result.get("status", "success"),
+                    tool_elapsed,
+                    known_tools=_declared_tool_names(),
+                )
                 _timing(turn_state)["tool_s"] = (
                     _timing(turn_state).get("tool_s", 0.0) + tool_elapsed
                 )

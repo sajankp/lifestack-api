@@ -5,6 +5,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
+from app.core.database.slow_query import install_slow_query_logging
 from app.core.exceptions import APIError
 
 logger = structlog.get_logger()
@@ -19,7 +20,7 @@ def get_engine():
         settings.DATABASE_MAX_OVERFLOW if settings.DATABASE_MAX_OVERFLOW > 0 else pool_size
     )
 
-    return create_async_engine(
+    engine = create_async_engine(
         settings.DATABASE_URL,
         echo=settings.LOG_LEVEL == "DEBUG",
         future=True,
@@ -30,6 +31,8 @@ def get_engine():
             "statement_cache_size": 1000,
         },
     )
+    install_slow_query_logging(engine.sync_engine)
+    return engine
 
 
 def get_session_maker(engine):
