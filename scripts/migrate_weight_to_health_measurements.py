@@ -1,4 +1,4 @@
-"""Copy body-weight rows from ``weight_entries`` into the measurement store (spec-110).
+"""Copy body-weight rows from ``weight_entries`` into the measurement store (spec-111).
 
     uv run python -m scripts.migrate_weight_to_health_measurements [--workspace-id N]
     uv run python -m scripts.migrate_weight_to_health_measurements --apply

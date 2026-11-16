@@ -1,4 +1,4 @@
-"""Request/response models for health measurements (spec-110)."""
+"""Request/response models for health measurements (spec-111)."""
 
 import uuid
 from datetime import date, datetime
@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 _CODE_PATTERN = r"^[a-z][a-z0-9_]{1,63}$"
 _SLUG_PATTERN = r"^[a-z0-9][a-z0-9_]{0,31}$"
 
-# API-level limits for the TEXT columns (spec-110 "Column types"): they live only here.
+# API-level limits for the TEXT columns (spec-111 "Column types"): they live only here.
 TITLE_MAX = 160
 RECORD_NOTE_MAX = 2000
 MEASUREMENT_NOTE_MAX = 500

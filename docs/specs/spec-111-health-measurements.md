@@ -1,4 +1,4 @@
-# Spec-110: Health measurements — one store for any result over time (weight becomes a metric)
+# Spec-111: Health measurements — one store for any result over time (weight becomes a metric)
 
 **Created:** 2026-11-16
 **Status:** Approved 2026-11-16 (owner: "let's build this feature … both merged and then one deployment") — rollout amended below

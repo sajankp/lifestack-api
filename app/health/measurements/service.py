@@ -1,4 +1,4 @@
-"""Health measurements service: catalog, series, records, idempotent bulk writes (spec-110)."""
+"""Health measurements service: catalog, series, records, idempotent bulk writes (spec-111)."""
 
 import difflib
 import uuid
@@ -167,7 +167,7 @@ def _metric_keys(metric: HealthMetric | Any) -> set[str]:
 
 
 def _measurement_snapshot(row: HealthMeasurement, metric_code: str) -> dict[str, Any]:
-    """Audit snapshot: what is needed to undo, never note text (spec-110 privacy)."""
+    """Audit snapshot: what is needed to undo, never note text (spec-111 privacy)."""
     return {
         "metric": metric_code,
         "measured_on": row.measured_on,
@@ -1110,7 +1110,7 @@ class MeasurementService:
                         "Pass skip_duplicates=true to skip silently."
                     )
 
-    # -- weight (spec-110 §D: weight is the ``body_weight`` metric) --------
+    # -- weight (spec-111 §D: weight is the ``body_weight`` metric) --------
 
     async def log_weight(
         self,

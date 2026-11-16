@@ -373,7 +373,7 @@ class HealthService:
             )
         return event
 
-    # -- Weight (spec-110: the ``body_weight`` metric) -----------------------
+    # -- Weight (spec-111: the ``body_weight`` metric) -----------------------
 
     @staticmethod
     def _weight_response(row) -> WeightEntryResponse:

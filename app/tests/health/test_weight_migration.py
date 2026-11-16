@@ -1,4 +1,4 @@
-"""One-time copy of ``weight_entries`` into ``health_measurements`` (spec-110 §D)."""
+"""One-time copy of ``weight_entries`` into ``health_measurements`` (spec-111 §D)."""
 
 from datetime import UTC, datetime
 from decimal import Decimal

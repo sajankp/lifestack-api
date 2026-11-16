@@ -1,4 +1,4 @@
-"""Concurrent identical bulk writes leave exactly one copy (spec-110 idempotency)."""
+"""Concurrent identical bulk writes leave exactly one copy (spec-111 idempotency)."""
 
 import asyncio
 
