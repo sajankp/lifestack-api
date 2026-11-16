@@ -105,6 +105,26 @@ async def test_builtin_body_weight_is_created_once(override_database_url):
 
 
 @pytest.mark.asyncio
+async def test_reads_never_create_the_builtin_metric(override_database_url):
+    """A GET or a background summary job must not write: only writes create ``body_weight``."""
+    async with postgres.async_session_maker() as session:
+        service = await _seed(session)
+        assert await service.list_metrics(WS) == []
+        assert await service.list_weight(WS) == ([], 0)
+        assert (
+            await service.weight_between(WS, datetime(2026, 1, 1, tzinfo=UTC), datetime.now(UTC))
+            == []
+        )
+        window, stats = await service.weight_trend(WS, 30, user_id=USER)
+        assert window == [] and stats.count == 0 and stats.latest is None
+        with pytest.raises(NotFoundError):
+            await service.get_series(WS, "body_weight")
+        with pytest.raises(NotFoundError):
+            await service.delete_weight(user_id=USER, workspace_id=WS, public_id=uuid.uuid4())
+        assert await _count(session, HealthMetric) == 0
+
+
+@pytest.mark.asyncio
 async def test_define_metric_create_update_and_alias_collision(override_database_url):
     async with postgres.async_session_maker() as session:
         service = await _seed(session)

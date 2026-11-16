@@ -7,12 +7,13 @@ from app.config import settings
 from app.core.audit import AuditLogger, snapshot_columns
 from app.core.exceptions import NotFoundError, ValidationError
 from app.core.pagination import DEFAULT_LIMIT
-from app.health.models import Medication, MedicationEvent, WeightEntry
-from app.health.repository import (
-    MedicationEventRepository,
-    MedicationRepository,
-    WeightEntryRepository,
+from app.health.measurements.service import (
+    HealthMeasurementError,
+    MeasurementService,
+    weight_point_time,
 )
+from app.health.models import Medication, MedicationEvent
+from app.health.repository import MedicationEventRepository, MedicationRepository
 from app.health.schedule import (
     derive_slot_status,
     get_dose_slots_for_date,
@@ -45,8 +46,6 @@ _MEDICATION_AUDIT_FIELDS = (
     "reminders_enabled",
 )
 
-_WEIGHT_AUDIT_FIELDS = ("measured_at", "weight_kg", "note")
-
 _EVENT_AUDIT_FIELDS = ("scheduled_for", "status", "note", "taken_at")
 
 _INTERVAL_MODE = "interval_from_last_dose"
@@ -57,13 +56,6 @@ def _snapshot_medication(med: Medication) -> dict:
     for field in ("anchor_date", "end_date"):
         if data.get(field) is not None:
             data[field] = data[field].isoformat()
-    return data
-
-
-def _snapshot_weight(entry: WeightEntry) -> dict:
-    data = snapshot_columns(entry, _WEIGHT_AUDIT_FIELDS)
-    data["measured_at"] = data["measured_at"].isoformat()
-    data["weight_kg"] = str(data["weight_kg"])
     return data
 
 
@@ -80,11 +72,11 @@ class HealthService:
         self,
         medication_repo: MedicationRepository,
         event_repo: MedicationEventRepository,
-        weight_repo: WeightEntryRepository,
+        measurements: MeasurementService,
     ):
         self.medication_repo = medication_repo
         self.event_repo = event_repo
-        self.weight_repo = weight_repo
+        self.measurements = measurements
 
     # -- Medications ---------------------------------------------------
 
@@ -381,7 +373,18 @@ class HealthService:
             )
         return event
 
-    # -- Weight -----------------------------------------------------------
+    # -- Weight (spec-110: the ``body_weight`` metric) -----------------------
+
+    @staticmethod
+    def _weight_response(row) -> WeightEntryResponse:
+        return WeightEntryResponse(
+            public_id=row.public_id,
+            measured_at=weight_point_time(row),
+            weight_kg=_kg(row.value_num),
+            note=row.note,
+            source_type=row.source_type,
+            created_at=row.created_at,
+        )
 
     async def list_weight_entries(
         self,
@@ -391,8 +394,8 @@ class HealthService:
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
     ) -> tuple[list[WeightEntryResponse], int]:
-        items, total = await self.weight_repo.get_range(workspace_id, start, end, limit, offset)
-        return [WeightEntryResponse.model_validate(w) for w in items], total
+        rows, total = await self.measurements.list_weight(workspace_id, start, end, limit, offset)
+        return [self._weight_response(r) for r in rows], total
 
     async def create_weight_entry(
         self,
@@ -400,26 +403,19 @@ class HealthService:
         workspace_id: int,
         payload: WeightEntryCreate,
         audit_logger: AuditLogger | None = None,
-    ) -> WeightEntry:
-        entry = WeightEntry(user_id=user_id, workspace_id=workspace_id, **payload.model_dump())
-        entry = await self.weight_repo.create(entry)
-        if audit_logger:
-            after_snap = _snapshot_weight(entry)
-            await audit_logger.log(
+    ) -> WeightEntryResponse:
+        try:
+            row = await self.measurements.log_weight(
+                user_id=user_id,
                 workspace_id=workspace_id,
-                actor_id=user_id,
-                action="create",
-                module="health",
-                entity_type="weight_entry",
-                entity_id=entry.id,
-                details={
-                    "entity_public_id": str(entry.public_id),
-                    "before": None,
-                    "after": after_snap,
-                    "changed_fields": list(after_snap.keys()),
-                },
+                weight_kg=payload.weight_kg,
+                measured_at=payload.measured_at,
+                note=payload.note,
+                audit_logger=audit_logger,
             )
-        return entry
+        except HealthMeasurementError as exc:
+            raise ValidationError(detail=str(exc)) from exc
+        return self._weight_response(row)
 
     async def delete_weight_entry(
         self,
@@ -428,61 +424,27 @@ class HealthService:
         actor_id: int | None = None,
         audit_logger: AuditLogger | None = None,
     ) -> None:
-        result = await self.weight_repo.get_by_public_id(workspace_id, public_id)
-        if not result:
-            raise NotFoundError(detail=f"Weight entry with id {public_id} not found")
-        before_snap = _snapshot_weight(result)
-        await self.weight_repo.delete(result)
-        if audit_logger and actor_id is not None:
-            await audit_logger.log(
-                workspace_id=workspace_id,
-                actor_id=actor_id,
-                action="delete",
-                module="health",
-                entity_type="weight_entry",
-                entity_id=result.id,
-                details={
-                    "entity_public_id": str(result.public_id),
-                    "before": before_snap,
-                    "after": None,
-                    "changed_fields": [],
-                },
-            )
-
-    async def get_weight_trend(self, workspace_id: int, days: int = 30) -> WeightTrendResponse:
-        end = datetime.now(UTC)
-        start = end - timedelta(days=days)
-        items, _total = await self.weight_repo.get_range(
-            workspace_id, start, end, limit=1000, offset=0
+        await self.measurements.delete_weight(
+            user_id=actor_id or 0,
+            workspace_id=workspace_id,
+            public_id=public_id,
+            audit_logger=audit_logger if actor_id is not None else None,
         )
-        entries = [WeightEntryResponse.model_validate(w) for w in items]
-        if not entries:
-            return WeightTrendResponse(
-                entries=[],
-                latest_kg=None,
-                delta_7d_kg=None,
-                delta_30d_kg=None,
-                min_kg=None,
-                max_kg=None,
-            )
-        # entries are ordered newest-first (repository default)
-        latest = entries[0]
-        weights = [e.weight_kg for e in entries]
 
-        def _delta_since(days_back: int) -> Decimal | None:
-            cutoff = end - timedelta(days=days_back)
-            if latest.measured_at <= cutoff:
-                return None
-            prior = [e for e in entries if e.measured_at <= cutoff]
-            if not prior:
-                return None
-            return latest.weight_kg - prior[0].weight_kg
-
+    async def get_weight_trend(
+        self, workspace_id: int, days: int = 30, user_id: int | None = None
+    ) -> WeightTrendResponse:
+        window, stats = await self.measurements.weight_trend(workspace_id, days, user_id=user_id)
         return WeightTrendResponse(
-            entries=entries,
-            latest_kg=latest.weight_kg,
-            delta_7d_kg=_delta_since(7),
-            delta_30d_kg=_delta_since(30),
-            min_kg=min(weights),
-            max_kg=max(weights),
+            entries=[self._weight_response(r) for r in window],
+            latest_kg=_kg(stats.latest),
+            delta_7d_kg=_kg(stats.delta_7d),
+            delta_30d_kg=_kg(stats.delta_30d),
+            min_kg=_kg(stats.min),
+            max_kg=_kg(stats.max),
         )
+
+
+def _kg(value: Decimal | None) -> Decimal | None:
+    """Weights are kilograms to two decimals on the wire (as ``Numeric(6, 2)`` stored them)."""
+    return None if value is None else value.quantize(Decimal("0.01"))

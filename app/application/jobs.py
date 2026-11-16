@@ -73,10 +73,10 @@ from app.core.database import postgres
 from app.core.job_failures import record_job_failure, resolve_job_failures
 from app.core.retry import TRANSIENT_JOB_EXCEPTIONS, RetryPolicy, retry_async
 from app.finance.repository import AccountRepository, FinanceSettingRepository, FxRateRepository
+from app.health.measurements.service import MeasurementService
 from app.health.repository import (
     MedicationEventRepository,
     MedicationRepository,
-    WeightEntryRepository,
 )
 from app.health.service import HealthService
 from app.imports.repository import ImportRepository
@@ -1566,7 +1566,7 @@ async def morning_briefing_job(workspace_id: int | None = None) -> None:
             health_service=HealthService(
                 MedicationRepository(session),
                 MedicationEventRepository(session),
-                WeightEntryRepository(session),
+                MeasurementService.from_session(session),
             ),
             user_repo=UserRepository(session),
         )

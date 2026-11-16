@@ -25,7 +25,8 @@ from app.finance.models import (
     WorkspaceCurrency,
     WorkspaceFinanceSetting,
 )
-from app.health.models import Medication, MedicationEvent, WeightEntry
+from app.health.measurements.models import HealthMeasurement, HealthMetric, HealthRecord
+from app.health.models import Medication, MedicationEvent
 from app.investing.models import (
     CashBalance,
     CorporateAction,
@@ -182,10 +183,26 @@ class ExportService:
                     .order_by(MedicationEvent.scheduled_for.asc()),
                 ),
                 (
-                    "weight_entries",
-                    select(WeightEntry)
-                    .where(WeightEntry.workspace_id == workspace_id)
-                    .order_by(WeightEntry.measured_at.asc()),
+                    "health_metrics",
+                    select(HealthMetric)
+                    .where(HealthMetric.workspace_id == workspace_id)
+                    .order_by(HealthMetric.code.asc()),
+                ),
+                (
+                    "health_records",
+                    select(HealthRecord)
+                    .where(HealthRecord.workspace_id == workspace_id)
+                    .order_by(HealthRecord.recorded_on.asc(), HealthRecord.id.asc()),
+                ),
+                (
+                    "health_measurements",
+                    select(HealthMeasurement)
+                    .where(HealthMeasurement.workspace_id == workspace_id)
+                    .order_by(
+                        HealthMeasurement.measured_on.asc(),
+                        HealthMeasurement.measured_at.asc().nulls_first(),
+                        HealthMeasurement.id.asc(),
+                    ),
                 ),
             ]
         raise ValueError(f"Unknown export module: {module}")

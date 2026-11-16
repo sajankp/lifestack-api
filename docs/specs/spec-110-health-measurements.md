@@ -245,7 +245,7 @@ manually". Zod schemas have no `.default()` on required fields; MSW mocks use th
 | Threshold values (`<0.5`) in a numeric series | `comparator` kept; excluded from `in_range`, min/max and deltas, but plotted and listed |
 | Two legitimate readings the same day | Natural key includes `measured_at`; weight naturally has times, labs naturally dedupe |
 | Weight dual-write window at deploy | Script is idempotent; run before and after the flip deploy; old table frozen until PR-3 |
-| Sensitive data exposure | Health data is more sensitive than weight. MCP read scope exposes it to any agent holding `mcp:read`; bulk payloads and note text must not appear in application logs or audit `details` beyond ids and counts. Verified in tests, and noted in `docs/SECURITY_CHECKLIST.md` |
+| Sensitive data exposure | Health data is more sensitive than weight. MCP read scope exposes it to any agent holding `mcp:read`. Bulk payloads and note text are not written to application logs or audit `details`: a bulk write audits ids and counts, a single-row audit keeps only metric code, date, value and unit (enough to undo), never note text. Verified in tests, and noted in `docs/SECURITY_CHECKLIST.md` |
 | Trust boundary drift | No flags other than the range printed on the report; no wording that implies a diagnosis. Briefing/summary lines state facts only |
 | MCP golden catalog | Seven additions land in a deliberate `UPDATE_GOLDEN=1` commit; `log_weight`/`get_weight_history` entries must be byte-identical (tested) |
 

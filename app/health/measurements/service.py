@@ -260,8 +260,10 @@ class MeasurementService:
             raise HealthMeasurementError("Could not create the body_weight metric.")
         return winner
 
-    async def _catalog(self, workspace_id: int) -> list[HealthMetric]:
-        await self.ensure_builtin_metrics(workspace_id)
+    async def _catalog(self, workspace_id: int, *, ensure: bool = False) -> list[HealthMetric]:
+        """The workspace's metrics. Reads never write; only write paths pass ``ensure=True``."""
+        if ensure:
+            await self.ensure_builtin_metrics(workspace_id)
         return list(await self.metrics.list_for_workspace(workspace_id))
 
     @staticmethod
@@ -280,7 +282,7 @@ class MeasurementService:
             raise NotFoundError(detail=f"Health metric '{ref}' not found")
         return metric
 
-    def _to_metric_response(
+    def to_metric_response(
         self, metric: HealthMetric, count: int = 0, latest: HealthMeasurement | None = None
     ) -> MetricResponse:
         latest_view = (
@@ -313,7 +315,7 @@ class MeasurementService:
         catalog = await self._catalog(workspace_id)
         counts = await self.metrics.measurement_counts(workspace_id)
         latest = await self.measurements.latest_per_metric(workspace_id)
-        return [self._to_metric_response(m, counts.get(m.id, 0), latest.get(m.id)) for m in catalog]
+        return [self.to_metric_response(m, counts.get(m.id, 0), latest.get(m.id)) for m in catalog]
 
     async def define_metric(
         self,
@@ -346,7 +348,7 @@ class MeasurementService:
         ):
             raise HealthMeasurementError("min_value must not exceed max_value.")
 
-        catalog = await self._catalog(workspace_id)
+        catalog = await self._catalog(workspace_id, ensure=True)
         existing = next((m for m in catalog if m.code == code), None)
         new_keys = {normalise_name(code), normalise_name(definition.name)}
         new_keys.update(normalise_name(a) for a in (definition.aliases or []))
@@ -468,7 +470,7 @@ class MeasurementService:
         page = rows[offset : offset + limit]
         record_ids = await self._record_ids(workspace_id, page)
         return SeriesResponse(
-            metric=self._to_metric_response(metric, len(rows), rows[0] if rows else None),
+            metric=self.to_metric_response(metric, len(rows), rows[0] if rows else None),
             points=[to_point(r, metric, record_ids) for r in page],
             stats=compute_series_stats(rows, metric, today),
             total=len(rows),
@@ -658,7 +660,7 @@ class MeasurementService:
             else None
         )
 
-        catalog = await self._catalog(workspace_id)
+        catalog = await self._catalog(workspace_id, ensure=True)
         index = self._index(catalog)
         pending: dict[str, _MetricView] = {}
         plans = [
@@ -1152,11 +1154,17 @@ class MeasurementService:
         limit: int = 25,
         offset: int = 0,
     ) -> tuple[list[HealthMeasurement], int]:
-        metric = await self.ensure_builtin_metrics(workspace_id)
+        metric = await self._weight_metric(workspace_id)
+        if metric is None:
+            return [], 0
         rows = await self.measurements.list_for_metric(
             workspace_id, metric.id, start_at=start_at, end_at=end_at
         )
         return rows[offset : offset + limit], len(rows)
+
+    async def _weight_metric(self, workspace_id: int) -> HealthMetric | None:
+        """The ``body_weight`` metric if it exists. Reads must not create it."""
+        return await self.metrics.get_by_code(workspace_id, BODY_WEIGHT_CODE)
 
     async def weight_between(
         self, workspace_id: int, start_at: datetime, end_at: datetime
@@ -1174,9 +1182,9 @@ class MeasurementService:
         public_id: uuid.UUID,
         audit_logger: AuditLogger | None = None,
     ) -> None:
-        metric = await self.ensure_builtin_metrics(workspace_id)
+        metric = await self._weight_metric(workspace_id)
         row = await self.measurements.get_by_public_id(workspace_id, public_id)
-        if row is None or row.metric_id != metric.id:
+        if metric is None or row is None or row.metric_id != metric.id:
             raise NotFoundError(detail=f"Weight entry with id {public_id} not found")
         before = _measurement_snapshot(row, metric.code)
         await self.measurements.delete(row)
@@ -1188,7 +1196,9 @@ class MeasurementService:
         self, workspace_id: int, days: int, user_id: int | None = None
     ) -> tuple[list[HealthMeasurement], SeriesStats]:
         """Rows inside the window (newest first) and stats whose deltas search all history."""
-        metric = await self.ensure_builtin_metrics(workspace_id)
+        metric = await self._weight_metric(workspace_id)
+        if metric is None:
+            return [], SeriesStats(count=0)
         history = await self.measurements.list_for_metric(workspace_id, metric.id)
         today = await self._today(user_id)
         window = [r for r in history if r.measured_on >= today - timedelta(days=days)]

@@ -68,6 +68,7 @@ from app.core.scheduler import (
 from app.dashboard.router import router as dashboard_router
 from app.exports.router import router as exports_router
 from app.finance.router import router as finance_router
+from app.health.measurements.router import router as health_measurements_router
 from app.health.router import router as health_module_router
 from app.imports.router import router as imports_router
 from app.investing.router import router as investing_router
@@ -411,6 +412,7 @@ def create_app() -> FastAPI:
     _app.include_router(oauth_router, prefix=f"{settings.API_V1_STR}/auth", tags=["oauth"])
     _app.include_router(todo_router, prefix=settings.API_V1_STR)
     _app.include_router(health_module_router, prefix=settings.API_V1_STR)
+    _app.include_router(health_measurements_router, prefix=settings.API_V1_STR)
     _app.include_router(spending_router, prefix=settings.API_V1_STR)
     _app.include_router(investing_router, prefix=settings.API_V1_STR)
     _app.include_router(finance_router, prefix=settings.API_V1_STR)

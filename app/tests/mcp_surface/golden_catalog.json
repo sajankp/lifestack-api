@@ -672,6 +672,176 @@
     },
     {
       "annotations": null,
+      "description": "Create or update one metric in the catalog (a thing that can be measured).\n\n``code`` is a slug (``ldl_cholesterol``); omitted, it is derived from ``name``.\n``value_type`` is ``numeric`` or ``text``. ``canonical_unit`` is the unit series are\ncharted in. ``unit_conversions`` maps other units to it:\n``{\"mmol/L\": {\"factor\": \"38.67\", \"offset\": \"0\"}}`` means\n``canonical = value * factor + offset``. ``aliases`` are other names the metric goes\nby (``[\"SGPT\", \"ALT (SGPT)\"]``); an alias already used by another metric is rejected.\n``min_value``/``max_value`` are plausibility bounds (strings). On a metric that already\nhas measurements, the canonical unit and value type cannot change and a unit in use\ncannot be dropped.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "canonical_unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "category": {
+            "default": "other",
+            "type": "string"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "max_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "min_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "name": {
+            "type": "string"
+          },
+          "unit_conversions": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "value_type": {
+            "default": "numeric",
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "define_health_metric",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Delete one measurement by its ``public_id``. Corrections are delete + re-log.\nWithout ``confirmed=true`` nothing is deleted.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_health_measurement",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Delete a record and ALL of its measurements (the undo for a mis-extracted report).\nWithout ``confirmed=true`` it only reports how many measurements it would remove.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "public_id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "public_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "delete_health_record",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
       "description": "Delete one complete sourced constituent snapshot after confirmation.",
       "input_schema": {
         "additionalProperties": false,
@@ -1175,6 +1345,64 @@
       },
       "meta": null,
       "name": "get_fx_rate",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "One metric over time, newest first, with stats.\n\n``metric`` is a code, name or alias. ``from_date``/``to_date`` are inclusive\nYYYY-MM-DD days. Each point has the value and unit as reported, the value converted\nto the metric's canonical unit, any ``<``/``>`` comparator, the report's own range and\n``in_range`` (``low``/``normal``/``high`` against that range only), plus its record and\nnote. ``stats`` (latest, min, max, 7- and 30-day change) use canonical units and\nexclude threshold and text rows. ``limit`` is capped at 100.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "from_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer"
+          },
+          "metric": {
+            "type": "string"
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer"
+          },
+          "to_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "metric"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "get_health_series",
       "output_schema": {
         "additionalProperties": true,
         "type": "object"
@@ -1825,6 +2053,106 @@
       },
       "meta": null,
       "name": "harvest_candidates",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "The catalog of measurable things in a workspace, with how many results each has\nand its latest result. Includes the built-in ``body_weight``. Call this before\n``record_health_results`` to pick the right metric names and units.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_health_metrics",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Records (lab reports, prescriptions, imports...) newest first, each with its\nprovider, free note, ``source_ref`` and result count. Pass ``record_id`` (a record's\n``public_id``) to get that one record with every measurement in it. ``limit`` is\ncapped at 100.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "from_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 25,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "to_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "list_health_records",
       "output_schema": {
         "additionalProperties": true,
         "type": "object"
@@ -2982,6 +3310,70 @@
       },
       "meta": null,
       "name": "reconcile_holdings",
+      "output_schema": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "tags": [],
+      "title": null
+    },
+    {
+      "annotations": null,
+      "description": "Write up to 100 results (a lab panel, a prescription, a vitals batch) in one call.\n\nWithout ``confirmed=true`` (or with ``dry_run=true``) nothing is written: the\ncall returns what would happen. Always preview first.\n\n``record`` is the document the results came from: ``{kind, title, recorded_on?,\nprovider?, note?, source_ref?}``. ``kind`` is a slug (``lab_report``,\n``prescription``, ``imaging``, ``visit``, ``import``...). Put where the data came\nfrom in ``note`` (free text, 2000 chars). Re-sending the same ``source_ref``\nreuses the record and writes nothing twice.\n\nEach item: ``{metric, value, unit?, measured_on?, measured_at?, ref_low?,\nref_high?, ref_text?, note?, source_ref?, category?}``. ``metric`` is a code, name\nor alias from ``list_health_metrics``. ``value`` is a string: ``\"5.4\"``, ``\"<0.5\"``,\n``\">100\"``, or text for a text metric (``\"Negative\"``). ``unit`` is required for a\nmetric with a canonical unit and must be that unit or a registered conversion; it is\nnever guessed. ``ref_low``/``ref_high`` are the report's own range, in the item's unit.\n``measured_on`` defaults to ``record.recorded_on``.\n\nAn unknown metric is NOT written (status ``unknown_metric`` with suggestions): define\nit with ``define_health_metric`` or pass ``create_missing_metrics=true``. A reading\nthat already exists is ``possible_duplicate`` (not written) unless\n``skip_duplicates=true`` marks it ``duplicate``. ``atomic=true`` rejects the whole\nbatch if any item is invalid.\n\nReturns ``{status, dry_run, record, counts, items:[{index, status, metric,\nmatch_reason, existing_id, errors, warnings, suggestions}]}``.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "atomic": {
+            "default": false,
+            "type": "boolean"
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "create_missing_metrics": {
+            "default": false,
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": false,
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "record": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "skip_duplicates": {
+            "default": false,
+            "type": "boolean"
+          },
+          "workspace_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "items"
+        ],
+        "type": "object"
+      },
+      "meta": null,
+      "name": "record_health_results",
       "output_schema": {
         "additionalProperties": true,
         "type": "object"

@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 
 from app.core.pagination import DEFAULT_LIMIT
 from app.core.repository import BaseRepository
-from app.health.models import Medication, MedicationEvent, WeightEntry
+from app.health.models import Medication, MedicationEvent
 
 
 class MedicationRepository(BaseRepository[Medication]):
@@ -170,38 +170,3 @@ class MedicationEventRepository(BaseRepository[MedicationEvent]):
         )
         result = await self.session.execute(items_q)
         return result.scalars().all(), int(total)
-
-
-class WeightEntryRepository(BaseRepository[WeightEntry]):
-    async def get_range(
-        self,
-        workspace_id: int,
-        start: datetime | None = None,
-        end: datetime | None = None,
-        limit: int = DEFAULT_LIMIT,
-        offset: int = 0,
-    ) -> tuple[Sequence[WeightEntry], int]:
-        base = select(WeightEntry).where(WeightEntry.workspace_id == workspace_id)
-        if start is not None:
-            base = base.where(WeightEntry.measured_at >= start)
-        if end is not None:
-            base = base.where(WeightEntry.measured_at <= end)
-        total = (
-            await self.session.execute(select(func.count()).select_from(base.subquery()))
-        ).scalar_one()
-        items_q = (
-            base
-            .order_by(WeightEntry.measured_at.desc(), WeightEntry.id.desc())
-            .limit(limit)
-            .offset(offset)
-        )
-        result = await self.session.execute(items_q)
-        return result.scalars().all(), total
-
-    async def get_by_public_id(self, workspace_id: int, public_id: UUID) -> WeightEntry | None:
-        result = await self.session.execute(
-            select(WeightEntry).where(
-                WeightEntry.workspace_id == workspace_id, WeightEntry.public_id == public_id
-            )
-        )
-        return result.scalar_one_or_none()

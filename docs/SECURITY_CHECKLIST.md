@@ -21,6 +21,12 @@ This checklist is for release-hardening and regression review on `main`.
 - [x] Voice capture WebSocket sessions enforce frame, cumulative byte, duration, and text-size limits.
 - [x] Voice provider failures return sanitized client-facing errors.
 
+## Health Data (spec-110)
+- [x] Health measurement routes and MCP tools are workspace-scoped; another workspace's metrics, records and measurements return not-found.
+- [x] MCP writes need `mcp:write` and `member` role; reads need `mcp:read`. Bulk writes preview unless `confirmed=true`; deletes require `confirmed=true`.
+- [x] Note text and bulk payloads are not written to audit `details` (ids, counts, metric code, date, value and unit only) and not logged.
+- [ ] Health results are exposed to any agent holding `mcp:read` for the workspace; grant that scope deliberately.
+
 ## Audit and Traceability
 - [x] Mutation paths emit audit logs with before/after snapshots.
 - [x] Sensitive keys are redacted in audit payloads.
