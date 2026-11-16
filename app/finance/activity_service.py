@@ -43,6 +43,7 @@ class ActivityFeedService:
         *,
         account_id: uuid.UUID | None = None,
         event_types: list[str] | None = None,
+        category_id: uuid.UUID | None = None,
         from_date: datetime | None = None,
         to_date: datetime | None = None,
         limit: int = 50,
@@ -65,6 +66,23 @@ class ActivityFeedService:
         allowed_types = {"spend", "transfer", "order", "dividend"}
         selected_types = set(event_types) if event_types else allowed_types
 
+        # Only spending transactions carry a category, so a category filter
+        # narrows the feed to spend events.
+        filter_internal_cat_id: int | None = None
+        if category_id is not None:
+            cat_row = (
+                await self.session.execute(
+                    select(SpendingCategory).where(
+                        SpendingCategory.workspace_id == workspace_id,
+                        SpendingCategory.public_id == category_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if cat_row is None:
+                raise ValidationError(detail=f"Category with id {category_id} not found")
+            filter_internal_cat_id = cat_row.id
+            selected_types &= {"spend"}
+
         items: list[ActivityFeedItem] = []
 
         # 1. SPEND transactions
@@ -74,6 +92,8 @@ class ActivityFeedService:
             )
             if filter_internal_acc_id is not None:
                 stmt = stmt.where(SpendingTransaction.account_id == filter_internal_acc_id)
+            if filter_internal_cat_id is not None:
+                stmt = stmt.where(SpendingTransaction.category_id == filter_internal_cat_id)
             if from_date is not None:
                 stmt = stmt.where(SpendingTransaction.occurred_at >= from_date)
             if to_date is not None:
