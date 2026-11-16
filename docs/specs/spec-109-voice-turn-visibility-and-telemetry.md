@@ -64,7 +64,8 @@ AudioWorklet capture, push-to-talk / client-side VAD, custom vocabulary, any cha
 | `go_away` | `time_left` |
 | `session_ended` | `reason`, `duration_seconds` |
 
-`session_started` additionally records `model`. No utterance text is added to any of these rows.
+`session_started` additionally records `model`. Existing `tool_call` rows gain `duration_ms` (tool execution time;
+`null` when nothing executed, e.g. a suppressed replay) so slow tools can be identified per tool name. No utterance text is added to any of these rows.
 Timing fields that cannot be computed for a turn (e.g. typed text has no input transcript) are `null`.
 
 ### VAD settings (all default unset → no `realtimeInputConfig` sent)
