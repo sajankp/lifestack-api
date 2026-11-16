@@ -1,7 +1,7 @@
 # Spec-110: Health measurements — one store for any result over time (weight becomes a metric)
 
 **Created:** 2026-11-16
-**Status:** Draft — pending approval
+**Status:** Approved 2026-11-16 (owner: "let's build this feature … both merged and then one deployment") — rollout amended below
 **Scope:** `lifestack-api` (new `app/health/measurements/` package, alembic migration, MCP tools, weight migration, exports/briefing/summary integration) and `lifestack-web` (read-only Records section). E2E after both merge.
 **Depends on:** spec-069 (health module — this spec generalises its `weight_entries` table; the source-triplet, audit and trust-boundary rules carry over), spec-103 (MCP health reads), the MCP batch-write pattern (`log_spending_transactions_batch`), the golden MCP catalog test.
 
@@ -137,9 +137,10 @@ conversion factor fixes history with no backfill. (Volumes are tens of rows per 
   `^\s*(<=|>=|<|>)?\s*(-?\d+(\.\d+)?)\s*$` into `comparator` + `value_num`; anything else is an
   item error (`"Negative"` on a numeric metric tells the caller to use a `text` metric). For a
   `text` metric it is stored in `value_text`. All numbers are strings, per the MCP convention.
-- `unit` must equal `canonical_unit`, or be a key of `unit_conversions`, or the item is
-  rejected with the registered units listed. **Never guessed, never stored unconverted.** A
-  unitless metric accepts only an empty unit.
+- `unit` is **required** for a metric that has a `canonical_unit`, and must equal it or be a key of
+  `unit_conversions` (compared case-insensitively), or the item is rejected with the registered
+  units listed. **Never guessed, never defaulted, never stored unconverted.** A unitless metric
+  accepts only an empty unit.
 - `min_value`/`max_value`, when set, reject out-of-bounds numbers (weight keeps its `> 0`
   guarantee through `min_value`).
 - `measured_on` defaults to the record's `recorded_on`; for a single log with neither, to today in
@@ -206,8 +207,9 @@ Weight is the metric `body_weight`; the old surface is preserved on top of it.
 | `WeightEntry` model, repository, `weight_repo` plumbing in `jobs.py`, `dependencies.py`, `mcp/support/services.py`, `capture/tools.py`, `summaries/service.py`, `exports/service.py` | Removed in the flip (PR-2); the table is dropped in PR-3 |
 
 **Day-based trend semantics.** Weight deltas move from "timestamp ≤ now − 7 d" to "`measured_on` ≤
-latest `measured_on` − 7 days". Results keep their meaning; the boundary shifts by under a day and
-the existing trend tests are updated and re-justified in PR-2, not loosened silently.
+today − 7 days" (and `None` when the latest reading is itself that old, as before). Results keep
+their meaning; the boundary shifts by under a day and any existing trend test that changes is
+re-justified in the PR, not loosened silently.
 
 **Data copy is a script, not a migration** (repo rule: alembic is schema only).
 `scripts/migrate_weight_to_health_measurements.py` follows `scripts/audit_brokerage_cash.py`:
@@ -274,30 +276,33 @@ manually". Zod schemas have no `.default()` on required fields; MSW mocks use th
 
 ## Rollout
 
-Backend and frontend as separate PRs (backend first). The weight move is expand → copy → flip →
-contract, because the code and the data cannot change in one atomic step.
+**Amended 2026-11-16 (owner: one deployment).** The weight move is *expand → copy → flip* inside a
+single backend PR and a single deploy; only the destructive *contract* step is deferred.
 
-1. **PR-1 (api, additive):** migration (next free number after `0073_stale_price_days`;
-   renumber on collision), models, repositories, services, REST reads, the seven MCP tools,
-   copy script, docs (ERD, PATTERNS, `SECURITY_CHECKLIST`). Weight untouched. Deploy.
-   Then on the VM: script dry-run → `--apply` → compare counts and latest value by a read.
-2. **PR-2 (api, flip):** weight REST/MCP/capture/briefing/summary/export onto the metric store;
-   remove `WeightEntry` plumbing. Run `--apply` immediately before and again after the deploy,
-   then verify counts and the latest value per workspace.
-3. **PR-3 (api, contract):** drop `weight_entries`. Only after PR-2 has run in production long
-   enough to trust, and on explicit go-ahead. Take a verified backup first and remove it once the
-   drop is confirmed.
-4. **PR-4 (web):** Records section. Auto-deploys on merge; independent of PR-2/3.
-5. **E2E** after PR-1, PR-2 and PR-4 are merged.
+1. **API PR (one PR, one migration `0075`):** schema, the metric store, REST reads, the seven MCP
+   tools, the weight flip (REST/MCP/capture/briefing/summary/export onto the metric store), and the
+   copy script. The `weight_entries` table and model stay, unread, as the rollback path. The todo
+   description PR (#284, migration `0074`) merges first.
+2. **One deploy** with `./scripts/deploy-production.sh`, then **immediately** the copy script on
+   the VM: dry-run, read the plan, `--apply`, run again (no-op), and compare count and latest
+   value per workspace by a read. Weight history reads as empty for the minutes between the deploy
+   and `--apply` (accepted: single-user, and the old rows are untouched). No write can be lost in
+   that gap, because the old code that wrote to `weight_entries` is gone once the new container
+   serves; the script is idempotent, so it can be re-run safely.
+3. **Web PRs merge after the deploy** (Cloudflare Pages deploys the web on merge and the Records
+   section needs the new API): the todo-limit PR and the Records section.
+4. **E2E** after the API and web PRs are merged.
+5. **Follow-up, not in this deploy:** drop `weight_entries` (migration + model removal), only after
+   the new store has run in production long enough to trust and on explicit go-ahead, with a
+   verified backup first.
 
-Nothing is pushed or deployed from this spec without an explicit go-ahead. Each deploy goes
-through `./scripts/deploy-production.sh`.
+Nothing is pushed or deployed without the owner's go-ahead for that step; the owner has authorised
+merging and the single deploy for this work.
 
 ## Decisions for approval
 
-1. **Expand/contract over a one-shot move** for weight (PR-1/2/3 above). Cost: three backend PRs
-   and two script runs. Benefit: no window where weight is empty or lost, and a rollback exists
-   until PR-3.
+1. **Weight is copied by a script after the single deploy** (see Rollout). Cost: a short window
+   where weight reads empty. Benefit: one deploy, a rollback exists until the follow-up drop.
 2. **Day-based trend deltas** for weight (§D). Alternative: keep timestamp-based deltas by sorting
    on `coalesce(measured_at, measured_on)`; costs a computed ordering expression in every query.
 3. **Export breaks** `weight_entries.csv`. Alternative: emit a derived `weight_entries.csv` for one
