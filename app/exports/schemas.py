@@ -22,7 +22,13 @@ EXPORT_MODULES: dict[str, list[str]] = {
     ],
     "investing": ["holdings", "cash_balances", "orders", "order_lots", "corporate_actions"],
     "finance": ["accounts", "capital_transfers", "finance_settings", "workspace_currencies"],
-    "health": ["medications", "medication_events", "weight_entries"],
+    "health": [
+        "medications",
+        "medication_events",
+        "health_metrics",
+        "health_records",
+        "health_measurements",
+    ],
 }
 
 SUPPORTED_MODULES = set(EXPORT_MODULES)

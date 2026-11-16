@@ -16,10 +16,10 @@ from app.finance.repository import (
     NetWorthSnapshotRepository,
 )
 from app.finance.service import FxRateService
+from app.health.measurements.service import MeasurementService
 from app.health.repository import (
     MedicationEventRepository,
     MedicationRepository,
-    WeightEntryRepository,
 )
 from app.health.service import HealthService
 from app.investing.company_sector_service import CompanySectorService
@@ -215,5 +215,9 @@ def health_service(session: Any) -> HealthService:
     return HealthService(
         MedicationRepository(session),
         MedicationEventRepository(session),
-        WeightEntryRepository(session),
+        MeasurementService.from_session(session),
     )
+
+
+def measurement_service(session: Any) -> MeasurementService:
+    return MeasurementService.from_session(session)

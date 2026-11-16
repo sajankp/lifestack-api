@@ -19,7 +19,9 @@ from app.core.audit import AuditLog, AuditLogger
 from app.core.database import postgres
 from app.core.exceptions import ForbiddenError, ValidationError
 from app.finance.models import Account, CapitalTransfer, FxRate
-from app.health.models import Medication, MedicationEvent, WeightEntry
+from app.health.measurements.models import HealthMeasurement
+from app.health.measurements.service import MeasurementService
+from app.health.models import Medication, MedicationEvent
 from app.investing.models import (
     Holding,
     HoldingPrice,
@@ -458,32 +460,30 @@ async def test_get_weight_history_pagination_filters_and_scoping(override_databa
     async with postgres.async_session_maker() as session:
         await _seed_base(session)
         base = datetime(2026, 3, 1, 8, 0, tzinfo=UTC)
-        session.add_all([
-            WeightEntry(
-                workspace_id=WS,
-                user_id=ALICE,
-                measured_at=base + timedelta(days=d),
-                weight_kg=Decimal(f"7{d}.25"),
+        weight = MeasurementService.from_session(session)
+        metric_id = (await weight.ensure_builtin_metrics(WS)).id
+        other_metric_id = (await weight.ensure_builtin_metrics(OTHER_WS)).id
+
+        def _w(ws, user, metric, at, kg):
+            return HealthMeasurement(
+                workspace_id=ws,
+                user_id=user,
+                metric_id=metric,
+                measured_on=at.date(),
+                measured_at=at,
+                value_num=Decimal(kg),
+                unit="kg",
+                source_type="manual",
             )
-            for d in range(5)
+
+        session.add_all([
+            _w(WS, ALICE, metric_id, base + timedelta(days=d), f"7{d}.25") for d in range(5)
         ])
         # Two entries sharing one timestamp: tiebreak keeps pages stable.
         session.add_all([
-            WeightEntry(
-                workspace_id=WS,
-                user_id=ALICE,
-                measured_at=base - timedelta(days=1),
-                weight_kg=Decimal("69.50"),
-            ),
-            WeightEntry(
-                workspace_id=WS,
-                user_id=ALICE,
-                measured_at=base - timedelta(days=1),
-                weight_kg=Decimal("69.60"),
-            ),
-            WeightEntry(
-                workspace_id=OTHER_WS, user_id=BOB, measured_at=base, weight_kg=Decimal("99.99")
-            ),
+            _w(WS, ALICE, metric_id, base - timedelta(days=1), "69.50"),
+            _w(WS, ALICE, metric_id, base - timedelta(days=1), "69.60"),
+            _w(OTHER_WS, BOB, other_metric_id, base, "99.99"),
         ])
         await session.commit()
     tools = await _tools()

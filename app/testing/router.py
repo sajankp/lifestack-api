@@ -19,12 +19,14 @@ from app.core.dependencies import (
     get_db_session,
     get_finance_fx_rate_service,
     get_investing_portfolio_report_service,
+    get_measurement_service,
     get_workspace_repo,
     require_min_role,
 )
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import NotFoundError, ValidationError
 from app.finance.schemas import FxRateUpsert
 from app.finance.service import FxRateService
+from app.health.measurements.service import MeasurementService
 from app.investing.service import PortfolioReportService
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
@@ -91,6 +93,20 @@ class PortfolioReportSeedRequest(BaseModel):
 class PortfolioReportSeedResponse(BaseModel):
     status: str = "ok"
     public_id: str
+
+
+class HealthResultsSeedRequest(BaseModel):
+    """Mirrors the ``record_health_results`` MCP tool (the only real write path)."""
+
+    record: dict[str, Any] | None = None
+    items: list[dict[str, Any]] = Field(..., min_length=1)
+    create_missing_metrics: bool = True
+
+
+class HealthResultsSeedResponse(BaseModel):
+    status: str = "ok"
+    record_public_id: str | None
+    created: int
 
 
 async def _active_workspace_or_404(workspace_id: int, workspace_repo: WorkspaceRepository):
@@ -209,6 +225,36 @@ async def seed_portfolio_report(
         tax_buckets=payload.tax_buckets,
     )
     return PortfolioReportSeedResponse(public_id=str(report.public_id))
+
+
+@router.post("/health-results", response_model=HealthResultsSeedResponse)
+async def seed_health_results(
+    payload: HealthResultsSeedRequest,
+    user: Annotated[dict, Depends(get_current_user)],
+    _role: Annotated[object, Depends(require_min_role("owner"))],
+    workspace_id: Annotated[int, Depends(get_current_workspace_id)],
+    service: Annotated[MeasurementService, Depends(get_measurement_service)],
+) -> HealthResultsSeedResponse:
+    """
+    Seed health results for the caller's workspace through the real bulk-write path.
+
+    Generic health results are written over MCP, which the e2e stack cannot reach, and the
+    web app is read-only for them, so this hook lets the Results section be exercised
+    against the real stored shape.
+    """
+    result = await service.record_results(
+        user_id=user["id"],
+        workspace_id=workspace_id,
+        record=payload.record,
+        items=payload.items,
+        create_missing_metrics=payload.create_missing_metrics,
+        dry_run=False,
+    )
+    if result["status"] != "success":
+        raise ValidationError(detail=result.get("message", "Seeding health results failed"))
+    return HealthResultsSeedResponse(
+        record_public_id=result["record"]["public_id"], created=result["counts"]["create"]
+    )
 
 
 @router.post("/workflows/weekly-summary", response_model=WeeklySummaryWorkflowRunResponse)

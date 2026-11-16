@@ -172,6 +172,34 @@ docker compose --env-file .env.production \
   logs --since 10m --timestamps --no-color api migrate cloudflared database-backup
 ```
 
+### 4a. One-time data copies after a deploy
+
+A data repair is a reviewed script, never a migration. Run it inside the API container after the
+deploy, dry-run first, and verify by a read (not by the script's own output).
+
+**Weight into the measurement store (spec-110).** Run once right after the deploy that ships
+migration `0075_health_measurements` and the weight flip. Until it runs, weight history reads as
+empty (the old `weight_entries` rows are untouched).
+
+```bash
+docker exec <api container> python -m scripts.migrate_weight_to_health_measurements          # dry run
+docker exec <api container> python -m scripts.migrate_weight_to_health_measurements --apply
+docker exec <api container> python -m scripts.migrate_weight_to_health_measurements --apply  # no-op
+```
+
+The script is idempotent, refuses (writing nothing) if a copied row no longer matches its source,
+and keeps public ids, values, timestamps and notes. Then confirm the count and the latest reading
+with a read, for example `get_health_series` for `body_weight`, or:
+
+```sql
+SELECT (SELECT count(*) FROM weight_entries) AS old_rows,
+       (SELECT count(*) FROM health_measurements m JOIN health_metrics t ON t.id = m.metric_id
+         WHERE t.code = 'body_weight') AS new_rows;
+```
+
+`new_rows` may exceed `old_rows` once new weights are logged. `weight_entries` stays as the rollback
+path until a later change drops it.
+
 ## 5. Log Retention and Incident Evidence
 
 The API writes structured production logs to stdout. The default Docker `json-file` driver is

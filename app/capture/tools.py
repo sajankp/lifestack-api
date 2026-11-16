@@ -37,10 +37,10 @@ from app.finance.repository import (
 )
 from app.finance.schemas import CapitalTransferCreate, CapitalTransferUpdate
 from app.finance.service import CapitalTransferService, FxRateService
+from app.health.measurements.service import MeasurementService
 from app.health.repository import (
     MedicationEventRepository,
     MedicationRepository,
-    WeightEntryRepository,
 )
 from app.health.schemas import MedicationEventUpsert, WeightEntryCreate
 from app.health.service import HealthService
@@ -204,9 +204,10 @@ class AgentTools:
 
         self.medication_repo = MedicationRepository(session)
         self.medication_event_repo = MedicationEventRepository(session)
-        self.weight_repo = WeightEntryRepository(session)
         self.health_service = HealthService(
-            self.medication_repo, self.medication_event_repo, self.weight_repo
+            self.medication_repo,
+            self.medication_event_repo,
+            MeasurementService.from_session(session),
         )
 
         self.audit_logger = AuditLogger(session)

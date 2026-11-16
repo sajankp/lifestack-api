@@ -20,10 +20,10 @@ from app.finance.repository import (
     NetWorthSnapshotRepository,
 )
 from app.finance.service import FxRateService
+from app.health.measurements.service import MeasurementService, weight_point_time
 from app.health.repository import (
     MedicationEventRepository,
     MedicationRepository,
-    WeightEntryRepository,
 )
 from app.health.schedule import (
     get_dose_slots_for_date,
@@ -679,7 +679,7 @@ class WeeklySummaryService:
         health data at all that week."""
         medication_repo = MedicationRepository(self.session)
         event_repo = MedicationEventRepository(self.session)
-        weight_repo = WeightEntryRepository(self.session)
+        measurements = MeasurementService.from_session(self.session)
 
         medications, _total = await medication_repo.get_all(
             workspace_id, is_active=None, limit=1000
@@ -719,13 +719,14 @@ class WeeklySummaryService:
             else None
         )
 
-        weight_entries, _wtotal = await weight_repo.get_range(
-            workspace_id, start_dt, end_dt, limit=1000, offset=0
-        )
+        weight_entries = await measurements.weight_between(workspace_id, start_dt, end_dt)
         weight_delta_kg = None
         if len(weight_entries) >= 2:
-            ordered = sorted(weight_entries, key=lambda e: e.measured_at)
-            weight_delta_kg = str(ordered[-1].weight_kg - ordered[0].weight_kg)
+            ordered = sorted(weight_entries, key=weight_point_time)
+            weight_delta_kg = str(
+                ordered[-1].value_num.quantize(Decimal("0.01"))
+                - ordered[0].value_num.quantize(Decimal("0.01"))
+            )
 
         if scheduled_count == 0 and taken_count == 0 and skipped_count == 0 and not weight_entries:
             return None

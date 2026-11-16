@@ -173,7 +173,7 @@ async def create_weight_entry(
     entry = await health_service.create_weight_entry(
         user["id"], workspace_id, payload, audit_logger=audit_logger
     )
-    return WeightEntryResponse.model_validate(entry)
+    return entry
 
 
 @router.get("/weight/trend", response_model=WeightTrendResponse)
@@ -183,7 +183,7 @@ async def get_weight_trend(
     user: Annotated[dict, Depends(get_current_user)],
     days: int = Query(30, ge=1, le=365),
 ):
-    return await health_service.get_weight_trend(workspace_id, days)
+    return await health_service.get_weight_trend(workspace_id, days, user_id=user["id"])
 
 
 @router.delete("/weight/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)

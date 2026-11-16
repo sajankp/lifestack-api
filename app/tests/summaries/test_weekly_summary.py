@@ -11,7 +11,9 @@ from app.auth.repository import UserRepository
 from app.core.audit import AuditLog
 from app.core.database import postgres
 from app.finance.models import Account, AccountType, NetWorthSnapshot
-from app.health.models import Medication, MedicationEvent, WeightEntry
+from app.health.measurements.models import HealthMeasurement
+from app.health.measurements.service import MeasurementService
+from app.health.models import Medication, MedicationEvent
 from app.investing.models import Dividend, PortfolioSnapshot
 from app.notifications.models import Notification
 from app.notifications.repository import NotificationRepository
@@ -344,19 +346,21 @@ async def test_weekly_summary_computes_health_summary(client: AsyncClient):
                 status="taken",
             )
         )
+        weight_metric = await MeasurementService.from_session(session).ensure_builtin_metrics(
+            workspace_id
+        )
         session.add_all([
-            WeightEntry(
+            HealthMeasurement(
                 workspace_id=workspace_id,
                 user_id=user_id,
-                measured_at=start_dt,
-                weight_kg=Decimal("80.0"),
-            ),
-            WeightEntry(
-                workspace_id=workspace_id,
-                user_id=user_id,
-                measured_at=start_dt + timedelta(days=2),
-                weight_kg=Decimal("79.5"),
-            ),
+                metric_id=weight_metric.id,
+                measured_on=at.date(),
+                measured_at=at,
+                value_num=Decimal(kg),
+                unit="kg",
+                source_type="manual",
+            )
+            for at, kg in ((start_dt, "80.0"), (start_dt + timedelta(days=2), "79.5"))
         ])
         await session.flush()
 

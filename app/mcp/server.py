@@ -9,6 +9,7 @@ from app.mcp.auth import LifestackTokenVerifier
 from app.mcp.tools import (
     finance,
     health,
+    health_measurements,
     orders,
     portfolio,
     research,
@@ -18,7 +19,18 @@ from app.mcp.tools import (
     workspace,
 )
 
-_TOOL_MODULES = (todos, workspace, finance, tax, spending, health, portfolio, research, orders)
+_TOOL_MODULES = (
+    todos,
+    workspace,
+    finance,
+    tax,
+    spending,
+    health,
+    health_measurements,
+    portfolio,
+    research,
+    orders,
+)
 
 
 def create_mcp_server() -> FastMCP:

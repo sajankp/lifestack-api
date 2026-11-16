@@ -161,8 +161,8 @@ erDiagram
 
 ## Health (spec-069)
 
-Medications + weight only in v1 (owner decision D9) — sleep/workouts/vitals/labs are later slices,
-same table patterns. Dose slots are never stored: they're derived on read from
+Medications + weight in v1 (owner decision D9). Labs, vitals, prescriptions and any other result over
+time live in the generic measurement store (spec-110, below); weight is its `body_weight` metric. Dose slots are never stored: they're derived on read from
 (frequency, interval, anchor_date, days_of_week, times, timezone, end_date) via
 `app/health/schedule.py`, reusing the `RecurringTodoRule` recurrence vocabulary
 (`core/recurrence.py::advance_due_date` semantics for daily/monthly, with
@@ -216,6 +216,8 @@ erDiagram
     }
 
     WEIGHT_ENTRIES {
+        %% LEGACY (spec-110): read only by scripts/migrate_weight_to_health_measurements.py;
+        %% kept as the rollback path and dropped in a later change.
         int id PK
         uuid public_id UK
         int workspace_id FK
@@ -235,6 +237,76 @@ erDiagram
     MEDICATIONS ||--o{ MEDICATION_EVENTS : "ON DELETE CASCADE"
     USERS ||--o{ WEIGHT_ENTRIES : owns
     WORKSPACES ||--o{ WEIGHT_ENTRIES : scopes
+```
+
+### Health measurements (spec-110)
+
+One store for any result over time. `health_metrics` is the per-workspace catalog (code, canonical
+unit, unit conversions, aliases); `health_records` is the document or event a bulk write came from
+(its free `note` is the provenance); `health_measurements` is one result of one metric on one day.
+Ingestion is MCP-only (`record_health_results`); the REST routes are read-only, plus the existing
+weight routes served by the same store. Free-form fields are `TEXT` (limits live in the Pydantic
+schemas); identifier-like fields stay `VARCHAR`. A measurement stores the value and unit as
+reported; the canonical value is computed on read, so fixing a conversion fixes history.
+
+```mermaid
+erDiagram
+    HEALTH_METRICS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        string code "UK with workspace_id"
+        string name
+        string category
+        string value_type "numeric | text"
+        string canonical_unit
+        json unit_conversions
+        json aliases
+        decimal min_value
+        decimal max_value
+    }
+
+    HEALTH_RECORDS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        string kind
+        text title
+        date recorded_on
+        string provider
+        text note
+        string source_type
+        string source_ref "partial UK with workspace_id"
+        int source_import_id FK
+    }
+
+    HEALTH_MEASUREMENTS {
+        int id PK
+        uuid public_id UK
+        int workspace_id FK
+        int user_id FK
+        int metric_id FK "ON DELETE RESTRICT"
+        int record_id FK "ON DELETE CASCADE"
+        date measured_on
+        datetime measured_at "only when a real time exists"
+        decimal value_num
+        string comparator "< <= > >="
+        text value_text
+        string unit "as reported"
+        decimal ref_low
+        decimal ref_high
+        text ref_text
+        text note
+        string source_type
+        string source_ref "partial UK with workspace_id"
+        int source_import_id FK
+    }
+
+    WORKSPACES ||--o{ HEALTH_METRICS : scopes
+    HEALTH_METRICS ||--o{ HEALTH_MEASUREMENTS : "RESTRICT"
+    HEALTH_RECORDS ||--o{ HEALTH_MEASUREMENTS : "ON DELETE CASCADE"
+    WORKSPACES ||--o{ HEALTH_RECORDS : scopes
 ```
 
 A dose slot's status is computed on read (never stored): `taken`/`skipped` if a

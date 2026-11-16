@@ -39,11 +39,8 @@ from app.finance.service import (
     NetWorthService,
 )
 from app.finance.statement_service import StatementService
-from app.health.repository import (
-    MedicationEventRepository,
-    MedicationRepository,
-    WeightEntryRepository,
-)
+from app.health.measurements.service import MeasurementService
+from app.health.repository import MedicationEventRepository, MedicationRepository
 from app.health.service import HealthService
 from app.imports.repository import ImportRepository
 from app.imports.service import ImportService
@@ -188,18 +185,18 @@ async def get_medication_event_repo(
     return MedicationEventRepository(session)
 
 
-async def get_weight_entry_repo(
+async def get_measurement_service(
     session: AsyncSession = Depends(get_db_session),
-) -> WeightEntryRepository:
-    return WeightEntryRepository(session)
+) -> MeasurementService:
+    return MeasurementService.from_session(session)
 
 
 async def get_health_service(
     medication_repo: MedicationRepository = Depends(get_medication_repo),
     event_repo: MedicationEventRepository = Depends(get_medication_event_repo),
-    weight_repo: WeightEntryRepository = Depends(get_weight_entry_repo),
+    measurements: MeasurementService = Depends(get_measurement_service),
 ) -> HealthService:
-    return HealthService(medication_repo, event_repo, weight_repo)
+    return HealthService(medication_repo, event_repo, measurements)
 
 
 # ---------------------------------------------------------------------------

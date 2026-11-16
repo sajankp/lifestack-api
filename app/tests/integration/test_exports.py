@@ -296,7 +296,10 @@ async def test_health_export_json_and_csv(client: AsyncClient):
     assert download_resp.status_code == 200
     data = download_resp.json()["data"]["health"]
     assert len(data["medications"]) == 1
-    assert len(data["weight_entries"]) == 1
+    assert len(data["health_measurements"]) == 1
+    assert data["health_measurements"][0]["unit"] == "kg"
+    assert [m["code"] for m in data["health_metrics"]] == ["body_weight"]
+    assert "weight_entries" not in data
     assert data["medications"][0]["name"] == "Metformin"
 
     csv_resp = await client.post(
