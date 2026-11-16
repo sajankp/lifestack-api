@@ -301,6 +301,62 @@ async def test_e2e_portfolio_report_hook_not_registered_by_default(client: Async
     assert response.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_e2e_health_results_hook_seeds_through_the_real_write_path(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+):
+    creds = await _register_and_login(client, "e2ehealth")
+    monkeypatch.setattr(settings, "ENABLE_E2E_TEST_HOOKS", True)
+    monkeypatch.setattr(settings, "ENV", "local")
+    async with await _e2e_hook_client() as hook_client:
+        hook_client.cookies.update(creds["cookies"])
+        response = await hook_client.post(
+            "/v1/e2e/health-results",
+            json={
+                "record": {
+                    "kind": "lab_report",
+                    "title": "E2E panel",
+                    "recorded_on": "2026-11-10",
+                    "note": "seeded by the e2e hook",
+                },
+                "items": [
+                    {"metric": "HbA1c", "value": "5.6", "unit": "%", "measured_on": "2026-10-01"},
+                    {"metric": "HbA1c", "value": "5.9", "unit": "%", "ref_high": "5.7"},
+                ],
+            },
+        )
+        assert response.status_code == 200, response.text
+        seeded = response.json()
+        assert seeded["created"] == 2 and seeded["record_public_id"]
+
+        bad = await hook_client.post(
+            "/v1/e2e/health-results",
+            json={"items": [{"metric": "HbA1c", "value": "x"}], "create_missing_metrics": True},
+        )
+        assert bad.status_code == 200, bad.text  # partial success: the bad item is just not written
+        assert bad.json()["created"] == 0
+
+    series = await client.get("/v1/health/metrics/hba1c/series", cookies=creds["cookies"])
+    assert series.status_code == 200, series.text
+    assert series.json()["total"] == 2
+    assert series.json()["points"][0]["in_range"] == "high"
+    record = await client.get(
+        f"/v1/health/records/{seeded['record_public_id']}", cookies=creds["cookies"]
+    )
+    assert record.json()["note"] == "seeded by the e2e hook"
+
+
+@pytest.mark.asyncio
+async def test_e2e_health_results_hook_not_registered_by_default(client: AsyncClient):
+    creds = await _register_and_login(client, "e2ehealthoff")
+    response = await client.post(
+        "/v1/e2e/health-results",
+        json={"items": [{"metric": "HbA1c", "value": "5.6", "unit": "%"}]},
+        cookies=creds["cookies"],
+    )
+    assert response.status_code == 404
+
+
 def test_e2e_hooks_production_gating_settings():
     # Should raise error if we try to set ENABLE_E2E_TEST_HOOKS=True in production
     with pytest.raises(
