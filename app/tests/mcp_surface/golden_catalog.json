@@ -2062,7 +2062,7 @@
     },
     {
       "annotations": null,
-      "description": "The catalog of measurable things in a workspace, with how many results each has\nand its latest result. Includes the built-in ``body_weight``. Call this before\n``record_health_results`` to pick the right metric names and units.",
+      "description": "The catalog of measurable things in a workspace, with how many results each has\nand its latest result. ``body_weight`` appears once weight (or any result) has been\nwritten. Call this before\n``record_health_results`` to pick the right metric names and units.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
