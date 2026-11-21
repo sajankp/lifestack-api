@@ -21,6 +21,7 @@ from app.todo.schemas import (
 _TODO_AUDIT_FIELDS = (
     "title",
     "description",
+    "category",
     "due_date",
     "priority",
     "completed",
@@ -69,11 +70,14 @@ class TodoService:
         self,
         workspace_id: int,
         completed: bool | None = None,
+        category: str | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
         sort: Literal["created_at", "due_date"] = "created_at",
     ) -> tuple[list[TodoResponse], int]:
-        items, total = await self.repository.get_all(workspace_id, completed, limit, offset, sort)
+        items, total = await self.repository.get_all(
+            workspace_id, completed, category, limit, offset, sort
+        )
         return await self._to_responses(items), total
 
     async def _to_responses(self, items: Sequence[Todo]) -> list[TodoResponse]:
@@ -110,6 +114,7 @@ class TodoService:
             public_id=todo.public_id,
             title=todo.title,
             description=todo.description,
+            category=todo.category,
             due_date=todo.due_date,
             priority=todo.priority,
             completed=todo.completed,

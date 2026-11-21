@@ -444,6 +444,17 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "description": {
             "anyOf": [
               {
@@ -2846,10 +2857,21 @@
     },
     {
       "annotations": null,
-      "description": "List todos for an authorized workspace.",
+      "description": "List todos for an authorized workspace, optionally filtered by category.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "completed": {
             "anyOf": [
               {
@@ -4191,6 +4213,17 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "completed": {
             "anyOf": [
               {

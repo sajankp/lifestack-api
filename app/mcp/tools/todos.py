@@ -18,7 +18,11 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool
     async def create_todo(
-        workspace_id: int, title: str, description: str | None = None, due_date: str | None = None
+        workspace_id: int,
+        title: str,
+        description: str | None = None,
+        category: str | None = None,
+        due_date: str | None = None,
     ) -> dict[str, Any]:
         """Create a todo in a workspace the authenticated user belongs to."""
         async with postgres.async_session_maker() as session, session.begin():
@@ -29,22 +33,26 @@ def register(mcp: FastMCP) -> None:
             todo = await TodoService(TodoRepository(session)).create_todo(
                 user_id,
                 workspace_id,
-                TodoCreate(title=title, description=description, due_date=due),
+                TodoCreate(title=title, description=description, category=category, due_date=due),
             )
             return TodoResponse.model_validate(todo).model_dump()
 
     @mcp.tool
     async def list_todos(
-        workspace_id: int, completed: bool | None = None, limit: int = 20, offset: int = 0
+        workspace_id: int,
+        completed: bool | None = None,
+        category: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
     ) -> dict[str, Any]:
-        """List todos for an authorized workspace."""
+        """List todos for an authorized workspace, optionally filtered by category."""
         security.validate_page(limit, offset)
         async with postgres.async_session_maker() as session:
             await security.authorize_workspace(
                 session, workspace_id, required_scope="mcp:read", tool="list_todos"
             )
             todos, total = await TodoService(TodoRepository(session)).list_todos(
-                workspace_id, completed, limit, offset
+                workspace_id, completed, category, limit, offset
             )
             return {
                 "items": [TodoResponse.model_validate(t).model_dump() for t in todos],
@@ -135,6 +143,7 @@ def register(mcp: FastMCP) -> None:
         public_id: str,
         title: str | None = None,
         description: str | None = None,
+        category: str | None = None,
         due_date: str | None = None,
         priority: str | None = None,
         completed: bool | None = None,
@@ -148,6 +157,7 @@ def register(mcp: FastMCP) -> None:
                 "public_id": public_id,
                 "title": title,
                 "description": description,
+                "category": category,
                 "due_date": due_date,
                 "priority": priority,
                 "completed": completed,

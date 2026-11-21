@@ -219,7 +219,7 @@ async def test_mcp_todo_tools(monkeypatch):
         due_date=datetime(2026, 10, 5, 10, 0, tzinfo=UTC),
         priority="medium",
         completed=False,
-        completed_at=None,
+        category="Finance",
         created_at=datetime(2026, 10, 4, 10, 0, tzinfo=UTC),
         updated_at=datetime(2026, 10, 4, 10, 0, tzinfo=UTC),
     )
@@ -237,16 +237,23 @@ async def test_mcp_todo_tools(monkeypatch):
             workspace_id=202,
             title="Test Todo",
             description="Description",
+            category="Finance",
             due_date="2026-10-05T10:00:00Z",
         )
         assert res_create["title"] == "Test Todo"
+        assert res_create["category"] == "Finance"
 
         # 2. list_todos
         res_list = await tool_map["list_todos"](workspace_id=202, limit=10, offset=0)
         assert res_list["total"] == 1
         assert len(res_list["items"]) == 1
+        assert res_list["items"][0]["category"] == "Finance"
 
-        # 3. get_todo_summary
+        # 3. list_todos filtered by category reaches the service
+        await tool_map["list_todos"](workspace_id=202, category="Finance", limit=10, offset=0)
+        mock_todo_svc.list_todos.assert_called_with(202, None, "Finance", 10, 0)
+
+        # 4. get_todo_summary
         res_sum = await tool_map["get_todo_summary"](workspace_id=202)
         assert res_sum["pending"] == 5
         assert res_sum["completed"] == 10

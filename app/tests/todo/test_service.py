@@ -24,7 +24,7 @@ def service(mock_repo):
 async def test_list_todos(service, mock_repo):
     mock_repo.get_all.return_value = ([], 0)
     result = await service.list_todos(workspace_id=1, completed=True)
-    mock_repo.get_all.assert_called_once_with(1, True, 50, 0, "created_at")
+    mock_repo.get_all.assert_called_once_with(1, True, None, 50, 0, "created_at")
     assert result == ([], 0)
 
 
@@ -54,13 +54,14 @@ async def test_get_todo_not_found(service, mock_repo):
 
 @pytest.mark.asyncio
 async def test_create_todo(service, mock_repo):
-    todo_in = TodoCreate(title="New Todo", description="Desc")
+    todo_in = TodoCreate(title="New Todo", description="Desc", category="Finance")
     mock_repo.create.return_value = Todo(id=1, workspace_id=1, user_id=1, **todo_in.model_dump())
 
     result = await service.create_todo(user_id=1, workspace_id=1, todo_in=todo_in)
 
     mock_repo.create.assert_called_once()
     assert result.title == "New Todo"
+    assert result.category == "Finance"
     assert result.workspace_id == 1
 
 
@@ -117,7 +118,6 @@ async def test_create_recurring_rule_uses_rule_timezone_not_utc(service, mock_re
 
     with patch("app.todo.service.datetime", FixedDatetime):
         rule = await service.create_recurring_rule(user_id=1, workspace_id=1, rule_in=rule_in)
-
     # Local "today" is still 2026-06-30, matching anchor_date exactly — not yet
     # elapsed, so next_due_date must stay put, not skip ahead to next month.
     assert rule.next_due_date == date(2026, 6, 30)

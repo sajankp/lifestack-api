@@ -365,6 +365,7 @@ class AgentTools:
             {
                 "public_id": str(t.public_id),
                 "title": t.title,
+                "category": t.category,
                 "due_date": t.due_date.isoformat() if t.due_date else None,
                 "priority": t.priority,
                 "completed": t.completed,
@@ -382,6 +383,7 @@ class AgentTools:
             {
                 "public_id": str(t.public_id),
                 "title": t.title,
+                "category": t.category,
                 "due_date": t.due_date.isoformat() if t.due_date else None,
                 "priority": t.priority,
                 "completed": t.completed,
@@ -410,6 +412,7 @@ class AgentTools:
             "status": "success",
             "entity_public_id": str(todo.public_id),
             "title": todo.title,
+            "category": todo.category,
             "description": todo.description,
             "due_date": todo.due_date.isoformat() if todo.due_date else None,
             "priority": todo.priority,
@@ -421,6 +424,7 @@ class AgentTools:
         public_id: str,
         title: str | None = None,
         description: str | None = None,
+        category: str | None = None,
         due_date: str | None = None,
         priority: str | None = None,
         completed: bool | None = None,
@@ -446,6 +450,7 @@ class AgentTools:
             for key, value in {
                 "title": title,
                 "description": description,
+                "category": category,
                 "due_date": parsed_due if due_date is not None else None,
                 "priority": priority,
                 "completed": completed,
