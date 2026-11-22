@@ -440,7 +440,7 @@
     },
     {
       "annotations": null,
-      "description": "Create a todo in a workspace the authenticated user belongs to.",
+      "description": "Create a todo in a workspace the authenticated user belongs to.\n\n``parent_public_id`` optionally makes the new todo a subtask of an\nexisting todo in the same workspace. One level only: the parent must\nbe a top-level todo in this workspace, and the new todo cannot be its\nown parent. Omit it (or pass null) for a top-level todo.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -477,6 +477,17 @@
             ],
             "default": null
           },
+          "parent_public_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "title": {
             "type": "string"
           },
@@ -501,11 +512,22 @@
     },
     {
       "annotations": null,
-      "description": "Create a voice-compatible todo in an authorized workspace.",
+      "description": "Create a voice-compatible todo in an authorized workspace.\n\n``parent_public_id`` optionally makes the new todo a subtask of an\nexisting todo in the same workspace (one level only).",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
           "due_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "parent_public_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -4209,7 +4231,7 @@
     },
     {
       "annotations": null,
-      "description": "Update one todo in an authorized workspace.",
+      "description": "Update one todo in an authorized workspace.\n\n``parent_public_id`` re-parents the todo to another todo in the same\nworkspace (one level only, enforced by the service). Pass\n``clear_parent=true`` to detach the todo from its parent and make it\na top-level todo again; when both are given, ``clear_parent`` wins.",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -4223,6 +4245,10 @@
               }
             ],
             "default": null
+          },
+          "clear_parent": {
+            "default": false,
+            "type": "boolean"
           },
           "completed": {
             "anyOf": [
@@ -4247,6 +4273,17 @@
             "default": null
           },
           "due_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "parent_public_id": {
             "anyOf": [
               {
                 "type": "string"

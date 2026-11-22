@@ -213,7 +213,11 @@ class AgentTools:
         self.audit_logger = AuditLogger(session)
 
     async def create_todo_task(
-        self, title: str, due_date: str | None = None, priority: str = "medium"
+        self,
+        title: str,
+        due_date: str | None = None,
+        priority: str = "medium",
+        parent_public_id: str | None = None,
     ) -> dict:
         """Create a new todo task/item for the user.
 
@@ -221,6 +225,8 @@ class AgentTools:
             title: The title or text of the todo task.
             due_date: Optional ISO 8601 due date/time (e.g. '2026-05-29T16:00:00+05:30').
             priority: The priority, one of 'low', 'medium', or 'high'.
+            parent_public_id: Optional public_id of the parent todo this is a
+                subtask of (one level only, same workspace).
         """
         parsed_due = None
         if due_date:
@@ -232,10 +238,21 @@ class AgentTools:
                     "message": "Invalid due_date format. Use an ISO 8601 date or date-time.",
                 }
 
+        parent_uuid: uuid.UUID | None = None
+        if parent_public_id is not None:
+            try:
+                parent_uuid = uuid.UUID(parent_public_id)
+            except (ValueError, AttributeError):
+                return {
+                    "status": "error",
+                    "message": "Invalid parent_public_id: must be a UUID.",
+                }
+
         payload = TodoCreate(
             title=title,
             due_date=parsed_due,
             priority=priority,
+            parent_public_id=parent_uuid,
         )
         todo = await self.todo_service.create_todo(
             user_id=self.user_id,
@@ -366,6 +383,8 @@ class AgentTools:
                 "public_id": str(t.public_id),
                 "title": t.title,
                 "category": t.category,
+                "parent_public_id": str(t.parent_public_id) if t.parent_public_id else None,
+                "subtask_count": t.subtask_count,
                 "due_date": t.due_date.isoformat() if t.due_date else None,
                 "priority": t.priority,
                 "completed": t.completed,
@@ -379,17 +398,21 @@ class AgentTools:
         todos = await self.todo_service.get_next_due_items(
             self.workspace_id, datetime.now(UTC), limit
         )
-        items = [
-            {
-                "public_id": str(t.public_id),
-                "title": t.title,
-                "category": t.category,
-                "due_date": t.due_date.isoformat() if t.due_date else None,
-                "priority": t.priority,
-                "completed": t.completed,
-            }
-            for t in todos
-        ]
+        items = []
+        for todo in todos:
+            response = await self.todo_service.to_response(self.workspace_id, todo)
+            items.append({
+                "public_id": str(response.public_id),
+                "title": response.title,
+                "category": response.category,
+                "parent_public_id": (
+                    str(response.parent_public_id) if response.parent_public_id else None
+                ),
+                "subtask_count": response.subtask_count,
+                "due_date": response.due_date.isoformat() if response.due_date else None,
+                "priority": response.priority,
+                "completed": response.completed,
+            })
         return {"status": "success", "total": len(items), "items": items}
 
     async def get_todo(self, public_id: str) -> dict:
@@ -400,7 +423,7 @@ class AgentTools:
             return {"status": "error", "message": "Invalid public_id"}
 
         try:
-            todo = await self.todo_service.get_todo(self.workspace_id, pid)
+            todo = await self.todo_service.get_todo_response(self.workspace_id, pid)
         except Exception as e:
             logger.error("get_todo_failed", public_id=public_id, error=str(e))
             return {
@@ -414,6 +437,8 @@ class AgentTools:
             "title": todo.title,
             "category": todo.category,
             "description": todo.description,
+            "parent_public_id": str(todo.parent_public_id) if todo.parent_public_id else None,
+            "subtask_count": todo.subtask_count,
             "due_date": todo.due_date.isoformat() if todo.due_date else None,
             "priority": todo.priority,
             "completed": todo.completed,
@@ -428,8 +453,15 @@ class AgentTools:
         due_date: str | None = None,
         priority: str | None = None,
         completed: bool | None = None,
+        parent_public_id: str | None = None,
+        clear_parent: bool = False,
     ) -> dict:
-        """Update fields on an existing todo. due_date should be ISO 8601 if provided."""
+        """Update fields on an existing todo. due_date should be ISO 8601 if provided.
+
+        ``parent_public_id`` re-parents the todo to another todo in the same
+        workspace (one level only). Pass ``clear_parent=true`` to detach the
+        todo from its parent; when both are given, ``clear_parent`` wins.
+        """
         try:
             pid = uuid.UUID(public_id)
         except (TypeError, ValueError):
@@ -457,6 +489,10 @@ class AgentTools:
             }.items()
             if value is not None
         }
+        if parent_public_id is not None:
+            supplied_fields["parent_public_id"] = parent_public_id
+        elif clear_parent:
+            supplied_fields["parent_public_id"] = None
         update_payload = TodoUpdate.model_validate(supplied_fields)
 
         try:

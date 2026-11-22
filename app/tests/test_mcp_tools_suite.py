@@ -13,6 +13,7 @@ from app.core.exceptions import ForbiddenError, ValidationError
 from app.mcp.server import create_mcp_server
 from app.mcp.tools.orders import _dividend_response
 from app.mcp.tools.portfolio import _decimal_string
+from app.todo.schemas import TodoCreate
 
 
 class MockAsyncSession:
@@ -220,6 +221,8 @@ async def test_mcp_todo_tools(monkeypatch):
         priority="medium",
         completed=False,
         category="Finance",
+        parent_public_id=uuid.uuid4(),
+        subtask_count=2,
         created_at=datetime(2026, 10, 4, 10, 0, tzinfo=UTC),
         updated_at=datetime(2026, 10, 4, 10, 0, tzinfo=UTC),
     )
@@ -233,21 +236,30 @@ async def test_mcp_todo_tools(monkeypatch):
         mock_todo_svc.get_next_due_items = AsyncMock(return_value=[fake_todo])
 
         # 1. create_todo
+        parent_public_id = uuid.uuid4()
         res_create = await tool_map["create_todo"](
             workspace_id=202,
             title="Test Todo",
             description="Description",
             category="Finance",
             due_date="2026-10-05T10:00:00Z",
+            parent_public_id=str(parent_public_id),
         )
         assert res_create["title"] == "Test Todo"
         assert res_create["category"] == "Finance"
+        assert res_create["subtask_count"] == 2
+
+        create_call = mock_todo_svc.create_todo.call_args
+        assert isinstance(create_call.args[2], TodoCreate)
+        assert create_call.args[2].parent_public_id == parent_public_id
 
         # 2. list_todos
         res_list = await tool_map["list_todos"](workspace_id=202, limit=10, offset=0)
         assert res_list["total"] == 1
         assert len(res_list["items"]) == 1
         assert res_list["items"][0]["category"] == "Finance"
+        assert res_list["items"][0]["parent_public_id"] == fake_todo.parent_public_id
+        assert res_list["items"][0]["subtask_count"] == 2
 
         # 3. list_todos filtered by category reaches the service
         await tool_map["list_todos"](workspace_id=202, category="Finance", limit=10, offset=0)
@@ -616,6 +628,15 @@ async def test_mcp_delegated_capture_tools(monkeypatch):
     assert called_tools[-1][1] == "mcp:write"
     assert called_tools[-1][2] == "create_todo_task"
 
+    # 9b. create_todo_task forwards parent_public_id to the capture tool
+    subtask_parent = str(uuid.uuid4())
+    await tool_map["create_todo_task"](
+        workspace_id=202, title="Sub-task", parent_public_id=subtask_parent
+    )
+    assert called_tools[-1][1] == "mcp:write"
+    assert called_tools[-1][2] == "create_todo_task"
+    assert called_tools[-1][3]["parent_public_id"] == subtask_parent
+
     # 10. create_recurring_todo
     await tool_map["create_recurring_todo"](
         workspace_id=202, title="Weekly review", frequency="weekly"
@@ -632,6 +653,17 @@ async def test_mcp_delegated_capture_tools(monkeypatch):
     await tool_map["update_todo"](workspace_id=202, public_id="td-1", completed=True)
     assert called_tools[-1][1] == "mcp:write"
     assert called_tools[-1][2] == "update_todo"
+
+    # 12b. update_todo re-parents via parent_public_id
+    await tool_map["update_todo"](
+        workspace_id=202, public_id="td-1", parent_public_id=str(uuid.uuid4())
+    )
+    assert called_tools[-1][3]["parent_public_id"] is not None
+
+    # 12c. update_todo detaches via clear_parent
+    await tool_map["update_todo"](workspace_id=202, public_id="td-1", clear_parent=True)
+    assert called_tools[-1][3]["clear_parent"] is True
+    assert called_tools[-1][3].get("parent_public_id") is None
 
     # 13. delete_todo
     await tool_map["delete_todo"](workspace_id=202, public_id="td-1")
