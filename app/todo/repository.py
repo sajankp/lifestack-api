@@ -15,6 +15,7 @@ class TodoRepository(BaseRepository[Todo]):
         self,
         workspace_id: int,
         completed: bool | None = None,
+        category: str | None = None,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
         sort: Literal["created_at", "due_date"] = "created_at",
@@ -22,6 +23,8 @@ class TodoRepository(BaseRepository[Todo]):
         base = select(Todo).where(Todo.workspace_id == workspace_id)
         if completed is not None:
             base = base.where(Todo.completed == completed)
+        if category is not None:
+            base = base.where(Todo.category == category)
 
         total_q = select(func.count()).select_from(base.subquery())
         total = (await self.session.execute(total_q)).scalar_one()

@@ -33,10 +33,11 @@ async def list_todos(
     user: Annotated[dict, Depends(get_current_user)],
     pagination: Annotated[PaginationParams, Depends()],
     completed: bool | None = Query(None),
+    category: str | None = Query(None),
     sort: Literal["created_at", "due_date"] = Query("created_at"),
 ):
     items, total = await todo_service.list_todos(
-        workspace_id, completed, pagination.limit, pagination.offset, sort
+        workspace_id, completed, category, pagination.limit, pagination.offset, sort
     )
     return build_page(items, total, pagination)
 

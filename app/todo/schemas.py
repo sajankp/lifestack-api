@@ -9,8 +9,9 @@ from app.todo.models import PriorityEnum
 
 
 class TodoBase(BaseModel):
-    title: str = Field(..., min_length=1, max_length=100)
-    description: str | None = Field(default="", max_length=2000)
+    title: str = Field(..., min_length=1, max_length=200)
+    description: str | None = Field(default="", max_length=20000)
+    category: str | None = Field(default=None, max_length=100)
     due_date: datetime | None = Field(default=None)
     priority: PriorityEnum = Field(default=PriorityEnum.medium)
     completed: bool = Field(default=False)
@@ -21,8 +22,9 @@ class TodoCreate(TodoBase):
 
 
 class TodoUpdate(BaseModel):
-    title: str | None = Field(None, min_length=1, max_length=100)
-    description: str | None = Field(None, max_length=2000)
+    title: str | None = Field(None, min_length=1, max_length=200)
+    description: str | None = Field(None, max_length=20000)
+    category: str | None = Field(None, max_length=100)
     due_date: datetime | None = Field(None)
     priority: PriorityEnum | None = Field(None)
     completed: bool | None = Field(None)
@@ -44,8 +46,8 @@ class DeleteCompletedResponse(BaseModel):
 
 
 class RecurringTodoRuleCreate(BaseModel):
-    title: str = Field(..., min_length=1, max_length=100)
-    description: str | None = Field(default="", max_length=2000)
+    title: str = Field(..., min_length=1, max_length=200)
+    description: str | None = Field(default="", max_length=20000)
     priority: PriorityEnum = Field(default=PriorityEnum.medium)
     frequency: Literal["daily", "weekly", "monthly", "yearly"] = Field(default="weekly")
     interval: int = Field(default=1, ge=1)
@@ -66,8 +68,8 @@ class RecurringTodoRuleCreate(BaseModel):
 
 
 class RecurringTodoRuleUpdate(BaseModel):
-    title: str | None = Field(default=None, min_length=1, max_length=100)
-    description: str | None = Field(default=None, max_length=2000)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=20000)
     priority: PriorityEnum | None = Field(default=None)
     frequency: Literal["daily", "weekly", "monthly", "yearly"] | None = Field(default=None)
     interval: int | None = Field(default=None, ge=1)
