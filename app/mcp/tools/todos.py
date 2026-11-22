@@ -57,7 +57,16 @@ def register(mcp: FastMCP) -> None:
                     parent_public_id=parent_uuid,
                 ),
             )
-            return TodoResponse.model_validate(todo).model_dump()
+            response = TodoResponse.model_validate(todo)
+            # The Todo ORM model exposes parent_id rather than
+            # parent_public_id/subtask_count, so echo the resolved parent
+            # (and zero subtasks for a brand-new todo) here, making the MCP
+            # create response match the read surface (get_todo/list_todos/
+            # list_next_due_items). When the caller's todo object already
+            # carries those attributes, keep them.
+            response.parent_public_id = getattr(todo, "parent_public_id", parent_uuid)
+            response.subtask_count = getattr(todo, "subtask_count", 0)
+            return response.model_dump()
 
     @mcp.tool
     async def list_todos(
