@@ -57,7 +57,13 @@ def register(mcp: FastMCP) -> None:
                     parent_public_id=parent_uuid,
                 ),
             )
-            return TodoResponse.model_validate(todo).model_dump()
+            # A brand-new todo has no subtasks yet; echo the resolved parent so
+            # the MCP create response carries parent_public_id/subtask_count
+            # like the read path does (the Todo ORM model exposes parent_id,
+            # not parent_public_id/subtask_count).
+            return TodoService._build_response(
+                todo, subtask_count=0, parent_public_id=parent_uuid
+            ).model_dump()
 
     @mcp.tool
     async def list_todos(
