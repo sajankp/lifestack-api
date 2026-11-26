@@ -366,3 +366,12 @@ def test_every_prod_service_rotates_its_json_logs():
 def test_postgres_preloads_pg_stat_statements():
     command = _load_compose("docker-compose.yml")["services"]["postgres"]["command"]
     assert "shared_preload_libraries=pg_stat_statements" in command
+
+
+def test_prod_postgres_override_keeps_the_pg_stat_statements_preload():
+    """Compose replaces (not merges) a service's `command`, so the prod override must repeat
+    the preload flags or production silently loses pg_stat_statements on the next recreate."""
+    command = _load_compose("docker-compose.prod.yml")["services"]["postgres"]["command"]
+    assert command[0] == "postgres"
+    assert "shared_preload_libraries=pg_stat_statements" in command
+    assert "pg_stat_statements.track=top" in command
