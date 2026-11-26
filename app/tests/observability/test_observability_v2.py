@@ -1,6 +1,7 @@
 """spec-112: slow-query visibility, request DB attribution, pool/host gauges, MCP tool metrics,
 pg_stat_statements report, prod compose logging."""
 
+import re
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -320,7 +321,7 @@ def test_report_ranks_by_total_time_with_share_and_truncates_statements():
             mean_ms=90.0,
             max_ms=900.0,
             rows=1000,
-            query="select * from holdings where workspace_id = $1 " + "x" * 400,
+            query=" ".join(["select * from holdings where workspace_id = $1", "x" * 400]),
         ),
         StatementRow(
             calls=2, total_ms=10_000.0, mean_ms=5000.0, max_ms=7000.0, rows=2, query="select 1"
@@ -344,11 +345,10 @@ def test_report_explains_how_to_enable_when_the_extension_is_missing():
 
 
 def _load_compose(name: str) -> dict:
-    class Loader(yaml.SafeLoader):
-        pass
-
-    Loader.add_multi_constructor("!", lambda loader, suffix, node: None)  # !override / !reset
-    return yaml.load((REPO / name).read_text(), Loader=Loader)  # noqa: S506 - SafeLoader subclass
+    # `!override` / `!reset` are Compose-only merge tags; strip them so the plain, safe loader
+    # can read the file (a custom yaml.load Loader is flagged by bandit B506 in CI).
+    text = re.sub(r"[ \t]!(?:override|reset)\b", "", (REPO / name).read_text())
+    return yaml.safe_load(text)
 
 
 def test_every_prod_service_rotates_its_json_logs():
