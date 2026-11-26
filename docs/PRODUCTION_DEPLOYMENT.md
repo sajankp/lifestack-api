@@ -288,7 +288,7 @@ faults ~160 MB back in as 4 KB random reads: **14.6 s, 19.3 s, 22.8 s and 31.8 s
 Do not read the API's `process_resident_memory_bytes` as its size: it drops to 50-80 MB because the rest is
 swapped out; use `VmSwap`/`VmHWM` in `/proc/<pid>/status`.
 
-Measure it yourself (read-only; the second script forces the swap-in by reading `/proc/<pid>/mem`):
+Measure it yourself (read-only; `VmSwap` is the part of the API that is currently on disk):
 
 ```bash
 docker exec lifestack-api-api-1 sh -c 'grep -E "VmRSS|VmSwap|VmHWM" /proc/1/status'
@@ -303,12 +303,60 @@ into zram (166 MB stored in ~46 MB of RAM, ~3.6x with zstd; disk swap unchanged)
 **4.2 s** instead of 15-30 s. The VM runs it from `zram-swap.service` (512 MB, zstd, priority 100, above the
 two disk swapfiles):
 
+`/usr/local/sbin/zram-swap.sh` (mode 0755; `ZRAM_*` env overrides exist for testing on a spare device, and the
+defaults are the production values):
+
+```sh
+#!/bin/sh
+# zram-backed swap for the 1 GB production VM (spec-112 follow-up). Idempotent.
+# Higher priority than the disk swapfiles, so newly evicted pages are compressed into RAM
+# instead of being written to (and later read back from) the slow boot volume.
+set -eu
+DEV=${ZRAM_DEV:-/dev/zram0}; SIZE=${ZRAM_SIZE:-512M}; ALGO=${ZRAM_ALGO:-zstd}; PRIO=${ZRAM_PRIO:-100}
+case "${1:-}" in
+  start)
+    modprobe zram
+    if swapon --noheadings --show=NAME | grep -qx "$DEV"; then exit 0; fi
+    zramctl --reset "$DEV" 2>/dev/null || true
+    zramctl "$DEV" --algorithm "$ALGO" --size "$SIZE"
+    mkswap -q "$DEV"
+    swapon --priority "$PRIO" "$DEV"
+    ;;
+  stop)
+    swapoff "$DEV" 2>/dev/null || true
+    zramctl --reset "$DEV" 2>/dev/null || true
+    ;;
+  *) echo "usage: $0 start|stop" >&2; exit 2 ;;
+esac
+```
+
+`/etc/systemd/system/zram-swap.service`:
+
+```ini
+[Unit]
+Description=zram compressed swap (512M, zstd, priority 100)
+DefaultDependencies=no
+After=systemd-modules-load.service
+Before=swap.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/zram-swap.sh start
+ExecStop=/usr/local/sbin/zram-swap.sh stop
+
+[Install]
+WantedBy=swap.target
+```
+
 ```bash
-sudo install -m 0755 zram-swap.sh /usr/local/sbin/zram-swap.sh      # idempotent start/stop
-sudo install -m 0644 zram-swap.service /etc/systemd/system/zram-swap.service
 sudo systemctl daemon-reload && sudo systemctl enable --now zram-swap.service
 swapon --show; zramctl                                              # /dev/zram0 prio 100, zstd
 ```
+
+Test overrides only with `sudo env ZRAM_DEV=/dev/zram1 ZRAM_SIZE=16M ZRAM_PRIO=1 ...` (plain `sudo -E` is
+ignored on some hosts and the script would then act on the default `/dev/zram0`).
 
 Two things to know:
 
