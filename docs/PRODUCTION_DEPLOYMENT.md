@@ -273,3 +273,101 @@ docker exec lifestack-api-api-1 python -m app.cli.pg_top_queries --limit 5   # e
 
 Data persists in the `lifestack-api_pg-data` volume. `pg_stat_statements` stores normalised text
 (`$1`, `$2`), so the report holds no amounts, names or tokens. Counters reset when Postgres restarts.
+
+### The API lives in swap: why requests stall for 15 s and what fixes it (2026-11-26)
+
+Symptom: after the app sits idle, the first pages you open take 15–30 s, and `slow_query` logs several
+different statements finishing in the same second with durations of 15–50 s, while `pg_stat_statements`
+shows no Postgres execution above ~1 s. The time is lost outside Postgres.
+
+Cause (measured on the VM, not inferred): importing `app.main` alone costs ~215 MB resident
+(fastapi, sqlalchemy/sqlmodel, fastmcp, redis, posthog, httpx, ...), and the API peaks at ~230 MB. The 954 MB
+VM cannot keep that plus dockerd, containerd, Postgres and the page cache resident, so the kernel evicts the
+idle API to the swapfile on the boot volume (`VmSwap` ~180 MB, `VmRSS` ~55 MB). The next burst of requests
+faults ~160 MB back in as 4 KB random reads: **14.6 s, 19.3 s, 22.8 s and 31.8 s** in four timed runs.
+Do not read the API's `process_resident_memory_bytes` as its size: it drops to 50-80 MB because the rest is
+swapped out; use `VmSwap`/`VmHWM` in `/proc/<pid>/status`.
+
+Measure it yourself (read-only; `VmSwap` is the part of the API that is currently on disk):
+
+```bash
+docker exec lifestack-api-api-1 sh -c 'grep -E "VmRSS|VmSwap|VmHWM" /proc/1/status'
+```
+
+What did **not** work: `mem_reservation` (cgroup `memory.low`), even with the parent `system.slice`
+protected. The kernel still evicted the API within four minutes and the cgroup's `low` counter climbed to
+17,269, i.e. nothing else was left to reclaim. There is not enough RAM to protect it; do not add it.
+
+What works: **zram swap**, which turns a disk read into an in-RAM decompress. A fresh API process evicted
+into zram (166 MB stored in ~46 MB of RAM, ~3.6x with zstd; disk swap unchanged) and faulted back in
+**4.2 s** instead of 15-30 s. The VM runs it from `zram-swap.service` (512 MB, zstd, priority 100, above the
+two disk swapfiles):
+
+`/usr/local/sbin/zram-swap.sh` (mode 0755; `ZRAM_*` env overrides exist for testing on a spare device, and the
+defaults are the production values):
+
+```sh
+#!/bin/sh
+# zram-backed swap for the 1 GB production VM (spec-112 follow-up). Idempotent.
+# Higher priority than the disk swapfiles, so newly evicted pages are compressed into RAM
+# instead of being written to (and later read back from) the slow boot volume.
+set -eu
+DEV=${ZRAM_DEV:-/dev/zram0}; SIZE=${ZRAM_SIZE:-512M}; ALGO=${ZRAM_ALGO:-zstd}; PRIO=${ZRAM_PRIO:-100}
+case "${1:-}" in
+  start)
+    modprobe zram
+    if swapon --noheadings --show=NAME | grep -qx "$DEV"; then exit 0; fi
+    zramctl --reset "$DEV" 2>/dev/null || true
+    zramctl "$DEV" --algorithm "$ALGO" --size "$SIZE"
+    mkswap -q "$DEV"
+    swapon --priority "$PRIO" "$DEV"
+    ;;
+  stop)
+    swapoff "$DEV" 2>/dev/null || true
+    zramctl --reset "$DEV" 2>/dev/null || true
+    ;;
+  *) echo "usage: $0 start|stop" >&2; exit 2 ;;
+esac
+```
+
+`/etc/systemd/system/zram-swap.service`:
+
+```ini
+[Unit]
+Description=zram compressed swap (512M, zstd, priority 100)
+DefaultDependencies=no
+After=systemd-modules-load.service
+Before=swap.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/zram-swap.sh start
+ExecStop=/usr/local/sbin/zram-swap.sh stop
+
+[Install]
+WantedBy=swap.target
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now zram-swap.service
+swapon --show; zramctl                                              # /dev/zram0 prio 100, zstd
+```
+
+Test overrides only with `sudo env ZRAM_DEV=/dev/zram1 ZRAM_SIZE=16M ZRAM_PRIO=1 ...` (plain `sudo -E` is
+ignored on some hosts and the script would then act on the default `/dev/zram0`).
+
+Two things to know:
+
+1. **Restart the API once after enabling zram.** Pages that already have a copy in a disk swapfile are
+   dropped on eviction without being rewritten, so they never move to zram and keep faulting from disk. A
+   fresh process has no disk copies (~2 minutes to healthy on this VM).
+2. **Never run `zram-swap.sh stop` (or `swapoff /dev/zram0`) while the API is swapped out**: it has to read
+   everything back into RAM and needs ~170 MB free. Do not `swapoff` the disk swapfiles either (~330 MB).
+
+Rollback: `sudo systemctl disable --now zram-swap.service` only when memory is free, otherwise just
+`sudo systemctl disable zram-swap.service` and reboot. The unit failing at boot leaves the VM exactly as it
+was before (no zram).
+
+Still open: the real fix is a smaller resident footprint (lazy-loading rarely used imports) or a bigger host.
