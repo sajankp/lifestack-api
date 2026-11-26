@@ -220,3 +220,56 @@ used alongside request logs when investigating financial or agent mutations.
 Protect `logs/deploy` and `logs/capture` because operational output can contain identifiers and
 request context. Rotate or export them through the same retention policy used by the host logging
 system.
+
+`docker-compose.prod.yml` bounds every service's `json-file` log (`max-size: 10m`, `max-file: 3`);
+the VM has no `/etc/docker/daemon.json`, so that is the only cap. It applies when a container is
+recreated.
+
+## 6. Performance Diagnosis (spec-110, spec-112)
+
+Metrics are scraped from `/metrics` by the homelab Prometheus and shown in Grafana; there is
+nothing extra to run on the VM. What to look at, in order:
+
+1. **Which route is slow?** Grafana "Avg seconds per request by route" next to "Requests by route".
+   `route="mcp"` is MCP tool traffic (the MCP app is mounted at `/`); `route="unmatched"` is only
+   404/scanner noise.
+2. **Database or not?** "DB share of request time" and "SQL queries per request". A high query count
+   is an N+1 loop; a low DB share means the time is outbound calls, CPU or swap.
+3. **Was the VM starved?** "VM memory pressure" (PSI `some avg10`) and swap, read from `/proc` by the
+   API itself. Compare with the slow-query graph.
+4. **Which statement?** `docker logs lifestack-api-api-1 | grep slow_query` (duration, route and a
+   truncated statement, never bind values), or the exact cost ranking:
+
+   ```bash
+   docker exec lifestack-api-api-1 python -m app.cli.pg_top_queries --limit 20
+   ```
+
+### Log level must not hide `slow_query`
+
+`slow_query` is logged at WARNING. With `LOG_LEVEL=ERROR` structlog drops it while the Prometheus
+counter still counts, which is how production once showed 1,141 slow queries and no statements.
+Production runs `LOG_LEVEL=WARNING`. The API logs `slow_query_log_suppressed_by_log_level` at startup
+if the level would hide it again.
+
+### Enabling `pg_stat_statements` and the VM Postgres tuning (one-time, restarts Postgres)
+
+`docker-compose.yml` starts the `postgres` service with
+`-c shared_preload_libraries=pg_stat_statements`; `docker-compose.prod.yml` repeats that and adds the
+VM tuning (`jit=off`, `shared_buffers=64MB`, `effective_cache_size=512MB`, `maintenance_work_mem=32MB`,
+`max_connections=30`, `random_page_cost=1.1`) because the image defaults assume a much larger host than
+the 1 OCPU / ~1 GB production VM. The deploy script does **not** manage Postgres (it
+sits behind the `local` profile), so apply it deliberately. Take a `pg_dump -Fc` first. The API
+reconnects after a few seconds; one scheduler job may log a single `connection is closed` at the
+restart (applied 2026-11-26, one error, none after):
+
+```bash
+cd /home/ubuntu/lifestack-api
+COMPOSE="docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml"
+$COMPOSE --profile local up -d --no-deps postgres          # recreates it with the new flags
+docker exec lifestack-api-postgres-1 sh -c \
+  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;"'
+docker exec lifestack-api-api-1 python -m app.cli.pg_top_queries --limit 5   # expect a table, exit 0
+```
+
+Data persists in the `lifestack-api_pg-data` volume. `pg_stat_statements` stores normalised text
+(`$1`, `$2`), so the report holds no amounts, names or tokens. Counters reset when Postgres restarts.
