@@ -8,7 +8,8 @@ from starlette.datastructures import MutableHeaders
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.observability.request_metrics import observe_request
+from app.observability.db_profile import begin_request_profile, end_request_profile
+from app.observability.request_metrics import observe_request, observe_request_db
 
 
 class MultipartBodySizeLimitMiddleware:
@@ -137,16 +138,21 @@ class StructlogMiddleware(BaseHTTPMiddleware):
 
         logger = structlog.get_logger()
         start_time = time.perf_counter()
+        # spec-112: the DB layer adds each statement to this profile (contextvar, shared object).
+        db_profile, db_profile_token = begin_request_profile(request.scope)
 
         try:
             response = await call_next(request)
         except Exception:
             structlog.get_logger("middleware").exception("Request failed")
             raise
+        finally:
+            end_request_profile(db_profile_token)
 
         process_time = time.perf_counter() - start_time
         status_code = response.status_code
         route = observe_request(request, status_code, process_time)
+        observe_request_db(route, db_profile)
 
         if status_code >= 500:
             log_fn = logger.error

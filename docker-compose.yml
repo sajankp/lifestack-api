@@ -58,6 +58,18 @@ services:
   postgres:
     image: postgres:18
     profiles: ["local"]
+    # spec-112: pg_stat_statements gives exact per-statement cost (read it with
+    # `python -m app.cli.pg_top_queries`). Changing shared_preload_libraries needs a Postgres
+    # restart, and the extension itself is created once with
+    # `CREATE EXTENSION IF NOT EXISTS pg_stat_statements;` (docs/PRODUCTION_DEPLOYMENT.md).
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.max=1000
+      - -c
+      - pg_stat_statements.track=top
     environment:
       POSTGRES_USER: lifestack
       POSTGRES_PASSWORD: lifestack

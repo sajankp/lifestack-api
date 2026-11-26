@@ -107,7 +107,7 @@ def _engine():
 def test_slow_query_is_logged_without_bind_parameters_and_counted():
     engine = _engine()
     install_slow_query_logging(engine, threshold_ms=0.0001)
-    before = _sample("lifestack_db_slow_queries_total", {})
+    before = _sample("lifestack_db_slow_queries_total", {"route": "none"})
 
     with structlog.testing.capture_logs() as logs, engine.connect() as conn:
         conn.execute(text("select :secret as v"), {"secret": "hunter2-amount-9999"})
@@ -117,7 +117,7 @@ def test_slow_query_is_logged_without_bind_parameters_and_counted():
     assert "select" in slow[0]["statement"].lower()
     assert slow[0]["duration_ms"] >= 0
     assert "hunter2" not in repr(slow)  # parameters are never logged
-    assert _sample("lifestack_db_slow_queries_total", {}) == before + len(slow)
+    assert _sample("lifestack_db_slow_queries_total", {"route": "none"}) == before + len(slow)
 
 
 def test_fast_query_is_not_logged():

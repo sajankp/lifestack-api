@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config import settings
 from app.core.database.slow_query import install_slow_query_logging
 from app.core.exceptions import APIError
+from app.observability.pool_metrics import register_pool_metrics
 
 logger = structlog.get_logger()
 
@@ -41,6 +42,7 @@ def get_session_maker(engine):
 
 # Default engine and session maker
 engine = get_engine()
+register_pool_metrics(engine.sync_engine.pool)
 async_session_maker = get_session_maker(engine)
 
 

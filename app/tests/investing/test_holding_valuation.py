@@ -24,11 +24,12 @@ def _data() -> dict:
 
 
 def test_valuation_stays_current_within_stale_window() -> None:
+    # Relative to today: a hardcoded date ages out of the 7-day window and turns CI red.
     data = _data()
     _add_holding_reporting_valuation(
         data,
         _holding(),
-        _price_row(date(2026, 11, 9)),
+        _price_row(date.today() - timedelta(days=1)),
         "USD",
         {},
         None,
