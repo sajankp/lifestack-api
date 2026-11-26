@@ -21,6 +21,25 @@ class HealthAccessFilter(logging.Filter):
         return normalized_path != "/health" or status_code_int >= 400
 
 
+def warn_if_slow_query_log_suppressed() -> None:
+    """Make a silent misconfiguration loud (spec-112).
+
+    `slow_query` is logged at WARNING. With LOG_LEVEL above that, structlog drops the line while
+    the Prometheus counter keeps counting, so production showed 1,141 slow queries and no
+    statements. Emit at a level that always passes the filter."""
+    level = getattr(logging, str(settings.LOG_LEVEL).upper(), logging.INFO)
+    if settings.SLOW_QUERY_THRESHOLD_MS <= 0 or level <= logging.WARNING:
+        return
+    logger = structlog.get_logger()
+    emit = logger.critical if level >= logging.CRITICAL else logger.error
+    emit(
+        "slow_query_log_suppressed_by_log_level",
+        log_level_setting=settings.LOG_LEVEL,
+        slow_query_threshold_ms=settings.SLOW_QUERY_THRESHOLD_MS,
+        hint="set LOG_LEVEL=WARNING (or lower) to see slow_query statements",
+    )
+
+
 def setup_logging():
     """Configure structlog for consistent structured logging."""
 
@@ -60,3 +79,4 @@ def setup_logging():
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
+    warn_if_slow_query_log_suppressed()

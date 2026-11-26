@@ -12,7 +12,8 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
 from app.config import settings
-from app.observability.request_metrics import db_slow_queries_total
+from app.observability.db_profile import record_query
+from app.observability.request_metrics import NO_ROUTE, db_slow_queries_total, route_for_scope
 
 logger = structlog.get_logger(__name__)
 
@@ -29,10 +30,10 @@ def _compact(statement: str) -> str:
 
 def install_slow_query_logging(engine: Engine, threshold_ms: float | None = None) -> None:
     """Attach the timing listeners to a *sync* engine (use `async_engine.sync_engine`).
-    A threshold of 0 (or less) installs nothing."""
+
+    Every statement is added to the active request's DB profile (spec-112). A threshold of 0
+    (or less) only turns the slow-query log and counter off; the profile is still recorded."""
     threshold = settings.SLOW_QUERY_THRESHOLD_MS if threshold_ms is None else threshold_ms
-    if threshold <= 0:
-        return
 
     @event.listens_for(engine, "before_cursor_execute")
     def _before(conn, cursor, statement, parameters, context, executemany):
@@ -45,11 +46,15 @@ def install_slow_query_logging(engine: Engine, threshold_ms: float | None = None
         started = getattr(context, _START_ATTR, None)
         if started is None:
             return
-        elapsed_ms = (time.perf_counter() - started) * 1000
-        if elapsed_ms >= threshold:
-            db_slow_queries_total.inc()
+        elapsed_s = time.perf_counter() - started
+        profile = record_query(elapsed_s)
+        elapsed_ms = elapsed_s * 1000
+        if threshold > 0 and elapsed_ms >= threshold:
+            route = route_for_scope(profile.scope) if profile else NO_ROUTE
+            db_slow_queries_total.labels(route=route).inc()
             logger.warning(
                 "slow_query",
                 duration_ms=round(elapsed_ms, 1),
+                route=route,
                 statement=_compact(statement),
             )

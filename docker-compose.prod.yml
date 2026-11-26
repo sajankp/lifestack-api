@@ -1,3 +1,11 @@
+# spec-112: bound container logs. Docker's default json-file driver never rotates, and the
+# production VM has no /etc/docker/daemon.json, so this is the only limit on log growth.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   migrate:
     # Requires Docker Compose v2.24.4+ for the !override merge tag.
@@ -8,6 +16,7 @@ services:
     # PostgreSQL is external in production; do not inherit the base file's
     # dependency on the local-profile postgres service.
     depends_on: !override {}
+    logging: *default-logging
 
   api:
     # Requires Docker Compose v2.24.4+ for the !override merge tag.
@@ -24,6 +33,44 @@ services:
     depends_on: !override
       migrate:
         condition: service_completed_successfully
+    logging: *default-logging
+
+  # The deploy script does not manage these two (they sit behind the `local` profile and are
+  # recreated deliberately); the entries only make their settings apply when they are.
+  #
+  # Postgres is tuned for the production VM (1 OCPU, ~1 GB RAM, 28 MB database) instead of the
+  # image defaults, which assume a much larger host. `command` replaces the base file's list,
+  # so pg_stat_statements (spec-112) is repeated here.
+  #   jit=off                  JIT compile time dominates short queries on a throttled CPU.
+  #   shared_buffers=64MB      the whole database is ~28 MB; the default 128 MB is wasted RAM.
+  #   effective_cache_size     planner hint only (page cache is ~400 MB), allocates nothing.
+  #   max_connections=30       ~11 in use; each idle backend costs memory the VM does not have.
+  #   random_page_cost=1.1     block-volume SSD, not spinning disk.
+  postgres:
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.max=1000
+      - -c
+      - pg_stat_statements.track=top
+      - -c
+      - jit=off
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - effective_cache_size=512MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_connections=30
+      - -c
+      - random_page_cost=1.1
+    logging: *default-logging
+
+  redis:
+    logging: *default-logging
 
   cloudflared:
     # Pin to a known stable version to avoid unexpected breaking changes from 'latest'
@@ -35,6 +82,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    logging: *default-logging
 
   database-backup:
     build:
@@ -50,3 +98,4 @@ services:
       timeout: 5s
       retries: 48
       start_period: 24h
+    logging: *default-logging

@@ -74,6 +74,7 @@ from app.imports.router import router as imports_router
 from app.investing.router import router as investing_router
 from app.mcp.server import create_mcp_asgi_app, create_mcp_server
 from app.notifications.router import router as notifications_router
+from app.observability.host_metrics import register_host_metrics
 from app.observability.log_export import setup_log_export
 from app.observability.posthog_client import init_posthog
 from app.observability.scheduler_metrics import set_jobs_registered, set_scheduler_running
@@ -91,6 +92,7 @@ from app.todo.router import router as todo_router
 
 # Initialize logging before creating the app
 setup_logging()
+register_host_metrics()
 
 logger = structlog.get_logger()
 

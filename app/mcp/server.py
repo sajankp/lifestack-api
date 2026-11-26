@@ -18,6 +18,7 @@ from app.mcp.tools import (
     todos,
     workspace,
 )
+from app.observability.mcp_metrics import McpToolMetricsMiddleware
 
 _TOOL_MODULES = (
     todos,
@@ -38,7 +39,14 @@ def create_mcp_server() -> FastMCP:
     mcp = FastMCP("Lifestack", auth=LifestackTokenVerifier())
     for module in _TOOL_MODULES:
         module.register(mcp)
+    # spec-112: time every tool call by (bounded) tool name; see observability/mcp_metrics.py.
+    mcp.add_middleware(McpToolMetricsMiddleware(lambda: registered_tool_names(mcp)))
     return mcp
+
+
+async def registered_tool_names(server: FastMCP) -> set[str]:
+    """Names of the tools this server registered (the bound for the MCP metric label)."""
+    return {tool.name for tool in await server.list_tools()}
 
 
 def create_mcp_asgi_app(mcp: FastMCP, path: str = "/mcp"):
