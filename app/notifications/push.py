@@ -9,8 +9,6 @@ the same way ``app.investing.service._fetch_stock_price`` is.
 import json
 from dataclasses import dataclass
 
-from pywebpush import WebPushException, webpush
-
 from app.config import settings
 
 
@@ -24,6 +22,10 @@ class PushResult:
 
 
 def send_web_push(endpoint: str, p256dh: str, auth: str, payload: dict) -> PushResult:
+    # Imported here, not at module top: pywebpush pulls in requests + py_vapid + http_ece and is
+    # only needed once a push is actually sent (app/tests/test_import_footprint.py).
+    from pywebpush import WebPushException, webpush  # noqa: PLC0415
+
     try:
         webpush(
             subscription_info={

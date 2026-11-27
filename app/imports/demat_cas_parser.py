@@ -27,8 +27,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
-import pdfplumber
-
 # NSDL's combined CAS separates equities from other asset classes with a
 # "Equities (E)" style header; CDSL's statement of holding has no such
 # sub-split — the whole statement (spec-063 problem statement) is a single
@@ -115,6 +113,10 @@ class DematCasParseResult:
 
 
 def _extract_lines(file_path: str, password: str | None) -> list[str]:
+    # Imported here: pdfplumber/pdfminer/Pillow are ~6 MB resident and CAS imports are rare
+    # (app/tests/test_import_footprint.py).
+    import pdfplumber  # noqa: PLC0415
+
     lines: list[str] = []
     with pdfplumber.open(file_path, password=password or "") as pdf:
         for page in pdf.pages:

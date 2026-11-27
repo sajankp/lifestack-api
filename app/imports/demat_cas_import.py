@@ -12,7 +12,6 @@ import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from pdfminer.pdfdocument import PDFPasswordIncorrect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -130,6 +129,9 @@ async def validate_demat_cas_batch(
         # file. Blaming the password for every failure would mislead a user
         # whose PDF is just broken.
         underlying = exc.args[0] if exc.args else None
+        # Imported here: pdfminer is only loaded once a PDF import actually fails.
+        from pdfminer.pdfdocument import PDFPasswordIncorrect  # noqa: PLC0415
+
         if isinstance(underlying, PDFPasswordIncorrect):
             raise ValidationError(
                 detail=(
