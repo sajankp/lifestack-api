@@ -17,8 +17,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
-import pdfplumber
-
 _FOLIO_RE = re.compile(r"Folio No[:\s]+([\w/-]+)", re.IGNORECASE)
 _SCHEME_RE = re.compile(
     r"^(?P<name>.+?)\s*\(ISIN:\s*(?P<isin>[A-Z]{2}[A-Z0-9]{9}\d)\)", re.IGNORECASE
@@ -89,6 +87,10 @@ def parse_cams_cas(file_path: str) -> CamsCasParseResult:
     nav_history: dict[str, list[tuple[datetime, Decimal]]] = {}
 
     lines: list[str] = []
+    # Imported here: pdfplumber/pdfminer/Pillow are ~6 MB resident and CAS imports are rare
+    # (app/tests/test_import_footprint.py).
+    import pdfplumber  # noqa: PLC0415
+
     with pdfplumber.open(file_path) as pdf:
         for page in pdf.pages:
             text = page.extract_text() or ""

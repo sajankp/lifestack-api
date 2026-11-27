@@ -9,14 +9,8 @@ existing print/stdout pipeline.
 
 import logging
 
-from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-from opentelemetry.sdk.resources import Resource
-
 from app.config import settings
-from app.observability.tracing import _parse_otlp_headers, redact_span_attributes
+from app.observability.otel_redaction import _parse_otlp_headers, redact_span_attributes
 
 _OTEL_BRIDGE_LOGGER_NAME = "lifestack.otel_bridge"
 _bridge_logger: logging.Logger | None = None
@@ -26,6 +20,17 @@ def setup_log_export() -> None:
     global _bridge_logger
     if _bridge_logger is not None:
         return
+
+    # Imported here, not at module top: ``app.core.logging`` imports this module on every
+    # start-up, but the OTel SDK is only needed when an OTLP endpoint is configured
+    # (app/tests/test_import_footprint.py).
+    from opentelemetry._logs import set_logger_provider  # noqa: PLC0415
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import (  # noqa: PLC0415
+        OTLPLogExporter,
+    )
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler  # noqa: PLC0415
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor  # noqa: PLC0415
+    from opentelemetry.sdk.resources import Resource  # noqa: PLC0415
 
     resource = Resource.create({
         "service.name": "lifestack-api",

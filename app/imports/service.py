@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-import openpyxl
 from fastapi import UploadFile
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -757,6 +756,10 @@ class ImportService:
         wb = None
 
         if is_xlsx:
+            # Imported here: openpyxl is ~10 MB resident and Excel imports are rare
+            # (app/tests/test_import_footprint.py).
+            import openpyxl  # noqa: PLC0415
+
             wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
             ws = wb.active
             rows_gen = ws.iter_rows(values_only=True)

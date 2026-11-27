@@ -5,8 +5,6 @@ called from ``create_app`` behind that check, so dev/test/e2e/CI never
 install a real exporter and need no mocking.
 """
 
-import re
-
 import structlog
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -15,60 +13,15 @@ from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, SpanExportResult
 
 from app.config import settings
+from app.observability.otel_redaction import (  # noqa: F401 — re-exported; tests and callers use these names
+    _DENYLIST_KEYS,
+    _REDACTED,
+    _is_denylisted,
+    _parse_otlp_headers,
+    redact_span_attributes,
+)
 
 _logger = structlog.get_logger(__name__)
-
-# Attribute keys that must never leave the box, plus a query-string /
-# request-body catch-all pattern (spec-082 privacy section — the core
-# design problem of this spec).
-_DENYLIST_KEYS = {"amount", "balance", "email", "token", "name", "note", "body"}
-_REDACTED = "[redacted]"
-
-
-def _parse_otlp_headers(raw: str | None) -> dict[str, str]:
-    """Parse the standard OTel comma-separated ``key=value`` header format."""
-    headers: dict[str, str] = {}
-    if not raw:
-        return headers
-    for pair in raw.split(","):
-        if "=" not in pair:
-            continue
-        key, _, value = pair.partition("=")
-        headers[key.strip()] = value.strip()
-    return headers
-
-
-def _is_denylisted(key: str) -> bool:
-    lowered = key.lower()
-    # Allow-list common non-PII metadata suffixes that would otherwise match
-    # the "name" denylist term (e.g. job_name, logger_name, method_name).
-    safe_suffixes = (
-        "job_name",
-        "logger_name",
-        "method_name",
-        "class_name",
-        "db_name",
-        "funcname",
-        "filename",
-        "pathname",
-    )
-    if any(lowered.endswith(s) or lowered == s for s in safe_suffixes):
-        return False
-    return any(term in lowered for term in _DENYLIST_KEYS)
-
-
-def redact_span_attributes(attributes: dict) -> dict:
-    """Strip denylisted attribute values and query strings from a span's
-    attributes. Used both by the exporting processor and directly in tests."""
-    redacted = {}
-    for key, value in attributes.items():
-        if _is_denylisted(key):
-            redacted[key] = _REDACTED
-        elif key in ("http.url", "http.target", "url.full") and isinstance(value, str):
-            redacted[key] = re.sub(r"\?.*$", "", value)
-        else:
-            redacted[key] = value
-    return redacted
 
 
 class RedactingSpanExporter(SpanExporter):

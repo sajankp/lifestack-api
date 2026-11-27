@@ -6,9 +6,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
@@ -75,10 +72,8 @@ from app.investing.router import router as investing_router
 from app.mcp.server import create_mcp_asgi_app, create_mcp_server
 from app.notifications.router import router as notifications_router
 from app.observability.host_metrics import register_host_metrics
-from app.observability.log_export import setup_log_export
 from app.observability.posthog_client import init_posthog
 from app.observability.scheduler_metrics import set_jobs_registered, set_scheduler_running
-from app.observability.tracing import setup_tracing
 from app.platform.router import router as platform_router
 from app.spending.router import router as spending_router
 from app.summaries.router import (
@@ -400,6 +395,15 @@ def create_app() -> FastAPI:
     # OpenTelemetry traces/logs to PostHog OTLP (spec-082) — inert without
     # OTEL_EXPORTER_OTLP_ENDPOINT; installs a no-op provider otherwise.
     if settings.OTEL_EXPORTER_OTLP_ENDPOINT:
+        # Imported here: the OTel SDK + instrumentors are ~7 MB resident and unused while the
+        # endpoint is unset, which is the production default (app/tests/test_import_footprint.py).
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # noqa: PLC0415
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor  # noqa: PLC0415
+        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor  # noqa: PLC0415
+
+        from app.observability.log_export import setup_log_export  # noqa: PLC0415
+        from app.observability.tracing import setup_tracing  # noqa: PLC0415
+
         setup_tracing()
         setup_log_export()
         FastAPIInstrumentor.instrument_app(_app)
