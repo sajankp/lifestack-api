@@ -370,4 +370,28 @@ Rollback: `sudo systemctl disable --now zram-swap.service` only when memory is f
 `sudo systemctl disable zram-swap.service` and reboot. The unit failing at boot leaves the VM exactly as it
 was before (no zram).
 
-Still open: the real fix is a smaller resident footprint (lazy-loading rarely used imports) or a bigger host.
+Footprint (perf/api-memory-footprint, measured in the production image with Python 3.13, importing
+`app.main`; the API process starts at about this size before serving a request):
+
+| | heap (`RssAnon`) | total RSS |
+|---|---|---|
+| before | 178.0 MB | 208.5 MB |
+| after | 147.9 MB | 174.5 MB |
+
+What changed: `openpyxl` (Excel import), `pdfplumber`/`pdfminer` (CAS PDF import), `pywebpush` (push
+delivery) and the OpenTelemetry SDK, exporters and instrumentors are imported where they are used, not at
+module top level. OpenTelemetry loads only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set (it is not in
+production); `redis` still imports `opentelemetry.sdk.metrics` itself, which this app cannot avoid.
+PostHog and MCP stay eager because production uses both. `app/tests/test_import_footprint.py` fails if any
+of those libraries is imported at start-up again. The first Excel or PDF import after a restart pays the
+import cost (about a second).
+
+Image: `--no-install-recommends` for ffmpeg (about 560 MB less; WebM/Opus, Ogg/Opus and M4A/AAC decode
+byte-identical), `--compile-bytecode` (site-packages is root-owned, so `appuser` could never cache `.pyc`
+and every start recompiled ~2,500 modules: import 8.4 s to about 5 s, image +130 MB), `COPY --chown`
+instead of a recursive `chown` (no duplicated `/app` layer), tests excluded by `.dockerignore`, uv pinned.
+Net 1.66 GB to 1.42 GB, plus `google-generativeai` and the unused `httplib2` pin removed: voice capture
+talks to Gemini Live over raw `websockets` (`app/capture/agent.py`), never through the SDK.
+
+Still open: the heap is still ~150 MB because SQLAlchemy, Pydantic (338 app models), FastAPI and the MCP
+stack are core; going lower needs a bigger host or fewer Pydantic models, not more lazy imports.
