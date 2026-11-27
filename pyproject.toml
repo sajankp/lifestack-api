@@ -38,7 +38,6 @@ dependencies = [
     "posthog>=3.7.0",
     # Scheduler
     "apscheduler>=3.11.0",
-    "google-generativeai>=0.8.6",
     "websockets>=16.0",
     "httpx>=0.28.1",
     # Pin vulnerable/transitive packages to patched versions
@@ -51,7 +50,6 @@ dependencies = [
     "pyjwt[crypto]>=2.10.1",
     "pdfplumber>=0.11.10",
     "pywebpush>=2.3.0",
-    "httplib2>=0.32.0",
     "mcp>=1.30.0",
     "tzdata",
     # MCP
