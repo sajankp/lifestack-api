@@ -6,7 +6,7 @@ the highest-taxed gain first.**
 **Depends on:** spec-099 (capital-gains tax estimate). This spec implements spec-099's phase 4 and the
 set-off rule from spec-099 §1, which the engine never applied. Where spec-099 §3.4 gives a different
 ordering, this spec replaces it.
-**Branch:** `fix/spec-114-tax-loss-set-off` (one PR, three commits T1/T2/T3, each with its own RED test).
+**Branch:** the shared `feat/lifestack-reshape` in `lifestack-api` (spec-113 §7). Three commits T1/T2/T3, each with its own RED test.
 **Delivery slot:** step 2 of 6 in spec-113 §7.
 
 ---
@@ -177,14 +177,15 @@ These are thin routers over the existing `TaxWhatIfService` (`app/investing/tax_
 
 **Step 0: evidence (non-blocking).** The `personal` profile posts the four FY 2026-27 buckets for
 workspace 1 as a comment on kanban card **`t_7ae94ff5`** (`kanban_show t_7ae94ff5`). Use them to confirm a
-loss bucket exists, and build a regression fixture that reproduces the real figures. Quote them in the PR
-description. If the comment isn't there yet, go ahead; the fix doesn't depend on it.
+loss bucket exists, and build a regression fixture that reproduces the real figures. Quote them in the final
+API PR description. If the comment isn't there yet, go ahead; the fix doesn't depend on it.
 
 Setup:
 ```bash
 cd /home/sajan/lifestack/lifestack-api && git fetch origin
-git worktree add /home/sajan/lifestack-wt/spec-114 -b fix/spec-114-tax-loss-set-off origin/main
-cd /home/sajan/lifestack-wt/spec-114
+# (branch and worktree are shared by every step; see spec-113 §7. Create them only if they don't exist yet, otherwise `cd` there and `git fetch origin && git rebase origin/main`.)
+git worktree add /home/sajan/lifestack-wt/reshape/lifestack-api -b feat/lifestack-reshape origin/main
+cd /home/sajan/lifestack-wt/reshape/lifestack-api
 export PY=/home/sajan/lifestack/lifestack-api/.venv/bin/python   # the worktree has no venv of its own
 export PRECOMMIT=/home/sajan/lifestack/lifestack-api/.venv/bin/pre-commit
 ```
@@ -232,7 +233,7 @@ export PRECOMMIT=/home/sajan/lifestack/lifestack-api/.venv/bin/pre-commit
 - `git add -A && $PRECOMMIT run --all-files` (run twice if it rewrites files).
 - Full suite with coverage: `$PY -m pytest app/tests -q --cov=app --cov-fail-under=80`.
   It takes longer than 10 minutes, so run it in the background.
-- Push and open a PR **only when the owner asks**. Merge with `--merge`; squash is disabled.
+- Don't push or open a PR here. The single API PR is opened at the end of spec-113 §7.
 
 ## 6. Acceptance
 - With any loss bucket present, `total_tax_inr` is lower than or equal to today's figure, and equals the

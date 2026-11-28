@@ -1,9 +1,9 @@
 # Spec-115: One budget rule, an actionable morning push, and a Saturday net-worth push
 
 **Status:** Approved by the owner (2026-11-28); not yet implemented.
-**Scope:** `lifestack-api` (most of it) and one small `lifestack-web` change. E2E comes after both merge.
+**Scope:** `lifestack-api` (most of it) and one small `lifestack-web` change. E2E is written at the very end (spec-113 §7).
 **Part of:** spec-113, phase 1.
-**Branches:** API `fix/spec-115-budget-rule-and-push`, web `fix/spec-115-budget-card`.
+**Branches:** the shared `feat/lifestack-reshape` in `lifestack-api` and in `lifestack-web` (spec-113 §7).
 **Delivery slot:** step 1 of 6 in spec-113 §7.
 
 ---
@@ -169,8 +169,9 @@ phase 4.
 Setup:
 ```bash
 cd /home/sajan/lifestack/lifestack-api && git fetch origin
-git worktree add /home/sajan/lifestack-wt/spec-115 -b fix/spec-115-budget-rule-and-push origin/main
-cd /home/sajan/lifestack-wt/spec-115
+# (branch and worktree are shared by every step; see spec-113 §7. Create them only if they don't exist yet, otherwise `cd` there and `git fetch origin && git rebase origin/main`.)
+git worktree add /home/sajan/lifestack-wt/reshape/lifestack-api -b feat/lifestack-reshape origin/main
+cd /home/sajan/lifestack-wt/reshape/lifestack-api
 export PY=/home/sajan/lifestack/lifestack-api/.venv/bin/python PRECOMMIT=/home/sajan/lifestack/lifestack-api/.venv/bin/pre-commit
 ```
 Fast loop: `$PY -m pytest <file> -p no:cacheprovider --no-cov -q`.
@@ -192,7 +193,8 @@ Finish:
 - Update `docs/specs/spec-067-morning-briefing.md` and `spec-058-dashboard-insights.md` with a short
   "Superseded in part by spec-115" note
 
-**Web PR (after the API PR merges):** branch `fix/spec-115-budget-card` in `lifestack-web`.
+**Web part** (same step, `lifestack-web` worktree `/home/sajan/lifestack-wt/reshape/lifestack-web`, branch
+`feat/lifestack-reshape`; build it against the local API branch):
 - `DashboardPage.tsx` (~L205-216): the budget card counts category and group budgets. The note becomes
   "N budgets tracked" / "No budgets set" plus "₹X not covered by a budget".
 - `types/dashboard.ts`: nullable group fields, new category fields.
@@ -201,7 +203,7 @@ Finish:
   "On pace to spend ₹X this month" / "₹Y not covered by a budget".
 - Vitest for each change.
 
-**E2E (after both merge):** in `lifestack-e2e`, one spec covering:
+**E2E (written at the very end, spec-113 §7):** in `lifestack-e2e`, one spec covering:
 - a category budget shows on the dashboard
 - the pacing card isn't "over budget" when only unbudgeted spend is high
 
@@ -212,7 +214,8 @@ Finish:
   on, no push is sent and the skip log line appears.
 - The Saturday 05:20 IST push shows the week's change split into saved vs. markets & other, and new money
   vs. growth.
-- Coverage ≥ 80%, pre-commit green. Deploy only when the owner authorises it.
+- Coverage ≥ 80%, pre-commit green. Push and the Saturday push are verified after the final deploy
+  (spec-113 §7); before that, by the job tests and a local run of the job against the e2e stack.
 
 ## 5. Not in scope
 - An overall monthly limit and merging Budgets with KPIs (spec-113 phase 4).

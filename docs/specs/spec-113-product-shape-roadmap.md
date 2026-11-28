@@ -36,7 +36,7 @@ Dependencies (the delivery is sequential anyway; see §7):
 P1 (spec-115) → T (spec-114) → P2 → P3 Today → P4 Money + nav → P5 Investments → personal's pending items
 ```
 
-| Phase | Spec | Repos | Needs merged first |
+| Phase | Spec | Repos | Needs done first |
 |---|---|---|---|
 | **P1** | spec-115 | api → web → e2e | — |
 | **T** | spec-114 | api | — |
@@ -47,14 +47,15 @@ P1 (spec-115) → T (spec-114) → P2 → P3 Today → P4 Money + nav → P5 Inv
 | personal | §6 | card `t_7ae94ff5` (now) + pending README items | P5 live (pending items) |
 
 **Rules for every phase** (from the root `CLAUDE.md` and the `lifestack` skill):
-- One PR per repo: API first, then web. E2E is written **after both merge**, because E2E CI checks out the
+- **One branch and one PR per repo for the whole programme** (§7). E2E is written at the very end, after the
+  API and web PRs merge, because E2E CI checks out the
   sibling repos' `main`.
-- Branch prefixes `feat/`, `fix/`, `chore/`. Use a separate git worktree per step under
-  `/home/sajan/lifestack-wt/`; never switch the shared checkout's branch.
+- Branch `feat/lifestack-reshape` in each repo, in worktrees under `/home/sajan/lifestack-wt/reshape/`
+  (§7). Never switch the shared checkout's branch.
 - TDD, coverage thresholds never lowered, and `pre-commit run --all-files` green before any commit is
   called done.
-- One PR open at a time (§7). Merge only with the owner's go-ahead; deploy only when the owner asks.
-  Merge with `--merge`; squash is disabled.
+- Commit freely per task (TDD). Push, PRs, merge and deploy happen once, at the end (§7), with the owner's
+  go-ahead. Merge with `--merge`; squash is disabled.
 - No secrets in output. Prod (Oracle VM, 1 GB) is memory-bound: no new page may call investing analytics
   endpoints on load unless that page is Investments.
 - Don't paste pages together. Extract sections into their own files.
@@ -104,7 +105,7 @@ P1 (spec-115) → T (spec-114) → P2 → P3 Today → P4 Money + nav → P5 Inv
 - **One valuation line** on Investments: derive "Valuation status" and "Valuation as of … · estimated" from
   the same status, so they can't contradict each other.
 - Vitest per component.
-- E2E: update assertions on changed copy and the transfer row. List each changed selector in the PR body.
+- E2E: update assertions on changed copy and the transfer row. Record each changed selector in the step report; the E2E work happens at the end (§7.3).
 
 ## 3. Phase 3: Today (rebuilt Dashboard)
 
@@ -130,7 +131,7 @@ Keep `dashboard-portfolio-value` as the test id on the Investments line.
 
 Rename the nav label to **Today**; the route stays `/`.
 
-**API** (small, in this phase's API PR if needed): add `month_budget` (from `MonthBudgetStatus`) to
+**API** (small, in this step's API commits if needed): add `month_budget` (from `MonthBudgetStatus`) to
 `DashboardSummary` so Today needs no extra call. It goes through the same Redis cache.
 
 **Tests:**
@@ -171,7 +172,7 @@ Rename the nav label to **Today**; the route stays `/`.
 - `MonthBudgetStatus` (spec-115) gains an `overall` line covering **all** spend.
 - **KPIs:**
   - prod has no custom KPIs. Verify with a count query on `financial_kpis` before the migration and record
-    the result in the PR.
+    the result in the step report (and later the API PR description).
   - remove the KPI UI
   - stop scheduling `kpi_guardrails_job` (`app/main.py` ~L163) behind a setting
     `KPI_GUARDRAILS_ENABLED=False`
@@ -214,10 +215,10 @@ Add a Vitest test that walks every route the API emits and asserts it resolves t
 - `app/application/workflows.py` `route=` values
 - `_INSIGHT_ENTITY_ROUTES`
 
-Then, in this phase's API PR, update those emitters to the new routes. That's a tidy-up; the redirects
+Then, in this step's API commits, update those emitters to the new routes. That's a tidy-up; the redirects
 stay.
 
-### 4.5 E2E selectors removed or changed (list them in the web PR)
+### 4.5 E2E selectors removed or changed (record them in the step report and the final web PR)
 
 The counts are usages in `lifestack-e2e` today:
 - `nav-spending` ×13
@@ -335,31 +336,97 @@ The deferred items, for reference (originally drafted as a separate card):
 > **Done when:** one run stores a report without the three fields, the todos exist in LifeStack once each,
 > and the cron shows the new schedule and name.
 
-## 7. Delivery: one coding agent, one PR at a time
+## 7. Delivery: one coding agent, one branch and one PR per repo
 
-The owner runs a single coding agent through the steps below **sequentially**.
-- A step's repos are delivered as API PR → merge → web PR → merge → E2E PR → merge. **Only one PR is open
-  at any time**, and the next PR starts from an up-to-date `main`.
-- No parallel agents, no kanban fan-out. Merging and deploying happen when the owner asks.
+The owner runs a **single coding agent** through the six steps below, **in order**.
+- All work collects on one branch per repo, `feat/lifestack-reshape`, with as many commits per feature as
+  TDD needs. Each commit message carries the step tag, e.g. `fix(tax): … (spec-114 T1)`, so the final PR
+  reads feature by feature and any feature can be reverted on its own.
+- Nothing is pushed or merged until all six steps are done.
+- At the end there is **one API PR and one web PR**, then **one E2E PR**.
 
-| Step | Spec | PRs, in order | Owner checkpoint before the next step |
+### 7.1 Workspace (create once, reuse for every step)
+
+The three worktrees sit side by side, so `lifestack-e2e/docker-compose.e2e.yml` (build contexts
+`../lifestack-api`, `../lifestack-web`) builds the feature branches, not `main`:
+
+```bash
+mkdir -p /home/sajan/lifestack-wt/reshape
+for r in lifestack-api lifestack-web lifestack-e2e; do
+  git -C /home/sajan/lifestack/$r fetch -q origin
+  git -C /home/sajan/lifestack/$r worktree add /home/sajan/lifestack-wt/reshape/$r -b feat/lifestack-reshape origin/main
+done
+export PY=/home/sajan/lifestack/lifestack-api/.venv/bin/python
+export PRECOMMIT=/home/sajan/lifestack/lifestack-api/.venv/bin/pre-commit
+```
+
+- Web needs `node_modules` in its worktree (`npm ci`), and so does E2E.
+- Never use the shared checkouts in `/home/sajan/lifestack/`, which may be on other branches.
+
+### 7.2 Steps
+
+| Step | Spec | Repos touched | Local check before moving on |
 |---|---|---|---|
-| 1 | spec-115 (phase 1) | api `fix/spec-115-budget-rule-and-push` → web `fix/spec-115-budget-card` → e2e | Deploy the API; watch a few morning pushes and the first Saturday push |
-| 2 | spec-114 (tax T1–T3) | api `fix/spec-114-tax-loss-set-off` | Compare the new tax summary with card `t_7ae94ff5`'s figures |
-| 3 | spec-113 §2 (phase 2) | api `fix/spec-113-p2-transfer-row` → web `fix/spec-113-p2-wording` → e2e | |
-| 4 | spec-113 §3 (Today) | api (`month_budget`, if needed) → web → e2e | Use Today for a few days |
-| 5 | spec-113 §4 (Money + nav) | api (overall limit, KPI off) → web → e2e | Test the installed PWA on phone and iPad |
-| 6 | spec-113 §5 (Investments + tax UI + ELSS) | api → web → e2e | Then tell `personal` to do the pending items on its README |
+| 1 | spec-115 (budget rule, actionable push, period change, Saturday push) | api, web | The seeded budget case gives one answer across the four places (test). A local run of `morning_briefing_job` and `weekly_wealth_push_job` against the e2e stack writes the expected notifications. |
+| 2 | spec-114 (tax T1–T3) | api | A fixture with card `t_7ae94ff5`'s real buckets gives the highest-tax-first result (about ₹70.9k vs ₹81.6k today) |
+| 3 | spec-113 §2 (one-row transfers, wording) | api, web | Feed tests; screenshots of Money at 390 / 820 / 1440 px |
+| 4 | spec-113 §3 (Today) | api (if needed), web | Screenshots of Today at 390 / 820 / 1440 px |
+| 5 | spec-113 §4 (Money, overall limit, KPI off, nav, redirects) | api, web | Route-resolution test; screenshots at phone and iPad widths |
+| 6 | spec-113 §5 (Investments, tax UI, ELSS) | api, web | Screenshots of the Tax & dates tab at iPad width; no clipped tables |
+
+**At the start of every step:**
+- rebase both feature branches on `origin/main` (`git fetch && git rebase origin/main`)
+- re-run the step's tests
+- after any migration, check that `alembic heads` shows exactly one head. Migration numbers on the branch
+  must follow `main`'s latest, so renumber after a rebase if `main` moved.
+
+**At the end of every step:**
+- `pre-commit run --all-files` green in each touched repo
+- API: full suite with `--cov-fail-under=80`
+- Web: `npm test` + `npm run build` + lint
+- report to the owner: commits, tests run with results, test ids removed or changed
+
+Then stop and wait for the owner's "next".
 
 **Prompt for the coding agent at each step** (owner pastes it):
-> Implement step N of `lifestack-api/docs/specs/spec-113-product-shape-roadmap.md` §7, following the named
-> spec exactly.
-> - Work in a fresh worktree off `origin/main` under `/home/sajan/lifestack-wt/`.
-> - TDD, one commit per task, `pre-commit run --all-files` and the full suite with coverage green.
-> - Open one PR at a time. Merge each (`gh pr merge --merge --delete-branch`) only after its CI is green
->   and I say so, then continue with the next repo of the step.
-> - No deploy unless I ask.
-> - Report: PRs (links), tests run with results, test ids removed or changed.
+> Do step N of `lifestack-api/docs/specs/spec-113-product-shape-roadmap.md` §7.2, following the named spec
+> exactly.
+> - Work only in the worktrees under `/home/sajan/lifestack-wt/reshape/` (create them per §7.1 if missing),
+>   on branch `feat/lifestack-reshape`.
+> - TDD; commit as you go with the step tag in each message.
+> - Don't push, open PRs or deploy.
+> - Finish with the step's local check and the end-of-step gates, then report.
+
+### 7.3 Finish (after step 6, when the owner says "ship")
+
+Order matters, because Cloudflare Pages deploys the web app as soon as web `main` changes. Web must
+**never** go live before the API it calls.
+
+1. **E2E:** in the `lifestack-e2e` worktree, write the E2E specs listed in each step's spec. Replace the
+   removed selectors (§4.5). Run the **full** suite locally against the reshape stack.
+2. **API PR:**
+   - rebase on `origin/main` and rerun the full suite
+   - push; open **one** PR `feat/lifestack-reshape`, whose description has one section per step (commits,
+     tests, migrations) and card `t_7ae94ff5`'s tax evidence
+   - CI green → merge with `--merge` when the owner says so
+3. **Deploy the API** (`./scripts/deploy-production.sh` on the VM, per the `lifestack` skill) when the owner
+   says so:
+   - check that `/health` returns 200 and the migrations ran
+   - this is when the new morning-push behaviour goes live, and the Saturday push starts on the next
+     Saturday
+4. **Web PR:** rebase, `npm test` + build, push, open **one** PR, CI green → merge (this auto-deploys).
+   Check the live site on phone and iPad: installed PWA, old routes redirect.
+5. **E2E PR:** push and open it. Its CI checks out the now-merged API and web `main`. Merge when green.
+6. **Personal's pending items:** tell `personal` (one kanban card) to carry out the "Pending" section of its
+   `portfolio/README.md`, now that §5 is live.
+
+**Risks of the single-PR approach, and how they're handled:**
+- **A large review.** Handled by per-step commit tags and per-step sections in the PR description.
+- **Drift from `main` over weeks.** Handled by rebasing at every step start and renumbering migrations.
+- **Production feedback** on the push and the tax figure arrives only after the final deploy. The local
+  checks in 7.2 stand in for it.
+- **If one feature misbehaves after the deploy,** revert its tagged commits in a follow-up PR. No commit
+  mixes two steps.
 
 ## 8. Cross-cutting pitfalls
 1. **PWA cache:** installed apps on phone and iPad can serve an old shell after route moves. Verify on a
@@ -369,8 +436,8 @@ The owner runs a single coding agent through the steps below **sequentially**.
 3. **Old routes in stored notifications** keep working forever (4.4).
 4. **Money correctness:** only spec-114 (tax), spec-115 (budget meaning) and 4.2 (overall limit) change
    what a number means. Everything else is layout and wording. Any other number change is a bug.
-5. **E2E order:** API PR → web PR → E2E PR. A green E2E PR run is only `@smoke`; run the full suite locally
-   before merge.
+5. **Release order:** API PR → API deploy → web PR (auto-deploys) → E2E PR (§7.3). A green E2E PR run is
+   only `@smoke`; run the full suite locally before opening it.
 
 ## 9. Acceptance (whole programme)
 - 5 nav items; phone bottom bar with nothing clipped; iPad rail with 5 icons.
