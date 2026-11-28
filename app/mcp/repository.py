@@ -1,10 +1,14 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp.models import McpGrant
+
+# ``last_used_at`` is display metadata; refreshing it on every authenticated MCP request cost one
+# write transaction per call. Minute-level accuracy is plenty.
+GRANT_TOUCH_MIN_INTERVAL = timedelta(minutes=5)
 
 
 class McpGrantRepository:
@@ -70,8 +74,11 @@ class McpGrantRepository:
         return result.scalar_one_or_none()
 
     async def touch(self, grant: McpGrant) -> None:
-        grant.last_used_at = datetime.now(UTC)
-        grant.updated_at = grant.last_used_at
+        now = datetime.now(UTC)
+        if grant.last_used_at is not None and now - grant.last_used_at < GRANT_TOUCH_MIN_INTERVAL:
+            return
+        grant.last_used_at = now
+        grant.updated_at = now
         self.session.add(grant)
         await self.session.flush()
 

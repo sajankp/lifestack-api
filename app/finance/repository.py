@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import case, delete, func, or_, select, true
+from sqlalchemy import case, delete, func, or_, select, true, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -819,13 +819,19 @@ class FxRateRepository:
         unique_pairs = {(b.upper(), q.upper()) for b, q in pairs if b and q}
         if not unique_pairs:
             return {}
-        base_codes = {b for b, _ in unique_pairs}
-        quote_codes = {q for _, q in unique_pairs}
         # System rows only -- feeds live valuation (spec-072 INV-3).
-        query = select(FxRate).where(
-            FxRate.workspace_id.is_(None),
-            FxRate.base_currency_code.in_(base_codes),
-            FxRate.quote_currency_code.in_(quote_codes),
+        # One row per requested pair (DISTINCT ON), not the whole rate history of every
+        # base x quote combination: the latter grew by a row per pair per day and was filtered
+        # down to the latest in Python.
+        query = (
+            select(FxRate)
+            .where(
+                FxRate.workspace_id.is_(None),
+                tuple_(FxRate.base_currency_code, FxRate.quote_currency_code).in_(
+                    sorted(unique_pairs)
+                ),
+            )
+            .distinct(FxRate.base_currency_code, FxRate.quote_currency_code)
         )
         if as_of is not None:
             query = query.where(FxRate.as_of <= as_of)
@@ -834,18 +840,13 @@ class FxRateRepository:
                 FxRate.base_currency_code.asc(),
                 FxRate.quote_currency_code.asc(),
                 FxRate.as_of.desc(),
+                FxRate.id.desc(),
             )
         )
-        rows = result.scalars().all()
-
-        latest: dict[tuple[str, str], FxRate] = {}
-        for row in rows:
-            key = (row.base_currency_code.upper(), row.quote_currency_code.upper())
-            if key not in unique_pairs:
-                continue
-            if key not in latest:
-                latest[key] = row
-        return latest
+        return {
+            (row.base_currency_code.upper(), row.quote_currency_code.upper()): row
+            for row in result.scalars().all()
+        }
 
 
 class CapitalTransferRepository(BaseRepository[CapitalTransfer]):
