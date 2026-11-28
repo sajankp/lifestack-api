@@ -439,6 +439,19 @@ class ReturnMetricsService:
         self, workspace_id: int, positions: list[_Position], reporting_currency: str
     ) -> tuple[list[_Position], bool]:
         converted: list[_Position] = []
+        # Many flows share a (currency, date): resolve each pair once per request instead of
+        # one DB round trip per flow (a multi-currency portfolio cost ~300 queries).
+        rate_cache: dict[tuple[str, datetime], tuple[Decimal, str] | None] = {}
+        as_of_today = datetime.now(UTC)
+
+        async def resolve(currency: str, as_of: datetime) -> tuple[Decimal, str] | None:
+            key = (currency.upper(), as_of)
+            if key not in rate_cache:
+                rate_cache[key] = await self.fx_rate_service.resolve_historical_rate(
+                    workspace_id, currency, reporting_currency, as_of
+                )
+            return rate_cache[key]
+
         for p in positions:
             if p.currency.upper() == reporting_currency.upper():
                 converted.append(p)
@@ -446,19 +459,14 @@ class ReturnMetricsService:
             new_flows: list[_Flow] = []
             for f in p.flows:
                 as_of_dt = datetime.combine(f.when, datetime.min.time(), tzinfo=UTC)
-                result = await self.fx_rate_service.resolve_historical_rate(
-                    workspace_id, p.currency, reporting_currency, as_of_dt
-                )
+                result = await resolve(p.currency, as_of_dt)
                 if result is None:
                     return [], False
                 rate, _source = result
                 new_flows.append(
                     _Flow(when=f.when, amount=f.amount * rate, is_contribution=f.is_contribution)
                 )
-            as_of_today = datetime.now(UTC)
-            rate_today = await self.fx_rate_service.resolve_historical_rate(
-                workspace_id, p.currency, reporting_currency, as_of_today
-            )
+            rate_today = await resolve(p.currency, as_of_today)
             if rate_today is None:
                 return [], False
             rate, _source = rate_today
