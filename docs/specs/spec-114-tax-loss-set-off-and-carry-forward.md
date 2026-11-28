@@ -1,12 +1,13 @@
 # Spec-114: Tax estimate — set off losses across the four buckets (highest tax first) and carry forward prior-year losses
 
-**Status:** Draft for owner approval (2026-11-28). The owner has confirmed the ordering rule: **losses go against
+**Status:** Approved by the owner (2026-11-28); not yet implemented. The owner has confirmed the ordering rule: **losses go against
 the highest-taxed gain first.**
 **Scope:** `lifestack-api` only (engine, schema, migration, REST, MCP). The web part is in spec-113 phase 5.
 **Depends on:** spec-099 (capital-gains tax estimate). This spec implements spec-099's phase 4 and the
 set-off rule from spec-099 §1, which the engine never applied. Where spec-099 §3.4 gives a different
 ordering, this spec replaces it.
 **Branch:** `fix/spec-114-tax-loss-set-off` (one PR, three commits T1/T2/T3, each with its own RED test).
+**Delivery slot:** step 2 of 6 in spec-113 §7.
 
 ---
 
@@ -174,11 +175,10 @@ These are thin routers over the existing `TaxWhatIfService` (`app/investing/tax_
 
 ## 5. Implementation plan (TDD; each task is RED → GREEN → commit)
 
-**Step 0: evidence (non-blocking, about 10 min).**
-- Get the four buckets for FY 2026-27 for workspace 1. The coding profile has no LifeStack MCP, so create a
-  kanban card for `personal`: "call `get_tax_summary(workspace_id=1, fy='2026-27')` and comment the four
-  buckets' `gain_inr` and `tax` (read-only)".
-- Record the result in the PR description. The fix doesn't wait for it.
+**Step 0: evidence (non-blocking).** The `personal` profile posts the four FY 2026-27 buckets for
+workspace 1 as a comment on kanban card **`t_7ae94ff5`** (`kanban_show t_7ae94ff5`). Use them to confirm a
+loss bucket exists, and build a regression fixture that reproduces the real figures. Quote them in the PR
+description. If the comment isn't there yet, go ahead; the fix doesn't depend on it.
 
 Setup:
 ```bash

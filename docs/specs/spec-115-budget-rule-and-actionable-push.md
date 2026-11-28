@@ -1,9 +1,10 @@
 # Spec-115: One budget rule, an actionable morning push, and a Saturday net-worth push
 
-**Status:** Draft for owner approval (2026-11-28).
+**Status:** Approved by the owner (2026-11-28); not yet implemented.
 **Scope:** `lifestack-api` (most of it) and one small `lifestack-web` change. E2E comes after both merge.
 **Part of:** spec-113, phase 1.
 **Branches:** API `fix/spec-115-budget-rule-and-push`, web `fix/spec-115-budget-card`.
+**Delivery slot:** step 1 of 6 in spec-113 §7.
 
 ---
 

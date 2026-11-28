@@ -1,6 +1,6 @@
 # Spec-113: LifeStack product shape — Today, Money, Investments (roadmap + phases 2–5)
 
-**Status:** Draft for owner approval (2026-11-28).
+**Status:** Approved by the owner (2026-11-28); not yet implemented.
 **Scope:** `lifestack-api`, `lifestack-web`, `lifestack-e2e`, plus one hand-off card to the Hermes
 `personal` profile.
 **Source:** the product review `/home/sajan/lifestack/.hermes/plans/2026-11-28_161148-lifestack-product-shape.md`,
@@ -30,32 +30,31 @@ which has the evidence, screenshots and reasoning. This spec is the buildable pa
 
 ## 1. Phases and order
 
+Dependencies (the delivery is sequential anyway; see §7):
+
 ```
-T (spec-114, API) ──────────────────────────────┐
-P1 (spec-115, API → web → e2e) ─┐               │
-                                ├─ P3 Today ─ P4 Money + nav ─ P5 Investments ─ P5b personal card
-P2 (API small → web → e2e) ─────┘
+P1 (spec-115) → T (spec-114) → P2 → P3 Today → P4 Money + nav → P5 Investments → personal's pending items
 ```
 
-| Phase | Spec | Repos | Starts when |
+| Phase | Spec | Repos | Needs merged first |
 |---|---|---|---|
-| **T** | spec-114 | api | now |
-| **P1** | spec-115 | api → web → e2e | now |
-| **P2** | §2 below | api → web → e2e | now (independent of P1) |
-| **P3** | §3 | web (api from P1) → e2e | P1 API merged |
-| **P4** | §4 | api (small) → web → e2e | P2 + P3 web merged |
-| **P5** | §5 | api → web → e2e | T + P4 merged |
-| **P5b** | §6 | card to `personal` | P5 deployed |
+| **P1** | spec-115 | api → web → e2e | — |
+| **T** | spec-114 | api | — |
+| **P2** | §2 below | api → web → e2e | — |
+| **P3** | §3 | web (api from P1) → e2e | P1 |
+| **P4** | §4 | api (small) → web → e2e | P2, P3 |
+| **P5** | §5 | api → web → e2e | T, P4 |
+| personal | §6 | card `t_7ae94ff5` (now) + pending README items | P5 live (pending items) |
 
 **Rules for every phase** (from the root `CLAUDE.md` and the `lifestack` skill):
 - One PR per repo: API first, then web. E2E is written **after both merge**, because E2E CI checks out the
   sibling repos' `main`.
-- Branch prefixes `feat/`, `fix/`, `chore/`. Use a separate git worktree per card under
+- Branch prefixes `feat/`, `fix/`, `chore/`. Use a separate git worktree per step under
   `/home/sajan/lifestack-wt/`; never switch the shared checkout's branch.
 - TDD, coverage thresholds never lowered, and `pre-commit run --all-files` green before any commit is
   called done.
-- Commit locally. **Push, open PRs, merge and deploy only when the owner asks.** Merge with `--merge`;
-  squash is disabled.
+- One PR open at a time (§7). Merge only with the owner's go-ahead; deploy only when the owner asks.
+  Merge with `--merge`; squash is disabled.
 - No secrets in output. Prod (Oracle VM, 1 GB) is memory-bound: no new page may call investing analytics
   endpoints on load unless that page is Investments.
 - Don't paste pages together. Extract sections into their own files.
@@ -304,10 +303,17 @@ Keep these ids where the element survives:
   - suggestion regex
   - lock-in end appears in `/investing/tax/dates`
 
-## 6. Phase 5b: card for the `personal` profile (create after P5 is deployed)
+## 6. The `personal` profile's part (kanban card `t_7ae94ff5`, created 2026-11-28)
 
-`personal` owns its scripts (`~/.hermes/profiles/personal/scripts/`). The coding profile doesn't edit them.
-Card body:
+`personal` owns its scripts (`~/.hermes/profiles/personal/scripts/`); the coding profile doesn't edit them.
+The single card `t_7ae94ff5` carries everything personal needs:
+- **now:** post the tax-bucket evidence for spec-114, write planned exits/folds as LifeStack todos
+  (category `portfolio-plan`, idempotent via a `[plan:SYMBOL:date]` key), move the cron to Saturday 04:30 IST
+  and rename it
+- **deferred:** recorded in personal's own `portfolio/README.md`. After §5 is live, Sajan tells personal to
+  carry out the pending items
+
+The deferred items, for reference (originally drafted as a separate card):
 
 > **Goal:** stop pushing numbers LifeStack now computes live; push judgement as tasks.
 > **Context:** spec-113 §5/§6 in `lifestack-api/docs/specs/`. LifeStack now shows tax buckets with
@@ -329,7 +335,33 @@ Card body:
 > **Done when:** one run stores a report without the three fields, the todos exist in LifeStack once each,
 > and the cron shows the new schedule and name.
 
-## 7. Cross-cutting pitfalls
+## 7. Delivery: one coding agent, one PR at a time
+
+The owner runs a single coding agent through the steps below **sequentially**.
+- A step's repos are delivered as API PR → merge → web PR → merge → E2E PR → merge. **Only one PR is open
+  at any time**, and the next PR starts from an up-to-date `main`.
+- No parallel agents, no kanban fan-out. Merging and deploying happen when the owner asks.
+
+| Step | Spec | PRs, in order | Owner checkpoint before the next step |
+|---|---|---|---|
+| 1 | spec-115 (phase 1) | api `fix/spec-115-budget-rule-and-push` → web `fix/spec-115-budget-card` → e2e | Deploy the API; watch a few morning pushes and the first Saturday push |
+| 2 | spec-114 (tax T1–T3) | api `fix/spec-114-tax-loss-set-off` | Compare the new tax summary with card `t_7ae94ff5`'s figures |
+| 3 | spec-113 §2 (phase 2) | api `fix/spec-113-p2-transfer-row` → web `fix/spec-113-p2-wording` → e2e | |
+| 4 | spec-113 §3 (Today) | api (`month_budget`, if needed) → web → e2e | Use Today for a few days |
+| 5 | spec-113 §4 (Money + nav) | api (overall limit, KPI off) → web → e2e | Test the installed PWA on phone and iPad |
+| 6 | spec-113 §5 (Investments + tax UI + ELSS) | api → web → e2e | Then tell `personal` to do the pending items on its README |
+
+**Prompt for the coding agent at each step** (owner pastes it):
+> Implement step N of `lifestack-api/docs/specs/spec-113-product-shape-roadmap.md` §7, following the named
+> spec exactly.
+> - Work in a fresh worktree off `origin/main` under `/home/sajan/lifestack-wt/`.
+> - TDD, one commit per task, `pre-commit run --all-files` and the full suite with coverage green.
+> - Open one PR at a time. Merge each (`gh pr merge --merge --delete-branch`) only after its CI is green
+>   and I say so, then continue with the next repo of the step.
+> - No deploy unless I ask.
+> - Report: PRs (links), tests run with results, test ids removed or changed.
+
+## 8. Cross-cutting pitfalls
 1. **PWA cache:** installed apps on phone and iPad can serve an old shell after route moves. Verify on a
    production build on both devices; the redirects cover stale links.
 2. **Prod memory:** Today = cached dashboard summary + period change (cheap reads). Never load Investments
@@ -340,7 +372,7 @@ Card body:
 5. **E2E order:** API PR → web PR → E2E PR. A green E2E PR run is only `@smoke`; run the full suite locally
    before merge.
 
-## 8. Acceptance (whole programme)
+## 9. Acceptance (whole programme)
 - 5 nav items; phone bottom bar with nothing clipped; iPad rail with 5 icons.
 - One answer to "am I on budget?" everywhere; one tax figure, one LRS figure and one harvest list, all live.
 - No morning push leads with a spending spike; the Saturday push shows the week with new money split out.
